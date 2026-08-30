@@ -1,0 +1,14 @@
+{
+  "name": "@planestro/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "planestro": "./src/cli.ts"
+  },
+  "dependencies": {
+    "@planestro/shared": "*",
+    "yaml": "^2.8.0",
+    "zod": "^4.0.0"
+  }
+}
