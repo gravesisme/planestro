@@ -237,7 +237,11 @@ export class LiveEngine implements Engine {
       const msg = decision === 'deny'
         ? `${this.resumeNote(id, 'a permission decision')}\n\nThe user denied ${desc}${payload.reason ? `: ${payload.reason}` : ''}. Continue without it, or call report_blocked if you cannot.`
         : `${this.resumeNote(id, 'a permission decision')}\n\nThe user approved ${desc}. It is now allowed; continue.`;
-      this.runJob(id, () => this.runTurnFor(id, phase, msg, decision === 'deny' ? [] : [rule]));
+      // A chained/heredoc command can't be expressed as a matchable allow rule (the SDK's
+      // matcher and segment matching both refuse it), so an approval is also carried into the
+      // turn as a one-shot exact-command pass (consumed on first use).
+      const oneShot = decision !== 'deny' && req.tool === 'Bash' ? [String(req.input.command ?? '')] : [];
+      this.runJob(id, () => this.runTurnFor(id, phase, msg, decision === 'deny' ? [] : [rule], oneShot));
       return;
     }
     throw new Error(`unknown response kind ${String(payload.kind)}`);
@@ -260,7 +264,8 @@ export class LiveEngine implements Engine {
   }
 
   // ---- turns ----
-  private async runTurnFor(id: string, phase: TurnPhase, prompt: string, extraAllowed: string[] = []): Promise<TurnResult | undefined> {
+  private async runTurnFor(id: string, phase: TurnPhase, prompt: string, extraAllowed: string[] = [], oneShotCommands: string[] = []): Promise<TurnResult | undefined> {
+    const oneShot = new Set(oneShotCommands.map((c) => c.trim()));
     if (this.stopping) return undefined;
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
@@ -288,6 +293,7 @@ export class LiveEngine implements Engine {
         onPermission: async (req) => {
           const why = policy.deny(req);
           if (why) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `denied ${req.tool}: ${why}` } }], 'engine'); return { action: 'deny', message: `Not allowed: ${why}` }; }
+          if (req.tool === 'Bash' && oneShot.delete(String(req.input.command ?? '').trim())) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: 'one-shot approval consumed' } }], 'engine'); return { action: 'allow' }; }
           if (allowedByRules(req, [...BASE_ALLOWED[phase], ...this.store.config.permissions.allow, ...extraAllowed])) return { action: 'allow' };
           this.store.mutateItem(id, [{ set: { awaiting: 'permission', awaiting_data: { tool: req.tool, input: req.input, requested_at: this.now() } } }, { activity: { actor: 'app', text: `parked: permission for ${req.tool} ${String(req.input.command ?? req.input.file_path ?? '').slice(0, 80)}` } }], 'engine', { commit: `${id}: awaiting permission` });
           return { action: 'park' };
