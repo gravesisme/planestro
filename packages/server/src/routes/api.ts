@@ -21,6 +21,8 @@ export function apiRoutes(store: DataStore, engine: Engine): Hono {
 
   api.get('/state', async (c) => c.json(stateView(store, engine, await store.git.status())));
   api.post('/reload', async (c) => { store.reload(); return c.json({ ok: true, invalid: store.invalid }); });
+  api.post('/reconcile', async (c) => { const e = engine as Engine & { reconcile?: (s: 'manual') => Promise<string[]> }; if (!e.reconcile) return c.json({ corrections: [], note: 'no reconciler with this engine' }); return c.json({ corrections: await e.reconcile('manual') }); });
+  api.post('/queue/order', async (c) => { try { const { ids } = z.object({ ids: z.array(z.string()).min(1) }).parse(await c.req.json()); ids.forEach((id, i) => store.mutateItem(id, [{ set: { merge_order: i + 1 } }], 'user')); store.git.commit('planestro: merge order'); engine.poke(); return c.json({ ok: true }); } catch (e) { return fail(c, e); } });
 
   api.get('/items', (c) => {
     const q = c.req.query('q') ?? '';

@@ -21,6 +21,7 @@ export function App() {
           <NavLink to="/done">Done</NavLink>
           <NavLink to="/sessions">Sessions</NavLink>
           <NavLink to="/prompts">Prompts</NavLink>
+          <NavLink to="/console">Console</NavLink>
           <NavLink to="/settings">Settings</NavLink>
         </nav>
         <div className="status">

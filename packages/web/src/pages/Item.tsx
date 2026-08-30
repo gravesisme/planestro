@@ -118,6 +118,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
         )}
         <div className="section"><h2>Session</h2>
           {session ? <p>{session.busy ? 'running' : 'idle'} · {session.model} · {session.op ?? ''}<br /><span className="small muted">{session.last_output}</span></p> : <p className="muted small">No live session. {fm.session_id ? `Parked session ${fm.session_id.slice(0, 8)}… resumes when needed.` : 'Nothing has run for this item yet.'}</p>}
+          {fm.session_id && !session && <p className="small muted">Open in a terminal (pauses planestro's use of it while attached): <code>claude --resume {fm.session_id}</code> <button className="small" onClick={() => void navigator.clipboard.writeText(`claude --resume ${fm.session_id}`)}>copy</button></p>}
           <div className="row"><input className="grow" placeholder="Message to the session (queued for its next turn)" value={msg} onChange={(e) => setMsg(e.target.value)} /><button disabled={!msg.trim()} onClick={() => { void act(() => api.message(item.id, msg)); setMsg(''); }}>Send</button></div>
         </div>
         <div className="section"><h2>Attachments</h2>

@@ -1,0 +1,63 @@
+import { useEffect, useState } from 'react';
+import { Link } from 'react-router';
+import type { JournalEntry } from '@planestro/shared';
+import { DndContext, PointerSensor, useSensor, useSensors, closestCenter, type DragEndEvent } from '@dnd-kit/core';
+import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+import { api } from '../api.ts';
+import { act, useStore } from '../store.ts';
+
+export function ConsolePage() {
+  const state = useStore((s) => s.state);
+  const events = useStore((s) => s.events);
+  const [journal, setJournal] = useState<JournalEntry[]>([]);
+  const [questions, setQuestions] = useState<JournalEntry[]>([]);
+  const [itemFilter, setItemFilter] = useState('');
+  const [msg, setMsg] = useState('');
+  const [reconcileOut, setReconcileOut] = useState<string[] | null>(null);
+  const refresh = () => { void api.journal({ item: itemFilter || undefined, limit: 120 }).then((j) => setJournal(j.reverse())); void api.orchestratorQuestions().then((q) => setQuestions(q.reverse())); };
+  useEffect(() => { refresh(); const t = setInterval(refresh, 5000); return () => clearInterval(t); }, [itemFilter]);
+  const queue = (state?.items ?? []).filter((i) => i.frontmatter.status === 'IN_REVIEW').sort((a, b) => (a.frontmatter.merge_order ?? 1e9) - (b.frontmatter.merge_order ?? 1e9) || (a.frontmatter.rank ?? 0) - (b.frontmatter.rank ?? 0));
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
+  const onQueueDrag = (e: DragEndEvent) => {
+    if (!e.over || e.active.id === e.over.id) return;
+    const ids = queue.map((i) => i.id);
+    const next = arrayMove(ids, ids.indexOf(String(e.active.id)), ids.indexOf(String(e.over.id)));
+    void act(() => api.queueOrder(next));
+  };
+  if (!state) return <p className="muted">Loading…</p>;
+  return (
+    <div>
+      <div className="section"><h2>Orchestrator</h2>
+        <p className="muted small">The judgment layer: woken on plan submissions, merges, repeated CI failures and blocks. Message it with context or answers; it records decisions on the items.</p>
+        {questions.length > 0 && <div>{questions.map((q, i) => <p key={i}>🟠 <b>{String((q.data as any)?.question)}</b> {q.item && <Link to={`/items/${q.item}`}>{q.item}</Link>} <span className="muted small">{q.ts.slice(0, 16).replace('T', ' ')}</span></p>)}</div>}
+        <div className="row"><input className="grow" placeholder="Message the orchestrator (it wakes with your text + current state)" value={msg} onChange={(e) => setMsg(e.target.value)} /><button disabled={!msg.trim()} onClick={() => { void act(() => api.orchestratorMessage(msg)); setMsg(''); }}>Send</button></div>
+      </div>
+      <div className="section"><h2>Merge queue (drag to reorder)</h2>
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onQueueDrag}>
+          <SortableContext items={queue.map((i) => i.id)} strategy={verticalListSortingStrategy}>
+            {queue.map((i, n) => <QueueRow key={i.id} n={n + 1} id={i.id} title={i.frontmatter.title} base={i.derived.base_branch} ci={i.frontmatter.ci_result} skip={i.frontmatter.skip_merge} />)}
+          </SortableContext>
+        </DndContext>
+        {!queue.length && <p className="muted small">Nothing in review.</p>}
+      </div>
+      <div className="section"><h2>Maintenance</h2>
+        <div className="row"><button onClick={async () => { const r = await act(() => api.reconcile()); if (r) setReconcileOut(r.corrections); }}>Reconcile now</button><span className="muted small">Cross-checks items against git, worktrees, GitHub and CI.</span></div>
+        {reconcileOut && <pre className="events">{reconcileOut.length ? reconcileOut.join('\n') : 'everything matches'}</pre>}
+      </div>
+      <div className="section"><h2>Journal <input placeholder="filter by item id" value={itemFilter} onChange={(e) => setItemFilter(e.target.value)} style={{ marginLeft: 10, fontWeight: 400 }} /></h2>
+        <div className="events">{journal.map((e, i) => `${e.ts.slice(5, 19).replace('T', ' ')}  ${e.type.padEnd(22)} ${e.item ?? ''} ${e.data ? JSON.stringify(e.data).slice(0, 140) : ''}`).join('\n') || 'quiet'}</div>
+      </div>
+      <div className="section"><h2>Engine log</h2><div className="events">{events.slice(-80).join('\n') || 'quiet'}</div></div>
+    </div>
+  );
+}
+
+function QueueRow({ n, id, title, base, ci, skip }: { n: number; id: string; title: string; base?: string; ci?: string; skip?: boolean }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+  return (
+    <div ref={setNodeRef} style={{ transform: CSS.Transform.toString(transform), transition }} {...attributes} {...listeners} className={`card ${isDragging ? 'dragging' : ''}`}>
+      <span className="id">#{n}</span> <Link to={`/items/${id}`}>{id}</Link> {title} <span className="muted small">→ {base}</span> {ci && <span className="tag">{ci}</span>} {skip && <span className="tag hot">held</span>}
+    </div>
+  );
+}

@@ -21,6 +21,7 @@ const { values, positionals } = parseArgs({
   options: {
     repo: { type: 'string' }, name: { type: 'string' }, prefix: { type: 'string' }, 'default-branch': { type: 'string' },
     'release-branch': { type: 'string' }, github: { type: 'string' }, layout: { type: 'string' }, 'no-commit': { type: 'boolean' },
+    commit: { type: 'boolean' }, 'copy-small': { type: 'boolean' }, data: { type: 'string' },
     help: { type: 'boolean', short: 'h' }, port: { type: 'string' }, mock: { type: 'boolean' },
   },
 });
@@ -57,6 +58,30 @@ try {
       const dir = locateDataDir(arg);
       const r = await migrate(dir, log);
       log(`schema ${r.from} → ${r.to}${r.applied.length ? ` (applied ${r.applied.join(', ')})` : ' (nothing to do)'}`);
+      break;
+    }
+    case 'import-prompts': {
+      if (!arg) throw new Error('usage: planestro import-prompts <file> [--data <dir>] [--commit]');
+      const dir = locateDataDir(values.data);
+      const store = await DataStore.open(dir, { log: (l, m) => log(`[${l}] ${m}`) });
+      const { importPrompts } = await import('./import/promptsImport.ts');
+      const r = importPrompts(store, resolve(arg), { commit: Boolean(values.commit), copySmall: Boolean(values['copy-small']) });
+      for (const row of r.rows) log(`${row.kind.padEnd(7)} ${(row.id ?? row.name ?? '').padEnd(8)} ${(row.status ?? '').padEnd(18)} ${(row.category ?? '').padEnd(16)} ${row.title.slice(0, 70)}${row.flags.length ? '  [' + row.flags.join('; ') + ']' : ''}`);
+      log(`${values.commit ? 'imported' : 'would import'}: ${r.items} items, ${r.prompts} prompts (${r.skipped} skipped)${values.commit ? '' : ' — re-run with --commit to write'}`);
+      await store.flushCommits(); store.close();
+      break;
+    }
+    case 'reconcile': {
+      const dir = locateDataDir(arg);
+      const { DataStore: DS } = await import('./store/DataStore.ts');
+      const { LiveEngine } = await import('./engine/LiveEngine.ts');
+      const { makePorts } = await import('./engine/makePorts.ts');
+      const store = await DS.open(dir, { log: (l, m) => log(`[${l}] ${m}`) });
+      const engine = new LiveEngine(store, makePorts('live', (m) => log(m), store), () => {}, {});
+      const corrections = await engine.reconcile('manual');
+      for (const cx of corrections) log(`  ${cx}`);
+      log(corrections.length ? `${corrections.length} correction(s) applied` : 'everything matches');
+      await store.flushCommits(); store.git.checkpoint(); await store.git.push(); store.close();
       break;
     }
     case 'serve': {

@@ -186,7 +186,8 @@ describe('LiveEngine lifecycle (dry-run ports)', () => {
     await engine.stop();
     store.mutateItem(item.id, [{ transition: { to: 'IN_PROGRESS', actor: 'user' } }, { set: { op: 'implement_turn', op_started_at: '2026-01-01T00:00:00+00:00' } }], 'user');
     const world2 = new FakeWorld(() => {}, { 'origin/trunk': 'f'.repeat(40) });
-    world2.worktrees.set(join(store.codeRepoPath(), '.claude/worktrees/tp-1-paused'), { path: 'x', head: 'a'.repeat(40), branch: 'tp/1-paused' });
+    const wtPath = join(store.codeRepoPath(), '.claude/worktrees/tp-1-paused');
+    world2.worktrees.set(wtPath, { path: wtPath, head: 'a'.repeat(40), branch: 'tp/1-paused' });
     const engine2 = new LiveEngine(store, { mode: 'dry-run', git: new DryRunGitPort(world2), gh: new DryRunGhPort(world2), proc: new DryRunProcPort(world2), claude: new DryRunClaudePort(world2) }, () => {}, { sleep: async () => {}, tickMs: 50 });
     await engine2.start();
     await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
@@ -304,5 +305,50 @@ describe('orchestrator', () => {
     engine.orchestrator.wake({ type: 'user_message', data: { message: 'again' } });
     await waitFor(() => wakes.length >= 3);
     expect(wakes[2].resume).toBeUndefined(); // rotated: files are the memory
+  });
+});
+
+describe('reconciler (chaos: crash markers left on disk)', () => {
+  it('converges stale ops, adopts pre-crash PRs, observes external merges, blocks on missing worktrees, reports orphans', async () => {
+    const { store, engine, world } = await setup();
+    const mk = (title: string, set: Record<string, unknown>, status?: string) => {
+      const it = store.createItem({ title });
+      const ops: any[] = [];
+      if (status) ops.push({ set: { status } });
+      ops.push({ set });
+      return store.mutateItem(it.id, ops, 'engine').id;
+    };
+    // a: crash during creating_pr, but the PR made it to GitHub
+    const a = mk('A', { op: 'creating_pr', op_started_at: '2026-01-01T00:00:00+00:00', branch: 'tp/1-a', worktree: '.claude/worktrees/tp-1-a' }, 'IN_PROGRESS');
+    world.worktrees.set(join(store.codeRepoPath(), '.claude/worktrees/tp-1-a'), { path: join(store.codeRepoPath(), '.claude/worktrees/tp-1-a'), head: world.sha(), branch: 'tp/1-a' });
+    world.remoteBranches.set('tp/1-a', world.sha());
+    world.prs.set(300, { number: 300, url: 'u', state: 'OPEN', headRefOid: world.remoteBranches.get('tp/1-a')!, headRefName: 'tp/1-a', baseRefName: 'trunk', polls: 9, failOnce: false });
+    // b: PR merged outside planestro while IN_REVIEW (its worktree exists and is clean)
+    const b = mk('B', { pr: 301, branch: 'tp/2-b', worktree: '.claude/worktrees/tp-2-b', ci_head_sha: 'x'.repeat(40) }, 'IN_REVIEW');
+    world.worktrees.set(join(store.codeRepoPath(), '.claude/worktrees/tp-2-b'), { path: join(store.codeRepoPath(), '.claude/worktrees/tp-2-b'), head: world.sha(), branch: 'tp/2-b' });
+    world.prs.set(301, { number: 301, url: 'u', state: 'MERGED', mergedAt: new Date().toISOString(), headRefOid: 'x'.repeat(40), headRefName: 'tp/2-b', baseRefName: 'trunk', mergeCommit: world.sha(), polls: 9, failOnce: false });
+    // c: worktree vanished mid-implementation
+    const c = mk('C', { branch: 'tp/3-c', worktree: '.claude/worktrees/tp-3-c' }, 'IN_PROGRESS');
+    // d: stale awaiting_ci marker
+    const d = mk('D', { pr: 302, op: 'awaiting_ci', op_started_at: '2026-01-01T00:00:00+00:00', branch: 'tp/4-d', worktree: '.claude/worktrees/tp-4-d', ci_result: 'pending' }, 'IN_REVIEW');
+    world.worktrees.set(join(store.codeRepoPath(), '.claude/worktrees/tp-4-d'), { path: join(store.codeRepoPath(), '.claude/worktrees/tp-4-d'), head: world.sha(), branch: 'tp/4-d' });
+    world.prs.set(302, { number: 302, url: 'u', state: 'OPEN', headRefOid: world.sha(), headRefName: 'tp/4-d', baseRefName: 'trunk', polls: 9, failOnce: false });
+    // orphan worktree nobody owns
+    world.worktrees.set(join(store.worktreesRoot(), 'tp-99-ghost'), { path: join(store.worktreesRoot(), 'tp-99-ghost'), head: world.sha(), branch: 'tp/99-ghost' });
+
+    const corrections = await engine.reconcile('manual');
+    expect(corrections.join('\n')).toContain(`${a}: adopted PR #300`);
+    expect(status(store, a)).toBe('IN_REVIEW');
+    expect(store.getItem(a)!.file.frontmatter.pr).toBe(300);
+    expect(corrections.join('\n')).toContain(`${b}: PR #301 was merged outside planestro`);
+    await waitFor(() => status(store, b) === 'FINISHED', 8000);
+    expect(store.getItem(c)!.file.frontmatter.blocked).toBe(true);
+    expect(store.getItem(c)!.file.frontmatter.blocked_reason).toBe('worktree_missing');
+    expect(status(store, c)).toBe('IN_PROGRESS'); // phase preserved
+    expect(store.getItem(d)!.file.frontmatter.op).toBeUndefined();
+    expect(corrections.join('\n')).toContain('orphan worktrees');
+    // idempotent: a second pass only re-reports the environment, changes nothing
+    const again = await engine.reconcile('manual');
+    expect(again.filter((x) => !x.includes('orphan') && !x.includes('resuming cleanup'))).toEqual([]);
   });
 });

@@ -57,17 +57,23 @@ export class LiveEngine implements Engine {
   private get github(): string { const g = this.store.config.code_repo.github; if (!g) throw new Error('code_repo.github is not configured'); return g; }
 
   // ---- lifecycle ----
+  private reconcileTimer?: NodeJS.Timeout;
+
   async start(): Promise<void> {
     this.note('info', `engine ${this.mode} starting${this._paused ? ' (paused)' : ''}`);
+    await this.reconcile('startup').catch((e) => this.note('error', `reconcile: ${(e as Error).message}`));
     await this.resumeInterrupted();
     this.timer = setInterval(() => void this.tick(), this.opts.tickMs ?? 10_000);
     this.timer.unref?.();
+    this.reconcileTimer = setInterval(() => void this.reconcile('periodic').catch(() => undefined), 5 * 60_000);
+    this.reconcileTimer.unref?.();
     void this.tick();
   }
   async stop(): Promise<void> {
     this.stopping = true;
     this.orchestrator.stop();
     if (this.timer) clearInterval(this.timer);
+    if (this.reconcileTimer) clearInterval(this.reconcileTimer);
     for (const t of this.turns.values()) t.abort.abort();
     await Promise.allSettled([...this.jobs.values()]);
   }
@@ -552,6 +558,80 @@ export class LiveEngine implements Engine {
     ], 'engine', { commit: `${id}: finish` });
     this.store.journal.end(opId, id, 'ok');
     this.note('info', `${id}: finished`);
+  }
+
+  // ---- reconciliation (Phase 5): cross-check persisted state against the world ----
+  /**
+   * Never assumes an operation completed and never deletes on its own authority
+   * (invariant 7 — deletions still go through cleanup's positive-evidence checks).
+   * Every correction is logged to the item's Activity as `reconcile: …`.
+   */
+  async reconcile(source: 'startup' | 'periodic' | 'manual'): Promise<string[]> {
+    const corrections: string[] = [];
+    const correct = (id: string, text: string, ops: ItemOp[] = []) => {
+      corrections.push(`${id}: ${text}`);
+      this.store.mutateItem(id, [...ops, { activity: { actor: 'app', text: `reconcile: ${text}` } }], 'engine');
+    };
+    await this.ports.git.fetch(this.repo).catch(() => undefined);
+    const worktrees = await this.ports.git.worktreeList(this.repo).catch(() => []);
+    const remoteHeads = await this.ports.git.remoteHeads(this.repo).catch(() => new Map<string, string>());
+    const github = this.store.config.code_repo.github;
+    for (const item of this.store.listItems()) {
+      const fm = item.file.frontmatter;
+      const id = item.id;
+      const d = this.store.derived(item);
+      const wtAbs = fm.worktree ? this.absWorktree(fm.worktree) : undefined;
+      const wtEntry = wtAbs ? worktrees.find((w) => w.path === wtAbs) : undefined;
+      try {
+        // stale in-flight ops (turn ops are handled by resumeInterrupted)
+        if (fm.op && !RESUMABLE_TURN_OPS.has(fm.op) && !this.jobs.has(id) && !this.turns.has(id)) {
+          if (fm.op === 'rebasing' || fm.op === 'syncing_base') {
+            if (wtAbs && wtEntry && await this.ports.git.inProgressOp(wtAbs)) { await this.ports.git.abortInProgress(wtAbs); correct(id, `aborted a half-done ${fm.op} left by a crash`, [{ unset: ['op', 'op_started_at'] }, { set: { ci_result: 'pending' } }]); }
+            else correct(id, `cleared stale op ${fm.op}`, [{ unset: ['op', 'op_started_at'] }, { set: { ci_result: 'pending' } }]);
+          } else if (fm.op === 'pushing' || fm.op === 'creating_pr') {
+            const pr = github && fm.branch ? (await this.ports.gh.prList(github, { head: fm.branch, state: 'open' }))[0] : undefined;
+            if (pr && fm.status === 'IN_PROGRESS') correct(id, `adopted PR #${pr.number} opened before the crash`, [{ transition: { to: 'IN_REVIEW', actor: 'engine' } }, { set: { pr: pr.number, ci_result: 'pending' } }, { unset: ['op', 'op_started_at'] }]);
+            else correct(id, `cleared stale op ${fm.op}; the pipeline will retry`, [{ unset: ['op', 'op_started_at'] }]);
+          } else if (fm.op === 'merging' || fm.op === 'cleaning_up' || fm.op === 'awaiting_ci' || fm.op === 'running_local_checks') {
+            correct(id, `cleared stale op ${fm.op}`, [{ unset: ['op', 'op_started_at'] }, ...(fm.status === 'IN_REVIEW' ? [{ set: { ci_result: 'pending' as const } }] : [])]);
+          } else if (fm.op === 'creating_worktree' || fm.op === 'importing') {
+            correct(id, `restart during ${fm.op}; re-running setup`, [{ unset: ['op', 'op_started_at'] }]);
+            if (fm.status === 'PLAN_IN_PROGRESS' && !wtEntry) this.store.mutateItem(id, [{ transition: { to: 'QUEUED', actor: 'engine' } }], 'engine');
+          }
+        }
+        // pull request truth
+        if (fm.pr && github && (fm.status === 'IN_REVIEW' || fm.status === 'MERGED' || fm.status === 'IN_PROGRESS')) {
+          const pr = await this.ports.gh.prView(github, fm.pr).catch(() => undefined);
+          if (pr?.state === 'MERGED' && (fm.status === 'IN_REVIEW' || fm.status === 'IN_PROGRESS')) {
+            if (fm.status === 'IN_PROGRESS') this.store.mutateItem(id, [{ transition: { to: 'IN_REVIEW', actor: 'engine' } }], 'engine');
+            correct(id, `PR #${fm.pr} was merged outside planestro`, [{ transition: { to: 'MERGED', actor: 'engine' } }, { set: { merged_at: pr.mergedAt ? isoLocal(new Date(pr.mergedAt)) : this.now(), ci_result: 'green' } }]);
+            this.runJob(id, () => this.cleanup(id));
+          } else if (pr?.state === 'CLOSED' && fm.status === 'IN_REVIEW' && !fm.blocked) {
+            this.block(id, 'pr_closed_externally', `PR #${fm.pr} was closed without merging`);
+            corrections.push(`${id}: PR #${fm.pr} closed externally`);
+          } else if (pr?.state === 'OPEN' && fm.status === 'IN_REVIEW' && fm.ci_head_sha && pr.headRefOid !== fm.ci_head_sha && fm.ci_result !== 'pending') {
+            correct(id, `branch tip moved (${pr.headRefOid.slice(0, 7)}); CI verdict discarded`, [{ set: { ci_result: 'pending' } }]);
+          }
+        }
+        // worktree truth (never recreate silently: local commits could be lost)
+        if (d.flavor === 'worker' && wtAbs && !wtEntry && ['PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW'].includes(fm.status) && !fm.blocked) {
+          this.block(id, 'worktree_missing', `the worktree ${fm.worktree} no longer exists; status preserved, nothing recreated`);
+          corrections.push(`${id}: worktree missing`);
+        }
+        // MERGED but never finished, or FINISHED leftovers
+        if (fm.status === 'MERGED' && !fm.op && !this.jobs.has(id) && !fm.blocked) { corrections.push(`${id}: resuming cleanup`); this.runJob(id, () => this.cleanup(id)); }
+        if (fm.status === 'FINISHED' && fm.branch && d.flavor !== 'external' && remoteHeads.has(fm.branch)) correct(id, `remote branch ${fm.branch} still exists after finish (left in place; delete by hand or re-run cleanup)`);
+      } catch (e) { corrections.push(`${id}: reconcile error ${(e as Error).message}`); }
+    }
+    // orphans: worktrees under our root that no item references
+    const root = this.store.worktreesRoot();
+    const referenced = new Set(this.store.listItems().map((i) => i.file.frontmatter.worktree && this.absWorktree(i.file.frontmatter.worktree!)).filter(Boolean));
+    const orphans = worktrees.filter((w) => w.path.startsWith(root + '/') && !referenced.has(w.path));
+    if (orphans.length) { corrections.push(`orphan worktrees: ${orphans.map((o) => o.path).join(', ')}`); this.wakeOrchestrator('orphans_found', undefined, { worktrees: orphans.map((o) => `${o.path} (${o.branch ?? o.head})`).join('\n') }); }
+    this.store.journal.append({ type: 'reconcile.done', actor: 'engine', data: { source, corrections } });
+    if (corrections.length) this.note('warn', `reconcile (${source}): ${corrections.length} correction(s): ${corrections.slice(0, 5).join(' | ')}`);
+    else if (source === 'manual') this.note('info', 'reconcile: everything matches');
+    return corrections;
   }
 
   // ---- restart recovery (Phase 3 subset; Phase 5 adds the full reconciler) ----
