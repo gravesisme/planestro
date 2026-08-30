@@ -66,6 +66,13 @@ pins these versions so planestro can warn when the installed CLI drifts.
    `allowedTools`). The callback must answer allow for planestro's own tools
    itself; it cannot rely on the allowlist in plan mode.
 
+11. **In-process MCP tool calls can fail late in a long session** (seen live on
+   HH-94, turn 46: `submit_plan` failed 3× with `Tool permission request
+   failed: AbortError: Stream closed`, then succeeded on a fresh resumed
+   turn). Treat planestro tool results as fallible: the engine's no_plan /
+   done detection paths are the safety net, and a resumed turn re-running the
+   tool is the recovery. Cause not yet isolated (SDK-internal transport).
+
 ## Engine decisions confirmed by the spike
 
 - One `query()` per turn with `resume` is a sound runtime model: no process
