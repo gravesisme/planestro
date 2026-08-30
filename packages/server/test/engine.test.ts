@@ -336,6 +336,8 @@ describe('reconciler (chaos: crash markers left on disk)', () => {
     // orphan worktree nobody owns
     world.worktrees.set(join(store.worktreesRoot(), 'tp-99-ghost'), { path: join(store.worktreesRoot(), 'tp-99-ghost'), head: world.sha(), branch: 'tp/99-ghost' });
 
+    const wakes: string[] = [];
+    (engine as any).orchestrator.wake = (ev: { type: string }) => { wakes.push(ev.type); };
     const corrections = await engine.reconcile('manual');
     expect(corrections.join('\n')).toContain(`${a}: adopted PR #300`);
     expect(status(store, a)).toBe('IN_REVIEW');
@@ -347,8 +349,11 @@ describe('reconciler (chaos: crash markers left on disk)', () => {
     expect(status(store, c)).toBe('IN_PROGRESS'); // phase preserved
     expect(store.getItem(d)!.file.frontmatter.op).toBeUndefined();
     expect(corrections.join('\n')).toContain('orphan worktrees');
-    // idempotent: a second pass only re-reports the environment, changes nothing
+    // idempotent: a second pass only re-reports the environment, changes nothing —
+    // and an unchanged orphan set never wakes the orchestrator again
+    expect(wakes.filter((w) => w === 'orphans_found')).toHaveLength(1);
     const again = await engine.reconcile('manual');
     expect(again.filter((x) => !x.includes('orphan') && !x.includes('resuming cleanup'))).toEqual([]);
+    expect(wakes.filter((w) => w === 'orphans_found')).toHaveLength(1);
   });
 });

@@ -627,7 +627,17 @@ export class LiveEngine implements Engine {
     const root = this.store.worktreesRoot();
     const referenced = new Set(this.store.listItems().map((i) => i.file.frontmatter.worktree && this.absWorktree(i.file.frontmatter.worktree!)).filter(Boolean));
     const orphans = worktrees.filter((w) => w.path.startsWith(root + '/') && !referenced.has(w.path));
-    if (orphans.length) { corrections.push(`orphan worktrees: ${orphans.map((o) => o.path).join(', ')}`); this.wakeOrchestrator('orphans_found', undefined, { worktrees: orphans.map((o) => `${o.path} (${o.branch ?? o.head})`).join('\n') }); }
+    if (orphans.length) {
+      corrections.push(`orphan worktrees: ${orphans.map((o) => o.path).join(', ')}`);
+      // Wake the orchestrator only when the orphan set CHANGES — a wake per reconcile pass
+      // would re-ask the same question every five minutes and burn a model turn each time.
+      const key = orphans.map((o) => o.path).sort().join('|');
+      const last = this.store.journal.read({ type: 'reconcile.orphans_reported', limit: 1 })[0];
+      if (last?.data?.key !== key) {
+        this.store.journal.append({ type: 'reconcile.orphans_reported', actor: 'engine', data: { key, count: orphans.length } });
+        this.wakeOrchestrator('orphans_found', undefined, { worktrees: orphans.map((o) => `${o.path} (${o.branch ?? o.head})`).join('\n') });
+      }
+    }
     this.store.journal.append({ type: 'reconcile.done', actor: 'engine', data: { source, corrections } });
     if (corrections.length) this.note('warn', `reconcile (${source}): ${corrections.length} correction(s): ${corrections.slice(0, 5).join(' | ')}`);
     else if (source === 'manual') this.note('info', 'reconcile: everything matches');
