@@ -190,6 +190,8 @@ export const LocalConfig = z.object({
   worktrees_root: z.string().optional(),
   godot_bin: z.string().optional(),
   claude_bin: z.string().optional(),
+  /** Optional Console API key: sessions then bill the API under the Commercial Terms instead of a claude.ai login. Local file only (gitignored). */
+  anthropic_api_key: z.string().optional(),
   engine: z.object({ paused: z.boolean().default(false), mode: z.enum(['live', 'dry-run']).optional() }).default({ paused: false }),
 }).passthrough();
 export type LocalConfig = z.infer<typeof LocalConfig>;
