@@ -6,6 +6,7 @@ import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { ItemCard, statusLabel } from '../components/ItemCard.tsx';
 import { NewItemDialog } from '../components/NewItemDialog.tsx';
+import { PreviewDrawer } from '../components/PreviewDrawer.tsx';
 
 const BOARD_COLUMNS = ['NOT_YET_SUBMITTED', 'QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW', 'MERGED'];
 
@@ -15,6 +16,7 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
   const [q, setQ] = useState('');
   const [category, setCategory] = useState<string>('');
   const [creating, setCreating] = useState(false);
+  const [preview, setPreview] = useState<string | null>(null);
   const needsOnly = params.get('needs') === '1';
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
@@ -51,12 +53,13 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
         <button className="primary" onClick={() => setCreating(true)}>+ New item</button>
       </div>
       {creating && <NewItemDialog onClose={() => setCreating(false)} icebox={lane === 'icebox'} />}
+      {preview && <PreviewDrawer id={preview} onClose={() => setPreview(null)} />}
       {lane === 'done' ? (
-        <div className="list card-list">{done.map((i) => <ItemCard key={i.id} item={i} sortable={false} />)}{!done.length && <p className="muted">Nothing finished yet.</p>}</div>
+        <div className="list card-list">{done.map((i) => <ItemCard key={i.id} item={i} sortable={false} onSelect={setPreview} />)}{!done.length && <p className="muted">Nothing finished yet.</p>}</div>
       ) : (
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
           <div className="board" style={lane === 'icebox' ? { gridAutoColumns: 'minmax(420px, 640px)' } : undefined}>
-            {columns.map((status) => { const col = items.filter((i) => i.frontmatter.status === status); return <Column key={status} status={status} items={col} />; })}
+            {columns.map((status) => { const col = items.filter((i) => i.frontmatter.status === status); return <Column key={status} status={status} items={col} onSelect={setPreview} />; })}
           </div>
         </DndContext>
       )}
@@ -64,12 +67,12 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
   );
 }
 
-function Column({ status, items }: { status: string; items: ItemView[] }) {
+function Column({ status, items, onSelect }: { status: string; items: ItemView[]; onSelect: (id: string) => void }) {
   return (
     <div className="column">
       <h3><span>{statusLabel(status)}</span><span>{items.length}</span></h3>
       <SortableContext items={items.map((i) => i.id)} strategy={verticalListSortingStrategy}>
-        {items.map((i) => <ItemCard key={i.id} item={i} />)}
+        {items.map((i) => <ItemCard key={i.id} item={i} onSelect={onSelect} />)}
       </SortableContext>
     </div>
   );

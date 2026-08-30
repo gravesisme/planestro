@@ -29,6 +29,7 @@ export const api = {
   patchItem: (id: string, body: { fields?: Record<string, unknown>; sections?: Record<string, string> }) => req<ItemView>('PATCH', `/api/items/${id}`, body),
   deleteItem: (id: string) => req<{ ok: true }>('DELETE', `/api/items/${id}`),
   move: (id: string, op: 'top' | 'bottom' | 'before' | 'after' | 'icebox' | 'backlog', ref?: string) => req<ItemView>('POST', `/api/items/${id}/move`, { op, ref }),
+  itemConsole: (id: string) => req<{ lines: string[] }>('GET', `/api/items/${id}/console`),
   transitions: (id: string) => req<{ to: Status; label: string }[]>('GET', `/api/items/${id}/transitions`),
   transition: (id: string, to: Status) => req<ItemView>('POST', `/api/items/${id}/transition`, { to }),
   approvePlan: (id: string, notes?: string) => req<ItemView>('POST', `/api/items/${id}/plan/approve`, { notes }),

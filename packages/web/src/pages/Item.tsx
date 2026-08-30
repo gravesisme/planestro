@@ -5,6 +5,7 @@ import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { Markdown } from '../components/Markdown.tsx';
 import { statusLabel } from '../components/ItemCard.tsx';
+import { ItemConsole } from '../components/ItemConsole.tsx';
 
 function useAutosave(id: string, section: 'Description' | 'Notes' | 'Plan', initial: string) {
   const [text, setText] = useState(initial);
@@ -120,6 +121,8 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           {session ? <p>{session.busy ? 'running' : 'idle'} · {session.model} · {session.op ?? ''}<br /><span className="small muted">{session.last_output}</span></p> : <p className="muted small">No live session. {fm.session_id ? `Parked session ${fm.session_id.slice(0, 8)}… resumes when needed.` : 'Nothing has run for this item yet.'}</p>}
           {fm.session_id && !session && <p className="small muted">Open in a terminal (pauses planestro's use of it while attached): <code>claude --resume {fm.session_id}</code> <button className="small" onClick={() => void navigator.clipboard.writeText(`claude --resume ${fm.session_id}`)}>copy</button></p>}
           <div className="row"><input className="grow" placeholder="Message to the session (queued for its next turn)" value={msg} onChange={(e) => setMsg(e.target.value)} /><button disabled={!msg.trim()} onClick={() => { void act(() => api.message(item.id, msg)); setMsg(''); }}>Send</button></div>
+          <h2 style={{ marginTop: 12 }}>Console</h2>
+          <ItemConsole id={item.id} />
         </div>
         <div className="section"><h2>Attachments</h2>
           <ul className="attachments">{fm.attachments.map((a) => <li key={a.path}>{a.kind === 'managed' && /\.(png|jpe?g|gif|webp)$/i.test(a.path) && <img src={`/${a.path}`} alt="" />}<code>{a.path}</code><span className="tag">{a.kind}</span>{a.kind === 'managed' && <a href={`/${a.path}`} target="_blank" rel="noreferrer">open</a>}<button className="small" onClick={() => act(() => api.removeAttachment(item.id, a.path))}>remove</button></li>)}</ul>

@@ -6,6 +6,7 @@ import YAML from 'yaml';
 import { allowedTransitions, parsePromptFile, RenderError, STATUSES, type Status, type Actor } from '@planestro/shared';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Engine } from '../engine/Engine.ts';
+import type { ConsoleBuffer } from '../store/ConsoleBuffer.ts';
 import { itemView, promptView, stateView } from './views.ts';
 
 const EDITABLE_FIELDS = z.object({
@@ -15,7 +16,7 @@ const EDITABLE_FIELDS = z.object({
   branch: z.string().nullable().optional(), pr: z.number().int().positive().nullable().optional(),
 }).strict();
 
-export function apiRoutes(store: DataStore, engine: Engine): Hono {
+export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBuffer): Hono {
   const api = new Hono();
   const fail = (c: any, e: unknown, status = 400) => c.json({ error: (e as Error).message ?? String(e) }, status);
 
@@ -70,6 +71,7 @@ export function apiRoutes(store: DataStore, engine: Engine): Hono {
     } catch (e) { return fail(c, e); }
   });
 
+  api.get('/items/:id/console', (c) => c.json({ lines: consoles?.get(c.req.param('id')) ?? [] }));
   api.get('/items/:id/transitions', (c) => {
     const it = store.requireItem(c.req.param('id'));
     return c.json(allowedTransitions(it.file.frontmatter.status, 'user', store.flavorOf(it.file.frontmatter)).map((t) => ({ to: t.to, label: t.label })));
