@@ -47,6 +47,21 @@ export function makePolicy(config: Config, baseBranch: string, worktree: string)
   };
 }
 
+/**
+ * Deterministic allow for chained Bash commands: the SDK's own allowlist matcher refuses a
+ * `a && b <<'EOF' ...` chain even when every segment is allowed, which would park a plain
+ * `git add && git commit -F -`. A command is allowed when every segment (heredoc bodies
+ * stripped — they are stdin data, not commands) matches one allow rule.
+ */
+export function allowedByRules(req: PermissionRequest, rules: string[]): boolean {
+  if (req.tool !== 'Bash') return rules.includes(req.tool);
+  const firstLine = String(req.input.command ?? '').split('\n')[0];  // heredoc bodies follow the first line
+  const segments = firstLine.split(/\s*(?:&&|\|\||;)\s*/).map((x) => x.replace(/<<-?\s*'?"?\w+'?"?\s*$/, '').trim()).filter(Boolean);
+  if (!segments.length) return false;
+  const prefixes = rules.filter((r) => r.startsWith('Bash(') && r.endsWith(')')).map((r) => r.slice(5, -1));
+  return segments.every((seg) => prefixes.some((p) => p.endsWith(' *') ? (seg + ' ').startsWith(p.slice(0, -1)) : p.endsWith('*') ? seg.startsWith(p.slice(0, -1)) : seg === p));
+}
+
 /** Permission rule that would pre-approve exactly this request on resume. */
 export function ruleFor(req: PermissionRequest): string {
   if (req.tool === 'Bash') return `Bash(${String(req.input.command ?? '')})`;
