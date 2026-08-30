@@ -1,0 +1,20 @@
+{
+  "name": "planestro",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first backlog planning and Claude Code orchestration tool",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "spike": "tsx spikes/sdk-spike.ts"
+  },
+  "devDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.251",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.0",
+    "zod": "^4.0.0"
+  }
+}
