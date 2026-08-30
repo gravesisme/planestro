@@ -54,6 +54,13 @@ export class LiveGitPort implements GitPort {
     await git(cwd, ['rebase', '--abort'], true);
     return { ok: false, conflicts: conflicts.length ? conflicts : [r.stderr.trim().split('\n').pop() ?? 'unknown conflict'], head: await this.revParse(cwd, 'HEAD') };
   }
+  async merge(cwd: string, ref: string): Promise<RebaseResult> {
+    const r = await git(cwd, ['merge', '--no-edit', ref], true);
+    if (r.code === 0) return { ok: true, conflicts: [], head: await this.revParse(cwd, 'HEAD') };
+    const conflicts = (await git(cwd, ['diff', '--name-only', '--diff-filter=U'], true)).stdout.split('\n').filter(Boolean);
+    await git(cwd, ['merge', '--abort'], true);
+    return { ok: false, conflicts: conflicts.length ? conflicts : [r.stderr.trim().split('\n').pop() ?? 'unknown conflict'], head: await this.revParse(cwd, 'HEAD') };
+  }
   async inProgressOp(cwd: string) {
     const dir = (await git(cwd, ['rev-parse', '--git-dir'])).stdout.trim();
     const abs = dir.startsWith('/') ? dir : `${cwd}/${dir}`;

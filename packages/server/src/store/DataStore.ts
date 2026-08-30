@@ -135,7 +135,13 @@ export class DataStore {
     }
   }
 
-  reload(): void { this.load(); this.emit({ type: 'index.reloaded' }); }
+  /** Re-read everything from disk, config included (hand edits, external tools). */
+  reload(): void {
+    (this as { config: Config }).config = readConfig(this.dataDir);
+    (this as { local: LocalConfig }).local = readLocalConfig(this.dataDir);
+    this.load();
+    this.emit({ type: 'index.reloaded' });
+  }
 
   /** Files edited while planestro was not running are versioned as-is (only when every dirty file parses). */
   private async commitHandEdits(): Promise<void> {
