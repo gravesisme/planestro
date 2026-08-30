@@ -44,17 +44,23 @@ export class GitCommitter {
     return { dirty, branch, head, ahead };
   }
 
-  /** Commit everything currently dirty under `message`; returns false when nothing changed. */
-  commit(message: string, body?: string): Promise<boolean> {
+  /**
+   * Commit under `message`. With `paths` (relative to the data dir) only those paths are
+   * staged and committed, so concurrent mutations never fold into each other's commits;
+   * without, everything dirty is committed (checkpoints, hand edits). Returns false when
+   * nothing changed.
+   */
+  commit(message: string, body?: string, paths?: string[]): Promise<boolean> {
     if (!this.enabled) return Promise.resolve(false);
     return this.enqueue(async () => {
       try {
-        await this.git(['add', '-A']);
-        const { stdout } = await this.git(['status', '--porcelain']);
+        const scope = paths?.length ? ['--', ...paths] : [];
+        await this.git(['add', '-A', ...scope]);
+        const { stdout } = await this.git(['status', '--porcelain', ...scope]);
         if (!stdout.trim()) return false;
         const args = ['commit', '-q', '-m', message];
         if (body) args.push('-m', body);
-        args.push('-m', `Planestro-Version: ${this.opts.toolVersion}`);
+        args.push('-m', `Planestro-Version: ${this.opts.toolVersion}`, ...scope);
         await this.git(args);
         this.opts.log?.('info', `git: ${message}`);
         return true;

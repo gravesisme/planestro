@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync, existsSync, mkdirSync, unlinkSync, statSync, writeFileSync } from 'node:fs';
-import { join, basename } from 'node:path';
+import { join, basename, relative } from 'node:path';
 import type YAML from 'yaml';
 import {
   parseItemFile, serializeItemFile, setSection, appendActivity, getSection, idNumber, slugify,
@@ -31,7 +31,7 @@ export type ItemOp =
   | { transition: { to: Status; actor: Actor } }
   | { rank: number };
 
-export interface MutateOptions { commit?: string; body?: string }
+export interface MutateOptions { commit?: string; body?: string; paths?: string[] }
 
 export interface CreateItemInput {
   title: string; category?: string; description?: string; notes?: string; kind?: 'item' | 'epic'; parent?: string;
@@ -214,7 +214,7 @@ export class DataStore {
     const stored = this.writeItem(file);
     this.journal.append({ type: 'item.created', item: id, actor, data: { title: fm.title, status } });
     this.emit({ type: 'item.created', id });
-    void this.git.commit(`${id}: create item`, fm.title);
+    void this.git.commit(`${id}: create item`, fm.title, [this.rel(stored.path), 'counter']);
     return stored;
   }
 
@@ -244,7 +244,7 @@ export class DataStore {
     const stored = this.writeItem(file);
     this.journal.append({ type: 'item.updated', item: id, actor, data: { ops: ops.map(opName), from: before, to: stored.file.frontmatter.status } });
     this.emit({ type: 'item.updated', id, source: 'app' });
-    if (options.commit) void this.git.commit(options.commit, options.body);
+    if (options.commit) void this.git.commit(options.commit, options.body, [this.rel(stored.path), ...(options.paths ?? [])]);
     return stored;
   }
 
@@ -257,7 +257,7 @@ export class DataStore {
   /** Debounced user edit of a section or authoritative field: written now, committed after a quiet period. */
   editItem(id: string, ops: ItemOp[], actor: Actor = 'user'): StoredItem {
     const stored = this.mutateItem(id, ops, actor);
-    this.scheduleCommit(`edit:${id}`, `${id}: edit`, EDIT_COMMIT_DELAY_MS);
+    this.scheduleCommit(`edit:${id}`, `${id}: edit`, EDIT_COMMIT_DELAY_MS, [this.rel(stored.path)]);
     return stored;
   }
 
@@ -285,7 +285,7 @@ export class DataStore {
       }
     }
     const stored = this.mutateItem(id, [{ rank }], actor);
-    this.scheduleCommit(`reorder:${lane}`, `planestro: reorder ${lane}`, REORDER_COMMIT_DELAY_MS);
+    this.scheduleCommit(`reorder:${lane}`, `planestro: reorder ${lane}`, REORDER_COMMIT_DELAY_MS, ['items']);
     return stored;
   }
 
@@ -297,14 +297,14 @@ export class DataStore {
     this.items.delete(id);
     this.journal.append({ type: 'item.deleted', item: id, actor });
     this.emit({ type: 'item.deleted', id });
-    void this.git.commit(`${id}: delete item`, item.file.frontmatter.title);
+    void this.git.commit(`${id}: delete item`, item.file.frontmatter.title, [this.rel(item.path)]);
   }
 
   /** Flush a pending debounced commit early (e.g. before a semantic commit or shutdown). */
-  private scheduleCommit(key: string, message: string, delayMs: number): void {
+  private scheduleCommit(key: string, message: string, delayMs: number, paths?: string[]): void {
     const existing = this.timers.get(key);
     if (existing) clearTimeout(existing);
-    const t = setTimeout(() => { this.timers.delete(key); void this.git.commit(message); }, delayMs);
+    const t = setTimeout(() => { this.timers.delete(key); void this.git.commit(message, undefined, paths); }, delayMs);
     t.unref?.();
     this.timers.set(key, t);
   }
@@ -326,7 +326,7 @@ export class DataStore {
     const rel = `attachments/${id}/${stamp}-${safe}`;
     atomicWrite(join(this.dataDir, rel), data);
     const entry = { path: rel, kind: 'managed' as const, added_at: isoLocal() };
-    this.mutateItem(id, [{ set: { attachments: [...this.requireItem(id).file.frontmatter.attachments, entry] } }, { activity: { actor: actorToActivity(actor), text: `attached ${rel}` } }], actor, { commit: `${id}: attach ${safe}` });
+    this.mutateItem(id, [{ set: { attachments: [...this.requireItem(id).file.frontmatter.attachments, entry] } }, { activity: { actor: actorToActivity(actor), text: `attached ${rel}` } }], actor, { commit: `${id}: attach ${safe}`, paths: [rel] });
     return entry;
   }
 
@@ -341,7 +341,7 @@ export class DataStore {
     const entry = fm.attachments.find((a) => a.path === path);
     if (!entry) throw new Error(`no attachment ${path} on ${id}`);
     if (entry.kind === 'managed' && existsSync(join(this.dataDir, path))) unlinkSync(join(this.dataDir, path));
-    this.mutateItem(id, [{ set: { attachments: fm.attachments.filter((a) => a.path !== path) } }], actor, { commit: `${id}: remove attachment ${basename(path)}` });
+    this.mutateItem(id, [{ set: { attachments: fm.attachments.filter((a) => a.path !== path) } }], actor, { commit: `${id}: remove attachment ${basename(path)}`, paths: entry.kind === 'managed' ? [path] : [] });
   }
 
   /** Absolute path for an attachment (managed → inside data dir; reference → as given, or relative to the code repo). */
@@ -365,7 +365,7 @@ export class DataStore {
     this.prompts.set(name, stored);
     this.journal.append({ type: isNew ? 'prompt.created' : 'prompt.updated', actor, data: { name } });
     this.emit({ type: 'prompt.updated', name });
-    void this.git.commit(`prompts: ${isNew ? 'add' : 'edit'} ${name}`);
+    void this.git.commit(`prompts: ${isNew ? 'add' : 'edit'} ${name}`, undefined, [this.rel(path)]);
     return stored;
   }
 
@@ -377,7 +377,7 @@ export class DataStore {
     this.prompts.delete(name);
     this.journal.append({ type: 'prompt.deleted', actor, data: { name } });
     this.emit({ type: 'prompt.updated', name });
-    void this.git.commit(`prompts: delete ${name}`);
+    void this.git.commit(`prompts: delete ${name}`, undefined, [this.rel(p.path)]);
   }
 
   /** Render a prompt with the standard context for an item (plus extras). Throws RenderError on gaps. */
@@ -414,7 +414,7 @@ export class DataStore {
     (this as { config: Config }).config = next;
     this.journal.append({ type: 'config.updated', actor: 'user' });
     this.emit({ type: 'config.updated' });
-    void this.git.commit(message);
+    void this.git.commit(message, undefined, ['planestro.yml']);
     return next;
   }
 
@@ -429,7 +429,7 @@ export class DataStore {
   renameCategory(from: string, to: string): number {
     if (!this.config.categories.includes(from)) throw new Error(`unknown category ${from}`);
     const affected = [...this.items.values()].filter((s) => s.file.frontmatter.category === from);
-    for (const s of affected) this.mutateItem(s.id, [{ set: { category: to } }], 'user');
+    for (const s of affected) this.mutateItem(s.id, [{ set: { category: to } }], 'user', { commit: `${s.id}: category ${from} → ${to}` });
     this.updateConfig((doc) => {
       const cats = (doc.get('categories') as YAML.YAMLSeq).toJSON() as string[];
       doc.set('categories', cats.map((c) => (c === from ? to : c)));
@@ -442,7 +442,7 @@ export class DataStore {
     if (name === reassignTo) throw new Error('reassign target must differ');
     if (!this.config.categories.includes(reassignTo)) throw new Error(`unknown category ${reassignTo}`);
     const affected = [...this.items.values()].filter((s) => s.file.frontmatter.category === name);
-    for (const s of affected) this.mutateItem(s.id, [{ set: { category: reassignTo } }], 'user');
+    for (const s of affected) this.mutateItem(s.id, [{ set: { category: reassignTo } }], 'user', { commit: `${s.id}: category ${name} → ${reassignTo}` });
     this.updateConfig((doc) => {
       const cats = (doc.get('categories') as YAML.YAMLSeq).toJSON() as string[];
       doc.set('categories', cats.filter((c) => c !== name));
@@ -450,6 +450,9 @@ export class DataStore {
     }, `config: remove category ${name} (${affected.length} items → ${reassignTo})`);
     return affected.length;
   }
+
+  /** Path relative to the data dir (git pathspec). */
+  private rel(abs: string): string { return relative(this.dataDir, abs); }
 
   stats(): { items: number; prompts: number; invalid: number; attachmentsBytes: number } {
     let attachmentsBytes = 0;

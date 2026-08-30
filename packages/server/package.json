@@ -9,6 +9,9 @@
   "dependencies": {
     "@planestro/shared": "*",
     "yaml": "^2.8.0",
-    "zod": "^4.0.0"
+    "zod": "^4.0.0",
+    "hono": "^4.9.0",
+    "@hono/node-server": "^1.19.0",
+    "@hono/node-ws": "^1.2.0"
   }
 }
