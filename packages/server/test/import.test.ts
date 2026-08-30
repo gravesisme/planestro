@@ -10,6 +10,30 @@ afterEach(() => { store?.close(); store = undefined; });
 
 const EXCERPT = `
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+# NON-GAME RELATED EXTRA
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+---
+
+# FABLE 5: NOT SUBMITTED
+
+## FENCED EXAMPLE
+
+An internal tool whose description holds an example file:
+
+\`\`\`
+---
+id: HH-143
+title: Example
+---
+# Description
+inside the fence
+\`\`\`
+
+That fence must stay one block.
+
+---
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 # COMMON TERMS
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -114,10 +138,13 @@ describe('prompts-file import', () => {
     writeFileSync(file, EXCERPT);
     const dry = importPrompts(store, file, { commit: false });
     expect(store.items.size).toBe(0);
-    expect(dry.items).toBe(6);
+    expect(dry.items).toBe(7);
     expect(dry.prompts).toBe(2);
     const real = importPrompts(store, file, { commit: true });
-    expect(real.items).toBe(6);
+    expect(real.items).toBe(7);
+    const fenced = store.listItems().find((i) => i.file.frontmatter.title === 'FENCED EXAMPLE')!;
+    expect(fenced.file.frontmatter.category).toBe('Tools');
+    expect(fenced.file.sections.find((s) => s.title === 'Description')!.body).toContain('id: HH-143');
     const items = store.listItems().map((i) => i.file.frontmatter);
     const tool = items.find((f) => f.title === 'INTERNAL TOOL THING')!;
     expect(tool.status).toBe('NOT_YET_SUBMITTED');
@@ -138,6 +165,6 @@ describe('prompts-file import', () => {
     const again = importPrompts(store, file, { commit: true });
     expect(again.items).toBe(0);
     expect(again.skipped).toBeGreaterThan(5);
-    expect(store.listItems().length).toBe(6);
+    expect(store.listItems().length).toBe(7);
   });
 });
