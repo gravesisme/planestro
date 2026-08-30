@@ -122,14 +122,19 @@ export class LiveGhPort implements GhPort {
   }
   async isBillingBlocked(repo: string, runId: number) {
     try {
-      const jobs = JSON.parse(await gh(['run', 'view', String(runId), '--repo', repo, '--json', 'jobs'])).jobs as any[];
-      for (const j of jobs) {
+      const view = JSON.parse(await gh(['run', 'view', String(runId), '--repo', repo, '--json', 'jobs,status']));
+      if (view.status !== 'completed') return false; // an in-progress (re-)run is never a billing block
+      for (const j of (view.jobs as any[]) ?? []) {
         const steps = j.steps ?? [];
         const ran = steps.some((s: any) => s.conclusion && s.conclusion !== 'skipped');
-        if (j.conclusion === 'failure' && !ran) {
-          const ann = await gh(['api', `repos/${repo}/check-runs/${j.databaseId}/annotations`]).catch(() => '[]');
-          if (/payments? (have|has) failed|spending limit|job was not started/i.test(ann) || !ran) return true;
-        }
+        if (j.conclusion !== 'failure' || ran) continue;
+        // Zero executed steps alone is NOT proof (the API often omits steps for old
+        // attempts): require the billing wording, or a job that died within seconds.
+        const ann = await gh(['api', `repos/${repo}/check-runs/${j.databaseId}/annotations`]).catch(() => '[]');
+        if (/payments? (have|has) failed|spending limit|job was not started/i.test(ann)) return true;
+        const started = Date.parse(j.startedAt ?? '');
+        const finished = Date.parse(j.completedAt ?? '');
+        if (Number.isFinite(started) && Number.isFinite(finished) && finished - started < 30_000 && steps.length === 0) return true;
       }
     } catch { /* fall through */ }
     return false;
