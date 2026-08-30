@@ -207,5 +207,16 @@ describe('policy.allowedByRules', () => {
     expect(allowedByRules({ tool: 'Bash', input: { command: 'git commitx' } }, rules)).toBe(false);
     expect(allowedByRules({ tool: 'Bash', input: { command: '' } }, rules)).toBe(false);
     expect(allowedByRules({ tool: 'Read', input: {} }, ['Read'])).toBe(true);
+    const ro = ['Bash(git --no-pager log *)', 'Bash(git --no-pager show *)', 'Bash(tail *)'];
+    expect(allowedByRules({ tool: 'Bash', input: { command: 'git --no-pager log --oneline -1; git --no-pager show --stat HEAD | tail -5' } }, ro)).toBe(true);
+  });
+
+  it('deny rules catch flag-prefixed git subcommands', async () => {
+    const { makePolicy } = await import('../src/engine/policy.ts');
+    const cfg = { code_repo: { release_branch: 'main' }, permissions: { deny: [] } } as any;
+    const policy = makePolicy(cfg, 'trunk', '/wt');
+    expect(policy.deny({ tool: 'Bash', input: { command: 'git --no-pager push origin HEAD' } })).toMatch(/push/);
+    expect(policy.deny({ tool: 'Bash', input: { command: 'git -C /x worktree remove foo' } })).toMatch(/worktree/);
+    expect(policy.deny({ tool: 'Bash', input: { command: 'git --no-pager log -1' } })).toBeNull();
   });
 });

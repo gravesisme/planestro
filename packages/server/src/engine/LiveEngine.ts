@@ -279,7 +279,13 @@ export class LiveEngine implements Engine {
   }
 
   private async afterTurn(id: string, phase: TurnPhase, result: TurnResult): Promise<void> {
-    const fm = this.store.requireItem(id).file.frontmatter;
+    let fm = this.store.requireItem(id).file.frontmatter;
+    // A permission request followed by report_done/submit_plan in the same turn is stale:
+    // the worker proceeded without it. Clear it instead of stalling on a moot prompt.
+    if (fm.awaiting === 'permission' && (result.done || result.planSubmitted)) {
+      this.store.mutateItem(id, [{ unset: ['awaiting', 'awaiting_data'] }, { activity: { actor: 'app', text: 'cleared a stale permission request (the turn finished its work without it)' } }], 'engine');
+      fm = this.store.requireItem(id).file.frontmatter;
+    }
     if (fm.awaiting || fm.blocked) return;                       // parked or agent-blocked: nothing to drive
     const pending = (fm.op_data?.pending_messages as string[] | undefined) ?? [];
     if (pending.length) {
