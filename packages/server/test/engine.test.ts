@@ -63,6 +63,26 @@ describe('LiveEngine lifecycle (dry-run ports)', () => {
     expect(store.journal.openOps()).toEqual([]);
   });
 
+  it('the same red run re-observed is not a second failure', async () => {
+    const { store, engine, world } = await setup({ ci: 'red-once' });
+    world.ciMode = 'red-once';
+    const item = store.createItem({ title: 'Same-run', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => (store.getItem(item.id)!.file.frontmatter.ci_failed_count ?? 0) === 1, 8000);
+    // simulate the merge job re-seeing the SAME completed red run before a re-run flips it
+    const fm = store.getItem(item.id)!.file.frontmatter;
+    expect((fm.op_data as any).last_red).toBeDefined();
+    await (engine as any).onCiRed(item.id, store.journal.begin('merge', item.id), fm.ci_head_sha ?? 'x', undefined, 'github', true);
+    const after = store.getItem(item.id)!.file.frontmatter;
+    expect(after.ci_failed_count).toBe(1); // NOT incremented
+    expect(after.blocked).toBeUndefined();
+    expect(after.ci_result).toBe('pending');
+    await waitFor(() => status(store, item.id) === 'FINISHED', 10000);
+  });
+
   it('CI red once → the session fixes it → merged; conflict once → session rebases', async () => {
     const { store, engine, world } = await setup({ ci: 'red-once' });
     world.ciMode = 'red-once';
