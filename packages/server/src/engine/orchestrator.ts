@@ -1,0 +1,138 @@
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import YAML from 'yaml';
+import { z } from 'zod';
+import { getSection, serializeItemFile, isoLocal, renormalize, laneOf, type ServerEvent } from '@planestro/shared';
+import type { DataStore, ItemOp } from '../store/DataStore.ts';
+import type { Ports, CustomToolDef, TurnResult } from './ports.ts';
+
+export interface WakeEvent { type: string; item?: string; data?: Record<string, unknown> }
+
+export interface OrchestratorHooks {
+  message(id: string, text: string): Promise<void>;
+  approvePlan(id: string, notes?: string): Promise<void>;
+  rejectPlan(id: string, message: string): Promise<void>;
+  poke(): void;
+}
+
+interface OrchState { session_id?: string; started_at?: string; wakes_served: number }
+
+/**
+ * The judgment layer: one resumable Fable session, woken with a compact structured
+ * context packet per event, never polled, rotated freely (invariant 3 — the files are
+ * its memory). It proposes state changes through tools; the engine and user stay in
+ * charge of everything mechanical.
+ */
+export class Orchestrator {
+  private queue: WakeEvent[] = [];
+  private running = false;
+  private stopped = false;
+  constructor(
+    private readonly store: DataStore,
+    private readonly ports: Ports,
+    private readonly hooks: OrchestratorHooks,
+    private readonly emit: (e: ServerEvent) => void,
+    private readonly log: (level: 'info' | 'warn' | 'error', msg: string) => void,
+    private readonly pausedRef: () => boolean,
+  ) {}
+
+  get enabled(): boolean { return typeof this.ports.claude.runCustomTurn === 'function'; }
+
+  private get stateFile(): string { return join(this.store.dataDir, '.planestro', 'orchestrator.yml'); }
+  private readState(): OrchState {
+    try { return { wakes_served: 0, ...(YAML.parse(readFileSync(this.stateFile, 'utf8')) ?? {}) }; } catch { return { wakes_served: 0 }; }
+  }
+  private writeState(s: OrchState): void { mkdirSync(join(this.store.dataDir, '.planestro'), { recursive: true }); writeFileSync(this.stateFile, YAML.stringify(s)); }
+
+  stop(): void { this.stopped = true; }
+
+  /** Queue an event; coalesced into one turn if more arrive while a wake is running. */
+  wake(event: WakeEvent): void {
+    if (!this.enabled || this.stopped) return;
+    this.queue.push(event);
+    this.store.journal.append({ type: 'orchestrator.wake', item: event.item, actor: 'engine', data: { event: event.type } });
+    void this.drain();
+  }
+
+  private async drain(): Promise<void> {
+    if (this.running || this.stopped || this.pausedRef()) return;
+    if (!this.queue.length) return;
+    this.running = true;
+    try {
+      while (this.queue.length && !this.stopped && !this.pausedRef()) {
+        const batch = this.queue.splice(0, this.queue.length);
+        await this.runWake(batch).catch((e) => this.log('error', `orchestrator wake failed: ${(e as Error).message}`));
+      }
+    } finally { this.running = false; }
+  }
+
+  private async runWake(events: WakeEvent[]): Promise<void> {
+    const cfg = this.store.config.orchestrator;
+    let state = this.readState();
+    const tooOld = state.started_at && (Date.now() - Date.parse(state.started_at)) / 86_400_000 > cfg.rotate_after_days;
+    if (state.session_id && (state.wakes_served >= cfg.rotate_after_wakes || tooOld)) {
+      this.log('info', `orchestrator: rotating session after ${state.wakes_served} wakes (the files are its memory)`);
+      state = { wakes_served: 0 };
+    }
+    const packet = events.map((e) => this.renderPacket(e)).join('\n\n---\n\n');
+    const prompt = `${state.session_id ? '' : this.systemIntro() + '\n\n'}# Wake: ${events.map((e) => e.type).join(', ')} — ${isoLocal()}\n\n${packet}\n\nHandle what needs judgment using the planestro tools, then call done_with_wake with a one-line summary. Everything mechanical is already handled by the app; do not attempt git or gh operations.`;
+    let doneSummary = '';
+    const model = this.store.config.models.find((m) => m.id === cfg.model)?.claude_model ?? cfg.model;
+    const result: TurnResult = await this.ports.claude.runCustomTurn!({
+      label: events.map((e) => e.type).join(','), cwd: this.store.codeRepoPath(), model,
+      permissionMode: 'dontAsk', prompt, resume: state.session_id, maxTurns: 30,
+      systemAppend: this.systemIntro(),
+      allowedTools: ['Read', 'Grep', 'Glob', 'Bash(git log*)', 'Bash(git diff*)', 'Bash(git show*)', 'Bash(gh pr view*)', 'Bash(gh pr diff*)', 'Bash(gh run view*)'],
+      mcpTools: this.tools((s) => { doneSummary = s; }),
+      onOutput: (t) => this.emit({ type: 'engine.log', level: 'info', message: `[orchestrator] ${t.slice(0, 300)}` }),
+    });
+    this.writeState({ session_id: result.sessionId ?? state.session_id, started_at: state.started_at ?? isoLocal(), wakes_served: state.wakes_served + 1 });
+    this.store.journal.append({ type: 'orchestrator.done', actor: 'orchestrator', data: { events: events.map((e) => e.type), summary: doneSummary || result.text.slice(-300), cost: result.costUsd, subtype: result.subtype } });
+    this.log('info', `orchestrator: ${doneSummary || result.subtype}`);
+  }
+
+  private systemIntro(): string {
+    try { return this.store.renderPrompt('orchestrator-system', undefined); }
+    catch { return 'You are the planestro orchestrator: the judgment layer over a deterministic pipeline. Decide, instruct and annotate through the planestro tools; never perform git/gh operations yourself.'; }
+  }
+
+  private renderPacket(e: WakeEvent): string {
+    const lines = [`Event: ${e.type}`];
+    if (e.item) {
+      const item = this.store.getItem(e.item);
+      if (item) {
+        const fm = item.file.frontmatter;
+        lines.push(`Item: ${fm.id} — "${fm.title}" (${fm.kind}, ${fm.category})`);
+        lines.push(`Status: ${fm.status}${fm.blocked ? ` · BLOCKED: ${fm.blocked_reason}` : ''}${fm.awaiting ? ` · awaiting ${fm.awaiting}` : ''}${fm.op ? ` · op ${fm.op}` : ''}`);
+        if (fm.pr) lines.push(`PR: #${fm.pr} · CI ${fm.ci_result ?? '—'} · red count ${fm.ci_failed_count ?? 0}`);
+        const desc = getSection(item.file, 'Description'); if (desc) lines.push(`Description:\n${desc.slice(0, 1200)}`);
+        const plan = getSection(item.file, 'Plan'); if (plan) lines.push(`Approved/submitted plan:\n${plan.slice(0, 2000)}`);
+        const activity = getSection(item.file, 'Activity').split('\n').slice(-8).join('\n'); if (activity) lines.push(`Recent activity:\n${activity}`);
+      }
+    }
+    for (const [k, v] of Object.entries(e.data ?? {})) lines.push(`${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`.slice(0, 2000));
+    return lines.join('\n');
+  }
+
+  private tools(onDone: (summary: string) => void): CustomToolDef[] {
+    const store = this.store;
+    const idArg = { id: z.string() };
+    return [
+      { name: 'list_items', description: 'List backlog items (id, status, flags), optionally filtered by status.', schema: { status: z.string().optional() }, handler: async (a) => store.listItems().filter((i) => !a.status || i.file.frontmatter.status === a.status).map((i) => { const f = i.file.frontmatter; return `${f.id} [${f.status}${f.blocked ? ' BLOCKED:' + f.blocked_reason : ''}${f.awaiting ? ' awaiting:' + f.awaiting : ''}] rank=${f.rank ?? '—'} pr=${f.pr ?? '—'} ${f.kind === 'epic' ? 'EPIC ' : ''}${f.title}`; }).join('\n') || '(no items)' },
+      { name: 'read_item', description: 'Read one item file in full.', schema: idArg, handler: async (a) => serializeItemFile(store.requireItem(String(a.id)).file) },
+      { name: 'pr_status', description: 'Pull request + CI status for an item.', schema: idArg, handler: async (a) => { const fm = store.requireItem(String(a.id)).file.frontmatter; if (!fm.pr) return 'no PR'; const gh = store.config.code_repo.github; if (!gh) return 'no github remote configured'; const pr = await this.ports.gh.prView(gh, fm.pr); return `#${pr.number} ${pr.state} base=${pr.baseRefName} head=${pr.headRefName}@${pr.headRefOid.slice(0, 7)} ci=${fm.ci_result ?? '—'} (${fm.ci_failed_count ?? 0} red)`; } },
+      { name: 'set_merge_order', description: 'Override the merge order of the given IN_REVIEW items (first merges first). Items not listed keep rank order after these.', schema: { ids: z.array(z.string()) }, handler: async (a) => { (a.ids as string[]).forEach((id, i) => store.mutateItem(id, [{ set: { merge_order: i + 1 } }, { activity: { actor: 'orchestrator', text: `merge order ${i + 1}` } }], 'orchestrator', { commit: `${id}: merge order ${i + 1}` })); this.hooks.poke(); return 'merge order set'; } },
+      { name: 'set_queue_order', description: 'Reorder the QUEUED items (first is admitted first).', schema: { ids: z.array(z.string()) }, handler: async (a) => { const ids = a.ids as string[]; const ranks = renormalize(ids); for (const id of ids) { const it = store.requireItem(id); if (laneOf(it.file.frontmatter.status) !== 'board') throw new Error(`${id} is not on the board`); store.mutateItem(id, [{ rank: ranks.get(id)! }], 'orchestrator'); } this.hooks.poke(); return 'queue order set'; } },
+      { name: 'skip_merge', description: 'Hold an IN_REVIEW item out of the merge queue, with a reason.', schema: { ...idArg, reason: z.string() }, handler: async (a) => { store.mutateItem(String(a.id), [{ set: { skip_merge: true } }, { activity: { actor: 'orchestrator', text: `held out of the merge queue: ${a.reason}` } }], 'orchestrator', { commit: `${a.id}: skip merge` }); return 'held'; } },
+      { name: 'unskip_merge', description: 'Return a held item to the merge queue.', schema: idArg, handler: async (a) => { store.mutateItem(String(a.id), [{ unset: ['skip_merge'] }, { activity: { actor: 'orchestrator', text: 'returned to the merge queue' } }], 'orchestrator', { commit: `${a.id}: unskip merge` }); this.hooks.poke(); return 'returned'; } },
+      { name: 'message_session', description: "Send guidance to an item's worker session (queued for its next turn).", schema: { ...idArg, text: z.string() }, handler: async (a) => { await this.hooks.message(String(a.id), String(a.text)); return 'queued for the session'; } },
+      { name: 'annotate_item', description: "Append an orchestrator note to an item's activity log.", schema: { ...idArg, text: z.string() }, handler: async (a) => { store.mutateItem(String(a.id), [{ activity: { actor: 'orchestrator', text: String(a.text) } }], 'orchestrator'); return 'noted'; } },
+      { name: 'submit_item', description: 'Queue a NOT_YET_SUBMITTED worker item for planning.', schema: idArg, handler: async (a) => { store.transition(String(a.id), 'QUEUED', 'orchestrator'); this.hooks.poke(); return 'queued'; } },
+      { name: 'mark_blocked', description: 'Block an item for the user with a reason.', schema: { ...idArg, reason: z.string() }, handler: async (a) => { store.mutateItem(String(a.id), [{ set: { blocked: true, blocked_reason: 'orchestrator', awaiting: 'user' } }, { activity: { actor: 'orchestrator', text: `blocked for the user: ${a.reason}` } }], 'orchestrator', { commit: `${a.id}: blocked (orchestrator)` }); return 'blocked'; } },
+      { name: 'approve_plan', description: 'Approve a PLAN_READY item (only allowed when the item opted into auto-approval and config permits).', schema: { ...idArg, notes: z.string().optional() }, handler: async (a) => { const fm = store.requireItem(String(a.id)).file.frontmatter; if (!this.store.config.orchestrator.may_approve_plans || !fm.auto_approve_plan) return 'not permitted: the user approves this plan (add review notes with annotate_item instead)'; await this.hooks.approvePlan(String(a.id), a.notes ? String(a.notes) : undefined); return 'approved'; } },
+      { name: 'request_plan_changes', description: 'Send a PLAN_READY item back to planning with feedback.', schema: { ...idArg, message: z.string() }, handler: async (a) => { await this.hooks.rejectPlan(String(a.id), String(a.message)); return 'sent back to planning'; } },
+      { name: 'ask_user', description: 'Ask the user something; the answer arrives as a later wake. Returns immediately.', schema: { question: z.string(), item: z.string().optional() }, handler: async (a) => { const entry = store.journal.append({ type: 'orchestrator.question', item: a.item ? String(a.item) : undefined, actor: 'orchestrator', data: { question: String(a.question) } }); if (a.item) store.mutateItem(String(a.item), [{ activity: { actor: 'orchestrator', text: `question for you: ${a.question}` } }], 'orchestrator'); this.emit({ type: 'engine.log', level: 'warn', message: `[orchestrator asks] ${a.question}` }); return `recorded at ${entry.ts}; the user will see it in the console`; } },
+      { name: 'done_with_wake', description: 'Finish this wake with a one-line summary of what you decided.', schema: { summary: z.string() }, handler: async (a) => { onDone(String(a.summary)); return 'Recorded. End your turn now.'; } },
+    ];
+  }
+}

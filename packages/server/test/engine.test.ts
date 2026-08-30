@@ -261,3 +261,48 @@ describe('epics and external watchers (dry-run ports)', () => {
     const log = world.log; void log;
   });
 });
+
+describe('orchestrator', () => {
+  it('wakes on plan_review with a context packet, uses tools, and rotates after the configured wakes', async () => {
+    const wakes: { label: string; prompt: string; resume?: string }[] = [];
+    const scripted = (world: FakeWorld) => {
+      const inner = new DryRunClaudePort(world);
+      return {
+        runTurn: (o: TurnOptions) => inner.runTurn(o),
+        async runCustomTurn(o: any): Promise<TurnResult> {
+          wakes.push({ label: o.label, prompt: o.prompt, resume: o.resume });
+          const t = (n: string) => o.mcpTools.find((x: any) => x.name === n);
+          if (o.label.includes('plan_review')) {
+            expect(o.prompt).toContain('Event: plan_review');
+            expect(o.prompt).toContain('submitted plan');
+            await t('annotate_item').handler({ id: 'TP-1', text: 'plan looks tight; scope matches' });
+            expect(await t('approve_plan').handler({ id: 'TP-1' })).toContain('not permitted');
+          }
+          await t('done_with_wake').handler({ summary: `handled ${o.label}` });
+          return { sessionId: 'orch-1', subtype: 'success', isError: false, costUsd: 0.05, numTurns: 1, text: '' };
+        },
+      };
+    };
+    const { store, engine } = await setup({ claude: scripted });
+    const { readFileSync, writeFileSync } = await import('node:fs');
+    const cfg = `${store.dataDir}/planestro.yml`;
+    writeFileSync(cfg, readFileSync(cfg, 'utf8').replace('rotate_after_wakes: 40', 'rotate_after_wakes: 2'));
+    store.reload();
+    const item = store.createItem({ title: 'Orchestrated', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    await waitFor(() => wakes.length >= 1);
+    expect(wakes[0].label).toContain('plan_review');
+    expect(wakes[0].resume).toBeUndefined();
+    const activity = () => store.getItem(item.id)!.file.sections.find((s) => s.title === 'Activity')!.body;
+    await waitFor(() => activity().includes('[orchestrator] plan looks tight'));
+    // second wake resumes the same session; third rotates (rotate_after_wakes: 2)
+    engine.orchestrator.wake({ type: 'user_message', data: { message: 'hello' } });
+    await waitFor(() => wakes.length >= 2);
+    expect(wakes[1].resume).toBe('orch-1');
+    engine.orchestrator.wake({ type: 'user_message', data: { message: 'again' } });
+    await waitFor(() => wakes.length >= 3);
+    expect(wakes[2].resume).toBeUndefined(); // rotated: files are the memory
+  });
+});

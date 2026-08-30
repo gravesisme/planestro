@@ -1,4 +1,4 @@
-import type { GitPort, GhPort, ProcPort, ClaudePort, WorktreeEntry, RebaseResult, CiStatus, PrInfo, TurnOptions, TurnResult } from './ports.ts';
+import type { GitPort, GhPort, ProcPort, ClaudePort, WorktreeEntry, RebaseResult, CiStatus, PrInfo, TurnOptions, TurnResult, CustomTurnOptions } from './ports.ts';
 
 /**
  * An in-memory world so a dry run advances end to end: worktrees, branches, PRs whose CI
@@ -91,6 +91,15 @@ export class DryRunProcPort implements ProcPort {
 /** Fake Claude: plans, "commits", and reports done, exercising the same tool surface as the SDK path. */
 export class DryRunClaudePort implements ClaudePort {
   constructor(private readonly w: FakeWorld) {}
+
+  /** Fake orchestrator: reads the wake, annotates nothing, and closes with done_with_wake. */
+  async runCustomTurn(o: CustomTurnOptions): Promise<TurnResult> {
+    this.w.log(`Would run an orchestrator wake (${o.label}) with ${o.model}${o.resume ? `, resuming ${o.resume.slice(0, 8)}` : ''}`);
+    o.onOutput(`(dry-run) wake: ${o.prompt.slice(0, 120).replace(/\n/g, ' ')}…`);
+    const done = o.mcpTools.find((t) => t.name === 'done_with_wake');
+    if (done) await done.handler({ summary: 'dry-run: reviewed the wake, no action needed' });
+    return { sessionId: o.resume ?? `dryrun-orch-${this.w.sha().slice(-6)}`, subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: 'wake handled (dry-run)' };
+  }
   async runTurn(o: TurnOptions): Promise<TurnResult> {
     this.w.log(`Would run a ${o.phase} turn for ${o.itemId} with ${o.model} (${o.permissionMode}) in ${o.cwd}${o.resume ? `, resuming ${o.resume.slice(0, 8)}` : ''}`);
     const sessionId = o.resume ?? `dryrun-${o.itemId}-${this.w.sha().slice(-6)}`;

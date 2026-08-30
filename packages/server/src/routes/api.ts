@@ -177,6 +177,17 @@ export function apiRoutes(store: DataStore, engine: Engine): Hono {
     } catch (e) { return fail(c, e); }
   });
 
+  api.post('/orchestrator/message', async (c) => {
+    try {
+      const { text, item } = z.object({ text: z.string().min(1), item: z.string().optional() }).parse(await c.req.json());
+      const e = engine as Engine & { orchestrator?: { wake: (ev: { type: string; item?: string; data?: Record<string, unknown> }) => void; enabled: boolean } };
+      if (!e.orchestrator?.enabled) throw new Error('the orchestrator is not available with this engine');
+      store.journal.append({ type: 'orchestrator.user_message', item, actor: 'user', data: { text } });
+      e.orchestrator.wake({ type: 'user_message', item, data: { message: text } });
+      return c.json({ ok: true });
+    } catch (e) { return fail(c, e); }
+  });
+  api.get('/orchestrator/questions', (c) => c.json(store.journal.read({ type: 'orchestrator.question', limit: 20 })));
   api.get('/engine', (c) => c.json({ mode: engine.mode, paused: engine.paused, sessions: engine.sessions(), log: engine.log.slice(-200) }));
   api.post('/engine/pause', (c) => { engine.pause(); return c.json({ paused: true }); });
   api.post('/engine/resume', (c) => { engine.resume(); return c.json({ paused: false }); });
