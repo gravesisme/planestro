@@ -41,6 +41,8 @@ export class LiveClaudePort implements ClaudePort {
         additionalDirectories: o.extraDirs, maxBudgetUsd: o.maxBudgetUsd, abortController,
         ...(this.claudeBin ? { pathToClaudeCodeExecutable: this.claudeBin } : {}),
         canUseTool: async (toolName, input) => {
+          // Plan mode routes even allow-listed tools through this callback; planestro's own tools are always fine.
+          if (toolName.startsWith('mcp__planestro__')) return { behavior: 'allow', updatedInput: input };
           if (toolName === 'ExitPlanMode') {
             const plan = String((input as any).plan ?? '');
             if (plan) { result.planSubmitted = plan; await o.tools.submit_plan(plan); }
