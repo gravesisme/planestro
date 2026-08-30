@@ -503,12 +503,26 @@ export class LiveEngine implements Engine {
   private async onCiRed(id: string, opId: string, headSha: string, logText: string | undefined, source: 'github' | 'local', canFix = true): Promise<void> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
-    const count = (fm.ci_failed_count ?? 0) + 1;
     const ci = fm.op_data?.ci as { runId?: number; url?: string } | undefined;
+    // The same completed run re-observed (e.g. a manual re-run was just requested and the
+    // run hasn't flipped to in_progress yet) is the SAME verdict, not a second failure.
+    const lastRed = fm.op_data?.last_red as { runId?: number; sha?: string } | undefined;
+    if (source === 'github' && lastRed && lastRed.runId === ci?.runId && lastRed.sha === headSha) {
+      this.store.mutateItem(id, [
+        { unset: ['op', 'op_started_at'] },
+        { set: { ci_result: 'pending' } },
+        { activity: { actor: 'app', text: `same red run ${ci?.runId} re-observed for ${headSha.slice(0, 7)}; not counted again (waiting for a re-run or a new push)` } },
+      ], 'engine');
+      this.store.journal.end(opId, id, 'aborted', { reason: 'same_red_run' });
+      await this.sleep(30_000);
+      void this.tick();
+      return;
+    }
+    const count = (fm.ci_failed_count ?? 0) + 1;
     const log = logText ?? (ci?.runId ? await this.ports.gh.runFailedLog(this.github, ci.runId, 120) : '(no run id)');
     this.store.mutateItem(id, [
       { unset: ['op', 'op_started_at'] },
-      { set: { ci_result: 'red', ci_failed_count: count } },
+      { set: { ci_result: 'red', ci_failed_count: count, op_data: { ...(fm.op_data ?? {}), last_red: { runId: ci?.runId, sha: headSha } } } },
       { activity: { actor: 'app', text: `CI red (${source}, attempt ${count}) for ${headSha.slice(0, 7)}${ci?.url ? ` ${ci.url}` : ''}` } },
     ], 'engine', { commit: `${id}: CI red (${count})` });
     this.store.journal.end(opId, id, 'failed', { reason: 'ci_red', count });
