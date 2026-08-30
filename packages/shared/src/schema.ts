@@ -55,7 +55,7 @@ export const OPERATIONAL_KEYS = [
   'pr_created_at', 'merged_at', 'finished_at', 'iceboxed_at',
   'branch', 'worktree', 'pr', 'session_id', 'awaiting', 'awaiting_data',
   'op', 'op_started_at', 'op_data', 'ci_head_sha', 'ci_result', 'ci_failed_count',
-  'merge_order', 'blocked', 'blocked_reason', 'cost_usd', 'turns',
+  'merge_order', 'skip_merge', 'blocked', 'blocked_reason', 'cost_usd', 'turns',
   'imported_from', 'dates_estimated',
 ] as const;
 export const DERIVED_KEYS = ['base_branch', 'lane', 'external', 'children', 'deps_satisfied', 'needs_you'] as const;
@@ -102,6 +102,7 @@ export const ItemFrontmatter = z.object({
   ci_result: z.enum(CI_RESULTS).optional(),
   ci_failed_count: z.number().int().nonnegative().optional(),
   merge_order: z.number().int().optional(),
+  skip_merge: z.boolean().optional(),
   blocked: z.boolean().optional(),
   blocked_reason: z.string().optional(),
   cost_usd: z.number().nonnegative().optional(),
@@ -174,6 +175,7 @@ export const Config = z.object({
     rotate_after_days: z.number().positive().default(3),
   }).default({ model: 'claude-fable-5', may_approve_plans: false, rotate_after_wakes: 40, rotate_after_days: 3 }),
   engine: z.object({ mode: z.enum(['live', 'dry-run']).default('dry-run') }).default({ mode: 'dry-run' }),
+  epics: z.object({ auto_submit: z.boolean().default(true) }).default({ auto_submit: true }),
   notifications: z.object({ on_merge: z.string().optional() }).default({}),
   git: z.object({
     auto_commit: z.boolean().default(true),

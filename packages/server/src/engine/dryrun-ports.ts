@@ -37,6 +37,10 @@ export class DryRunGitPort implements GitPort {
     if (this.w.conflictArmed) { this.w.conflictArmed = false; this.say(`git rebase ${onto} in ${cwd} → CONFLICT (simulated)`); return { ok: false, conflicts: ['src/conflicted.ts'], head: this.w.worktrees.get(cwd)?.head ?? '' }; }
     this.say(`git rebase ${onto} in ${cwd}`); const wt = this.w.worktrees.get(cwd); const head = this.w.sha(); if (wt) wt.head = head; return { ok: true, conflicts: [], head };
   }
+  async merge(cwd: string, ref: string): Promise<RebaseResult> {
+    if (this.w.conflictArmed) { this.w.conflictArmed = false; this.say(`git merge ${ref} in ${cwd} → CONFLICT (simulated)`); return { ok: false, conflicts: ['src/conflicted.ts'], head: this.w.worktrees.get(cwd)?.head ?? '' }; }
+    this.say(`git merge ${ref} in ${cwd}`); const wt = this.w.worktrees.get(cwd); const head = this.w.sha(); if (wt) wt.head = head; return { ok: true, conflicts: [], head };
+  }
   async inProgressOp() { return null; }
   async abortInProgress() {}
   async pushForceWithLease(cwd: string, branch: string) { this.say(`git push --force-with-lease origin ${branch} (from ${cwd})`); this.w.remoteBranches.set(branch, this.w.worktrees.get(cwd)?.head ?? this.w.sha()); }

@@ -220,3 +220,44 @@ describe('policy.allowedByRules', () => {
     expect(policy.deny({ tool: 'Bash', input: { command: 'git --no-pager log -1' } })).toBeNull();
   });
 });
+
+describe('epics and external watchers (dry-run ports)', () => {
+  it('an epic with a Claude child and a watched external child ends with the epic PR merged and the branch gone', async () => {
+    const { store, engine, world } = await setup();
+    const epic = store.createItem({ title: 'World Two', kind: 'epic' });
+    const child1 = store.createItem({ title: 'Shadow gate', parent: epic.id, description: 'level' });
+    // external child: model not in config → make one via config? use implementer 'codex' by extending config models in the file
+    const { readFileSync, writeFileSync } = await import('node:fs');
+    const cfg = `${store.dataDir}/planestro.yml`;
+    writeFileSync(cfg, readFileSync(cfg, 'utf8').replace("  - { id: opus-5, label: Opus 5, claude_model: claude-opus-5 }", "  - { id: opus-5, label: Opus 5, claude_model: claude-opus-5 }\n  - { id: codex, label: Codex, external: true }"));
+    store.reload();
+    const child2 = store.createItem({ title: 'Monster sprites', parent: epic.id, implementer: 'codex', depends_on: [child1.id] });
+    store.transition(child1.id, 'QUEUED', 'user');
+    await engine.start();
+    // child1 queues → epic auto-opens → child1 plans
+    await waitFor(() => status(store, child1.id) === 'PLAN_READY', 8000);
+    expect(status(store, epic.id)).toBe('IN_PROGRESS');
+    expect(store.getItem(epic.id)!.file.frontmatter.branch).toBe('feature/world-two');
+    expect(world.remoteBranches.has('feature/world-two')).toBe(true);
+    expect(store.derived(store.getItem(child1.id)!).base_branch).toBe('feature/world-two');
+    await engine.approvePlan(child1.id);
+    await waitFor(() => status(store, child1.id) === 'FINISHED', 10000);
+    expect(world.prs.get(100)!.baseRefName).toBe('feature/world-two');
+    // external child: user marks started with its branch; simulate Codex's PR opened+merged into the feature branch
+    store.mutateItem(child2.id, [{ transition: { to: 'IN_PROGRESS', actor: 'user' } }, { set: { branch: 'codex/monster-sprites' } }], 'user');
+    world.remoteBranches.set('codex/monster-sprites', world.sha());
+    world.prs.set(200, { number: 200, url: 'https://x/200', state: 'MERGED', mergedAt: new Date().toISOString(), headRefOid: world.sha(), headRefName: 'codex/monster-sprites', baseRefName: 'feature/world-two', polls: 9, failOnce: false });
+    (engine as any).lastExternalPoll = 0;
+    await waitFor(() => status(store, child2.id) === 'FINISHED', 10000);
+    expect(world.remoteBranches.has('codex/monster-sprites')).toBe(true); // not ours to delete
+    // both children done → epic auto-submits, integration-merges (no rebase), CI, merge, cleanup
+    await waitFor(() => status(store, epic.id) === 'FINISHED', 12000);
+    const epicPr = [...world.prs.values()].find((p) => p.headRefName === 'feature/world-two')!;
+    expect(epicPr.state).toBe('MERGED');
+    expect(world.remoteBranches.has('feature/world-two')).toBe(false);
+    const activity = store.getItem(epic.id)!.file.sections.find((s) => s.title === 'Activity')!.body;
+    expect(activity).toContain('opened integration branch feature/world-two');
+    expect(activity).toContain('opened epic PR');
+    const log = world.log; void log;
+  });
+});

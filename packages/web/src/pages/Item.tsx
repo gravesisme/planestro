@@ -106,7 +106,12 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
         <div className="section"><h2>Notes</h2><textarea value={notes.text} onChange={(e) => notes.setText(e.target.value)} onBlur={notes.save} style={{ minHeight: 80 }} /></div>
         <div className="section"><h2>Plan <button className="small" onClick={() => { if (editPlan) plan.save(); setEditPlan(!editPlan); }}>{editPlan ? 'done' : 'edit'}</button></h2>{editPlan ? <textarea value={plan.text} onChange={(e) => plan.setText(e.target.value)} onBlur={plan.save} style={{ minHeight: 200 }} /> : <Markdown text={item.sections.Plan} />}</div>
         {fm.kind === 'epic' && (
-          <div className="section"><h2>Children · {children.filter((c) => ['MERGED', 'FINISHED'].includes(c.frontmatter.status)).length}/{children.length} merged</h2>
+          <div className="section"><h2>Children · {children.filter((c) => ['MERGED', 'FINISHED'].includes(c.frontmatter.status)).length}/{children.length} merged
+            <span>
+              {fm.status === 'NOT_YET_SUBMITTED' && <button className="small" onClick={() => act(() => api.epicAction(item.id, 'open'))}>Open epic branch</button>}{' '}
+              {fm.status === 'IN_PROGRESS' && <button className="small" onClick={() => act(() => api.epicAction(item.id, 'sync'))}>Sync with {d.base_branch}</button>}{' '}
+              {fm.status === 'IN_PROGRESS' && children.length > 0 && children.every((c) => ['MERGED', 'FINISHED'].includes(c.frontmatter.status)) && <button className="small primary" onClick={() => act(() => api.epicAction(item.id, 'submit'))}>Submit epic PR</button>}
+            </span></h2>
             <table><tbody>{children.map((c) => <tr key={c.id}><td><Link to={`/items/${c.id}`}>{c.id}</Link></td><td>{c.frontmatter.title}</td><td>{statusLabel(c.frontmatter.status)}</td><td>{c.frontmatter.pr ? `PR #${c.frontmatter.pr}` : ''}</td></tr>)}</tbody></table>
             {!children.length && <p className="muted small">No children yet — create items with this epic as their parent.</p>}
           </div>

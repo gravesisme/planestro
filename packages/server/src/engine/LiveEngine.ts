@@ -68,6 +68,8 @@ export class LiveEngine implements Engine {
     if (this._paused || this.stopping) return;
     try {
       this.admit();
+      await this.driveEpics();
+      await this.driveExternal();
       this.driveInReview();
     } catch (e) { this.note('error', `tick: ${(e as Error).message}`); }
   }
@@ -80,21 +82,34 @@ export class LiveEngine implements Engine {
       if (free <= 0) break;
       const fm = item.file.frontmatter;
       if (fm.status !== 'QUEUED' || this.jobs.has(item.id)) continue;
-      const d = this.store.derived(item);
-      if (d.flavor !== 'worker' || !d.deps_satisfied || !d.base_branch) continue;
+      let d = this.store.derived(item);
+      if (d.flavor !== 'worker' || !d.deps_satisfied) continue;
+      if (fm.parent) {
+        const parent = this.store.getItem(fm.parent);
+        if (!parent) continue;
+        if (parent.file.frontmatter.status === 'NOT_YET_SUBMITTED') { this.runJob(fm.parent, () => this.openEpic(fm.parent!)); continue; }
+        if (parent.file.frontmatter.status !== 'IN_PROGRESS') continue;
+        d = this.store.derived(item);
+      }
+      if (!d.base_branch) continue;
       free -= 1;
       this.runJob(item.id, () => this.startItem(item.id));
     }
   }
 
   private driveInReview(): void {
-    for (const item of this.store.listItems()) {
+    const candidates = this.store.listItems().filter((item) => {
       const fm = item.file.frontmatter;
-      if (fm.status !== 'IN_REVIEW' || fm.blocked || fm.awaiting || this.jobs.has(item.id) || this.turns.has(item.id)) continue;
-      if (fm.ci_result === 'green' || fm.ci_result === 'red' || fm.op_data?.needs_session_rebase) continue;
-      if (this.store.derived(item).flavor !== 'worker') continue;
-      this.runJob(item.id, () => this.mergeJob(item.id));
-    }
+      if (fm.status !== 'IN_REVIEW' || fm.blocked || fm.awaiting || fm.skip_merge || this.jobs.has(item.id) || this.turns.has(item.id)) return false;
+      if (fm.ci_result === 'green' || fm.ci_result === 'red' || fm.op_data?.needs_session_rebase) return false;
+      const flavor = this.store.derived(item).flavor;
+      if (flavor === 'external' && (fm.merge_policy ?? 'watch') === 'watch') return false; // watched: driveExternal observes it
+      return true;
+    }).sort((a, b) => {
+      const fa = a.file.frontmatter, fb = b.file.frontmatter;
+      return (fa.merge_order ?? Infinity) - (fb.merge_order ?? Infinity) || (fa.rank ?? Infinity) - (fb.rank ?? Infinity) || (fa.pr_created_at ?? '').localeCompare(fb.pr_created_at ?? '');
+    });
+    for (const item of candidates) this.runJob(item.id, () => this.mergeJob(item.id)); // mergeChain keeps them strictly serial, in this order
   }
 
   private followUps = new Map<string, () => Promise<unknown>>();
@@ -367,11 +382,22 @@ export class LiveEngine implements Engine {
 
   private async mergeStep(id: string): Promise<void> {
     if (this._paused || this.stopping) return;
-    const item = this.store.requireItem(id);
-    const fm = item.file.frontmatter;
+    let item = this.store.requireItem(id);
+    let fm = item.file.frontmatter;
     if (fm.status !== 'IN_REVIEW' || fm.blocked || fm.awaiting) return;
+    const d = this.store.derived(item);
+    const base = d.base_branch!;
+    const integration = fm.kind === 'epic';
+    const canFix = d.flavor === 'worker';
+    if (!fm.worktree) {
+      // epics and app-policy external items have no session worktree: make a temporary one from the remote branch
+      const dir = join(this.store.worktreesRoot(), `merge-${id.toLowerCase()}`);
+      await this.ports.git.fetch(this.repo);
+      await this.ports.git.worktreeAdd(this.repo, dir, fm.branch!, `origin/${fm.branch}`);
+      this.store.mutateItem(id, [{ set: { worktree: dir } }, { activity: { actor: 'app', text: `temporary worktree ${dir} for the merge pipeline` } }], 'engine');
+      item = this.store.requireItem(id); fm = item.file.frontmatter;
+    }
     const cwd = this.absWorktree(fm.worktree!);
-    const base = this.store.derived(item).base_branch!;
     const cfg = this.store.config.ci;
     const opId = this.store.journal.begin('merge', id, { pr: fm.pr, base });
 
@@ -380,29 +406,31 @@ export class LiveEngine implements Engine {
       if (health.state === 'failure') { this.store.journal.end(opId, id, 'aborted', { reason: 'base_red' }); this.block(id, 'base_red', `the base branch ${base} is red (${health.url ?? 'no run url'}); fix the base or disable ci.require_green_base`); return; }
     }
 
-    // 1. rebase
-    this.store.mutateItem(id, [{ set: { op: 'rebasing', op_started_at: this.now(), op_data: { ...(fm.op_data ?? {}), base_sha: null } } }], 'engine');
+    // 1. sync with the base — worker branches rebase, integration branches merge (never rewritten)
+    this.store.mutateItem(id, [{ set: { op: integration ? 'syncing_base' : 'rebasing', op_started_at: this.now(), op_data: { ...(fm.op_data ?? {}), base_sha: null } } }], 'engine');
     await this.ports.git.fetch(this.repo);
     const { clean } = await this.ports.git.status(cwd);
-    if (!clean) { this.store.journal.end(opId, id, 'aborted', { reason: 'dirty' }); this.block(id, 'dirty_tree', 'the worktree has uncommitted changes; it cannot be rebased'); return; }
+    if (!clean) { this.store.journal.end(opId, id, 'aborted', { reason: 'dirty' }); this.block(id, 'dirty_tree', 'the worktree has uncommitted changes; it cannot be synced'); return; }
     const baseSha = await this.ports.git.revParse(this.repo, `origin/${base}`);
     const expected = await this.ports.git.remoteBranchSha(this.repo, fm.branch!);
-    const rebase = await this.ports.git.rebase(cwd, `origin/${base}`);
-    if (!rebase.ok) {
+    const sync = integration ? await this.ports.git.merge(cwd, `origin/${base}`) : await this.ports.git.rebase(cwd, `origin/${base}`);
+    if (!sync.ok) {
       this.store.mutateItem(id, [
         { unset: ['op', 'op_started_at'] },
-        { set: { ci_result: 'unknown', op_data: { ...(fm.op_data ?? {}), needs_session_rebase: true } } },
-        { activity: { actor: 'app', text: `rebase onto origin/${base} (${baseSha.slice(0, 7)}) conflicted in ${rebase.conflicts.join(', ')}; handing to the session` } },
-      ], 'engine', { commit: `${id}: rebase conflict` });
-      this.store.journal.end(opId, id, 'aborted', { reason: 'conflict', files: rebase.conflicts });
-      this.queueFollowUp(id, () => this.runTurnFor(id, 'fix', this.store.renderPrompt('rebase-conflict', this.store.requireItem(id), { conflict_files: rebase.conflicts.join('\n'), base_sha: baseSha.slice(0, 12) })));
+        { set: { ci_result: 'unknown', op_data: { ...(fm.op_data ?? {}), needs_session_rebase: canFix } } },
+        { activity: { actor: 'app', text: `${integration ? 'merge of' : 'rebase onto'} origin/${base} (${baseSha.slice(0, 7)}) conflicted in ${sync.conflicts.join(', ')}${canFix ? '; handing to the session' : ''}` } },
+      ], 'engine', { commit: `${id}: ${integration ? 'merge' : 'rebase'} conflict` });
+      this.store.journal.end(opId, id, 'aborted', { reason: 'conflict', files: sync.conflicts });
+      if (canFix) this.queueFollowUp(id, () => this.runTurnFor(id, 'fix', this.store.renderPrompt('rebase-conflict', this.store.requireItem(id), { conflict_files: sync.conflicts.join('\n'), base_sha: baseSha.slice(0, 12) })));
+      else this.block(id, 'sync_conflict', `conflicts with ${base} in ${sync.conflicts.join(', ')} and no session to hand them to; resolve by hand`);
       return;
     }
 
-    // 2. push
+    // 2. push (integration branches push plainly; worker branches force-with-lease their rebase)
     this.store.mutateItem(id, [{ set: { op: 'pushing', op_started_at: this.now() } }], 'engine');
-    await this.ports.git.pushForceWithLease(cwd, fm.branch!, expected);
-    const headSha = rebase.head;
+    if (integration) await this.ports.git.pushSetUpstream(cwd, fm.branch!);
+    else await this.ports.git.pushForceWithLease(cwd, fm.branch!, expected);
+    const headSha = sync.head;
     this.store.mutateItem(id, [{ set: { op: 'awaiting_ci', op_started_at: this.now(), ci_head_sha: headSha, ci_result: 'pending' } }, { activity: { actor: 'app', text: `rebased onto ${base}@${baseSha.slice(0, 7)} and pushed ${headSha.slice(0, 7)}; waiting for CI` } }], 'engine');
 
     // 3. wait for CI
@@ -417,7 +445,7 @@ export class LiveEngine implements Engine {
         this.store.mutateItem(id, [{ activity: { actor: 'app', text: 'local checks passed (used as the CI gate)' } }], 'engine');
       } else { this.store.journal.end(opId, id, 'aborted', { reason: 'ci_blocked' }); this.block(id, 'ci_blocked', 'GitHub Actions did not run (billing blocked or workflow missing); set ci.mode to github-or-local with a local_check_command, or re-run by hand'); return; }
     }
-    if (verdict === 'red') { await this.onCiRed(id, opId, headSha, undefined, 'github'); return; }
+    if (verdict === 'red') { await this.onCiRed(id, opId, headSha, undefined, 'github', canFix); return; }
 
     // 4. merge
     this.store.mutateItem(id, [{ set: { op: 'merging', op_started_at: this.now(), ci_result: 'green' } }], 'engine');
@@ -437,7 +465,7 @@ export class LiveEngine implements Engine {
     await this.cleanup(id);
   }
 
-  private async onCiRed(id: string, opId: string, headSha: string, logText: string | undefined, source: 'github' | 'local'): Promise<void> {
+  private async onCiRed(id: string, opId: string, headSha: string, logText: string | undefined, source: 'github' | 'local', canFix = true): Promise<void> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
     const count = (fm.ci_failed_count ?? 0) + 1;
@@ -449,6 +477,7 @@ export class LiveEngine implements Engine {
       { activity: { actor: 'app', text: `CI red (${source}, attempt ${count}) for ${headSha.slice(0, 7)}${ci?.url ? ` ${ci.url}` : ''}` } },
     ], 'engine', { commit: `${id}: CI red (${count})` });
     this.store.journal.end(opId, id, 'failed', { reason: 'ci_red', count });
+    if (!canFix) { this.block(id, 'ci_red', 'CI is red and there is no session to hand the failure to; investigate by hand'); return; }
     if (count >= 2) { this.block(id, 'ci_red_twice', `CI failed ${count} times; a human (or, later, the orchestrator) decides what happens next`); return; }
     this.queueFollowUp(id, () => this.runTurnFor(id, 'fix', this.store.renderPrompt('ci-failed', this.store.requireItem(id), { ci: { attempt: String(count), run_url: ci?.url ?? '(local run)', failed_log: log } })));
   }
@@ -478,7 +507,12 @@ export class LiveEngine implements Engine {
   private async cleanup(id: string): Promise<void> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
-    const base = this.store.derived(item).base_branch!;
+    const d = this.store.derived(item);
+    if (d.flavor === 'external' && (fm.merge_policy ?? 'watch') === 'watch') {
+      this.store.mutateItem(id, [{ transition: { to: 'FINISHED', actor: 'engine' } }, { activity: { actor: 'app', text: 'externally driven: no local resources to clean (the remote branch is not planestro\'s to delete)' } }], 'engine', { commit: `${id}: finish` });
+      return;
+    }
+    const base = d.base_branch!;
     const cwd = this.absWorktree(fm.worktree!);
     const opId = this.store.journal.begin('cleaning_up', id, { branch: fm.branch });
     this.store.mutateItem(id, [{ set: { op: 'cleaning_up', op_started_at: this.now() } }], 'engine');
@@ -493,7 +527,7 @@ export class LiveEngine implements Engine {
     await this.ports.git.worktreeRemove(this.repo, cwd, false);
     await this.ports.git.worktreePrune(this.repo);
     await this.ports.git.deleteLocalBranch(this.repo, fm.branch!);
-    if (await this.ports.git.remoteBranchSha(this.repo, fm.branch!)) await this.ports.git.deleteRemoteBranch(this.repo, fm.branch!);
+    if (d.flavor !== 'external' && await this.ports.git.remoteBranchSha(this.repo, fm.branch!)) await this.ports.git.deleteRemoteBranch(this.repo, fm.branch!);
     this.store.mutateItem(id, [
       { transition: { to: 'FINISHED', actor: 'engine' } },
       { unset: ['op', 'op_started_at'] },
@@ -518,6 +552,116 @@ export class LiveEngine implements Engine {
         this.store.mutateItem(item.id, [{ unset: ['op', 'op_started_at'] }], 'engine');
         this.block(item.id, `interrupted_${fm.op}`, `planestro restarted during ${fm.op}; verify the repo state and unblock (the Phase 5 reconciler will do this automatically)`);
       }
+    }
+  }
+
+  // ---- epics ----
+  /** Push the integration branch from the epic's base and open the epic (auto when a child queues, or via API). */
+  async openEpic(id: string): Promise<void> {
+    const item = this.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    if (fm.kind !== 'epic' || fm.status !== 'NOT_YET_SUBMITTED') return;
+    const base = this.store.derived(item).base_branch!;
+    const branch = fm.branch ?? `feature/${slugify(fm.title)}`;
+    const opId = this.store.journal.begin('open_epic', id, { branch, base });
+    await this.ports.git.fetch(this.repo);
+    if (!(await this.ports.git.remoteBranchSha(this.repo, branch))) await this.ports.git.pushRef(this.repo, `origin/${base}`, branch);
+    this.store.mutateItem(id, [
+      { transition: { to: 'IN_PROGRESS', actor: 'engine' } },
+      { set: { branch } },
+      { activity: { actor: 'app', text: `opened integration branch ${branch} from origin/${base}` } },
+    ], 'engine', { commit: `${id}: open epic` });
+    this.store.journal.end(opId, id, 'ok');
+    this.note('info', `${id}: epic open on ${branch}`);
+  }
+
+  /** Epic completion: every child merged → open the epic PR into its base. */
+  private async driveEpics(): Promise<void> {
+    for (const item of this.store.listItems()) {
+      const fm = item.file.frontmatter;
+      if (fm.kind !== 'epic' || fm.status !== 'IN_PROGRESS' || fm.blocked || this.jobs.has(item.id)) continue;
+      const d = this.store.derived(item);
+      if (!d.children.length) continue;
+      const children = d.children.map((c) => this.store.requireItem(c).file.frontmatter);
+      if (!children.every((c) => c.status === 'MERGED' || c.status === 'FINISHED')) continue;
+      if (!this.store.config.epics.auto_submit) { if (!fm.op_data?.epic_ready_noted) this.store.mutateItem(item.id, [{ set: { op_data: { ...(fm.op_data ?? {}), epic_ready_noted: true } } }, { activity: { actor: 'app', text: 'all children merged — submit the epic PR when ready (epics.auto_submit is off)' } }], 'engine'); continue; }
+      this.runJob(item.id, () => this.submitEpic(item.id));
+    }
+  }
+
+  async submitEpic(id: string): Promise<void> {
+    const item = this.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    if (fm.kind !== 'epic' || fm.status !== 'IN_PROGRESS') return;
+    const base = this.store.derived(item).base_branch!;
+    const children = this.store.derived(item).children.map((c) => this.store.requireItem(c).file.frontmatter);
+    const opId = this.store.journal.begin('creating_pr', id, { branch: fm.branch, base });
+    this.store.mutateItem(id, [{ set: { op: 'creating_pr', op_started_at: this.now() } }], 'engine');
+    const existing = (await this.ports.gh.prList(this.github, { head: fm.branch!, state: 'open' }))[0];
+    const pr = existing ? { number: existing.number, url: existing.url } : await this.ports.gh.createPr(this.github, {
+      base, head: fm.branch!, title: `${fm.title} (${id})`,
+      body: `Integration branch for epic **${id}**. Child pull requests:\n\n${children.map((c) => `- ${c.id}: ${c.title}${c.pr ? ` (#${c.pr})` : ''}`).join('\n')}\n\n🤖 Opened by planestro`,
+    });
+    this.store.mutateItem(id, [
+      { transition: { to: 'IN_REVIEW', actor: 'engine' } },
+      { set: { pr: pr.number, ci_result: 'pending' } },
+      { unset: ['op', 'op_started_at'] },
+      { activity: { actor: 'app', text: `opened epic PR #${pr.number} → ${base} (${pr.url})` } },
+    ], 'engine', { commit: `${id}: open PR #${pr.number}` });
+    this.store.journal.end(opId, id, 'ok', { pr: pr.number });
+    void this.tick();
+  }
+
+  /** Deterministic "Sync with base": merge origin/<base> into the integration branch and push plainly. */
+  async syncBase(id: string): Promise<void> {
+    const item = this.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    if (fm.kind !== 'epic' || fm.status !== 'IN_PROGRESS' || !fm.branch) throw new Error(`${id} is not an open epic`);
+    const base = this.store.derived(item).base_branch!;
+    const dir = fm.worktree ? this.absWorktree(fm.worktree) : join(this.store.worktreesRoot(), `merge-${id.toLowerCase()}`);
+    const opId = this.store.journal.begin('syncing_base', id, { base });
+    this.store.mutateItem(id, [{ set: { op: 'syncing_base', op_started_at: this.now(), ...(fm.worktree ? {} : { worktree: dir }) } }], 'engine');
+    await this.ports.git.fetch(this.repo);
+    await this.ports.git.worktreeAdd(this.repo, dir, fm.branch, `origin/${fm.branch}`);
+    const sync = await this.ports.git.merge(dir, `origin/${base}`);
+    if (!sync.ok) { this.store.journal.end(opId, id, 'aborted', { reason: 'conflict' }); this.block(id, 'sync_conflict', `merging ${base} into ${fm.branch} conflicted in ${sync.conflicts.join(', ')}; resolve by hand in ${dir}`); return; }
+    await this.ports.git.pushSetUpstream(dir, fm.branch);
+    this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { activity: { actor: 'app', text: `merged origin/${base} into ${fm.branch} and pushed (${sync.head.slice(0, 7)})` } }], 'engine', { commit: `${id}: sync with ${base}` });
+    this.store.journal.end(opId, id, 'ok');
+  }
+
+  // ---- externally driven items (watched) ----
+  private lastExternalPoll = 0;
+  private async driveExternal(): Promise<void> {
+    const externals = this.store.listItems().filter((i) => { const fm = i.file.frontmatter; return this.store.derived(i).flavor === 'external' && (fm.merge_policy ?? 'watch') === 'watch' && !fm.blocked && (fm.status === 'IN_PROGRESS' || fm.status === 'IN_REVIEW'); });
+    if (!externals.length || Date.now() - this.lastExternalPoll < 60_000) return;
+    this.lastExternalPoll = Date.now();
+    for (const item of externals) {
+      const fm = item.file.frontmatter;
+      try {
+        let pr = fm.pr ? await this.ports.gh.prView(this.github, fm.pr) : undefined;
+        if (!pr && fm.branch) pr = (await this.ports.gh.prList(this.github, { head: fm.branch, state: 'all' }))[0];
+        if (!pr) continue;
+        if (fm.status === 'IN_PROGRESS') {
+          this.store.mutateItem(item.id, [
+            { transition: { to: 'IN_REVIEW', actor: 'engine' } },
+            { set: { pr: pr.number, branch: fm.branch ?? pr.headRefName, ci_result: 'pending' } },
+            { activity: { actor: 'app', text: `linked PR #${pr.number} (${pr.url})` } },
+          ], 'engine', { commit: `${item.id}: link PR #${pr.number}` });
+        }
+        if (pr.state === 'MERGED' && this.store.requireItem(item.id).file.frontmatter.status === 'IN_REVIEW') {
+          this.store.mutateItem(item.id, [
+            { transition: { to: 'MERGED', actor: 'engine' } },
+            { set: { merged_at: pr.mergedAt ? isoLocal(new Date(pr.mergedAt)) : this.now(), ci_result: 'green' } },
+            { activity: { actor: 'app', text: `observed merge of PR #${pr.number} into ${pr.baseRefName}` } },
+          ], 'engine', { commit: `${item.id}: merge (observed)` });
+          const notify = this.store.config.notifications.on_merge;
+          if (notify) void this.ports.proc.run(notify, { cwd: this.repo, timeoutMs: 30_000 });
+          await this.cleanup(item.id);
+        } else if (pr.state === 'CLOSED') {
+          this.block(item.id, 'pr_closed_externally', `PR #${pr.number} was closed without merging`);
+        }
+      } catch (e) { this.note('warn', `${item.id}: external poll failed: ${(e as Error).message}`); }
     }
   }
 

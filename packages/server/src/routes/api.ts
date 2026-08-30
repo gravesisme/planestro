@@ -80,6 +80,8 @@ export function apiRoutes(store: DataStore, engine: Engine): Hono {
       const d = store.derived(it);
       if (to === 'QUEUED' && !d.deps_satisfied) throw new Error('dependencies are not merged yet');
       if (to === 'QUEUED' && d.base_branch_error) throw new Error(d.base_branch_error);
+      const e = engine as Engine & { openEpic?: (id: string) => Promise<void> };
+      if (to === 'IN_PROGRESS' && it.file.frontmatter.kind === 'epic' && e.openEpic) { await e.openEpic(id); return c.json(itemView(store, store.requireItem(id))); }
       const stored = store.transition(id, to, 'user' as Actor);
       if (to === 'QUEUED') engine.poke();
       return c.json(itemView(store, stored));
@@ -88,6 +90,18 @@ export function apiRoutes(store: DataStore, engine: Engine): Hono {
   api.post('/items/:id/plan/approve', async (c) => { try { const { notes } = z.object({ notes: z.string().optional() }).parse(await c.req.json().catch(() => ({}))); await engine.approvePlan(c.req.param('id'), notes); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
   api.post('/items/:id/plan/reject', async (c) => { try { const { message } = z.object({ message: z.string().min(1) }).parse(await c.req.json()); await engine.rejectPlan(c.req.param('id'), message); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
   api.post('/items/:id/message', async (c) => { try { const { text } = z.object({ text: z.string().min(1) }).parse(await c.req.json()); await engine.message(c.req.param('id'), text); return c.json({ ok: true }); } catch (e) { return fail(c, e); } });
+  api.post('/items/:id/epic/:action', async (c) => {
+    try {
+      const e = engine as Engine & { openEpic?: (id: string) => Promise<void>; submitEpic?: (id: string) => Promise<void>; syncBase?: (id: string) => Promise<void> };
+      const action = c.req.param('action');
+      const id = c.req.param('id');
+      if (action === 'open' && e.openEpic) await e.openEpic(id);
+      else if (action === 'submit' && e.submitEpic) await e.submitEpic(id);
+      else if (action === 'sync' && e.syncBase) await e.syncBase(id);
+      else throw new Error(`epic action ${action} is not available`);
+      return c.json(itemView(store, store.requireItem(id)));
+    } catch (e) { return fail(c, e); }
+  });
   api.post('/items/:id/unblock', async (c) => { try { const { message } = z.object({ message: z.string().optional() }).parse(await c.req.json().catch(() => ({}))); const e = engine as Engine & { unblock?: (id: string, m?: string) => Promise<void> }; if (e.unblock) await e.unblock(c.req.param('id'), message); else store.mutateItem(c.req.param('id'), [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data'] }], 'user', { commit: `${c.req.param('id')}: unblock` }); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
   api.post('/items/:id/respond', async (c) => { try { await engine.respond(c.req.param('id'), await c.req.json()); return c.json({ ok: true }); } catch (e) { return fail(c, e); } });
 

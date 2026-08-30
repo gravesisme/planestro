@@ -18,6 +18,8 @@ export interface GitPort {
   aheadBehind(cwd: string, base: string, head: string): Promise<{ ahead: number; behind: number }>;
   /** Rebase `cwd`'s HEAD onto `onto`; on conflict the rebase is aborted and the files listed. */
   rebase(cwd: string, onto: string): Promise<RebaseResult>;
+  /** Merge `ref` into `cwd`'s HEAD (integration branches merge, never rebase); aborted on conflict. */
+  merge(cwd: string, ref: string): Promise<RebaseResult>;
   inProgressOp(cwd: string): Promise<'rebase' | 'merge' | null>;
   abortInProgress(cwd: string): Promise<void>;
   pushForceWithLease(cwd: string, branch: string, expectedRemoteSha: string | null): Promise<void>;
