@@ -48,16 +48,21 @@ function summarize(m: SDKMessage): string {
   return `${m.type}${(m as any).subtype ? '/' + (m as any).subtype : ''}`;
 }
 
-async function run(label: string, q: ReturnType<typeof query>): Promise<{ sessionId?: string; subtype?: string; text: string }> {
+async function run(label: string, q: ReturnType<typeof query>): Promise<{ sessionId?: string; subtype?: string; text: string; threw?: string }> {
   log(`\n## ${label} — ${stamp()}`);
-  let sessionId: string | undefined; let subtype: string | undefined; let text = '';
-  for await (const m of q) {
-    log('- ' + summarize(m));
-    if (m.type === 'system' && (m as any).subtype === 'init') sessionId = (m as any).session_id;
-    if (m.type === 'assistant') for (const c of (m as any).message?.content ?? []) if (c.type === 'text') text += c.text + '\n';
-    if (m.type === 'result') { subtype = (m as any).subtype; sessionId = (m as any).session_id ?? sessionId; }
+  let sessionId: string | undefined; let subtype: string | undefined; let text = ''; let threw: string | undefined;
+  try {
+    for await (const m of q) {
+      log('- ' + summarize(m));
+      if (m.type === 'system' && (m as any).subtype === 'init') sessionId = (m as any).session_id;
+      if (m.type === 'assistant') for (const c of (m as any).message?.content ?? []) if (c.type === 'text') text += c.text + '\n';
+      if (m.type === 'result') { subtype = (m as any).subtype; sessionId = (m as any).session_id ?? sessionId; }
+    }
+  } catch (e) {
+    // The SDK throws after yielding an error result (error_max_turns, error_max_budget_usd, ...). Engine must catch.
+    threw = String(e).slice(0, 200); log(`  query() threw after the error result: ${threw}`);
   }
-  return { sessionId, subtype, text };
+  return { sessionId, subtype, text, threw };
 }
 
 const planestroServer = createSdkMcpServer({
@@ -181,4 +186,19 @@ if (cmd === 'budget') {
   const r1 = await run('budget maxTurns=1', query({ prompt: 'List the files in tools/ using Glob, then Read tools/run_checks.sh, then summarize.', options: { cwd: CWD, model: IMPLEMENTER, permissionMode: 'acceptEdits', maxTurns: 1 } }));
   const r2 = await run('budget maxBudgetUsd=0.001', query({ prompt: 'Read CLAUDE.md fully and summarize it in detail.', options: { cwd: CWD, model: IMPLEMENTER, permissionMode: 'acceptEdits', maxBudgetUsd: 0.001 } }));
   log(`\n(i) subtypes: maxTurns→${r1.subtype}, maxBudgetUsd→${r2.subtype}`);
+}
+
+if (cmd === 'resume-park') {
+  // (e) re-test: `uname -a` is in Claude Code's built-in read-only set, so it never reaches canUseTool.
+  // Use a command that is neither read-only nor allowlisted by the project: `node -e`.
+  if (!state.session_id) throw new Error('run plan first');
+  const r = await run('resume-park (non-read-only, non-allowlisted Bash must reach canUseTool and park)', query({
+    prompt: 'One more thing: run `node -e "console.log(\'park-probe\')"` via Bash. If the tool is denied, do not retry or work around it — just end your turn.',
+    options: {
+      cwd: CWD, model: IMPLEMENTER, permissionMode: 'acceptEdits', resume: state.session_id,
+      canUseTool: canUseToolLogger((t) => t === 'Bash' ? { behavior: 'deny', message: 'Permission requires user approval; the request has been recorded by planestro — end this turn.' } : null),
+    },
+  }));
+  const reached = readFileSync(LOG, 'utf8').includes('[canUseTool] Bash {"command":"node -e');
+  log(`\n(e) non-allowlisted Bash reached canUseTool and parked: ${reached ? 'PASS' : 'FAIL'}; probe ran anyway: ${/park-probe/.test(r.text) ? 'YES (BAD)' : 'no'}`);
 }
