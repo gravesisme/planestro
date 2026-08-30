@@ -10,17 +10,24 @@ import { DataStore } from './store/DataStore.ts';
 import { apiRoutes, attachmentRoutes } from './routes/api.ts';
 import type { Engine } from './engine/Engine.ts';
 import { MockEngine } from './engine/MockEngine.ts';
+import { LiveEngine } from './engine/LiveEngine.ts';
+import { makePorts } from './engine/makePorts.ts';
 import { VALIDATED_CLAUDE_VERSION } from './compat.ts';
 import { TOOL_VERSION } from './config.ts';
 
-export interface ServeOptions { dataDir: string; port?: number; host?: string; engineFactory?: (store: DataStore, emit: (e: ServerEvent) => void) => Engine; log?: (level: string, msg: string) => void }
+export interface ServeOptions { dataDir: string; port?: number; host?: string; mock?: boolean; engineFactory?: (store: DataStore, emit: (e: ServerEvent) => void) => Engine; log?: (level: string, msg: string) => void }
 
 export async function startServer(o: ServeOptions) {
   const log = o.log ?? ((level, msg) => console.log(`[${level}] ${msg}`));
   const sockets = new Set<{ send(data: string): void }>();
   const emit = (e: ServerEvent) => { const data = JSON.stringify(e); for (const s of sockets) { try { s.send(data); } catch { /* closed */ } } };
   const store = await DataStore.open(o.dataDir, { emit, log: (l, m) => log(l, m) });
-  const engine = (o.engineFactory ?? ((s, em) => new MockEngine(s, em)))(store, emit);
+  const defaultFactory = (s: DataStore, em: (e: ServerEvent) => void): Engine => {
+    if (o.mock) return new MockEngine(s, em);
+    const mode = s.local.engine.mode ?? s.config.engine.mode;
+    return new LiveEngine(s, makePorts(mode, (m) => { log('info', m); em({ type: 'engine.log', level: 'info', message: m }); }, s), em);
+  };
+  const engine = (o.engineFactory ?? defaultFactory)(store, emit);
 
   const app = new Hono();
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });

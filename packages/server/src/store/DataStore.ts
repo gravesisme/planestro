@@ -388,7 +388,7 @@ export class DataStore {
   }
 
   promptContext(item: StoredItem | undefined, extra: Record<string, unknown> = {}): Record<string, unknown> {
-    const repo = { path: this.codeRepoPath(), default_branch: this.defaultBranch(), release_branch: this.config.code_repo.release_branch, github: this.config.code_repo.github };
+    const repo = { path: this.codeRepoPath(), default_branch: this.defaultBranch(), release_branch: this.config.code_repo.release_branch ?? '(none)', github: this.config.code_repo.github ?? '(none)' };
     const base: Record<string, unknown> = { repo, data_dir: this.dataDir, project: this.config.project };
     if (item) {
       const fm = item.file.frontmatter;

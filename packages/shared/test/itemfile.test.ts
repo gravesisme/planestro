@@ -89,10 +89,13 @@ describe('item file codec', () => {
     expect(() => parseItemFile(SAMPLE.replace('status: PLAN_IN_PROGRESS', 'status: BLOCKED'))).toThrow(/status/);
   });
 
-  it('setSection replaces wholesale', () => {
+  it('setSection replaces wholesale and demotes H1 headings inside a body', () => {
     const f = parseItemFile(SAMPLE);
-    setSection(f, 'Plan', '1. do\n2. things\n');
-    expect(getSection(f, 'Plan')).toBe('1. do\n2. things');
+    setSection(f, 'Plan', '# Plan: add flag\n\n1. do\n2. things\n');
+    expect(getSection(f, 'Plan')).toBe('## Plan: add flag\n\n1. do\n2. things');
+    const again = parseItemFile(serializeItemFile(f));
+    expect(again.sections.map((s) => s.title)).toEqual(['Description', 'Notes', 'Plan', 'Activity', 'Research']);
+    expect(getSection(again, 'Plan')).toContain('## Plan: add flag');
   });
 
   it('helpers', () => {

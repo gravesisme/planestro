@@ -65,9 +65,15 @@ export function getSection(file: ItemFile, title: SectionTitle | string): string
   return file.sections.find((s) => s.title === title)?.body ?? '';
 }
 
+/** H1 is the section delimiter, so any `# heading` inside a body is demoted to `##`. */
+export function demoteH1(body: string): string {
+  return body.replace(/^# (?=\S)/gm, '## ');
+}
+
 export function setSection(file: ItemFile, title: SectionTitle | string, body: string): void {
+  const text = demoteH1(body).trim();
   const s = file.sections.find((x) => x.title === title);
-  if (s) s.body = body.trim(); else file.sections.push({ title, body: body.trim() });
+  if (s) s.body = text; else file.sections.push({ title, body: text });
 }
 
 export type ActivityActor = 'user' | 'app' | 'orchestrator' | 'worker';
