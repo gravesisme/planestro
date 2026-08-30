@@ -11,7 +11,7 @@ const PARK_MSG = 'Permission requires user approval; the request has been record
  * AskUserQuestion and every other prompt to the engine's policy (see docs/sdk-notes.md).
  */
 export class LiveClaudePort implements ClaudePort {
-  constructor(private readonly claudeBin?: string) {}
+  constructor(private readonly claudeBin?: string, private readonly apiKey?: string) {}
 
   async runTurn(o: TurnOptions): Promise<TurnResult> {
     const result: TurnResult = { subtype: 'success', isError: false, costUsd: 0, numTurns: 0, text: '' };
@@ -40,6 +40,7 @@ export class LiveClaudePort implements ClaudePort {
         allowedTools: [...o.allowedTools, 'mcp__planestro__submit_plan', 'mcp__planestro__add_note', 'mcp__planestro__append_activity', 'mcp__planestro__report_done', 'mcp__planestro__report_blocked', 'mcp__planestro__get_item'],
         additionalDirectories: o.extraDirs, maxBudgetUsd: o.maxBudgetUsd, abortController,
         ...(this.claudeBin ? { pathToClaudeCodeExecutable: this.claudeBin } : {}),
+        ...(this.apiKey ? { env: { ...process.env, ANTHROPIC_API_KEY: this.apiKey } } : {}),
         canUseTool: async (toolName, input) => {
           // Plan mode routes even allow-listed tools through this callback; planestro's own tools are always fine.
           if (toolName.startsWith('mcp__planestro__')) return { behavior: 'allow', updatedInput: input };

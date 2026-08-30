@@ -9,5 +9,5 @@ export function makePorts(mode: 'live' | 'dry-run', log: (m: string) => void, st
     const world = new FakeWorld(log, { [`origin/${store.config.code_repo.default_branch}`]: 'f'.repeat(40) });
     return { mode, git: new DryRunGitPort(world), gh: new DryRunGhPort(world), proc: new DryRunProcPort(world), claude: new DryRunClaudePort(world) };
   }
-  return { mode, git: new LiveGitPort(), gh: new LiveGhPort(), proc: new LiveProcPort(), claude: new LiveClaudePort(store.local.claude_bin) };
+  return { mode, git: new LiveGitPort(), gh: new LiveGhPort(), proc: new LiveProcPort(), claude: new LiveClaudePort(store.local.claude_bin, store.local.anthropic_api_key ?? process.env.ANTHROPIC_API_KEY) };
 }

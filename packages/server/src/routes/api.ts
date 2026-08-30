@@ -143,7 +143,7 @@ export function apiRoutes(store: DataStore, engine: Engine): Hono {
     } catch (e) { return fail(c, e); }
   });
   api.put('/config/local', async (c) => {
-    try { const body = z.object({ code_repo_path: z.string().optional(), worktrees_root: z.string().optional(), godot_bin: z.string().optional(), claude_bin: z.string().optional() }).parse(await c.req.json()); return c.json({ local: store.updateLocal(body) }); }
+    try { const body = z.object({ code_repo_path: z.string().optional(), worktrees_root: z.string().optional(), godot_bin: z.string().optional(), claude_bin: z.string().optional(), anthropic_api_key: z.string().optional() }).parse(await c.req.json()); return c.json({ local: store.updateLocal(body) }); }
     catch (e) { return fail(c, e); }
   });
   api.post('/config/categories', async (c) => {

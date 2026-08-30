@@ -43,6 +43,17 @@ Requirements: Node 24, git, the GitHub CLI (`gh`, authenticated) and Claude
 Code (`claude`, logged in). The engine starts in `dry-run`; flip `engine.mode`
 to `live` in Settings once you have watched a dry run.
 
+## Authentication and billing
+
+Worker sessions are Claude Code sessions launched through the official Agent SDK.
+By default they use whatever `claude` is logged in as. Anthropic's Agent SDK docs
+ask that SDK-built agents use **API-key authentication** rather than a claude.ai
+login, and the SDK is governed by the Commercial Terms — so set an Anthropic
+Console key (Settings → *This machine* → Anthropic API key, stored in the
+gitignored `planestro.local.yml`, or `ANTHROPIC_API_KEY` in the environment) to
+bill the API directly. Never offer a claude.ai login to other users of a tool
+built on this.
+
 ## Lifecycle
 
 ```
