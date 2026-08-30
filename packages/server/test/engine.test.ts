@@ -148,6 +148,19 @@ describe('LiveEngine lifecycle (dry-run ports)', () => {
     await engine.respond(item.id, { kind: 'permission', decision: 'always' });
     await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
     expect(seen[2]).toContain('Bash(node -e 1)');
+    // an approved chained command that matches no rule is allowed once via the one-shot pass
+    const chain = "awk 'x' f.html > /tmp/o.js && node --check /tmp/o.js";
+    const it2 = store.createItem({ title: 'Chain' });
+    store.mutateItem(it2.id, [{ set: { status: 'IN_PROGRESS', branch: 'tp/x', worktree: '.claude/worktrees/tp-x', awaiting: 'permission', awaiting_data: { tool: 'Bash', input: { command: chain } } } }], 'engine');
+    let oneShotResult: string | undefined;
+    (engine as any).ports.claude.runTurn = async (o: TurnOptions) => {
+      oneShotResult = (await o.onPermission({ tool: 'Bash', input: { command: chain } })).action;
+      expect((await o.onPermission({ tool: 'Bash', input: { command: chain } })).action).toBe('park'); // consumed
+      return { sessionId: 's2', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', parked: 'permission' };
+    };
+    await engine.respond(it2.id, { kind: 'permission', decision: 'allow' });
+    await waitFor(() => oneShotResult !== undefined);
+    expect(oneShotResult).toBe('allow');
     expect(store.config.permissions.allow).toContain('Bash(node -e 1)');
   });
 
