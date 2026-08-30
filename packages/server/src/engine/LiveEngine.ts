@@ -805,6 +805,8 @@ export class LiveEngine implements Engine {
       submit_plan: async (plan) => {
         const cur = s.requireItem(id).file.frontmatter;
         const ops: ItemOp[] = [{ section: 'Plan', body: plan }];
+        // A late submit cures a no_plan block (e.g. after an MCP transport failure ate the first attempt).
+        if (cur.blocked && cur.blocked_reason === 'no_plan') ops.push({ unset: ['blocked', 'blocked_reason'] });
         if (cur.status === 'PLAN_IN_PROGRESS') ops.push({ transition: { to: 'PLAN_READY', actor: 'engine' } });
         s.mutateItem(id, ops, 'engine', { commit: `${id}: submit plan` });
         this.note('info', `${id}: plan submitted — needs your approval`);
