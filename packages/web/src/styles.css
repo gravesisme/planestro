@@ -47,3 +47,11 @@ main { padding: 16px; flex: 1; }
 .dialog { position: fixed; inset: 0; background: #0009; display: grid; place-items: center; z-index: 30; } .dialog form { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; width: min(560px, 92vw); display: grid; gap: 8px; }
 .events { font-family: ui-monospace, monospace; font-size: 12px; background: #0e1013; padding: 8px; border-radius: 6px; max-height: 300px; overflow: auto; white-space: pre-wrap; }
 .prompts { display: grid; grid-template-columns: 240px 1fr; gap: 12px; } .prompts ul { list-style: none; padding: 0; margin: 0; } .prompts li a { display: block; padding: 5px 8px; border-radius: 5px; } .prompts li a.active { background: var(--panel2); }
+
+.console { max-height: 340px; overflow: auto; }
+.drawer { position: fixed; top: 46px; right: 0; bottom: 0; width: min(460px, 92vw); background: var(--panel); border-left: 1px solid var(--line); box-shadow: -14px 0 34px #0007; padding: 14px 16px; overflow: auto; z-index: 15; }
+.drawer .id { font-size: 13px; }
+.drawer-h { margin: 12px 0 6px; font-size: 12px; letter-spacing: .6px; color: var(--muted); text-transform: uppercase; }
+.drawer-desc { max-height: 260px; overflow: auto; background: var(--panel2); border: 1px solid var(--line); border-radius: var(--radius); padding: 4px 12px; }
+.drawer-console { max-height: 200px; }
+.drawer a button { cursor: pointer; }

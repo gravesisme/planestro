@@ -8,6 +8,7 @@ import { execFileSync } from 'node:child_process';
 import type { ServerEvent } from '@planestro/shared';
 import { DataStore } from './store/DataStore.ts';
 import { apiRoutes, attachmentRoutes } from './routes/api.ts';
+import { ConsoleBuffer } from './store/ConsoleBuffer.ts';
 import type { Engine } from './engine/Engine.ts';
 import { MockEngine } from './engine/MockEngine.ts';
 import { LiveEngine } from './engine/LiveEngine.ts';
@@ -20,7 +21,8 @@ export interface ServeOptions { dataDir: string; port?: number; host?: string; m
 export async function startServer(o: ServeOptions) {
   const log = o.log ?? ((level, msg) => console.log(`[${level}] ${msg}`));
   const sockets = new Set<{ send(data: string): void }>();
-  const emit = (e: ServerEvent) => { const data = JSON.stringify(e); for (const s of sockets) { try { s.send(data); } catch { /* closed */ } } };
+  const consoles = new ConsoleBuffer();
+  const emit = (e: ServerEvent) => { consoles.handle(e); const data = JSON.stringify(e); for (const s of sockets) { try { s.send(data); } catch { /* closed */ } } };
   const store = await DataStore.open(o.dataDir, { emit, log: (l, m) => log(l, m) });
   const defaultFactory = (s: DataStore, em: (e: ServerEvent) => void): Engine => {
     if (o.mock) return new MockEngine(s, em);
@@ -31,7 +33,7 @@ export async function startServer(o: ServeOptions) {
 
   const app = new Hono();
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
-  app.route('/api', apiRoutes(store, engine));
+  app.route('/api', apiRoutes(store, engine, consoles));
   app.route('/attachments', attachmentRoutes(store));
   app.get('/ws', upgradeWebSocket(() => ({
     onOpen(_evt, ws) { sockets.add(ws as any); (ws as any).send(JSON.stringify({ type: 'engine.paused', paused: engine.paused })); },

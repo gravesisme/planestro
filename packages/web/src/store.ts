@@ -3,13 +3,16 @@ import { api, type State, type ItemView } from './api.ts';
 
 interface Store {
   state?: State; error?: string; connected: boolean; events: string[];
+  consoles: Record<string, string[]>;
+  seedConsole(id: string, lines: string[]): void;
   refresh(): Promise<void>; connect(): void; item(id: string): ItemView | undefined; flash(msg: string): void;
 }
 
 let refreshTimer: ReturnType<typeof setTimeout> | undefined;
 
 export const useStore = create<Store>((set, get) => ({
-  connected: false, events: [],
+  connected: false, events: [], consoles: {},
+  seedConsole(id, lines) { set({ consoles: { ...get().consoles, [id]: lines } }); },
   async refresh() {
     try { set({ state: await api.state(), error: undefined }); } catch (e) { set({ error: (e as Error).message }); }
   },
@@ -20,6 +23,11 @@ export const useStore = create<Store>((set, get) => ({
     ws.onclose = () => { set({ connected: false }); setTimeout(() => get().connect(), 2000); };
     ws.onmessage = (m) => {
       const e = JSON.parse(m.data);
+      const appendConsole = (id: string, line: string) => { const cur = get().consoles[id] ?? []; set({ consoles: { ...get().consoles, [id]: [...cur.slice(-799), `${new Date().toTimeString().slice(0, 8)}  ${line}`] } }); };
+      if (e.type === 'session.started') appendConsole(e.id, `── session ${e.session_id ? e.session_id.slice(0, 8) + ' ' : ''}turn started ──`);
+      if (e.type === 'session.output') for (const l of String(e.text).split('\n')) if (l.trim()) appendConsole(e.id, l);
+      if (e.type === 'session.ended') appendConsole(e.id, `── turn ended (${e.subtype ?? 'success'}) ──`);
+      if (e.type === 'engine.log' && e.item) appendConsole(e.item, `[engine] ${e.message}`);
       if (e.type === 'engine.log') set({ events: [...get().events.slice(-199), `${e.level}: ${e.message}`] });
       if (e.type === 'journal.appended') return;
       clearTimeout(refreshTimer);
