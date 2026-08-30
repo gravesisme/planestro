@@ -57,12 +57,16 @@ export async function startServer(o: ServeOptions) {
 
   const checkpoint = setInterval(() => { store.git.checkpoint(); void store.git.push(); }, store.config.git.checkpoint_interval_min * 60_000);
   checkpoint.unref();
+  let shuttingDown = false;
   const shutdown = async () => {
+    if (shuttingDown) return; shuttingDown = true;
     log('info', 'shutting down');
     clearInterval(checkpoint);
-    await engine.stop();
+    // Commit first and synchronously: a supervisor (tsx relays SIGINT to its child) may kill us
+    // before anything async completes. Everything after this line is best-effort.
     await store.flushCommits();
     store.git.checkpoint();
+    await engine.stop();
     await store.git.push();
     store.close();
     server.close();
