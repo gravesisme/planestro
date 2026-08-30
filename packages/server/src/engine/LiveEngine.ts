@@ -4,7 +4,7 @@ import { serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPromp
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import type { Ports, TurnPhase, TurnResult, TurnTools, PermissionRequest } from './ports.ts';
-import { makePolicy, ruleFor, BASE_ALLOWED } from './policy.ts';
+import { makePolicy, ruleFor, allowedByRules, BASE_ALLOWED } from './policy.ts';
 
 export interface EngineOptions { sleep?: (ms: number) => Promise<void>; tickMs?: number; now?: () => string; ciWorkflow?: string }
 
@@ -252,6 +252,7 @@ export class LiveEngine implements Engine {
         onPermission: async (req) => {
           const why = policy.deny(req);
           if (why) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `denied ${req.tool}: ${why}` } }], 'engine'); return { action: 'deny', message: `Not allowed: ${why}` }; }
+          if (allowedByRules(req, [...BASE_ALLOWED[phase], ...this.store.config.permissions.allow, ...extraAllowed])) return { action: 'allow' };
           this.store.mutateItem(id, [{ set: { awaiting: 'permission', awaiting_data: { tool: req.tool, input: req.input, requested_at: this.now() } } }, { activity: { actor: 'app', text: `parked: permission for ${req.tool} ${String(req.input.command ?? req.input.file_path ?? '').slice(0, 80)}` } }], 'engine', { commit: `${id}: awaiting permission` });
           return { action: 'park' };
         },
