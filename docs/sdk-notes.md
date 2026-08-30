@@ -61,6 +61,11 @@ pins these versions so planestro can warn when the installed CLI drifts.
    CLAUDE.md loaded), implementation turns ~$0.3–0.5 (Opus). Budget caps
    should be per item, not per turn.
 
+10. **Plan mode routes allow-listed tools through `canUseTool` too** (seen live on
+   HH-2: `mcp__planestro__submit_plan` reached the callback despite being in
+   `allowedTools`). The callback must answer allow for planestro's own tools
+   itself; it cannot rely on the allowlist in plan mode.
+
 ## Engine decisions confirmed by the spike
 
 - One `query()` per turn with `resume` is a sound runtime model: no process
