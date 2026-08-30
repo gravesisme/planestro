@@ -425,7 +425,13 @@ export class LiveEngine implements Engine {
 
     if (cfg.require_green_base) {
       const health = await this.ports.gh.branchCi(this.github, base, this.ciWorkflow);
-      if (health.state === 'failure') { this.store.journal.end(opId, id, 'aborted', { reason: 'base_red' }); this.block(id, 'base_red', `the base branch ${base} is red (${health.url ?? 'no run url'}); fix the base or disable ci.require_green_base`); return; }
+      // A verdict only counts if it is about the CURRENT base tip. Since push-triggered
+      // runs on the default branch were removed (PRs gate it), the latest push run can be
+      // arbitrarily stale — a red from last week must not block today's merges.
+      const baseTip = await this.ports.git.revParse(this.repo, `origin/${base}`).catch(() => null);
+      const current = !health.sha || !baseTip || health.sha === baseTip;
+      if (health.state === 'failure' && current) { this.store.journal.end(opId, id, 'aborted', { reason: 'base_red' }); this.block(id, 'base_red', `the base branch ${base} is red at its tip (${health.url ?? 'no run url'}); fix the base or disable ci.require_green_base`); return; }
+      if (health.state === 'failure' && !current) this.store.mutateItem(id, [{ activity: { actor: 'app', text: `ignoring a stale red on ${base} (run is for ${health.sha?.slice(0, 7)}, tip is ${baseTip?.slice(0, 7)})` } }], 'engine');
     }
 
     // 1. sync with the base — worker branches rebase, integration branches merge (never rewritten)
