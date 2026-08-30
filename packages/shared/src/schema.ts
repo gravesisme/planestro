@@ -159,6 +159,8 @@ export const Config = z.object({
   models: z.array(ModelDef).min(1),
   defaults: z.object({ planner: z.string(), implementer: z.string(), category: z.string() }),
   categories: z.array(z.string().min(1)).min(1),
+  /** Per-item spend ceiling across all of its turns; a turn starts with what remains. */
+  budget_usd_per_item: z.number().positive().default(25),
   concurrency: z.object({ max_sessions: z.number().int().positive().default(3), max_godot_jobs: z.number().int().positive().default(1) }).default({ max_sessions: 3, max_godot_jobs: 1 }),
   permissions: z.object({ allow: z.array(z.string()).default([]), deny: z.array(z.string()).default([]) }).default({ allow: [], deny: [] }),
   ci: z.object({

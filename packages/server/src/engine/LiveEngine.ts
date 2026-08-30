@@ -276,7 +276,7 @@ export class LiveEngine implements Engine {
     this.store.mutateItem(id, [{ set: { op, op_started_at: this.now() } }], 'engine');
     this.turns.set(id, { model, phase, startedAt: this.now(), lastOutput: '', abort });
     this.emit({ type: 'session.started', id, session_id: fm.session_id });
-    const budgetLeft = Math.max(0.5, (this.store.config as any).budget_usd_per_item ?? 25) - (fm.cost_usd ?? 0);
+    const budgetLeft = Math.max(0.5, this.store.config.budget_usd_per_item - (fm.cost_usd ?? 0));
     let result: TurnResult;
     try {
       result = await this.ports.claude.runTurn({
