@@ -47,8 +47,11 @@ export function splitBlocks(text: string): Block[] {
   let section = '';
   let cur: string[] = [];
   const flush = () => { const t = cur.join('\n').trim(); if (t) blocks.push({ section, text: t }); cur = []; };
+  let inFence = false;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    if (/^```/.test(line.trim())) inFence = !inFence;
+    if (inFence) { cur.push(line); continue; }
     if (/^-{10,}$/.test(line.trim())) {
       // banner: dashes, `# NAME`, dashes
       const name = lines[i + 1]?.trim();
@@ -103,8 +106,8 @@ function pickWorse(a: string | undefined, b: string): string {
 
 function categoryFor(section: string, body: string): string {
   if (/GAME/.test(section) && !/NON-GAME/.test(section)) return 'Game';
-  if (/site|website|marketing|mygame\.com|support@|vercel|cloudflare/i.test(body)) return 'Marketing Site';
-  if (/internal tool|tooling|orchestrat|level editor|documentation/i.test(body)) return 'Tools';
+  if (/internal tool|tooling|orchestrat|level editor/i.test(body)) return 'Tools';
+  if (/marketing site|site|website|mygame\.com|support@|vercel|cloudflare|app store page/i.test(body)) return 'Marketing Site';
   if (/NON-GAME/.test(section)) return 'Chores';
   return 'Not Yet Categorized';
 }
@@ -148,7 +151,8 @@ export function importPrompts(store: DataStore, filePath: string, opts: { commit
     // strip the leading headers/title we already parsed
     for (const h of parsed.headers) body = body.replace(h, '').trim();
     if (parsed.title) body = body.replace(/^##\s+.+$\n?/m, '').trim();
-    const title = parsed.title ?? (body.split(/[.\n]/)[0].trim().slice(0, 60) || 'Untitled');
+    const firstLine = body.split('\n').find((l) => l.trim())?.trim() ?? '';
+    const title = parsed.title ?? ((firstLine.includes('. ') ? firstLine.slice(0, firstLine.indexOf('. ')) : firstLine).replace(/^\.\//, '').slice(0, 70) || 'Untitled');
     if (!parsed.title) flags.push('title generated');
     const category = categoryFor(block.section, body);
     const refs = [...body.matchAll(/\.\/tmp\/[^\s)"']+/g)].map((m) => m[0]);
