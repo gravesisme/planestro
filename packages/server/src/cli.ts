@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { SCHEMA_VERSION } from '@planestro/shared';
 import { DataStore } from './store/DataStore.ts';
 import { initDataDir } from './init.ts';
-import { migrate, currentVersion } from './migrations/index.ts';
+import { migrate } from './migrations/index.ts';
 import { locateDataDir, TOOL_VERSION } from './config.ts';
 
 const USAGE = `planestro ${TOOL_VERSION}
@@ -61,9 +61,9 @@ try {
     }
     case 'serve': {
       const dir = locateDataDir(arg);
-      const v = currentVersion(dir);
-      log(`serve is not available yet (Phase 2). data dir ${dir} is schema ${v}.`);
-      process.exit(2);
+      const { startServer } = await import('./server.ts');
+      await startServer({ dataDir: dir, port: values.port ? Number(values.port) : undefined });
+      break;
     }
     case 'version': log(TOOL_VERSION); break;
     default: log(USAGE); process.exit(cmd && cmd !== 'help' ? 1 : 0);

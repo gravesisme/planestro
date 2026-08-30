@@ -11,7 +11,11 @@
     "spike": "tsx spikes/sdk-spike.ts",
     "planestro": "tsx packages/server/src/cli.ts",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "dev": "tsx watch packages/server/src/cli.ts serve",
+    "dev:web": "npm --workspace packages/web run dev",
+    "build": "npm --workspace packages/web run build",
+    "start": "tsx packages/server/src/cli.ts serve"
   },
   "devDependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.251",

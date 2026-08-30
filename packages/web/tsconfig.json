@@ -1,0 +1,8 @@
+{
+  "compilerOptions": {
+    "target": "ES2022", "module": "ESNext", "moduleResolution": "Bundler", "jsx": "react-jsx",
+    "strict": true, "skipLibCheck": true, "noEmit": true, "allowImportingTsExtensions": true, "types": ["vite/client"],
+    "paths": { "@planestro/shared": ["../shared/src/index.ts"] }, "baseUrl": "."
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts"]
+}
