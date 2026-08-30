@@ -12,7 +12,7 @@ const USAGE = `planestro ${TOOL_VERSION}
   planestro init <data_dir> --repo <code_repo> [--name N] [--prefix HH] [--default-branch B] [--release-branch B] [--github owner/repo] [--layout dir|orphan-branch] [--no-commit]
   planestro check [data_dir]        validate every file and report
   planestro migrate [data_dir]      apply schema migrations (${SCHEMA_VERSION} is current)
-  planestro serve [data_dir]        run the web UI + engine (Phase 2+)
+  planestro serve [data_dir] [--port N] [--mock]   run the web UI + engine (--mock: no engine at all)
   planestro version
 `;
 
@@ -21,7 +21,7 @@ const { values, positionals } = parseArgs({
   options: {
     repo: { type: 'string' }, name: { type: 'string' }, prefix: { type: 'string' }, 'default-branch': { type: 'string' },
     'release-branch': { type: 'string' }, github: { type: 'string' }, layout: { type: 'string' }, 'no-commit': { type: 'boolean' },
-    help: { type: 'boolean', short: 'h' }, port: { type: 'string' },
+    help: { type: 'boolean', short: 'h' }, port: { type: 'string' }, mock: { type: 'boolean' },
   },
 });
 const [cmd, arg] = positionals;
@@ -62,7 +62,7 @@ try {
     case 'serve': {
       const dir = locateDataDir(arg);
       const { startServer } = await import('./server.ts');
-      await startServer({ dataDir: dir, port: values.port ? Number(values.port) : undefined });
+      await startServer({ dataDir: dir, port: values.port ? Number(values.port) : undefined, mock: values.mock });
       break;
     }
     case 'version': log(TOOL_VERSION); break;

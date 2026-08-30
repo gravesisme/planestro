@@ -58,7 +58,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           {transitions.filter((t) => !(t.to === 'IN_PROGRESS' && fm.status === 'PLAN_READY') && !(t.to === 'PLAN_IN_PROGRESS' && fm.status === 'PLAN_READY')).map((t) => (
             <button key={t.to} disabled={t.to === 'QUEUED' && (!d.deps_satisfied || !!d.base_branch_error)} title={d.base_branch_error ?? (!d.deps_satisfied ? 'dependencies not merged' : '')} onClick={() => act(() => api.transition(item.id, t.to))}>{t.label}</button>
           ))}
-          {fm.blocked && <button onClick={() => field({})} disabled title="Unblocking arrives with the engine (Phase 3)">unblock</button>}
+          {fm.blocked && <button className="danger" onClick={() => { const m = prompt(`Unblock ${item.id} (${fm.blocked_reason}). Optional message for the session:`) ; if (m !== null) void act(() => api.unblock(item.id, m || undefined)); }}>unblock…</button>}
         </div>
         <div className="controls">
           <label>category <select value={fm.category} onChange={(e) => field({ category: e.target.value })}>{state.config.categories.map((c) => <option key={c}>{c}</option>)}</select></label>

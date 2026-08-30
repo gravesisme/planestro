@@ -124,11 +124,11 @@ attachments:
 }
 
 function detectDefaultBranch(repo: string): string {
-  try { return execFileSync('git', ['-C', repo, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], { encoding: 'utf8' }).trim().replace(/^origin\//, ''); } catch { return 'main'; }
+  try { return execFileSync('git', ['-C', repo, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim().replace(/^origin\//, ''); } catch { return 'main'; }
 }
 function detectGithub(repo: string): string | undefined {
   try {
-    const url = execFileSync('git', ['-C', repo, 'remote', 'get-url', 'origin'], { encoding: 'utf8' }).trim();
+    const url = execFileSync('git', ['-C', repo, 'remote', 'get-url', 'origin'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
     const m = /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url);
     return m?.[1];
   } catch { return undefined; }
