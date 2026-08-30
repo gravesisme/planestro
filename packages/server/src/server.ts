@@ -55,14 +55,14 @@ export async function startServer(o: ServeOptions) {
   warnOnClaudeDrift(log);
   await engine.start();
 
-  const checkpoint = setInterval(() => { void store.git.checkpoint().then(() => store.git.push()); }, store.config.git.checkpoint_interval_min * 60_000);
+  const checkpoint = setInterval(() => { store.git.checkpoint(); void store.git.push(); }, store.config.git.checkpoint_interval_min * 60_000);
   checkpoint.unref();
   const shutdown = async () => {
     log('info', 'shutting down');
     clearInterval(checkpoint);
     await engine.stop();
     await store.flushCommits();
-    await store.git.checkpoint();
+    store.git.checkpoint();
     await store.git.push();
     store.close();
     server.close();

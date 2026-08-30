@@ -168,7 +168,7 @@ export function apiRoutes(store: DataStore, engine: Engine): Hono {
   api.post('/engine/resume', (c) => { engine.resume(); return c.json({ paused: false }); });
   api.get('/journal', (c) => c.json(store.journal.read({ item: c.req.query('item') ?? undefined, since: c.req.query('since') ?? undefined, type: c.req.query('type') ?? undefined, limit: Number(c.req.query('limit') ?? 200) })));
   api.get('/git', async (c) => c.json(await store.git.status()));
-  api.post('/git/commit', async (c) => { await store.flushCommits(); return c.json({ committed: await store.git.checkpoint() }); });
+  api.post('/git/commit', async (c) => { await store.flushCommits(); return c.json({ committed: store.git.checkpoint() }); });
   api.post('/git/push', async (c) => c.json({ pushed: await store.git.push() }));
 
   return api;

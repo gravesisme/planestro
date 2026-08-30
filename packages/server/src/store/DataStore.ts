@@ -143,7 +143,7 @@ export class DataStore {
     const edits = dirty.filter((p) => p.startsWith('items/') || p.startsWith('prompts/') || p === 'planestro.yml' || p.startsWith('attachments/'));
     if (!edits.length) return;
     if (this.invalid.length) { this.log('warn', `${edits.length} file(s) changed outside planestro but ${this.invalid.length} file(s) are invalid; leaving the tree uncommitted`); return; }
-    await this.git.commit(`manual: ${edits.length} file(s) edited outside planestro`, edits.join('\n'));
+    this.git.commit(`manual: ${edits.length} file(s) edited outside planestro`, edits.join('\n'));
   }
 
   // ---- reads ----
@@ -214,7 +214,7 @@ export class DataStore {
     const stored = this.writeItem(file);
     this.journal.append({ type: 'item.created', item: id, actor, data: { title: fm.title, status } });
     this.emit({ type: 'item.created', id });
-    void this.git.commit(`${id}: create item`, fm.title, [this.rel(stored.path), 'counter']);
+    this.git.commit(`${id}: create item`, fm.title, [this.rel(stored.path), 'counter']);
     return stored;
   }
 
@@ -244,7 +244,7 @@ export class DataStore {
     const stored = this.writeItem(file);
     this.journal.append({ type: 'item.updated', item: id, actor, data: { ops: ops.map(opName), from: before, to: stored.file.frontmatter.status } });
     this.emit({ type: 'item.updated', id, source: 'app' });
-    if (options.commit) void this.git.commit(options.commit, options.body, [this.rel(stored.path), ...(options.paths ?? [])]);
+    if (options.commit) this.git.commit(options.commit, options.body, [this.rel(stored.path), ...(options.paths ?? [])]);
     return stored;
   }
 
@@ -297,14 +297,14 @@ export class DataStore {
     this.items.delete(id);
     this.journal.append({ type: 'item.deleted', item: id, actor });
     this.emit({ type: 'item.deleted', id });
-    void this.git.commit(`${id}: delete item`, item.file.frontmatter.title, [this.rel(item.path)]);
+    this.git.commit(`${id}: delete item`, item.file.frontmatter.title, [this.rel(item.path)]);
   }
 
   /** Flush a pending debounced commit early (e.g. before a semantic commit or shutdown). */
   private scheduleCommit(key: string, message: string, delayMs: number, paths?: string[]): void {
     const existing = this.timers.get(key);
     if (existing) clearTimeout(existing);
-    const t = setTimeout(() => { this.timers.delete(key); void this.git.commit(message, undefined, paths); }, delayMs);
+    const t = setTimeout(() => { this.timers.delete(key); this.git.commit(message, undefined, paths); }, delayMs);
     t.unref?.();
     this.timers.set(key, t);
   }
@@ -313,7 +313,7 @@ export class DataStore {
     const pending = [...this.timers.entries()];
     this.timers.clear();
     for (const [, t] of pending) clearTimeout(t);
-    if (pending.length) await this.git.checkpoint();
+    if (pending.length) this.git.checkpoint();
   }
 
   // ---- attachments ----
@@ -365,7 +365,7 @@ export class DataStore {
     this.prompts.set(name, stored);
     this.journal.append({ type: isNew ? 'prompt.created' : 'prompt.updated', actor, data: { name } });
     this.emit({ type: 'prompt.updated', name });
-    void this.git.commit(`prompts: ${isNew ? 'add' : 'edit'} ${name}`, undefined, [this.rel(path)]);
+    this.git.commit(`prompts: ${isNew ? 'add' : 'edit'} ${name}`, undefined, [this.rel(path)]);
     return stored;
   }
 
@@ -377,7 +377,7 @@ export class DataStore {
     this.prompts.delete(name);
     this.journal.append({ type: 'prompt.deleted', actor, data: { name } });
     this.emit({ type: 'prompt.updated', name });
-    void this.git.commit(`prompts: delete ${name}`, undefined, [this.rel(p.path)]);
+    this.git.commit(`prompts: delete ${name}`, undefined, [this.rel(p.path)]);
   }
 
   /** Render a prompt with the standard context for an item (plus extras). Throws RenderError on gaps. */
@@ -414,7 +414,7 @@ export class DataStore {
     (this as { config: Config }).config = next;
     this.journal.append({ type: 'config.updated', actor: 'user' });
     this.emit({ type: 'config.updated' });
-    void this.git.commit(message, undefined, ['planestro.yml']);
+    this.git.commit(message, undefined, ['planestro.yml']);
     return next;
   }
 
