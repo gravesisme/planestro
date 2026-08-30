@@ -6,6 +6,7 @@ import { BoardPage } from './pages/Board.tsx';
 import { ItemPage } from './pages/Item.tsx';
 import { SessionsPage } from './pages/Sessions.tsx';
 import { SettingsPage } from './pages/Settings.tsx';
+import { ConsolePage } from './pages/Console.tsx';
 import { PromptsPage } from './pages/Prompts.tsx';
 import './styles.css';
 
@@ -21,6 +22,7 @@ createRoot(document.getElementById('root')!).render(
           <Route path="sessions" element={<SessionsPage />} />
           <Route path="prompts" element={<PromptsPage />} />
           <Route path="prompts/:name" element={<PromptsPage />} />
+          <Route path="console" element={<ConsolePage />} />
           <Route path="settings" element={<SettingsPage />} />
         </Route>
       </Routes>

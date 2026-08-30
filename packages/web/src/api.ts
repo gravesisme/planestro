@@ -50,6 +50,10 @@ export const api = {
   resume: () => req<{ paused: boolean }>('POST', '/api/engine/resume'),
   journal: (q: { item?: string; limit?: number }) => req<JournalEntry[]>('GET', `/api/journal?${new URLSearchParams(Object.entries(q).filter(([, v]) => v !== undefined).map(([k, v]) => [k, String(v)]))}`),
   reload: () => req<{ ok: true }>('POST', '/api/reload'),
+  reconcile: () => req<{ corrections: string[] }>('POST', '/api/reconcile'),
+  queueOrder: (ids: string[]) => req<{ ok: true }>('POST', '/api/queue/order', { ids }),
+  orchestratorMessage: (text: string, item?: string) => req<{ ok: true }>('POST', '/api/orchestrator/message', { text, item }),
+  orchestratorQuestions: () => req<JournalEntry[]>('GET', '/api/orchestrator/questions'),
   gitCommit: () => req<{ committed: boolean }>('POST', '/api/git/commit'),
   gitPush: () => req<{ pushed: boolean }>('POST', '/api/git/push'),
 };

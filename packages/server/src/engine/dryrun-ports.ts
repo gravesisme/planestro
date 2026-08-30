@@ -46,6 +46,7 @@ export class DryRunGitPort implements GitPort {
   async pushForceWithLease(cwd: string, branch: string) { this.say(`git push --force-with-lease origin ${branch} (from ${cwd})`); this.w.remoteBranches.set(branch, this.w.worktrees.get(cwd)?.head ?? this.w.sha()); }
   async pushSetUpstream(cwd: string, branch: string) { this.say(`git push -u origin ${branch} (from ${cwd})`); this.w.remoteBranches.set(branch, this.w.worktrees.get(cwd)?.head ?? this.w.sha()); }
   async pushRef(_repo: string, src: string, dst: string) { this.say(`git push origin ${src}:refs/heads/${dst}`); this.w.remoteBranches.set(dst, this.w.sha()); }
+  async remoteHeads(): Promise<Map<string, string>> { return new Map(this.w.remoteBranches); }
   async remoteBranchSha(_repo: string, branch: string) { return this.w.remoteBranches.get(branch) ?? null; }
   async deleteRemoteBranch(_repo: string, branch: string) { this.say(`git push origin --delete ${branch}`); this.w.remoteBranches.delete(branch); }
   async localBranchExists(_repo: string, branch: string) { return this.w.localBranches.has(branch); }

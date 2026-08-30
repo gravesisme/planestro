@@ -26,6 +26,7 @@ export interface GitPort {
   pushSetUpstream(cwd: string, branch: string): Promise<void>;
   pushRef(repo: string, srcRef: string, dstBranch: string): Promise<void>;
   remoteBranchSha(repo: string, branch: string): Promise<string | null>;
+  remoteHeads(repo: string): Promise<Map<string, string>>;
   deleteRemoteBranch(repo: string, branch: string): Promise<void>;
   localBranchExists(repo: string, branch: string): Promise<boolean>;
   deleteLocalBranch(repo: string, branch: string): Promise<void>;

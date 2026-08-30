@@ -74,6 +74,12 @@ export class LiveGitPort implements GitPort {
   }
   async pushSetUpstream(cwd: string, branch: string) { await git(cwd, ['push', '-u', 'origin', `HEAD:refs/heads/${branch}`]); }
   async pushRef(repo: string, srcRef: string, dstBranch: string) { await git(repo, ['push', 'origin', `${srcRef}:refs/heads/${dstBranch}`]); }
+  async remoteHeads(repo: string): Promise<Map<string, string>> {
+    const out = (await git(repo, ['ls-remote', '--heads', 'origin'])).stdout;
+    const map = new Map<string, string>();
+    for (const line of out.split('\n')) { const m = /^(\S+)\s+refs\/heads\/(.+)$/.exec(line); if (m) map.set(m[2], m[1]); }
+    return map;
+  }
   async remoteBranchSha(repo: string, branch: string) { const out = (await git(repo, ['ls-remote', '--heads', 'origin', branch])).stdout.trim(); return out ? out.split(/\s+/)[0] : null; }
   async deleteRemoteBranch(repo: string, branch: string) { const r = await git(repo, ['push', 'origin', '--delete', branch], true); if (r.code !== 0 && !/remote ref does not exist/.test(r.stderr)) throw new Error(`delete remote ${branch}: ${r.stderr.trim()}`); }
   async localBranchExists(repo: string, branch: string) { return this.refExists(repo, `refs/heads/${branch}`); }
