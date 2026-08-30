@@ -96,6 +96,31 @@ export interface TurnResult {
   blocked?: string;
   parked?: 'question' | 'permission';
 }
-export interface ClaudePort { runTurn(opts: TurnOptions): Promise<TurnResult> }
+export interface CustomToolDef {
+  name: string;
+  description: string;
+  /** zod raw shape (loosely typed to keep ports dependency-free). */
+  schema: Record<string, unknown>;
+  handler: (args: Record<string, unknown>) => Promise<string>;
+}
+export interface CustomTurnOptions {
+  label: string;
+  cwd: string;
+  model: string;
+  permissionMode: 'dontAsk' | 'default' | 'plan' | 'acceptEdits';
+  prompt: string;
+  systemAppend: string;
+  resume?: string;
+  allowedTools: string[];
+  mcpTools: CustomToolDef[];
+  maxTurns?: number;
+  onOutput(text: string): void;
+  signal?: AbortSignal;
+}
+export interface ClaudePort {
+  runTurn(opts: TurnOptions): Promise<TurnResult>;
+  /** A turn with an arbitrary tool surface (the orchestrator). Non-planestro tool prompts are denied, never parked. Optional: test doubles may omit it. */
+  runCustomTurn?(opts: CustomTurnOptions): Promise<TurnResult>;
+}
 
 export interface Ports { git: GitPort; gh: GhPort; proc: ProcPort; claude: ClaudePort; mode: 'live' | 'dry-run' }

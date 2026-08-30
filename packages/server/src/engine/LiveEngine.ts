@@ -5,10 +5,12 @@ import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import type { Ports, TurnPhase, TurnResult, TurnTools, PermissionRequest } from './ports.ts';
 import { makePolicy, ruleFor, allowedByRules, BASE_ALLOWED } from './policy.ts';
+import { Orchestrator } from './orchestrator.ts';
 
 export interface EngineOptions { sleep?: (ms: number) => Promise<void>; tickMs?: number; now?: () => string; ciWorkflow?: string }
 
 const RESUMABLE_TURN_OPS = new Set(['planning_turn', 'implement_turn']);
+const JUDGMENT_BLOCKS = ['turn_error', 'no_plan', 'no_commits', 'dirty_tree', 'sync_conflict', 'ci_timeout', 'ci_blocked', 'base_red', 'pr_closed_externally', 'merge_unverified', 'agent_blocked', 'engine_error'] as const;
 const ACTIVE_FOR_SLOTS: Status[] = ['PLAN_IN_PROGRESS', 'IN_PROGRESS'];
 
 /**
@@ -29,6 +31,7 @@ export class LiveEngine implements Engine {
   private readonly now: () => string;
   private readonly ciWorkflow: string;
   private godotLock: Promise<void> = Promise.resolve();
+  readonly orchestrator: Orchestrator;
 
   constructor(private readonly store: DataStore, private readonly ports: Ports, private readonly emit: (e: ServerEvent) => void, private readonly opts: EngineOptions = {}) {
     this.mode = ports.mode;
@@ -36,6 +39,17 @@ export class LiveEngine implements Engine {
     this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.now = opts.now ?? isoLocal;
     this.ciWorkflow = opts.ciWorkflow ?? 'CI';
+    this.orchestrator = new Orchestrator(store, ports, {
+      message: (id, text) => this.message(id, text),
+      approvePlan: (id, notes) => this.approvePlan(id, notes),
+      rejectPlan: (id, m) => this.rejectPlan(id, m),
+      poke: () => this.poke(),
+    }, emit, (l, m) => this.note(l, m), () => this._paused);
+  }
+
+  /** Fire-and-forget judgment wake (invariant 4: never for anything a state machine can know). */
+  private wakeOrchestrator(type: string, item?: string, data?: Record<string, unknown>): void {
+    this.orchestrator.wake({ type, item, data });
   }
 
   get paused(): boolean { return this._paused; }
@@ -52,6 +66,7 @@ export class LiveEngine implements Engine {
   }
   async stop(): Promise<void> {
     this.stopping = true;
+    this.orchestrator.stop();
     if (this.timer) clearInterval(this.timer);
     for (const t of this.turns.values()) t.abort.abort();
     await Promise.allSettled([...this.jobs.values()]);
@@ -370,6 +385,7 @@ export class LiveEngine implements Engine {
     ], 'engine', { commit: `${id}: open PR #${pr.number}` });
     this.store.journal.end(opId, id, 'ok', { pr: pr.number });
     this.note('info', `${id}: PR #${pr.number} opened against ${base}`);
+    this.wakeOrchestrator('pr_opened', id);
     void this.tick();
   }
 
@@ -460,6 +476,7 @@ export class LiveEngine implements Engine {
     ], 'engine', { commit: `${id}: merge` });
     this.store.journal.end(opId, id, 'ok', { merged: true });
     this.note('info', `${id}: PR #${fm.pr} merged into ${base}`);
+    this.wakeOrchestrator('pr_merged', id);
     const notify = this.store.config.notifications.on_merge;
     if (notify) void this.ports.proc.run(notify, { cwd: this.repo, timeoutMs: 30_000 });
     await this.cleanup(id);
@@ -478,7 +495,7 @@ export class LiveEngine implements Engine {
     ], 'engine', { commit: `${id}: CI red (${count})` });
     this.store.journal.end(opId, id, 'failed', { reason: 'ci_red', count });
     if (!canFix) { this.block(id, 'ci_red', 'CI is red and there is no session to hand the failure to; investigate by hand'); return; }
-    if (count >= 2) { this.block(id, 'ci_red_twice', `CI failed ${count} times; a human (or, later, the orchestrator) decides what happens next`); return; }
+    if (count >= 2) { this.block(id, 'ci_red_twice', `CI failed ${count} times`); this.wakeOrchestrator('ci_red_again', id, { failed_log: log.slice(0, 3000) }); return; }
     this.queueFollowUp(id, () => this.runTurnFor(id, 'fix', this.store.renderPrompt('ci-failed', this.store.requireItem(id), { ci: { attempt: String(count), run_url: ci?.url ?? '(local run)', failed_log: log } })));
   }
 
@@ -675,6 +692,7 @@ export class LiveEngine implements Engine {
         if (cur.status === 'PLAN_IN_PROGRESS') ops.push({ transition: { to: 'PLAN_READY', actor: 'engine' } });
         s.mutateItem(id, ops, 'engine', { commit: `${id}: submit plan` });
         this.note('info', `${id}: plan submitted — needs your approval`);
+        this.wakeOrchestrator('plan_review', id);
         return 'Plan recorded by planestro. End your turn now; you will be resumed once it is approved.';
       },
       add_note: async (markdown) => { const cur = getSection(s.requireItem(id).file, 'Notes'); s.mutateItem(id, [{ section: 'Notes', body: cur ? `${cur}\n\n${markdown}` : markdown }], 'engine', { commit: `${id}: worker note` }); return 'Note recorded.'; },
@@ -694,6 +712,7 @@ export class LiveEngine implements Engine {
         { activity: { actor: 'app', text: `BLOCKED (${reason}): ${detail.replace(/\s+/g, ' ').slice(0, 500)}` } },
       ], 'engine', { commit: `${id}: blocked (${reason})` });
       this.note('warn', `${id} blocked: ${reason} — ${detail.slice(0, 200)}`);
+      if ((JUDGMENT_BLOCKS as readonly string[]).includes(reason)) this.wakeOrchestrator(`blocked_${reason}`, id, { detail: detail.slice(0, 2000) });
     } catch (e) { this.note('error', `could not record block on ${id}: ${(e as Error).message}`); }
   }
 

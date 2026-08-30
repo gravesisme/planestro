@@ -1,6 +1,6 @@
 import { query, tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import type { ClaudePort, TurnOptions, TurnResult } from '../ports.ts';
+import type { ClaudePort, TurnOptions, TurnResult, CustomTurnOptions } from '../ports.ts';
 
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] });
 const PARK_MSG = 'Permission requires user approval; the request has been recorded by planestro — end this turn now.';
@@ -12,6 +12,35 @@ const PARK_MSG = 'Permission requires user approval; the request has been record
  */
 export class LiveClaudePort implements ClaudePort {
   constructor(private readonly claudeBin?: string, private readonly apiKey?: string) {}
+
+  async runCustomTurn(o: CustomTurnOptions): Promise<TurnResult> {
+    const result: TurnResult = { subtype: 'success', isError: false, costUsd: 0, numTurns: 0, text: '' };
+    const server = createSdkMcpServer({
+      name: 'planestro', version: '1',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      tools: o.mcpTools.map((t) => (tool as any)(t.name, t.description, t.schema, async (args: Record<string, unknown>) => text(await t.handler(args)))),
+    });
+    const abortController = new AbortController();
+    o.signal?.addEventListener('abort', () => abortController.abort(), { once: true });
+    const q = query({
+      prompt: o.prompt,
+      options: {
+        cwd: o.cwd, model: o.model, permissionMode: o.permissionMode, resume: o.resume,
+        systemPrompt: { type: 'preset', preset: 'claude_code', append: o.systemAppend },
+        mcpServers: { planestro: server }, strictMcpConfig: true, settingSources: ['project'],
+        allowedTools: [...o.allowedTools, ...o.mcpTools.map((t) => `mcp__planestro__${t.name}`)],
+        maxTurns: o.maxTurns, abortController,
+        ...(this.claudeBin ? { pathToClaudeCodeExecutable: this.claudeBin } : {}),
+        ...(this.apiKey ? { env: { ...process.env, ANTHROPIC_API_KEY: this.apiKey } } : {}),
+        canUseTool: async (toolName, input) => {
+          if (toolName.startsWith('mcp__planestro__')) return { behavior: 'allow', updatedInput: input };
+          return { behavior: 'deny', message: `${toolName} is not available in this role; use the planestro tools.` };
+        },
+      },
+    });
+    await consume(q, result, o.onOutput, abortController);
+    return result;
+  }
 
   async runTurn(o: TurnOptions): Promise<TurnResult> {
     const result: TurnResult = { subtype: 'success', isError: false, costUsd: 0, numTurns: 0, text: '' };
@@ -62,33 +91,36 @@ export class LiveClaudePort implements ClaudePort {
         },
       },
     });
-    let sawResult = false;
-    try {
-      for await (const m of q) {
-        if (m.type === 'system' && (m as any).subtype === 'init') result.sessionId = (m as any).session_id;
-        else if (m.type === 'assistant') {
-          for (const c of ((m as any).message?.content ?? []) as any[]) {
-            if (c.type === 'text' && c.text) { result.text += c.text + '\n'; o.onOutput(c.text); }
-            else if (c.type === 'tool_use') o.onOutput(`→ ${c.name} ${JSON.stringify(c.input).slice(0, 160)}`);
-          }
-        } else if (m.type === 'result') {
-          // Completion is "the iterator finished": a torn session's resume emits a zero-turn result first.
-          sawResult = true;
-          const r = m as any;
-          result.sessionId = r.session_id ?? result.sessionId;
-          result.subtype = r.subtype ?? 'success';
-          result.isError = Boolean(r.is_error);
-          result.costUsd += Number(r.total_cost_usd ?? 0);
-          result.numTurns += Number(r.num_turns ?? 0);
-          if (r.is_error && r.errors) result.error = String(r.errors).slice(0, 400);
-        }
-      }
-    } catch (e) {
-      const msg = String((e as Error).message ?? e);
-      if (abortController.signal.aborted || /exited with code 143/.test(msg)) { result.subtype = 'killed'; result.isError = false; }
-      else if (sawResult && result.isError) { result.error = result.error ?? msg; }   // the SDK throws after an error result
-      else { result.subtype = 'error_during_execution'; result.isError = true; result.error = msg; }
-    }
+    await consume(q, result, o.onOutput, abortController);
     return result;
+  }
+}
+
+/** Drain a query into a TurnResult. Completion is "the iterator finished": a torn session's resume emits a zero-turn result first. */
+async function consume(q: AsyncIterable<unknown>, result: TurnResult, onOutput: (t: string) => void, abortController: AbortController): Promise<void> {
+  let sawResult = false;
+  try {
+    for await (const m of q as AsyncIterable<any>) {
+      if (m.type === 'system' && m.subtype === 'init') result.sessionId = m.session_id;
+      else if (m.type === 'assistant') {
+        for (const c of (m.message?.content ?? []) as any[]) {
+          if (c.type === 'text' && c.text) { result.text += c.text + '\n'; onOutput(c.text); }
+          else if (c.type === 'tool_use') onOutput(`→ ${c.name} ${JSON.stringify(c.input).slice(0, 160)}`);
+        }
+      } else if (m.type === 'result') {
+        sawResult = true;
+        result.sessionId = m.session_id ?? result.sessionId;
+        result.subtype = m.subtype ?? 'success';
+        result.isError = Boolean(m.is_error);
+        result.costUsd += Number(m.total_cost_usd ?? 0);
+        result.numTurns += Number(m.num_turns ?? 0);
+        if (m.is_error && m.errors) result.error = String(m.errors).slice(0, 400);
+      }
+    }
+  } catch (e) {
+    const msg = String((e as Error).message ?? e);
+    if (abortController.signal.aborted || /exited with code 143/.test(msg)) { result.subtype = 'killed'; result.isError = false; }
+    else if (sawResult && result.isError) { result.error = result.error ?? msg; }   // the SDK throws after an error result
+    else { result.subtype = 'error_during_execution'; result.isError = true; result.error = msg; }
   }
 }
