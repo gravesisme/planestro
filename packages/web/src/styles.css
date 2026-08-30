@@ -49,9 +49,50 @@ main { padding: 16px; flex: 1; }
 .prompts { display: grid; grid-template-columns: 240px 1fr; gap: 12px; } .prompts ul { list-style: none; padding: 0; margin: 0; } .prompts li a { display: block; padding: 5px 8px; border-radius: 5px; } .prompts li a.active { background: var(--panel2); }
 
 .console { max-height: 340px; overflow: auto; }
+.drawer-backdrop { position: fixed; inset: 0; background: #0006; z-index: 14; }
 .drawer { position: fixed; top: 46px; right: 0; bottom: 0; width: min(460px, 92vw); background: var(--panel); border-left: 1px solid var(--line); box-shadow: -14px 0 34px #0007; padding: 14px 16px; overflow: auto; z-index: 15; }
 .drawer .id { font-size: 13px; }
 .drawer-h { margin: 12px 0 6px; font-size: 12px; letter-spacing: .6px; color: var(--muted); text-transform: uppercase; }
 .drawer-desc { max-height: 260px; overflow: auto; background: var(--panel2); border: 1px solid var(--line); border-radius: var(--radius); padding: 4px 12px; }
 .drawer-console { max-height: 200px; }
 .drawer a button { cursor: pointer; }
+
+/* ---- mobile ---- */
+html { -webkit-text-size-adjust: 100%; }
+@media (max-width: 840px) {
+  body { overflow-x: hidden; }
+  .topbar { flex-wrap: wrap; gap: 6px 10px; padding: 8px 10px; position: static; }
+  .brand .project { display: none; }
+  .topbar nav { order: 3; width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 2px; }
+  .topbar nav a { white-space: nowrap; padding: 7px 11px; }
+  .status { margin-left: auto; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+  .summary { display: none; }
+  .lever { padding: 6px 8px; font-size: 12px; }
+  main { padding: 10px; }
+  button, select, input, textarea, .chip { min-height: 38px; }
+  .toolbar input[type=search] { min-width: 0; flex: 1 1 100%; }
+  /* board: one column per swipe */
+  .board { grid-auto-columns: 86vw; scroll-snap-type: x mandatory; gap: 10px; padding-bottom: 6px; }
+  .column { scroll-snap-align: start; }
+  .card { padding: 10px 12px; }
+  /* item page: sidebar stacks under the content */
+  .item-page { grid-template-columns: 1fr; }
+  .item-page aside.sidebar { order: 2; }
+  .item-page h1 input { font-size: 18px; }
+  .controls { gap: 6px; }
+  .controls label select, .controls label input { max-width: 58vw; }
+  /* full-screen drawer with the backdrop to dismiss */
+  .drawer { top: 0; width: 100vw; border-left: none; padding: 12px; padding-top: max(12px, env(safe-area-inset-top)); }
+  .drawer-desc { max-height: 32vh; }
+  /* wide content scrolls inside itself, never the page */
+  table { display: block; overflow-x: auto; white-space: nowrap; }
+  .activity li { display: block; border-bottom: 1px dashed var(--line); padding: 5px 0; }
+  .activity .at { margin-right: 8px; }
+  .activity .muted { margin-right: 8px; }
+  .prompts { grid-template-columns: 1fr; }
+  .prompts ul { display: flex; overflow-x: auto; gap: 4px; }
+  .prompts li a { white-space: nowrap; }
+  .settings { grid-template-columns: 1fr; }
+  .events, .console { font-size: 11px; }
+  .dialog form { width: 94vw; max-height: 88vh; overflow: auto; }
+}

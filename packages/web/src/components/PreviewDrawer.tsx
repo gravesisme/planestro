@@ -22,6 +22,8 @@ export function PreviewDrawer({ id, onClose }: { id: string; onClose: () => void
   const session = state?.engine.sessions.find((s) => s.item === id);
   const showConsole = session || fm.session_id || LIVE_STATUSES.includes(fm.status);
   return (
+    <>
+    <div className="drawer-backdrop" onClick={onClose} />
     <aside className="drawer" onClick={(e) => e.stopPropagation()}>
       <div className="row">
         <span className="id">{id}</span>
@@ -48,5 +50,6 @@ export function PreviewDrawer({ id, onClose }: { id: string; onClose: () => void
         <Link className="grow" to={`/items/${id}`} onClick={onClose}><button className="primary" style={{ width: '100%' }}>Open full details →</button></Link>
       </div>
     </aside>
+    </>
   );
 }
