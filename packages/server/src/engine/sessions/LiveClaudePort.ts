@@ -96,6 +96,26 @@ export class LiveClaudePort implements ClaudePort {
   }
 }
 
+/** Human-readable one-liner for a tool call — the console is read by a person, not a parser. */
+function describeToolUse(name: string, input: Record<string, unknown>): string {
+  const first = (v: unknown) => String(v ?? '').split('\n')[0].slice(0, 160);
+  switch (name) {
+    case 'Bash': return `Bash: ${first(input.command)}${String(input.command ?? '').includes('\n') ? ' …' : ''}`;
+    case 'Read': return `Read ${first(input.file_path)}`;
+    case 'Write': return `Write ${first(input.file_path)}`;
+    case 'Edit': case 'MultiEdit': return `Edit ${first(input.file_path)}`;
+    case 'Grep': return `Grep /${first(input.pattern)}/ ${first(input.path ?? '')}`;
+    case 'Glob': return `Glob ${first(input.pattern)}`;
+    default: {
+      if (name.startsWith('mcp__planestro__')) {
+        const arg = first(input.plan ?? input.summary ?? input.reason ?? input.text ?? input.markdown ?? '');
+        return `${name.replace('mcp__planestro__', 'planestro.')}${arg ? `: ${arg}` : ''}`;
+      }
+      return `${name} ${JSON.stringify(input).slice(0, 120)}`;
+    }
+  }
+}
+
 /** Drain a query into a TurnResult. Completion is "the iterator finished": a torn session's resume emits a zero-turn result first. */
 async function consume(q: AsyncIterable<unknown>, result: TurnResult, onOutput: (t: string) => void, abortController: AbortController): Promise<void> {
   let sawResult = false;
@@ -105,7 +125,7 @@ async function consume(q: AsyncIterable<unknown>, result: TurnResult, onOutput: 
       else if (m.type === 'assistant') {
         for (const c of (m.message?.content ?? []) as any[]) {
           if (c.type === 'text' && c.text) { result.text += c.text + '\n'; onOutput(c.text); }
-          else if (c.type === 'tool_use') onOutput(`→ ${c.name} ${JSON.stringify(c.input).slice(0, 160)}`);
+          else if (c.type === 'tool_use') onOutput(`→ ${describeToolUse(c.name, c.input ?? {})}`);
         }
       } else if (m.type === 'result') {
         sawResult = true;
