@@ -481,7 +481,13 @@ export class LiveEngine implements Engine {
     }
     if (verdict === 'red') { await this.onCiRed(id, opId, headSha, undefined, 'github', canFix); return; }
 
-    // 4. merge
+    // 4. merge — re-check the holds: a skip_merge/block may have landed while we waited on CI
+    const latest = this.store.requireItem(id).file.frontmatter;
+    if (latest.skip_merge || latest.blocked || latest.awaiting) {
+      this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { ci_result: 'green' } }, { activity: { actor: 'app', text: `CI is green but the item is held (${latest.skip_merge ? 'skip_merge' : latest.blocked ? 'blocked' : 'awaiting ' + latest.awaiting}); not merging` } }], 'engine');
+      this.store.journal.end(opId, id, 'aborted', { reason: 'held_after_ci' });
+      return;
+    }
     this.store.mutateItem(id, [{ set: { op: 'merging', op_started_at: this.now(), ci_result: 'green' } }], 'engine');
     await this.ports.gh.mergePr(this.github, fm.pr!, { deleteBranch: true });
     const view = await this.ports.gh.prView(this.github, fm.pr!);
