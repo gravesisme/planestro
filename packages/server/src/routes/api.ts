@@ -14,6 +14,7 @@ const EDITABLE_FIELDS = z.object({
   auto_approve_plan: z.boolean().optional(), depends_on: z.array(z.string()).optional(), parent: z.string().nullable().optional(),
   merge_policy: z.enum(['app', 'watch']).nullable().optional(), base_branch_override: z.string().nullable().optional(),
   branch: z.string().nullable().optional(), pr: z.number().int().positive().nullable().optional(),
+  skip_merge: z.boolean().nullable().optional(),
 }).strict();
 
 export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBuffer): Hono {
@@ -94,6 +95,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
     } catch (e) { return fail(c, e); }
   });
   api.post('/items/:id/plan/approve', async (c) => { try { const { notes } = z.object({ notes: z.string().optional() }).parse(await c.req.json().catch(() => ({}))); await engine.approvePlan(c.req.param('id'), notes); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
+  api.post('/items/:id/hold/release', async (c) => { try { const { note } = z.object({ note: z.string().optional() }).parse(await c.req.json().catch(() => ({}))); await engine.releaseHold(c.req.param('id'), note); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
   api.post('/items/:id/plan/reject', async (c) => { try { const { message } = z.object({ message: z.string().min(1) }).parse(await c.req.json()); await engine.rejectPlan(c.req.param('id'), message); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
   api.post('/items/:id/message', async (c) => { try { const { text } = z.object({ text: z.string().min(1) }).parse(await c.req.json()); await engine.message(c.req.param('id'), text); return c.json({ ok: true }); } catch (e) { return fail(c, e); } });
   api.post('/items/:id/epic/:action', async (c) => {
@@ -175,7 +177,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
     } catch (e) { return fail(c, e); }
   });
   api.put('/config/local', async (c) => {
-    try { const body = z.object({ code_repo_path: z.string().optional(), worktrees_root: z.string().optional(), claude_bin: z.string().optional(), anthropic_api_key: z.string().optional() }).parse(await c.req.json()); return c.json({ local: store.updateLocal(body) }); }
+    try { const body = z.object({ code_repo_path: z.string().optional(), worktrees_root: z.string().optional(), codex_bin: z.string().optional(), claude_bin: z.string().optional(), anthropic_api_key: z.string().optional() }).parse(await c.req.json()); return c.json({ local: store.updateLocal(body) }); }
     catch (e) { return fail(c, e); }
   });
   api.post('/config/categories', async (c) => {

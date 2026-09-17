@@ -32,6 +32,7 @@ export const api = {
   itemConsole: (id: string) => req<{ lines: string[] }>('GET', `/api/items/${id}/console`),
   transitions: (id: string) => req<{ to: Status; label: string }[]>('GET', `/api/items/${id}/transitions`),
   transition: (id: string, to: Status, reason?: string) => req<ItemView>('POST', `/api/items/${id}/transition`, { to, reason }),
+  releaseHold: (id: string, note?: string) => req<ItemView>('POST', `/api/items/${id}/hold/release`, { note }),
   approvePlan: (id: string, notes?: string) => req<ItemView>('POST', `/api/items/${id}/plan/approve`, { notes }),
   rejectPlan: (id: string, message: string) => req<ItemView>('POST', `/api/items/${id}/plan/reject`, { message }),
   message: (id: string, text: string) => req<{ ok: true }>('POST', `/api/items/${id}/message`, { text }),

@@ -45,6 +45,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
   const epics = state.items.filter((i) => i.frontmatter.kind === 'epic' && i.id !== item.id);
   const others = state.items.filter((i) => i.id !== item.id && i.derived.lane !== 'done');
   const field = (fields: Record<string, unknown>) => act(() => api.patchItem(item.id, { fields }));
+  const implementerDef = state.config.models.find((m) => m.id === fm.implementer);
   const canClose = transitions.some((t) => t.to === 'FINISHED');
   const closeAsDone = () => promptCloseAsDone(item.id);
   const onPaste = (e: React.ClipboardEvent) => { const f = [...e.clipboardData.files][0]; if (f) { e.preventDefault(); void act(() => api.uploadAttachment(item.id, f)); } };
@@ -69,7 +70,8 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
         <div className="controls">
           <label>category <select value={fm.category} onChange={(e) => field({ category: e.target.value })}>{state.config.categories.map((c) => <option key={c}>{c}</option>)}</select></label>
           {fm.kind !== 'epic' && <label>planner <select value={fm.planner ?? ''} onChange={(e) => field({ planner: e.target.value })}>{state.config.models.filter(canPlan).map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}</select></label>}
-          {fm.kind !== 'epic' && <label>implementer <select value={fm.implementer ?? ''} onChange={(e) => field({ implementer: e.target.value })}>{state.config.models.map((m) => <option key={m.id} value={m.id}>{m.label}{m.external ? ' (external)' : ''}</option>)}</select></label>}
+          {fm.kind !== 'epic' && <label>implementer <select value={fm.implementer ?? ''} onChange={(e) => field({ implementer: e.target.value })}>{state.config.models.map((m) => <option key={m.id} value={m.id}>{m.label}{m.external ? ' (external)' : (m.runner ?? 'claude') !== 'claude' ? ` (${m.runner})` : ''}</option>)}</select></label>}
+          {fm.kind !== 'epic' && implementerDef && (implementerDef.runner ?? 'claude') !== 'claude' && <span className="small muted" title="Claude workers get a per-command permission policy with parked requests. This runner has no such callback: its turns run inside its own sandbox (writes confined to the worktree, no network for its commands) and planestro verifies the result afterwards.">runs on {implementerDef.runner}: sandboxed, not per-command permissions ⓘ</span>}
           {fm.kind !== 'epic' && <label>parent epic <select value={fm.parent ?? ''} onChange={(e) => field({ parent: e.target.value || null })}><option value="">none</option>{epics.map((e) => <option key={e.id} value={e.id}>{e.id} {e.frontmatter.title}</option>)}</select></label>}
           {fm.kind !== 'epic' && !d.external && <label><input type="checkbox" checked={!!fm.auto_approve_plan} onChange={(e) => field({ auto_approve_plan: e.target.checked })} disabled title="Available once the orchestrator exists (Phase 4)" /> auto-approve plan</label>}
           {d.external && <label>merge policy <select value={fm.merge_policy ?? 'watch'} onChange={(e) => field({ merge_policy: e.target.value })}><option value="watch">watch (someone else merges)</option><option value="app">app (planestro merges)</option></select></label>}
@@ -99,6 +101,13 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           <div className="approval">
             <h2 style={{ margin: '0 0 8px' }}>The agent asked</h2>
             <QuestionForm questions={awaitingData.questions} onSubmit={(answers) => act(() => api.respond(item.id, { kind: 'question', answers }))} />
+          </div>
+        )}
+        {fm.status === 'IN_REVIEW' && (fm.awaiting === 'review' || fm.skip_merge) && (
+          <div className="approval">
+            <h2 style={{ margin: '0 0 8px' }}>{fm.awaiting === 'review' ? 'Waiting for your review before it merges' : 'Held out of the merge queue'}</h2>
+            <p className="small">{fm.awaiting === 'review' ? `CI is green. ${implementerDef?.label ?? 'This model'} is a hold-for-review model: look at what it made${fm.pr ? ` (PR #${fm.pr})` : ''}, then let it merge.` : 'Releasing it sends it back through sync and CI before it merges.'}</p>
+            <div className="row"><button className="primary" onClick={() => { const n = prompt(`Let ${item.id} merge? Optional note for the log:`); if (n !== null) void act(() => api.releaseHold(item.id, n || undefined)); }}>{fm.awaiting === 'review' ? 'Approve & merge' : 'Release hold'}</button></div>
           </div>
         )}
         {fm.awaiting === 'permission' && awaitingData && (
@@ -149,9 +158,9 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           <dt>branch</dt><dd>{fm.branch ?? '—'}</dd>
           <dt>worktree</dt><dd>{fm.worktree ?? '—'}</dd>
           <dt>PR</dt><dd>{fm.pr ? <a href={`https://github.com/${state.config.code_repo.github}/pull/${fm.pr}`} target="_blank" rel="noreferrer">#{fm.pr}</a> : '—'}</dd>
-          <dt>session</dt><dd>{fm.session_id ?? '—'}</dd>
+          <dt>session</dt><dd>{fm.session_id ?? '—'}{Object.entries(fm.agent_sessions ?? {}).map(([r, sid]) => <div key={r}>{r}: {sid}</div>)}</dd>
           <dt>CI</dt><dd>{fm.ci_result ?? '—'}{fm.ci_failed_count ? ` (${fm.ci_failed_count} red)` : ''}</dd>
-          <dt>cost</dt><dd>{fm.cost_usd !== undefined ? `$${fm.cost_usd.toFixed(2)} · ${fm.turns ?? 0} turns` : '—'}</dd>
+          <dt>cost</dt><dd>{fm.cost_usd !== undefined ? `$${fm.cost_usd.toFixed(2)} · ${fm.turns ?? 0} turns` : '—'}{fm.agent_turns ? <div>{fm.agent_turns} of {state.config.budget_turns_per_item} {implementerDef?.runner} turns · {(fm.tokens ?? 0).toLocaleString()} tokens</div> : null}</dd>
           <dt>rank</dt><dd>{fm.rank ?? '—'}</dd>
           {(['created_at', 'updated_at', 'queued_at', 'started_at', 'plan_ready_at', 'plan_approved_at', 'pr_created_at', 'merged_at', 'finished_at', 'iceboxed_at'] as const).map((k) => fm[k] ? <Fragment key={k}><dt>{k.replace('_at', '')}</dt><dd>{fm[k]!.slice(0, 19).replace('T', ' ')}</dd></Fragment> : null)}
         </dl>
@@ -171,7 +180,7 @@ function QuestionForm({ questions, onSubmit }: { questions: { question: string; 
         <div key={q.question} style={{ marginBottom: 10 }}>
           <div><b>{q.header ? `${q.header}: ` : ''}{q.question}</b></div>
           {q.options.map((o) => <label key={o.label} className="row"><input type={q.multiSelect ? 'checkbox' : 'radio'} name={q.question} onChange={(e) => setAnswers((a) => ({ ...a, [q.question]: q.multiSelect ? [...(a[q.question]?.split(', ').filter(Boolean) ?? []).filter((x) => x !== o.label), ...(e.target.checked ? [o.label] : [])].join(', ') : o.label }))} /> {o.label} <span className="muted small">{o.description}</span></label>)}
-          <input placeholder="Or type your own answer" onBlur={(e) => e.target.value && setAnswers((a) => ({ ...a, [q.question]: e.target.value }))} />
+          <input className="grow" style={{ width: '100%' }} placeholder={q.options.length ? 'Or type your own answer' : 'Your answer'} onChange={(e) => setAnswers((a) => ({ ...a, [q.question]: e.target.value }))} />
         </div>
       ))}
       <button className="primary" disabled={questions.some((q) => !answers[q.question])} onClick={() => onSubmit(answers)}>Send answers</button>

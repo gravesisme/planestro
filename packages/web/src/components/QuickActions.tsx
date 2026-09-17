@@ -41,10 +41,11 @@ export function QuickActions({ item, onActed }: { item: ItemView; onActed?: () =
   const planReady = fm.status === 'PLAN_READY';
   // Approve / request-changes have their own endpoints (they start a session turn); the bare transition would not.
   const plain = transitions.filter((t) => !(planReady && (t.to === 'IN_PROGRESS' || t.to === 'PLAN_IN_PROGRESS')));
-  if (!plain.length && !planReady && !fm.blocked) return null;
+  if (!plain.length && !planReady && !fm.blocked && !(fm.status === 'IN_REVIEW' && (fm.awaiting === 'review' || fm.skip_merge))) return null;
   return (
     <div className="row quick-actions">
       {planReady && <button className="primary" onClick={() => run(() => api.approvePlan(item.id))}>Approve &amp; implement</button>}
+      {fm.status === 'IN_REVIEW' && (fm.awaiting === 'review' || fm.skip_merge) && <button className="primary" onClick={() => { const n = prompt(`Let ${item.id} merge? Optional note for the log:`); if (n !== null) run(() => api.releaseHold(item.id, n || undefined)); }}>{fm.awaiting === 'review' ? 'Approve & merge' : 'Release hold'}</button>}
       {planReady && <button onClick={() => { const m = prompt(`What should change in the plan for ${item.id}?`); if (m?.trim()) run(() => api.rejectPlan(item.id, m.trim())); }}>Request changes…</button>}
       {plain.map((t) => t.to === 'FINISHED'
         ? <button key={t.to} title={CLOSE_HINT} onClick={() => promptCloseAsDone(item.id)}>{t.label}…</button>

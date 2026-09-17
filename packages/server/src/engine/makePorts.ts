@@ -1,7 +1,8 @@
 import { isAbsolute, join } from 'node:path';
 import type { Ports } from './ports.ts';
 import { LiveGitPort, LiveGhPort, LiveProcPort } from './live-ports.ts';
-import { FakeWorld, DryRunGitPort, DryRunGhPort, DryRunProcPort, DryRunClaudePort } from './dryrun-ports.ts';
+import { FakeWorld, DryRunGitPort, DryRunGhPort, DryRunProcPort, DryRunClaudePort, DryRunCodexPort } from './dryrun-ports.ts';
+import { LiveCodexPort } from './sessions/LiveCodexPort.ts';
 import { LiveClaudePort } from './sessions/LiveClaudePort.ts';
 import type { DataStore } from '../store/DataStore.ts';
 
@@ -23,7 +24,7 @@ export function makePorts(mode: 'live' | 'dry-run', log: (m: string) => void, st
       world.prs.set(fm.pr, { number: fm.pr, url: `https://github.com/${store.config.code_repo.github ?? 'example/repo'}/pull/${fm.pr}`, state: fm.status === 'MERGED' ? 'MERGED' : 'OPEN', headRefOid: head, headRefName: fm.branch, baseRefName: store.derived(item).base_branch ?? store.config.code_repo.default_branch, polls: 0, failOnce: false });
       world.nextPr = Math.max(world.nextPr, fm.pr + 1);
     }
-    return { mode, git: new DryRunGitPort(world), gh: new DryRunGhPort(world), proc: new DryRunProcPort(world), agents: { claude: new DryRunClaudePort(world) } };
+    return { mode, git: new DryRunGitPort(world), gh: new DryRunGhPort(world), proc: new DryRunProcPort(world), agents: { claude: new DryRunClaudePort(world), codex: new DryRunCodexPort(world) } };
   }
-  return { mode, git: new LiveGitPort(), gh: new LiveGhPort(), proc: new LiveProcPort(), agents: { claude: new LiveClaudePort(store.local.claude_bin, store.local.anthropic_api_key ?? process.env.ANTHROPIC_API_KEY) } };
+  return { mode, git: new LiveGitPort(), gh: new LiveGhPort(), proc: new LiveProcPort(), agents: { claude: new LiveClaudePort(store.local.claude_bin, store.local.anthropic_api_key ?? process.env.ANTHROPIC_API_KEY), codex: new LiveCodexPort(store.local.codex_bin) } };
 }

@@ -16,6 +16,8 @@ export interface Engine {
   rejectPlan(id: string, message: string): Promise<void>;
   message(id: string, text: string): Promise<void>;
   respond(id: string, payload: Record<string, unknown>): Promise<void>;
+  /** Let a held pull request (a review hold, or skip_merge) back into the merge pipeline. */
+  releaseHold(id: string, note?: string): Promise<void>;
   /** Finish an item without a pull request: the work landed some other way. User-only. */
   closeAsDone(id: string, reason?: string): Promise<void>;
   sessions(): SessionView[];

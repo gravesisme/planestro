@@ -103,6 +103,8 @@ export interface TurnResult {
   subtype: string;            // success | error_max_turns | error_max_budget_usd | error_during_execution | killed | spawn_error
   isError: boolean;
   costUsd: number;
+  /** Uncached input + output tokens, from runners that report tokens instead of dollars. */
+  tokens?: number;
   numTurns: number;
   text: string;
   error?: string;

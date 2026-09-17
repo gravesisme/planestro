@@ -70,6 +70,9 @@ hooks:
 models:
   - { id: fable-5, label: Fable 5, claude_model: claude-fable-5 }
   - { id: opus-5, label: Opus 5, claude_model: claude-opus-5 }
+  # A model on the Codex CLI implements but never plans. Its description is what the epic planner routes by;
+  # hold_for_review parks its pull requests for your eye before they merge.
+  # - { id: codex-art, label: Codex Art, runner: codex, hold_for_review: true, description: "All raster art: icons, sprites, illustrations. The Claude models cannot generate images." }
 defaults:
   planner: fable-5
   implementer: opus-5

@@ -1,4 +1,4 @@
-import type { GitPort, GhPort, ProcPort, ClaudePort, WorktreeEntry, RebaseResult, CiStatus, PrInfo, TurnOptions, TurnResult, CustomTurnOptions } from './ports.ts';
+import type { GitPort, GhPort, ProcPort, ClaudePort, AgentPort, AgentTurnOptions, WorktreeEntry, RebaseResult, CiStatus, PrInfo, TurnOptions, TurnResult, CustomTurnOptions } from './ports.ts';
 
 /**
  * An in-memory world so a dry run advances end to end: worktrees, branches, PRs whose CI
@@ -87,6 +87,21 @@ export class DryRunGhPort implements GhPort {
 export class DryRunProcPort implements ProcPort {
   constructor(private readonly w: FakeWorld) {}
   async run(command: string, opts: { cwd: string }) { this.w.log(`Would run \`${command}\` in ${opts.cwd}`); return { code: 0, stdout: '', stderr: '' }; }
+}
+
+/** The Codex runner's stand-in: implements only, reports through its result like the live port's closing JSON. */
+export class DryRunCodexPort implements AgentPort<AgentTurnOptions> {
+  constructor(private readonly w: FakeWorld) {}
+  async runTurn(o: AgentTurnOptions): Promise<TurnResult> {
+    this.w.log(`Would run codex exec${o.resume ? ` resume ${o.resume.slice(0, 8)}` : ''} for ${o.itemId} (${o.phase}) in ${o.cwd} under the workspace-write sandbox${o.images?.length ? ` with ${o.images.length} image(s)` : ''}`);
+    const sessionId = o.resume ?? `dryrun-codex-${o.itemId}-${this.w.sha().slice(-6)}`;
+    o.onOutput(`(dry-run codex) prompt: ${o.prompt.slice(0, 120).replace(/\n/g, ' ')}…`);
+    await o.tools.append_activity('dry-run codex: pretended to generate the assets and commit them');
+    this.w.commits.set(o.cwd, (this.w.commits.get(o.cwd) ?? 0) + 1);
+    const summary = `Dry-run Codex turn for ${o.itemId}: assets generated and committed (simulated).`;
+    await o.tools.report_done(summary);
+    return { sessionId, subtype: 'success', isError: false, costUsd: 0, tokens: 1500, numTurns: 1, text: summary, done: summary };
+  }
 }
 
 /** Fake Claude: plans, "commits", and reports done, exercising the same tool surface as the SDK path. */

@@ -85,7 +85,7 @@ export function laneOf(status: Status): Lane {
   return 'board';
 }
 
-export const NEEDS_YOU_AWAITING = new Set(['plan_approval', 'permission', 'question', 'user']);
+export const NEEDS_YOU_AWAITING = new Set(['plan_approval', 'breakdown_approval', 'permission', 'question', 'review', 'user']);
 export function needsYou(fm: Pick<ItemFrontmatter, 'blocked' | 'awaiting'>): boolean {
   return Boolean(fm.blocked) || (fm.awaiting !== undefined && NEEDS_YOU_AWAITING.has(fm.awaiting));
 }

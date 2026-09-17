@@ -13,7 +13,7 @@ import type { Engine } from './engine/Engine.ts';
 import { MockEngine } from './engine/MockEngine.ts';
 import { LiveEngine } from './engine/LiveEngine.ts';
 import { makePorts } from './engine/makePorts.ts';
-import { VALIDATED_CLAUDE_VERSION } from './compat.ts';
+import { VALIDATED_CLAUDE_VERSION, VALIDATED_CODEX_VERSION } from './compat.ts';
 import { TOOL_VERSION } from './config.ts';
 
 export interface ServeOptions { dataDir: string; port?: number; host?: string; mock?: boolean; engineFactory?: (store: DataStore, emit: (e: ServerEvent) => void) => Engine; log?: (level: string, msg: string) => void }
@@ -55,6 +55,7 @@ export async function startServer(o: ServeOptions) {
   const server = serve({ fetch: app.fetch, port, hostname: host }, () => log('info', `planestro ${TOOL_VERSION} on http://${host}:${port} — data ${store.dataDir} (${store.schema}, ${store.items.size} items) — engine ${engine.mode}${engine.paused ? ' PAUSED' : ''}`));
   injectWebSocket(server);
   warnOnClaudeDrift(log);
+  warnOnCodexDrift(store, log);
   await engine.start();
 
   const checkpoint = setInterval(() => { store.git.checkpoint(); void store.git.push(); }, store.config.git.checkpoint_interval_min * 60_000);
@@ -77,6 +78,15 @@ export async function startServer(o: ServeOptions) {
   process.once('SIGINT', () => void shutdown());
   process.once('SIGTERM', () => void shutdown());
   return { store, engine, server, shutdown };
+}
+
+/** Only when a model actually runs on Codex: a project that never uses it should not hear about it. */
+function warnOnCodexDrift(store: DataStore, log: (level: string, msg: string) => void): void {
+  if (!store.config.models.some((m) => m.runner === 'codex')) return;
+  try {
+    const v = execFileSync(store.local.codex_bin ?? 'codex', ['--version'], { encoding: 'utf8' }).trim().split(' ').pop();
+    if (v !== VALIDATED_CODEX_VERSION) log('warn', `⚠ Codex CLI changed ${VALIDATED_CODEX_VERSION} → ${v} since the Codex runner was last validated (docs/codex-integration.md)`);
+  } catch { log('warn', 'a model uses the codex runner but the codex CLI is not on PATH; its turns will fail to start'); }
 }
 
 function warnOnClaudeDrift(log: (level: string, msg: string) => void): void {
