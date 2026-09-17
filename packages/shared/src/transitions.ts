@@ -12,6 +12,7 @@ const U: readonly Actor[] = ['user'];
 const UO: readonly Actor[] = ['user', 'orchestrator'];
 const E: readonly Actor[] = ['engine'];
 const UE: readonly Actor[] = ['user', 'engine'];
+export const CLOSE_AS_DONE = 'close as done';
 
 export const TRANSITIONS: readonly Transition[] = [
   { from: 'NOT_YET_SUBMITTED', to: 'QUEUED', by: UO, flavors: ['worker'], sets: 'queued_at', label: 'queue' },
@@ -32,6 +33,13 @@ export const TRANSITIONS: readonly Transition[] = [
   { from: 'IN_REVIEW', to: 'MERGED', by: E, flavors: ALL, sets: 'merged_at', label: 'merge' },
   { from: 'MERGED', to: 'FINISHED', by: E, flavors: ALL, sets: 'finished_at', label: 'finish' },
   { from: 'FINISHED', to: 'NOT_YET_SUBMITTED', by: U, flavors: ALL, label: 'reopen' },
+  // "Close as done": the work landed some other way (or was never needed), so there is no PR to
+  // merge. User-only — nobody but the human can vouch for work planestro did not integrate — and
+  // not from IN_REVIEW/MERGED, where a pull request already decides the outcome. An epic in
+  // progress owns an integration branch and children, so it is excluded too.
+  ...(['NOT_YET_SUBMITTED', 'ICEBOX'] as const).map((from): Transition => ({ from, to: 'FINISHED', by: U, flavors: ALL, sets: 'finished_at', label: CLOSE_AS_DONE })),
+  ...(['QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY'] as const).map((from): Transition => ({ from, to: 'FINISHED', by: U, flavors: ['worker'], sets: 'finished_at', label: CLOSE_AS_DONE })),
+  { from: 'IN_PROGRESS', to: 'FINISHED', by: U, flavors: ['worker', 'external'], sets: 'finished_at', label: CLOSE_AS_DONE },
 ];
 
 export function flavorOf(item: Pick<ItemFrontmatter, 'kind' | 'implementer'>, models: readonly ModelDef[]): Flavor {
@@ -64,7 +72,7 @@ export function applyTransition(fm: ItemFrontmatter, to: Status, actor: Actor, f
   if (to === 'PLAN_READY') { next.awaiting = 'plan_approval'; }
   if (to === 'IN_PROGRESS' && fm.status === 'PLAN_READY') { delete next.awaiting; delete next.awaiting_data; }
   if (to === 'PLAN_IN_PROGRESS' && fm.status === 'PLAN_READY') { delete next.awaiting; delete next.awaiting_data; }
-  if (to === 'FINISHED') { delete next.worktree; }
+  if (to === 'FINISHED') { delete next.worktree; delete next.blocked; delete next.blocked_reason; }
   return next;
 }
 

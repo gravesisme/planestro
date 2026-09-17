@@ -35,7 +35,20 @@ describe('transitions', () => {
   it('every status except FINISHED/MERGED has an exit and the table only names real statuses', () => {
     for (const t of TRANSITIONS) { expect(STATUSES).toContain(t.from); expect(STATUSES).toContain(t.to); }
     for (const s of STATUSES) if (s !== 'MERGED') expect(TRANSITIONS.some((t) => t.from === s), `${s} has no exit`).toBe(true);
-    expect(allowedTransitions('ICEBOX', 'user', 'worker').map((t) => t.to).sort()).toEqual(['NOT_YET_SUBMITTED', 'QUEUED']);
+    expect(allowedTransitions('ICEBOX', 'user', 'worker').map((t) => t.to).sort()).toEqual(['FINISHED', 'NOT_YET_SUBMITTED', 'QUEUED']);
+  });
+  it('close as done: the user alone, never past a pull request, and it clears a block', () => {
+    for (const from of ['NOT_YET_SUBMITTED', 'ICEBOX', 'QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS'] as const) {
+      expect(findTransition(from, 'FINISHED', 'user', 'worker'), from).toBeDefined();
+      expect(findTransition(from, 'FINISHED', 'orchestrator', 'worker'), from).toBeUndefined();
+      expect(findTransition(from, 'FINISHED', 'engine', 'worker'), from).toBeUndefined();
+    }
+    expect(findTransition('IN_REVIEW', 'FINISHED', 'user', 'worker')).toBeUndefined();
+    expect(findTransition('MERGED', 'FINISHED', 'user', 'worker')).toBeUndefined();
+    expect(findTransition('IN_PROGRESS', 'FINISHED', 'user', 'epic')).toBeUndefined();
+    const fm = applyTransition({ ...base, status: 'IN_PROGRESS', blocked: true, blocked_reason: 'no_commits', awaiting: 'user', worktree: 'wt', op_data: { done_summary: 'x' } }, 'FINISHED', 'user', 'worker', 't9');
+    expect(fm).toMatchObject({ status: 'FINISHED', finished_at: 't9' });
+    for (const k of ['blocked', 'blocked_reason', 'awaiting', 'worktree', 'op_data'] as const) expect(fm[k], k).toBeUndefined();
   });
   it('derived values', () => {
     expect(flavorOf({ kind: 'item', implementer: 'codex' }, models)).toBe('external');

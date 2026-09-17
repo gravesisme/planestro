@@ -28,6 +28,7 @@ async function setup(opts: { ci?: string; claude?: (world: FakeWorld) => Ports['
 
 async function waitFor(pred: () => boolean, ms = 4000) { const t0 = Date.now(); while (!pred()) { if (Date.now() - t0 > ms) throw new Error('timeout waiting'); await sleep(20); } }
 const status = (s: DataStore, id: string) => s.getItem(id)!.file.frontmatter.status;
+const activityOf = (s: DataStore, id: string) => s.getItem(id)!.file.sections.find((x) => x.title === 'Activity')!.body;
 
 describe('LiveEngine lifecycle (dry-run ports)', () => {
   it('drives one item NOT_YET_SUBMITTED → FINISHED with a user plan approval in the middle', async () => {
@@ -203,6 +204,49 @@ describe('LiveEngine lifecycle (dry-run ports)', () => {
     expect(fm.status).toBe('IN_PROGRESS');
     expect(fm.blocked_reason).toBe('no_commits');
     expect(fm.pr).toBeUndefined();
+    // The way out of that block when the work really is on the base already: close without a PR.
+    await engine.closeAsDone(item.id, 'landed before this was queued');
+    const closed = store.getItem(item.id)!;
+    expect(closed.file.frontmatter.status).toBe('FINISHED');
+    expect(closed.file.frontmatter.blocked).toBeUndefined();
+    expect(closed.file.frontmatter.awaiting).toBeUndefined();
+    expect(closed.file.frontmatter.finished_at).toBeDefined();
+    expect(activityOf(store, item.id)).toContain('closed as done without a pull request: landed before this was queued');
+  });
+
+  it('close as done removes an unused worktree and branch, and leaves one holding work in place', async () => {
+    const { store, engine, world } = await setup();
+    const unused = store.createItem({ title: 'Already shipped', description: 'x' });
+    store.transition(unused.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, unused.id) === 'PLAN_READY');
+    const branch = store.getItem(unused.id)!.file.frontmatter.branch!;
+    expect(world.worktrees.size).toBe(1);
+    expect(world.localBranches.has(branch)).toBe(true);
+    await engine.closeAsDone(unused.id);
+    expect(status(store, unused.id)).toBe('FINISHED');
+    expect(world.worktrees.size).toBe(0);
+    expect(world.localBranches.has(branch)).toBe(false);
+    expect(activityOf(store, unused.id)).toContain('removed unused worktree and branch');
+
+    const dirty = store.createItem({ title: 'Half started', description: 'x' });
+    store.transition(dirty.id, 'QUEUED', 'user');
+    engine.poke();
+    await waitFor(() => status(store, dirty.id) === 'PLAN_READY');
+    const cwd = [...world.worktrees.keys()][0]!;
+    world.dirty.add(cwd);
+    await engine.closeAsDone(dirty.id);
+    expect(status(store, dirty.id)).toBe('FINISHED');
+    expect(world.worktrees.has(cwd)).toBe(true);
+    expect(world.localBranches.has(store.getItem(dirty.id)!.file.frontmatter.branch!)).toBe(true);
+    expect(activityOf(store, dirty.id)).toMatch(/left worktree .* in place: uncommitted changes/);
+
+    // A pull request decides the outcome once one exists; a backlog item needs no engine work at all.
+    const idle = store.createItem({ title: 'Never needed', description: 'x' });
+    await engine.closeAsDone(idle.id);
+    expect(status(store, idle.id)).toBe('FINISHED');
+    store.transition(idle.id, 'NOT_YET_SUBMITTED', 'user');
+    expect(status(store, idle.id)).toBe('NOT_YET_SUBMITTED');
   });
 
   it('pause stops admissions; resume continues; a restart resumes an interrupted turn', async () => {
