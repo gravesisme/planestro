@@ -1,4 +1,4 @@
-import { getSection, parseActivity, type Status } from '@planestro/shared';
+import { getSection, parseActivity, serializePromptFile, type Status } from '@planestro/shared';
 import type { DataStore, StoredItem, StoredPrompt } from '../store/DataStore.ts';
 
 /** JSON shape of an item as the UI sees it: frontmatter + sections + derived values. */
@@ -16,7 +16,7 @@ export function itemView(store: DataStore, item: StoredItem) {
 export type ItemView = ReturnType<typeof itemView>;
 
 export function promptView(p: StoredPrompt) {
-  return { name: p.name, path: p.path, frontmatter: p.file.frontmatter, body: p.file.body };
+  return { name: p.name, path: p.path, frontmatter: p.file.frontmatter, body: p.file.body, text: serializePromptFile(p.file) };
 }
 
 export function stateView(store: DataStore, engine: { mode: string; paused: boolean; sessions(): unknown[] }, git: unknown) {

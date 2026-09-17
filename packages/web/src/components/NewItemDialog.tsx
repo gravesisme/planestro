@@ -6,7 +6,8 @@ import { act, useStore } from '../store.ts';
 
 /** Prompts a person starts work from: the library's templates and actions that no engine step owns. */
 export function itemPrompts(prompts: PromptView[]): PromptView[] {
-  return prompts.filter((p) => p.frontmatter.kind !== 'partial' && !p.frontmatter.role);
+  const fav = (p: PromptView) => p.frontmatter.favorite === true ? 0 : 1;
+  return prompts.filter((p) => p.frontmatter.kind !== 'partial' && !p.frontmatter.role).sort((a, b) => fav(a) - fav(b) || a.name.localeCompare(b.name));
 }
 
 /** What a template can resolve before any item exists; everything else is asked for in the dialog. */
@@ -60,7 +61,7 @@ export function NewItemDialog({ onClose, icebox, from }: { onClose: () => void; 
         if (r) { onClose(); nav(`/items/${r.id}`); }
       }}>
         <h2 style={{ margin: 0 }}>New {icebox ? 'icebox ' : ''}item</h2>
-        {library.length > 0 && <select value={template} onChange={(e) => pick(e.target.value)} title="Start from a prompt in the library"><option value="">blank — or start from a prompt…</option>{library.map((p) => <option key={p.name} value={p.name}>{p.frontmatter.title} ({p.name})</option>)}</select>}
+        {library.length > 0 && <select value={template} onChange={(e) => pick(e.target.value)} title="Start from a prompt in the library"><option value="">blank — or start from a prompt…</option>{library.map((p) => <option key={p.name} value={p.name}>{p.frontmatter.favorite === true ? '★ ' : ''}{p.frontmatter.title} ({p.name})</option>)}</select>}
         <input autoFocus placeholder="Title" value={title} onChange={(e) => setTitle(e.target.value)} required />
         <div className="row">
           <select value={category} onChange={(e) => setCategory(e.target.value)}>{state?.config.categories.map((c) => <option key={c}>{c}</option>)}</select>

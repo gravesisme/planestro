@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { basename, join, normalize } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import YAML from 'yaml';
-import { allowedTransitions, parsePromptFile, RenderError, STATUSES, type Status, type Actor } from '@planestro/shared';
+import { allowedTransitions, parsePromptFile, RenderError, STATUSES, PROMPT_KINDS, type Status, type Actor } from '@planestro/shared';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Engine } from '../engine/Engine.ts';
 import type { ConsoleBuffer } from '../store/ConsoleBuffer.ts';
@@ -129,6 +129,18 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
 
   api.get('/prompts', (c) => c.json(store.listPrompts().map(promptView)));
   api.get('/prompts/:name', (c) => { const p = store.getPrompt(c.req.param('name')); return p ? c.json(promptView(p)) : c.json({ error: 'not found' }, 404); });
+  api.post('/prompts', async (c) => {
+    try {
+      const input = z.object({ name: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, 'name: lowercase letters, digits and dashes'), title: z.string().min(1), kind: z.enum(PROMPT_KINDS).default('template'), description: z.string().optional(), body: z.string().default('') }).parse(await c.req.json());
+      return c.json(promptView(store.createPrompt(input)), 201);
+    } catch (e) { return fail(c, e); }
+  });
+  api.post('/prompts/:name/favorite', async (c) => {
+    try {
+      const { favorite } = z.object({ favorite: z.boolean() }).parse(await c.req.json());
+      return c.json(promptView(store.setPromptFavorite(c.req.param('name'), favorite)));
+    } catch (e) { return fail(c, e); }
+  });
   api.put('/prompts/:name', async (c) => {
     try {
       const { text } = z.object({ text: z.string() }).parse(await c.req.json());

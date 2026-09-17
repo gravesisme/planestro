@@ -128,9 +128,11 @@ export const PromptFrontmatter = z.object({
   title: z.string().min(1),
   description: z.string().optional(),
   model: z.string().optional(),
+  /** Pinned to the top of the library and of the "start from a prompt" picker. Absent means no. */
+  favorite: z.boolean().optional(),
 }).passthrough();
 export type PromptFrontmatter = z.infer<typeof PromptFrontmatter>;
-export const PROMPT_KEY_ORDER: readonly string[] = ['schema', 'name', 'kind', 'role', 'title', 'description', 'model'];
+export const PROMPT_KEY_ORDER: readonly string[] = ['schema', 'name', 'kind', 'role', 'title', 'description', 'model', 'favorite'];
 
 export const ModelDef = z.object({
   id: z.string().min(1),
