@@ -23,8 +23,8 @@ export function SettingsPage() {
         <div className="row"><input className="grow" placeholder="New category" value={newCat} onChange={(e) => setNewCat(e.target.value)} /><button disabled={!newCat.trim()} onClick={() => { void act(() => api.categories({ op: 'add', name: newCat.trim() })); setNewCat(''); }}>Add</button></div>
       </div>
       <div className="section"><h2>Models &amp; defaults</h2>
-        <table><tbody>{cfg.models.map((m) => <tr key={m.id}><td>{m.label}</td><td className="muted">{m.id}</td><td className="muted">{m.external ? 'external (watched)' : m.claude_model}</td></tr>)}</tbody></table>
-        <div className="row"><label className="grow">default planner <select value={cfg.defaults.planner} onChange={(e) => set('defaults', 'planner', e.target.value)}>{cfg.models.filter((m) => !m.external).map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}</select></label>
+        <table><tbody>{cfg.models.map((m) => <tr key={m.id}><td>{m.label}</td><td className="muted">{m.id}</td><td className="muted">{m.external ? 'external (watched)' : `${m.runner ?? 'claude'} · ${(m.runner ?? 'claude') === 'claude' ? m.claude_model : m.codex_model ?? 'CLI default'}`}</td></tr>)}</tbody></table>
+        <div className="row"><label className="grow">default planner <select value={cfg.defaults.planner} onChange={(e) => set('defaults', 'planner', e.target.value)}>{cfg.models.filter(canPlan).map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}</select></label>
           <label className="grow">default implementer <select value={cfg.defaults.implementer} onChange={(e) => set('defaults', 'implementer', e.target.value)}>{cfg.models.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}</select></label></div>
         <p className="muted small">Edit the model list in <code>planestro.yml</code> (models:).</p>
       </div>

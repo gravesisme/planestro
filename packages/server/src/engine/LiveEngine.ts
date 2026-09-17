@@ -1,6 +1,6 @@
 import { join, relative, isAbsolute } from 'node:path';
 import { readFileSync } from 'node:fs';
-import { serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, type ServerEvent, type Status } from '@planestro/shared';
+import { serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, canPlan, type ServerEvent, type Status } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import type { Ports, TurnPhase, TurnResult, TurnTools, PermissionRequest } from './ports.ts';
@@ -278,20 +278,26 @@ export class LiveEngine implements Engine {
     const d = this.store.derived(item);
     const cwd = this.absWorktree(fm.worktree!);
     const modelId = phase === 'plan' ? fm.planner : fm.implementer;
-    const model = this.store.config.models.find((m) => m.id === modelId)?.claude_model;
-    if (!model) throw new Error(`model ${modelId} has no claude_model`);
+    const def = this.store.config.models.find((m) => m.id === modelId);
+    if (!def) throw new Error(`unknown model ${modelId}`);
+    const runner = def.runner ?? 'claude';
+    if (phase === 'plan' && !canPlan(def)) { this.block(id, 'planner_cannot_plan', `${def.label} runs on ${runner}, which cannot plan; pick a Claude model as the planner`); return undefined; }
+    const agent = this.ports.agents[runner];
+    if (!agent) { this.block(id, 'runner_unavailable', `${def.label} needs the ${runner} runner, which is not available in this engine`); return undefined; }
+    const model = runner === 'claude' ? def.claude_model : def[`${runner}_model`];
+    if (runner === 'claude' && !model) throw new Error(`model ${modelId} has no claude_model`);
     const policy = makePolicy(this.store.config, d.base_branch!, cwd);
     const op = phase === 'plan' ? 'planning_turn' : 'implement_turn';
     const abort = new AbortController();
-    const opId = this.store.journal.begin(op, id, { phase, model });
+    const opId = this.store.journal.begin(op, id, { phase, model: model ?? def.label, runner });
     this.store.mutateItem(id, [{ set: { op, op_started_at: this.now() } }], 'engine');
-    this.turns.set(id, { model, phase, startedAt: this.now(), lastOutput: '', abort });
+    this.turns.set(id, { model: model ?? def.label, phase, startedAt: this.now(), lastOutput: '', abort });
     this.emit({ type: 'session.started', id, session_id: fm.session_id });
     const budgetLeft = Math.max(0.5, this.store.config.budget_usd_per_item - (fm.cost_usd ?? 0));
     let result: TurnResult;
     try {
-      result = await this.ports.claude.runTurn({
-        itemId: id, phase, cwd, model, permissionMode: phase === 'plan' ? 'plan' : 'acceptEdits', prompt, resume: fm.session_id,
+      result = await agent.runTurn({
+        itemId: id, phase, cwd, model: model as string, permissionMode: phase === 'plan' ? 'plan' : 'acceptEdits', prompt, resume: fm.session_id,
         systemAppend: this.store.renderPrompt('worker-system', item),
         allowedTools: [...BASE_ALLOWED[phase], ...this.store.config.permissions.allow, ...extraAllowed],
         extraDirs: [this.store.dataDir], maxBudgetUsd: budgetLeft,
