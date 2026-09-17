@@ -14,6 +14,7 @@ import { initDataDir } from './init.ts';
 export interface SampleResult { root: string; codeRepo: string; dataDir: string; items: number }
 
 const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, '-c', 'user.name=planestro sample', '-c', 'user.email=sample@planestro.invalid', ...args], { stdio: 'pipe' });
+const hasGitIdentity = () => { try { return execFileSync('git', ['config', 'user.email'], { stdio: 'pipe' }).toString().trim() !== ''; } catch { return false; } };
 const daysAgo = (d: number, h = 10, m = 0) => { const t = new Date(); t.setDate(t.getDate() - d); t.setHours(h, m, 0, 0); return t; };
 
 const CODE: Record<string, string> = {
@@ -106,6 +107,9 @@ export async function seedSample(out: string, opts: { reset?: boolean; log?: (m:
 
   mkdirSync(dataDir, { recursive: true });
   git(dataDir, 'init', '-q', '-b', 'planning');
+  // planestro commits to the data dir as whoever runs it; a machine with no git identity (a fresh
+  // laptop, a CI runner) still has to be able to run the demo, so give these two repos a local one.
+  if (!hasGitIdentity()) for (const repo of [codeRepo, dataDir]) { git(repo, 'config', 'user.name', 'planestro sample'); git(repo, 'config', 'user.email', 'sample@planestro.invalid'); }
   initDataDir({ dataDir, codeRepo, name: 'tidepool (sample)', prefix: 'TD', defaultBranch: 'main', github: 'example/tidepool', gdignore: false, register: false, commit: true });
 
   // The seed writes through the store like any other client, so it can never produce a file the tool would reject.
