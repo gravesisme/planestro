@@ -55,7 +55,7 @@ export const OPERATIONAL_KEYS = [
   'pr_created_at', 'merged_at', 'finished_at', 'iceboxed_at',
   'branch', 'worktree', 'pr', 'session_id', 'agent_sessions', 'awaiting', 'awaiting_data',
   'op', 'op_started_at', 'op_data', 'ci_head_sha', 'ci_result', 'ci_failed_count',
-  'merge_order', 'skip_merge', 'review_hold', 'blocked', 'blocked_reason', 'cost_usd', 'turns', 'agent_turns', 'tokens',
+  'merge_order', 'skip_merge', 'review_hold', 'delivered', 'blocked', 'blocked_reason', 'cost_usd', 'turns', 'agent_turns', 'tokens',
   'imported_from', 'dates_estimated',
 ] as const;
 export const DERIVED_KEYS = ['base_branch', 'lane', 'external', 'children', 'deps_satisfied', 'needs_you'] as const;
@@ -107,6 +107,8 @@ export const ItemFrontmatter = z.object({
   skip_merge: z.boolean().optional(),
   /** The PR goes through sync and CI as usual, then parks (`awaiting: review`) instead of merging, until a person releases it. */
   review_hold: z.boolean().optional(),
+  /** What this item's branch changed, recorded from git as it merged — so items that waited on it can be told, long after the branch is gone. */
+  delivered: z.array(z.object({ path: z.string(), change: z.enum(['added', 'modified', 'deleted']), bytes: z.number().optional(), width: z.number().optional(), height: z.number().optional() })).optional(),
   blocked: z.boolean().optional(),
   blocked_reason: z.string().optional(),
   cost_usd: z.number().nonnegative().optional(),
@@ -186,6 +188,8 @@ export const Config = z.object({
   budget_usd_per_item: z.number().positive().default(25),
   /** The budget for runners that report tokens, not dollars: worker turns per item. */
   budget_turns_per_item: z.number().int().positive().default(20),
+  /** …and uncached tokens per item. A live art turn measured 20–35k; the default leaves room for a dozen revisions. */
+  budget_tokens_per_item: z.number().int().positive().default(600_000),
   concurrency: z.object({
     max_sessions: z.number().int().positive().default(3), max_local_jobs: z.number().int().positive().default(1),
     /** Simultaneous turns per runner, for runners with their own rate limits (image generation is slow). Unlisted runners are unlimited. */
@@ -214,7 +218,7 @@ export const Config = z.object({
     checkpoint_interval_min: z.number().positive().default(60),
   }).default({ auto_commit: true, auto_push: true, checkpoint_interval_min: 60 }),
   /** Reviewing what a hold_for_review model made: thumbnails are also shown at `image_scale`× (a pixel-art project sets its display scale), and one changed file over `max_file_bytes` blocks the item before a PR is opened. */
-  review: z.object({ image_scale: z.number().int().min(1).max(16).default(1), max_file_bytes: z.number().int().positive().default(10_000_000) }).default({ image_scale: 1, max_file_bytes: 10_000_000 }),
+  review: z.object({ image_scale: z.number().int().min(1).max(16).default(1), max_file_bytes: z.number().int().positive().default(10_000_000), nudge_after_min: z.number().int().positive().default(240) }).default({ image_scale: 1, max_file_bytes: 10_000_000, nudge_after_min: 240 }),
   attachments: z.object({ managed_max_bytes: z.number().int().positive().default(2_000_000) }).default({ managed_max_bytes: 2_000_000 }),
 });
 export type Config = z.infer<typeof Config>;

@@ -18,6 +18,12 @@ Your worktree {{worktree}} is a fresh checkout of `{{base_branch}}` on branch `{
 
 {{item.notes}}
 
+## Delivered by the items this one waited on
+
+{{dependencies.delivered}}
+
+Those files are already in your base branch. Use them as they are: do not recreate, regenerate or edit them unless the request says so. If one you need is missing, that is a reason to report blocked, not to improvise a substitute.
+
 ## What to do
 
 1. Explore the code the request touches and identify existing utilities to reuse.

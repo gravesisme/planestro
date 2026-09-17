@@ -4,6 +4,9 @@ import { join, resolve } from 'node:path';
 import { isoLocal } from '@planestro/shared';
 import { DataStore, type ItemOp } from './store/DataStore.ts';
 import { initDataDir } from './init.ts';
+import { placeholderPng } from './engine/placeholderPng.ts';
+import { CONFIG_FILE } from './config.ts';
+import { readFileSync } from 'node:fs';
 
 /**
  * `planestro sample`: a fictional project with a populated backlog, so the whole tool can be seen
@@ -27,8 +30,9 @@ const CODE: Record<string, string> = {
 interface Seed {
   key: string; title: string; category: string; description: string; notes?: string;
   kind?: 'item' | 'epic'; parent?: string; depends_on?: string[]; icebox?: boolean;
-  /** A finished item: how many days ago it merged, its PR number and the plan it was approved with. */
-  done?: { daysAgo: number; pr: number; plan: string; ciRedOnce?: boolean };
+  implementer?: string;
+  /** A finished item: how many days ago it merged, its PR number and the plan it was approved with. `art` adds a review round-trip. */
+  done?: { daysAgo: number; pr: number; plan: string; ciRedOnce?: boolean; art?: { path: string; sentBack: string } };
 }
 
 const SEEDS: Seed[] = [
@@ -38,6 +42,10 @@ const SEEDS: Seed[] = [
     description: '`tidepool today --station 0000000` dies with `TypeError: Cannot read properties of undefined (reading \'map\')`.\n\nIt should say the station is unknown and exit non-zero.' },
   { key: 'node-version', title: 'Declare the supported Node range', category: 'Chore', done: { daysAgo: 2, pr: 15, plan: '1. Add `engines.node >= 20` to `package.json` (global `fetch`).\n2. Say so in the README.' },
     description: 'The CLI relies on global `fetch`. Declare `engines` so an old Node fails at install instead of at the first request.' },
+
+  { key: 'app-icon', title: 'App icon for the HTML report', category: 'Feature', implementer: 'codex-art',
+    done: { daysAgo: 4, pr: 16, art: { path: 'assets/icon.png', sentBack: 'The wave reads as a hill at 32px. Thicken the crest and drop the second ripple.' }, plan: '1. One file, `assets/icon.png`, 512×512, transparent corners.\n2. A single teal wave crest on the navy tile the README header already uses (#0b2545 / #19d3c5).\n3. Must still read at 32px: check the downscale before committing.' },
+    description: 'The HTML report has no icon. Draw one and save it as `assets/icon.png`: a single stylised wave on a dark navy rounded tile, flat vector look, 512×512, transparent outside the tile. It has to read at favicon size.' },
 
   { key: 'nearest', title: 'Find the nearest station from a lat/long', category: 'Feature',
     description: 'Nobody knows their NOAA station id. Accept `--near 37.80,-122.46` and pick the closest station that publishes predictions.\n\n- The station list is one request; cache it on disk for a week.\n- Print which station was chosen, so the answer can be checked.\n- Out of scope: geocoding a place name.' },
@@ -55,6 +63,10 @@ const SEEDS: Seed[] = [
     description: 'On first use of a station, fetch the full year and store it under the XDG cache dir. Every later command reads the cache first.\n\n- One file per station and year.\n- `tidepool cache clear` removes them.' },
   { key: 'offline-flag', title: 'Answer from cache with no network, and say so', category: 'Feature', parent: 'offline', depends_on: ['cache'],
     description: 'With the cache in place: when the request fails and the station is cached, answer from the cache and print `(offline: cached 2026-01-04)` on stderr. `--offline` skips the request entirely.' },
+
+  { key: 'chart', title: 'Tide chart view', category: 'Feature', kind: 'epic',
+    description: 'An HTML report for a day\'s tide: a chart of the curve with highs and lows marked, under a header illustration, with state icons (rising, falling, slack).\n\nThis one needs both kinds of work: the illustration and icons are raster art, the chart and report are code that uses them. **Open it and choose "plan the breakdown"**: the planner proposes the children, routes the art to the art model and the code to a Claude model, and makes the code wait for the art.',
+    notes: 'Art direction: the same teal on navy as the app icon, flat vector, no text in images. Icons 96×96, header 1200×400.' },
 
   { key: 'moon', title: 'Moon phase next to each day', category: 'Feature', icebox: true,
     description: 'Spring tides follow the new and full moon. A phase glyph per day in `week` would explain the big swings. Nice, not needed.' },
@@ -80,6 +92,14 @@ function history(id: string, s: Required<Pick<Seed, 'done'>>['done'], title: str
       [at(9, 56), 'app', 'CI red (github, attempt 1): test/tides.test.js › unknown station — expected exit code 2, got 1'],
       [at(10, 4), 'app', 'session updated the branch; re-entering the merge pipeline'],
     ] as [string, string, string][] : []),
+    ...(s.art ? [
+      [at(9, 58), 'app', 'CI is green; waiting for your review before merging'],
+      [at(10, 1), 'user', `review: changes requested: ${s.art.sentBack}`],
+      [at(10, 6), 'worker', `done: Revised ${s.art.path} as asked; same prompt with the crest thickened and the second ripple removed.`],
+      [at(10, 7), 'app', 'session updated the branch; re-entering the merge pipeline'],
+      [at(10, 11), 'app', 'CI is green; waiting for your review before merging'],
+      [at(10, 13), 'user', 'approved for merge: reads at 32px now'],
+    ] as [string, string, string][] : []),
     [at(10, 14), 'app', `merged PR #${s.pr}`],
     [at(10, 14), 'app', `removed worktree and branch ${branch} (local + remote)`],
   ];
@@ -101,6 +121,9 @@ export async function seedSample(out: string, opts: { reset?: boolean; log?: (m:
 
   mkdirSync(join(codeRepo, 'src'), { recursive: true });
   for (const [rel, text] of Object.entries(CODE)) writeFileSync(join(codeRepo, rel), text);
+  mkdirSync(join(codeRepo, 'assets'), { recursive: true });
+  writeFileSync(join(codeRepo, 'assets/icon.png'), placeholderPng('tidepool-icon', 128));
+  writeFileSync(join(codeRepo, 'AGENTS.md'), '# Conventions\n\n- Art lives under `assets/`: PNG, transparent background, teal (#19d3c5) on navy (#0b2545), flat vector look, no text in images.\n- Code is plain ESM JavaScript under `src/`, tests with `node --test`.\n');
   git(codeRepo, 'init', '-q', '-b', 'main');
   git(codeRepo, 'add', '-A');
   git(codeRepo, 'commit', '-q', '-m', 'tidepool 0.3.0');
@@ -111,6 +134,11 @@ export async function seedSample(out: string, opts: { reset?: boolean; log?: (m:
   // laptop, a CI runner) still has to be able to run the demo, so give these two repos a local one.
   if (!hasGitIdentity()) for (const repo of [codeRepo, dataDir]) { git(repo, 'config', 'user.name', 'planestro sample'); git(repo, 'config', 'user.email', 'sample@planestro.invalid'); }
   initDataDir({ dataDir, codeRepo, name: 'tidepool (sample)', prefix: 'TD', defaultBranch: 'main', github: 'example/tidepool', gdignore: false, register: false, commit: true });
+  // Two agents: Claude models for code, a Codex model for raster art — described, so the epic planner can route by it.
+  const cfg = join(dataDir, CONFIG_FILE);
+  writeFileSync(cfg, readFileSync(cfg, 'utf8')
+    .replace(/^  - \{ id: opus-5,.*$/m, (line) => `${line.replace(' }', ', description: "Code, tests and docs. Cannot generate images." }')}\n  - { id: codex-art, label: Codex Art, runner: codex, hold_for_review: true, description: "All raster art: icons, illustrations, sprites. Does not write code." }`)
+    + '\nreview:\n  image_scale: 2\n');
 
   // The seed writes through the store like any other client, so it can never produce a file the tool would reject.
   const store = await DataStore.open(dataDir);
@@ -118,7 +146,7 @@ export async function seedSample(out: string, opts: { reset?: boolean; log?: (m:
     const ids = new Map<string, string>();
     for (const s of SEEDS) {
       const item = store.createItem({
-        title: s.title, category: s.category, description: s.description, notes: s.notes, kind: s.kind,
+        title: s.title, category: s.category, description: s.description, notes: s.notes, kind: s.kind, implementer: s.implementer,
         parent: s.parent ? ids.get(s.parent) : undefined, depends_on: s.depends_on?.map((k) => ids.get(k)!),
         status: s.icebox ? 'ICEBOX' : undefined,
       });
@@ -126,12 +154,14 @@ export async function seedSample(out: string, opts: { reset?: boolean; log?: (m:
       if (!s.done) continue;
       const h = history(item.id, s.done, s.title);
       const ops: ItemOp[] = [
-        { set: { status: 'FINISHED', pr: s.done.pr, ci_result: 'green', ci_failed_count: s.done.ciRedOnce ? 1 : 0, ...h.stamps } },
+        { set: { status: 'FINISHED', pr: s.done.pr, ci_result: 'green', ci_failed_count: s.done.ciRedOnce ? 1 : 0, ...h.stamps, ...(s.done.art ? { agent_turns: 2, tokens: 58_240, agent_sessions: { codex: '01a0b002-6e04-7290-aeda-82f4cfe444c0' }, delivered: [{ path: s.done.art.path, change: 'added' as const, bytes: placeholderPng('tidepool-icon', 128).length, width: 128, height: 128 }] } : {}) } },
         { section: 'Plan', body: s.done.plan },
         { section: 'Activity', body: h.body },
       ];
       store.mutateItem(item.id, ops, 'user');
     }
+    // The picker and the Prompts page lead with what a person starts work from: one set per kind of agent.
+    for (const name of ['feature', 'bug-fixes', 'audit-recent-code', 'art-item', 'art-repaint']) if (store.getPrompt(name)) store.setPromptFavorite(name, true);
     await store.flushCommits();
     store.git.commit('sample: seed the tidepool backlog');
     await store.flushCommits();

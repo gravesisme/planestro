@@ -4,7 +4,6 @@ name: art-item
 kind: template
 title: Art item (for an image-generating implementer)
 description: A backlog item body for raster art. Start an item from it, fill the slots, and set the implementer to your art model.
-favorite: true
 ---
 ## What to make
 
