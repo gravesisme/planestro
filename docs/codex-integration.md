@@ -4,8 +4,9 @@ Goal: one epic, planned once by the Claude planner, whose **art children run on
 the Codex CLI** and whose **logic children run on Claude Code**, with the logic
 blocked on the art — all driven by planestro.
 
-Status: spike done 2026-09-17, nothing built. Pick this up in a dedicated
-session; the phases below are ordered so each one is useful alone.
+Status: spike done 2026-09-17, nothing built. The staged plan — milestones,
+acceptance tests, open decisions — is in [`codex-epic-plan.md`](codex-epic-plan.md);
+this file holds the findings and the design it stages.
 
 ## What the spike validated
 
