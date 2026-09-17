@@ -2,7 +2,7 @@
 
 Validated on **2026-08-30** against **Claude Code 2.1.251** and
 **@anthropic-ai/claude-agent-sdk 0.3.251** (Node 24.11, macOS), running real
-sessions in a throwaway worktree of the Hurricane Harrison repo. Runner:
+sessions in a throwaway worktree of a real project repo. Runner:
 `npm run spike -- <step>` (`spikes/sdk-spike.ts`); raw transcripts of the run
 are in `spikes/out/*.stdout` (gitignored). `packages/server/src/compat.ts`
 pins these versions so planestro can warn when the installed CLI drifts.
@@ -17,7 +17,7 @@ pins these versions so planestro can warn when the installed CLI drifts.
 | d | `AskUserQuestion` reaches `canUseTool`; deny → park; resume with the answer as the next user message works | **PASS** | Questions captured from `input.questions`; deny message was echoed as the tool result; Opus ended the turn; the next resume carried on with the answer. |
 | e | An `allowedTools` rule added on a resume pre-approves that exact Bash command, and a non-approved command reaches `canUseTool` (so it can be parked) | **PASS** (after a re-test) | `Bash(echo spike-ok)` never hit `canUseTool`. **Gotcha:** the first probe, `uname -a`, ran without any callback — it is in Claude Code's built-in read-only command set. `node -e …` (not read-only, not allowlisted) did reach `canUseTool` and the deny parked the session without a retry. |
 | f | Killing the child mid-turn (SIGTERM) leaves a resumable session | **PASS** | `query()` threw `Claude Code process exited with code 143`; `resume` of that id answered "what were you doing" correctly. |
-| g | Transcript lives at `~/.claude/projects/<cwd with non-alnum → '-'>/<id>.jsonl`; `getSessionInfo`/`listSessions` find it | **PASS** | Path for a worktree cwd: `-Users-dgraves-Projects-hurricane-harrison-godot--claude-worktrees-planestro-spike/<id>.jsonl`. `getSessionInfo(id, {dir})` returns `{sessionId, summary, lastModified, fileSize, firstPrompt, …}`. |
+| g | Transcript lives at `~/.claude/projects/<cwd with non-alnum → '-'>/<id>.jsonl`; `getSessionInfo`/`listSessions` find it | **PASS** | Path for a worktree cwd: `-Users-me-Projects-myproject--claude-worktrees-planestro-spike/<id>.jsonl`. `getSessionInfo(id, {dir})` returns `{sessionId, summary, lastModified, fileSize, firstPrompt, …}`. |
 | h | `claude agents --json` lists our child during a turn, with a pid | **PASS** | `{"pid":26928,"cwd":"<worktree>","kind":"interactive","sessionId":"…","name":"planestro-spike-b5"}` — SDK-spawned sessions show as `kind: interactive` with no `status` field for the pid entry we saw. |
 | i | `maxTurns` / `maxBudgetUsd` end the turn with distinguishable result subtypes | **PASS** | `error_max_turns` (`is_error: true`, `num_turns: 2` for `maxTurns: 1`) and `error_max_budget_usd`. |
 | j | Resume across a **full process restart** keeps context | **PASS** | Fable was told the codeword `PELICAN-42` while planning; a brand-new process resumed as Opus and answered it first. |

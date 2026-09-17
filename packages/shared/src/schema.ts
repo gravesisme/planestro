@@ -4,7 +4,7 @@
  */
 import { z } from 'zod';
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export const STATUSES = [
   'NOT_YET_SUBMITTED', 'QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY',
@@ -163,7 +163,7 @@ export const Config = z.object({
   categories: z.array(z.string().min(1)).min(1),
   /** Per-item spend ceiling across all of its turns; a turn starts with what remains. */
   budget_usd_per_item: z.number().positive().default(25),
-  concurrency: z.object({ max_sessions: z.number().int().positive().default(3), max_godot_jobs: z.number().int().positive().default(1) }).default({ max_sessions: 3, max_godot_jobs: 1 }),
+  concurrency: z.object({ max_sessions: z.number().int().positive().default(3), max_local_jobs: z.number().int().positive().default(1) }).default({ max_sessions: 3, max_local_jobs: 1 }),
   permissions: z.object({ allow: z.array(z.string()).default([]), deny: z.array(z.string()).default([]) }).default({ allow: [], deny: [] }),
   ci: z.object({
     mode: z.enum(['github', 'github-or-local']).default('github'),
@@ -194,7 +194,6 @@ export type Config = z.infer<typeof Config>;
 export const LocalConfig = z.object({
   code_repo_path: z.string().optional(),
   worktrees_root: z.string().optional(),
-  godot_bin: z.string().optional(),
   claude_bin: z.string().optional(),
   /** Optional Console API key: sessions then bill the API under the Commercial Terms instead of a claude.ai login. Local file only (gitignored). */
   anthropic_api_key: z.string().optional(),

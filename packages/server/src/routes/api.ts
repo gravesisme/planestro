@@ -164,7 +164,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
     try {
       const body = z.object({
         defaults: z.object({ planner: z.string(), implementer: z.string(), category: z.string() }).partial().optional(),
-        concurrency: z.object({ max_sessions: z.number().int().positive(), max_godot_jobs: z.number().int().positive() }).partial().optional(),
+        concurrency: z.object({ max_sessions: z.number().int().positive(), max_local_jobs: z.number().int().positive() }).partial().optional(),
         ci: z.object({ mode: z.enum(['github', 'github-or-local']), require_green_base: z.boolean(), local_check_command: z.string() }).partial().optional(),
         engine: z.object({ mode: z.enum(['live', 'dry-run']) }).partial().optional(),
         notifications: z.object({ on_merge: z.string() }).partial().optional(),
@@ -175,7 +175,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
     } catch (e) { return fail(c, e); }
   });
   api.put('/config/local', async (c) => {
-    try { const body = z.object({ code_repo_path: z.string().optional(), worktrees_root: z.string().optional(), godot_bin: z.string().optional(), claude_bin: z.string().optional(), anthropic_api_key: z.string().optional() }).parse(await c.req.json()); return c.json({ local: store.updateLocal(body) }); }
+    try { const body = z.object({ code_repo_path: z.string().optional(), worktrees_root: z.string().optional(), claude_bin: z.string().optional(), anthropic_api_key: z.string().optional() }).parse(await c.req.json()); return c.json({ local: store.updateLocal(body) }); }
     catch (e) { return fail(c, e); }
   });
   api.post('/config/categories', async (c) => {

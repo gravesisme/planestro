@@ -10,6 +10,20 @@ export interface Migration { version: number; describe: string; up(dataDir: stri
 /** Ordered by version; each `up` takes the dir from version-1 to version. */
 export const MIGRATIONS: Migration[] = [
   { version: 1, describe: 'initial schema', up() { /* baseline: nothing to rewrite */ } },
+  {
+    version: 2,
+    describe: 'concurrency.max_godot_jobs → concurrency.max_local_jobs (the limit was never Godot-specific)',
+    up(dataDir, log) {
+      const path = join(dataDir, CONFIG_FILE);
+      const doc = YAML.parseDocument(readFileSync(path, 'utf8'));
+      const old = doc.getIn(['concurrency', 'max_godot_jobs']);
+      if (old === undefined) return;
+      if (doc.getIn(['concurrency', 'max_local_jobs']) === undefined) doc.setIn(['concurrency', 'max_local_jobs'], old);
+      doc.deleteIn(['concurrency', 'max_godot_jobs']);
+      atomicWrite(path, doc.toString({ lineWidth: 0 }));
+      log(`  concurrency.max_local_jobs: ${String(old)}`);
+    },
+  },
 ];
 
 export function currentVersion(dataDir: string): number {

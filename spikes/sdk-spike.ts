@@ -23,7 +23,8 @@ const OUT = join(import.meta.dirname, 'out');
 mkdirSync(OUT, { recursive: true });
 const STATE = join(OUT, 'state.json');
 const LOG = join(OUT, 'log.md');
-const CWD = process.env.SPIKE_CWD ?? '/Users/dgraves/Projects/hurricane-harrison-godot/.claude/worktrees/planestro-spike';
+const CWD = process.env.SPIKE_CWD ?? '';
+if (!CWD) { console.error('SPIKE_CWD must name a throwaway git worktree for the sessions to run in'); process.exit(2); }
 const PLANNER = process.env.SPIKE_PLANNER ?? 'claude-fable-5';
 const IMPLEMENTER = process.env.SPIKE_IMPLEMENTER ?? 'claude-opus-5';
 const CODEWORD = 'PELICAN-42';

@@ -2,6 +2,7 @@
   "name": "planestro",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "Local-first backlog planning and Claude Code orchestration tool",
   "type": "module",
   "workspaces": [
@@ -15,7 +16,8 @@
     "dev": "tsx watch packages/server/src/cli.ts serve",
     "dev:web": "npm --workspace packages/web run dev",
     "build": "npm --workspace packages/web run build",
-    "start": "tsx packages/server/src/cli.ts serve"
+    "start": "tsx packages/server/src/cli.ts serve",
+    "sample": "tsx packages/server/src/cli.ts sample"
   },
   "devDependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.251",
