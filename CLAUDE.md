@@ -56,6 +56,13 @@ rewritten or force-pushed; worker branches rebase with `--force-with-lease`.
   PLAN_READY, IN_PROGRESS, IN_REVIEW, MERGED, FINISHED, ICEBOX`. `blocked` /
   `blocked_reason`, `awaiting` / `awaiting_data` and `op` / `op_data` are
   orthogonal, so an item never loses its phase when it needs a human.
+- FINISHED has two ways in: the engine after a merged PR, and the user's
+  **close as done** (`Engine.closeAsDone`) for work that landed some other way.
+  The second is user-only, stops at IN_REVIEW (a PR decides from there), and
+  removes the worktree/branch only when they are clean with nothing ahead of
+  the base — otherwise it leaves them and says so in the Activity log.
+- An item that returns to QUEUED after an icebox/backlog round-trip reuses the
+  worktree it already has; setup hooks are not re-run.
 - Frontmatter keys are classified authoritative / operational / derived in
   `packages/shared/src/schema.ts`; derived values (`base_branch`, `lane`,
   `needs_you`, …) are never persisted. Dependencies unblock on MERGED.

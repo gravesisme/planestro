@@ -167,9 +167,14 @@ export class LiveEngine implements Engine {
       { activity: { actor: 'app', text: `creating worktree ${worktreeRel} on ${branch} from origin/${base}` } },
     ], 'engine', { commit: `${id}: begin planning` });
     await this.ports.git.fetch(this.repo);
-    await this.ports.git.worktreeAdd(this.repo, dir, branch, `origin/${base}`);
+    // An item that went to the icebox (or back to the backlog) and is queued again still owns the
+    // worktree it made the first time: `git worktree add` over it fails, so pick it up as it is.
+    const kept = (await this.ports.git.worktreeList(this.repo)).find((w) => w.path === dir && !w.prunable);
+    if (kept && kept.branch !== branch) { this.store.journal.end(opId, id, 'failed', { reason: 'worktree_taken' }); this.block(id, 'worktree_taken', `${worktreeRel} already exists on ${kept.branch ?? 'a detached HEAD'}, not ${branch}; remove it by hand or move it aside`); return; }
+    if (kept) this.store.mutateItem(id, [{ activity: { actor: 'app', text: `reusing the worktree this item already has (${worktreeRel}); setup hooks not re-run` } }], 'engine');
+    else await this.ports.git.worktreeAdd(this.repo, dir, branch, `origin/${base}`);
     this.store.mutateItem(id, [{ set: { op: 'importing', op_started_at: this.now() } }], 'engine');
-    for (const hook of this.store.config.hooks.after_worktree_create) {
+    for (const hook of kept ? [] : this.store.config.hooks.after_worktree_create) {
       const r = await this.withGodotLock(() => this.ports.proc.run(hook, { cwd: dir, timeoutMs: 20 * 60_000 }));
       if (r.code !== 0) { this.store.journal.end(opId, id, 'failed', { hook, code: r.code }); this.block(id, 'hook_failed', `${hook} exited ${r.code}: ${r.stderr.slice(-400)}`); return; }
       this.store.mutateItem(id, [{ activity: { actor: 'app', text: `hook ok: ${hook}` } }], 'engine');
