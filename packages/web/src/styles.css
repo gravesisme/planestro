@@ -42,7 +42,13 @@ main { padding: 16px; flex: 1; }
 .attachments li { display: flex; gap: 8px; align-items: center; } .attachments img { max-height: 60px; border-radius: 4px; }
 .approval { border: 1px solid var(--warn); background: #2b2413; border-radius: var(--radius); padding: 12px; margin-bottom: 12px; }
 .card-list { display: grid; gap: 8px; } table { border-collapse: collapse; width: 100%; } th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); font-size: 13px; } th { color: var(--muted); font-weight: 600; }
-.settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; }
+.settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; align-items: start; }
+/* A grid item's min-width is its content, so one long select pushed a card's fields past its edge:
+   cards may shrink, rows wrap, and a label is a flex line so its control takes the remaining width. */
+.settings .section { min-width: 0; margin-bottom: 0; } .settings .row { flex-wrap: wrap; gap: 8px 12px; }
+.settings label { display: flex; gap: 6px; align-items: center; min-width: 0; max-width: 100%; white-space: nowrap; } .settings label.grow { flex: 1 1 220px; }
+.settings label select, .settings label input:not([type=checkbox]):not([type=number]) { min-width: 0; flex: 1 1 auto; text-overflow: ellipsis; } .settings label input[type=checkbox] { flex: none; }
+.settings dd { overflow-wrap: anywhere; }
 .row { display: flex; gap: 8px; align-items: center; margin: 4px 0; } .grow { flex: 1; } .muted { color: var(--muted); } .small { font-size: 12px; }
 .dialog { position: fixed; inset: 0; background: #0009; display: grid; place-items: center; z-index: 30; } .dialog form { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; width: min(560px, 92vw); display: grid; gap: 8px; }
 .events { font-family: ui-monospace, monospace; font-size: 12px; background: #0e1013; padding: 8px; border-radius: 6px; max-height: 300px; overflow: auto; white-space: pre-wrap; }
@@ -96,3 +102,8 @@ html { -webkit-text-size-adjust: 100%; }
   .events, .console { font-size: 11px; }
   .dialog form { width: 94vw; max-height: 88vh; overflow: auto; }
 }
+/* dark form controls and scrollbars (the board's horizontal scrollbar rendered white) */
+:root { color-scheme: dark; }
+.column.drop-ok { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--panel)); } .column.drop-no { border-color: var(--hot); opacity: .7; }
+.quick-actions { flex-wrap: wrap; margin: 8px 0 10px; }
+.dialog form label.row code { color: var(--muted); }

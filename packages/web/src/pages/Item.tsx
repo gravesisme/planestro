@@ -6,8 +6,7 @@ import { act, useStore } from '../store.ts';
 import { Markdown } from '../components/Markdown.tsx';
 import { statusLabel } from '../components/ItemCard.tsx';
 import { ItemConsole } from '../components/ItemConsole.tsx';
-
-const CLOSE_HINT = 'The work already landed some other way: finish this item without a pull request';
+import { CLOSE_HINT, confirmMove, promptCloseAsDone } from '../components/QuickActions.tsx';
 
 function useAutosave(id: string, section: 'Description' | 'Notes' | 'Plan', initial: string) {
   const [text, setText] = useState(initial);
@@ -47,7 +46,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
   const others = state.items.filter((i) => i.id !== item.id && i.derived.lane !== 'done');
   const field = (fields: Record<string, unknown>) => act(() => api.patchItem(item.id, { fields }));
   const canClose = transitions.some((t) => t.to === 'FINISHED');
-  const closeAsDone = () => { const r = prompt(`Close ${item.id} as done without a pull request?\n\nIts worktree and branch are removed only if they hold no changes. Optional reason for the log:`); if (r !== null) void act(() => api.transition(item.id, 'FINISHED', r.trim() || undefined)); };
+  const closeAsDone = () => promptCloseAsDone(item.id);
   const onPaste = (e: React.ClipboardEvent) => { const f = [...e.clipboardData.files][0]; if (f) { e.preventDefault(); void act(() => api.uploadAttachment(item.id, f)); } };
   const awaitingData = fm.awaiting_data as { questions?: { question: string; header?: string; options: { label: string; description?: string }[]; multiSelect?: boolean }[]; tool?: string; input?: Record<string, unknown> } | undefined;
 
@@ -63,7 +62,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           {transitions.filter((t) => !(t.to === 'IN_PROGRESS' && fm.status === 'PLAN_READY') && !(t.to === 'PLAN_IN_PROGRESS' && fm.status === 'PLAN_READY')).map((t) => (
             t.to === 'FINISHED'
               ? <button key={t.to} title={CLOSE_HINT} onClick={closeAsDone}>{t.label}…</button>
-              : <button key={t.to} disabled={t.to === 'QUEUED' && (!d.deps_satisfied || !!d.base_branch_error)} title={d.base_branch_error ?? (!d.deps_satisfied ? 'dependencies not merged' : '')} onClick={() => act(() => api.transition(item.id, t.to))}>{t.label}</button>
+              : <button key={t.to} disabled={t.to === 'QUEUED' && (!d.deps_satisfied || !!d.base_branch_error)} title={d.base_branch_error ?? (!d.deps_satisfied ? 'dependencies not merged' : '')} onClick={() => { if (confirmMove(item, t.to, t.label)) void act(() => api.transition(item.id, t.to)); }}>{t.label}</button>
           ))}
           {fm.blocked && <button className="danger" onClick={() => { const m = prompt(`Unblock ${item.id} (${fm.blocked_reason}). Optional message for the session:`) ; if (m !== null) void act(() => api.unblock(item.id, m || undefined)); }}>unblock…</button>}
         </div>

@@ -249,6 +249,24 @@ describe('LiveEngine lifecycle (dry-run ports)', () => {
     expect(status(store, idle.id)).toBe('NOT_YET_SUBMITTED');
   });
 
+  it('an item iceboxed mid-flight and queued again reuses its worktree instead of failing to re-create it', async () => {
+    const { store, engine, world } = await setup();
+    const item = store.createItem({ title: 'Round trip', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    const cwd = [...world.worktrees.keys()][0]!;
+    // the dry-run port would happily "add" twice; the real one refuses, so make the fake refuse too
+    const add = world.worktrees.set.bind(world.worktrees);
+    world.worktrees.set = (k, v) => { if (world.worktrees.has(k)) throw new Error(`fatal: '${k}' already exists`); return add(k, v); };
+    for (const to of ['ICEBOX', 'NOT_YET_SUBMITTED', 'QUEUED'] as const) store.transition(item.id, to, 'user');
+    engine.poke();
+    await waitFor(() => activityOf(store, item.id).includes('reusing the worktree'));
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    expect(store.getItem(item.id)!.file.frontmatter.blocked).toBeUndefined();
+    expect([...world.worktrees.keys()]).toEqual([cwd]);
+  });
+
   it('pause stops admissions; resume continues; a restart resumes an interrupted turn', async () => {
     const { store, engine, dataDir } = await setup();
     engine.pause();
