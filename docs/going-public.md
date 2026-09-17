@@ -42,9 +42,9 @@ one author. The `public-prep` PR did the first pass below.
 - [ ] **The name.** Check `planestro` on npm, GitHub and as a trademark before
       it is attached to a public identity. (`package.json` stays
       `"private": true` either way until publishing to npm is a decision.)
-- [ ] **Keep or rewrite history.** See the audit below; a squash to one
-      "initial public commit" is the cheap way out and loses nothing an
-      interviewer would read.
+- [x] **Keep or rewrite history.** Kept, with contents scrubbed (see the
+      audit): the commit log is interview material — the bug stories below
+      each have a commit to show — so it was rewritten rather than squashed.
 
 ## History audit (do this before the flip — it is the irreversible part)
 
@@ -53,11 +53,17 @@ Making the repo public publishes every commit, not just `main`'s tip.
 - [ ] `git log --all -p | grep -nE "sk-ant-|ghp_|github_pat_|BEGIN (RSA|OPENSSH)"`
       — a `sk-ant-` search was clean on 2026-09-17; re-run all of them, and
       run `gitleaks detect` or `trufflehog git file://.` once for a real scan.
-- [ ] Old commits still contain what the first pass removed from the tip: the
-      `/Users/<name>/Projects/<game>` paths (spike, sdk-notes), the legacy
-      importer at its old path, and ~7 commit messages that name the game or
-      its item ids (`HH-9`, `HH-94`…). Nothing secret — decide whether it
-      matters (see "Name the game or not").
+- [x] History scrubbed on 2026-09-17: every commit's files were rewritten
+      (`git filter-branch`, fixed string rules) so no blob or message in any
+      commit names the project planestro was built for or a home directory;
+      commit count, order, authorship and messages are otherwise unchanged. No
+      commit *message* ever named it — item ids like `HH-9` remain and are the
+      same example prefix the docs use. A pre-rewrite bundle is kept outside
+      the repo by the author; never push it.
+- [ ] GitHub keeps the pre-rewrite commits reachable by SHA (old PR refs,
+      unreferenced objects) until it garbage-collects. For a private repo that
+      is harmless; at the flip, publish by pushing to a **new** repository
+      rather than toggling this one, or ask GitHub Support to purge first.
 - [ ] `git branch -a` and `git tag`: delete stale remote branches before the
       flip; they become public too.
 - [ ] Confirm the *data* never lived here: the planning data dir is an orphan
