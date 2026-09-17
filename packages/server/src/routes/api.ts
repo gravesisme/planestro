@@ -83,6 +83,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
       const { to, reason } = z.object({ to: z.enum(STATUSES), reason: z.string().optional() }).parse(await c.req.json());
       const it = store.requireItem(id);
       // Closing without a PR goes through the engine: it decides what happens to the worktree and branch.
+      if (to === 'PLAN_IN_PROGRESS' && it.file.frontmatter.kind === 'epic') { await engine.planEpic(id); return c.json(itemView(store, store.requireItem(id))); }
       if (to === 'FINISHED') { await engine.closeAsDone(id, reason); return c.json(itemView(store, store.requireItem(id))); }
       const d = store.derived(it);
       if (to === 'QUEUED' && !d.deps_satisfied) throw new Error('dependencies are not merged yet');
@@ -95,6 +96,15 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
     } catch (e) { return fail(c, e); }
   });
   api.post('/items/:id/plan/approve', async (c) => { try { const { notes } = z.object({ notes: z.string().optional() }).parse(await c.req.json().catch(() => ({}))); await engine.approvePlan(c.req.param('id'), notes); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
+  api.post('/items/:id/epic/plan', async (c) => { try { await engine.planEpic(c.req.param('id')); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
+  api.post('/items/:id/breakdown/approve', async (c) => {
+    try {
+      const child = z.object({ title: z.string().min(1), description: z.string(), implementer: z.string(), category: z.string().optional(), depends_on: z.array(z.number().int().nonnegative()).optional() });
+      const { children, queue } = z.object({ children: z.array(child).optional(), queue: z.boolean().optional() }).parse(await c.req.json().catch(() => ({})));
+      const created = await engine.approveBreakdown(c.req.param('id'), children, { queue });
+      return c.json({ created, item: itemView(store, store.requireItem(c.req.param('id'))) });
+    } catch (e) { return fail(c, e); }
+  });
   api.get('/items/:id/images', async (c) => { try { return c.json(await engine.reviewImages(c.req.param('id'))); } catch (e) { return fail(c, e); } });
   api.get('/items/:id/thumb', async (c) => {
     const id = c.req.param('id');

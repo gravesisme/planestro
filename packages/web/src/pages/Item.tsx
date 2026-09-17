@@ -8,6 +8,7 @@ import { statusLabel } from '../components/ItemCard.tsx';
 import { ItemConsole } from '../components/ItemConsole.tsx';
 import { CLOSE_HINT, confirmMove, promptCloseAsDone } from '../components/QuickActions.tsx';
 import { ReviewPanel } from '../components/ReviewPanel.tsx';
+import { BreakdownPanel } from '../components/BreakdownPanel.tsx';
 
 function useAutosave(id: string, section: 'Description' | 'Notes' | 'Plan', initial: string) {
   const [text, setText] = useState(initial);
@@ -90,7 +91,8 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           </div>
         )}
 
-        {fm.status === 'PLAN_READY' && (
+        {fm.status === 'PLAN_READY' && fm.kind === 'epic' && <BreakdownPanel item={item} />}
+        {fm.status === 'PLAN_READY' && fm.kind !== 'epic' && (
           <div className="approval">
             <h2 style={{ margin: '0 0 8px' }}>Plan needs your approval</h2>
             {item.activity.filter((a) => a.actor === 'orchestrator').slice(-3).map((a, i) => <p key={i} className="small"><b>orchestrator:</b> {a.text}</p>)}

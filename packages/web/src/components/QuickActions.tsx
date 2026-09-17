@@ -38,9 +38,9 @@ export function QuickActions({ item, onActed }: { item: ItemView; onActed?: () =
   const [transitions, setTransitions] = useState<{ to: Status; label: string }[]>([]);
   useEffect(() => { let live = true; api.transitions(item.id).then((t) => { if (live) setTransitions(t); }).catch(() => {}); return () => { live = false; }; }, [item.id, fm.status]);
   const run = (fn: () => Promise<unknown>) => { void act(fn).then(() => onActed?.()); };
-  const planReady = fm.status === 'PLAN_READY';
+  const planReady = fm.status === 'PLAN_READY' && fm.kind !== 'epic'; // an epic's breakdown is edited on its page, not approved blind
   // Approve / request-changes have their own endpoints (they start a session turn); the bare transition would not.
-  const plain = transitions.filter((t) => !(planReady && (t.to === 'IN_PROGRESS' || t.to === 'PLAN_IN_PROGRESS')));
+  const plain = transitions.filter((t) => !(fm.status === 'PLAN_READY' && (t.to === 'IN_PROGRESS' || t.to === 'PLAN_IN_PROGRESS')));
   if (!plain.length && !planReady && !fm.blocked && !(fm.status === 'IN_REVIEW' && (fm.awaiting === 'review' || fm.skip_merge))) return null;
   return (
     <div className="row quick-actions">

@@ -38,6 +38,7 @@ export class LiveGitPort implements GitPort {
   async fetch(repo: string) { await git(repo, ['fetch', '--prune', 'origin']); }
   async revParse(cwd: string, ref: string) { return (await git(cwd, ['rev-parse', ref])).stdout.trim(); }
   async refExists(repo: string, ref: string) { return (await git(repo, ['rev-parse', '--verify', '--quiet', ref], true)).code === 0; }
+  async worktreeAddDetached(repo: string, path: string, ref: string) { await git(repo, ['worktree', 'add', '--detach', path, ref]); }
   async worktreeAdd(repo: string, path: string, branch: string, startRef: string) {
     const exists = await this.localBranchExists(repo, branch);
     await git(repo, exists ? ['worktree', 'add', path, branch] : ['worktree', 'add', '-b', branch, path, startRef]);

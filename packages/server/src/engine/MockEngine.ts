@@ -22,6 +22,8 @@ export class MockEngine implements Engine {
   }
   async message(id: string, text: string): Promise<void> { this.store.mutateItem(id, [{ activity: { actor: 'user', text: `message (no engine): ${text}` } }], 'user'); }
   async respond(): Promise<void> { throw new Error('no engine is running'); }
+  async planEpic(): Promise<void> { throw new Error('no engine is running'); }
+  async approveBreakdown(): Promise<string[]> { throw new Error('no engine is running'); }
   async reviewImages(): Promise<[]> { return []; }
   async reviewImage(): Promise<null> { return null; }
   async requestReviewChanges(): Promise<void> { throw new Error('no engine is running'); }

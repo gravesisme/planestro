@@ -1,6 +1,6 @@
 import { join, relative, isAbsolute } from 'node:path';
 import { readFileSync } from 'node:fs';
-import { serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, canPlan, type ServerEvent, type Status } from '@planestro/shared';
+import { serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, canPlan, validateBreakdown, dependencyOrder, type BreakdownChild, type ServerEvent, type Status } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import type { Ports, TurnPhase, TurnResult, TurnTools, PermissionRequest } from './ports.ts';
@@ -195,6 +195,7 @@ export class LiveEngine implements Engine {
 
   async approvePlan(id: string, notes?: string): Promise<void> {
     const item = this.store.requireItem(id);
+    if (item.file.frontmatter.kind === 'epic') { await this.approveBreakdown(id); return; }
     if (item.file.frontmatter.status !== 'PLAN_READY') throw new Error(`${id} is ${item.file.frontmatter.status}, not PLAN_READY`);
     this.store.mutateItem(id, [
       { transition: { to: 'IN_PROGRESS', actor: 'user' } },
@@ -208,7 +209,8 @@ export class LiveEngine implements Engine {
     const item = this.store.requireItem(id);
     if (item.file.frontmatter.status !== 'PLAN_READY') throw new Error(`${id} is ${item.file.frontmatter.status}, not PLAN_READY`);
     this.store.mutateItem(id, [{ transition: { to: 'PLAN_IN_PROGRESS', actor: 'user' } }, { activity: { actor: 'user', text: `plan changes requested: ${message}` } }], 'user', { commit: `${id}: request plan changes` });
-    this.runJob(id, () => this.runTurnFor(id, 'plan', `${this.resumeNote(id, 'your plan review')}\n\nChanges requested on your plan:\n\n${message}\n\nRevise the plan accordingly and submit it again with the submit_plan tool, then end your turn.`));
+    const tool = item.file.frontmatter.kind === 'epic' ? 'submit_breakdown' : 'submit_plan';
+    this.runJob(id, () => this.runTurnFor(id, 'plan', `${this.resumeNote(id, 'your plan review')}\n\nChanges requested on your plan:\n\n${message}\n\nRevise it accordingly and submit it again with the ${tool} tool, then end your turn.`));
   }
 
   async message(id: string, text: string): Promise<void> {
@@ -743,6 +745,69 @@ export class LiveEngine implements Engine {
 
   // ---- epics ----
   /** Push the integration branch from the epic's base and open the epic (auto when a child queues, or via API). */
+  // ---- epics planned by the planner: it proposes the children, the user approves, the engine creates them
+  private epicPlanDir(id: string): string { return join(this.store.worktreesRoot(), `${this.store.config.project.id_prefix.toLowerCase()}-${idNumber(id)}-plan`); }
+
+  async planEpic(id: string): Promise<void> {
+    const item = this.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    if (fm.kind !== 'epic') throw new Error(`${id} is not an epic`);
+    if (fm.status !== 'NOT_YET_SUBMITTED') throw new Error(`${id} is ${fm.status}; only an epic that has not started can be planned`);
+    const base = this.store.derived(item).base_branch;
+    if (!base) throw new Error(this.store.derived(item).base_branch_error ?? `${id} has no base branch`);
+    const dir = this.epicPlanDir(id);
+    const worktreeRel = isAbsolute(dir) ? relative(this.repo, dir) : dir;
+    this.store.mutateItem(id, [
+      { transition: { to: 'PLAN_IN_PROGRESS', actor: 'user' } },
+      // The integration branch gets its name now (the planner's rules speak of it); it is created on approval.
+      { set: { worktree: worktreeRel, branch: fm.branch ?? `feature/${slugify(fm.title)}`, op: 'creating_worktree', op_started_at: this.now() } },
+      { activity: { actor: 'app', text: `planning the breakdown in a read-only checkout of origin/${base} (${worktreeRel})` } },
+    ], 'user', { commit: `${id}: plan the breakdown` });
+    this.runJob(id, async () => {
+      await this.ports.git.fetch(this.repo);
+      if (!(await this.ports.git.worktreeList(this.repo)).some((w) => w.path === dir && !w.prunable)) await this.ports.git.worktreeAddDetached(this.repo, dir, `origin/${base}`);
+      this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }], 'engine');
+      const implementers = this.store.config.models.filter((m) => !m.external).map((m) => `- \`${m.id}\` — ${m.label} (runner ${m.runner ?? 'claude'}): ${m.description ?? (canPlan(m) ? 'general software work: code, tests, docs. Cannot generate images.' : 'no description configured')}`).join('\n');
+      await this.runTurnFor(id, 'plan', this.store.renderPrompt('plan-epic', this.store.requireItem(id), { implementers, categories: this.store.config.categories.join(', ') }));
+    });
+  }
+
+  /** Create the approved children (as edited by the user), drop the planning checkout, open the epic, and queue what can start. */
+  async approveBreakdown(id: string, edited?: BreakdownChild[], opts: { queue?: boolean } = {}): Promise<string[]> {
+    const item = this.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    if (fm.kind !== 'epic' || fm.status !== 'PLAN_READY') throw new Error(`${id} has no breakdown waiting for approval`);
+    const children = edited ?? (fm.awaiting_data?.children as BreakdownChild[] | undefined) ?? [];
+    const problem = validateBreakdown(children, this.store.config.models, this.store.config.categories);
+    if (problem) throw new Error(problem);
+    // dependencies first, so every depends_on can name an item that already exists
+    const ids = new Map<number, string>();
+    for (const i of dependencyOrder(children)) {
+      const c = children[i];
+      const child = this.store.createItem({ title: c.title.trim(), description: c.description.trim(), category: c.category ?? fm.category, implementer: c.implementer, parent: id, depends_on: (c.depends_on ?? []).map((d) => ids.get(d)!) }, 'user');
+      ids.set(i, child.id);
+    }
+    const created = children.map((_c, i) => ids.get(i)!);
+    const dir = fm.worktree ? this.absWorktree(fm.worktree) : undefined;
+    this.store.mutateItem(id, [
+      { transition: { to: 'IN_PROGRESS', actor: 'user' } },
+      { unset: ['worktree'] },
+      { activity: { actor: 'user', text: `breakdown approved: created ${created.join(', ')}` } },
+    ], 'user', { commit: `${id}: approve breakdown (${created.length} children)` });
+    this.runJob(id, async () => {
+      // The planning checkout is detached and was only ever read: a clean tree is the whole proof it holds nothing.
+      if (dir) {
+        const st = await this.ports.git.status(dir).catch(() => undefined);
+        if (st?.clean) { await this.ports.git.worktreeRemove(this.repo, dir, false); await this.ports.git.worktreePrune(this.repo); }
+        else if (st) this.store.mutateItem(id, [{ activity: { actor: 'app', text: `left the planning checkout ${dir} in place: it has uncommitted changes` } }], 'engine');
+      }
+      await this.ensureEpicBranch(id);
+      if (opts.queue !== false) for (const cid of created) this.store.transition(cid, 'QUEUED', 'user');
+      void this.tick();
+    });
+    return created;
+  }
+
   async openEpic(id: string): Promise<void> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
@@ -758,6 +823,18 @@ export class LiveEngine implements Engine {
       { activity: { actor: 'app', text: `opened integration branch ${branch} from origin/${base}` } },
     ], 'engine', { commit: `${id}: open epic` });
     this.store.journal.end(opId, id, 'ok');
+    this.note('info', `${id}: epic open on ${branch}`);
+  }
+
+  /** The integration branch of an epic that is already IN_PROGRESS (a planned epic gets there by approval, not by openEpic). */
+  private async ensureEpicBranch(id: string): Promise<void> {
+    const item = this.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    const base = this.store.derived(item).base_branch!;
+    const branch = fm.branch ?? `feature/${slugify(fm.title)}`;
+    await this.ports.git.fetch(this.repo);
+    if (!(await this.ports.git.remoteBranchSha(this.repo, branch))) await this.ports.git.pushRef(this.repo, `origin/${base}`, branch);
+    this.store.mutateItem(id, [{ set: { branch } }, { activity: { actor: 'app', text: `opened integration branch ${branch} from origin/${base}` } }], 'engine', { commit: `${id}: open epic` });
     this.note('info', `${id}: epic open on ${branch}`);
   }
 
@@ -855,8 +932,22 @@ export class LiveEngine implements Engine {
   private makeTools(id: string): TurnTools {
     const s = this.store;
     return {
+      submit_breakdown: async (plan, children) => {
+        const cur = s.requireItem(id).file.frontmatter;
+        if (cur.kind !== 'epic') return 'Rejected: this item is not an epic. Hand in your plan with submit_plan.';
+        const problem = validateBreakdown(children, s.config.models, s.config.categories);
+        if (problem) { s.mutateItem(id, [{ activity: { actor: 'app', text: `breakdown rejected back to the planner: ${problem}` } }], 'engine'); return `Rejected: ${problem}. Fix that and call submit_breakdown again.`; }
+        const ops: ItemOp[] = [{ section: 'Plan', body: plan }];
+        if (cur.blocked && cur.blocked_reason === 'no_plan') ops.push({ unset: ['blocked', 'blocked_reason'] });
+        if (cur.status === 'PLAN_IN_PROGRESS') ops.push({ transition: { to: 'PLAN_READY', actor: 'engine' } });
+        ops.push({ set: { awaiting_data: { children, requested_at: this.now() } } });
+        s.mutateItem(id, ops, 'engine', { commit: `${id}: submit breakdown` });
+        this.note('info', `${id}: breakdown of ${(children as unknown[]).length} children submitted — needs your approval`);
+        return 'Breakdown recorded by planestro. End your turn now; the user will review the children.';
+      },
       submit_plan: async (plan) => {
         const cur = s.requireItem(id).file.frontmatter;
+        if (cur.kind === 'epic') return 'Rejected: this is an epic. Hand in its children with submit_breakdown.';
         const ops: ItemOp[] = [{ section: 'Plan', body: plan }];
         // A late submit cures a no_plan block (e.g. after an MCP transport failure ate the first attempt).
         if (cur.blocked && cur.blocked_reason === 'no_plan') ops.push({ unset: ['blocked', 'blocked_reason'] });

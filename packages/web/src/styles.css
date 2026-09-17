@@ -121,3 +121,4 @@ button.checker { cursor: zoom-in; } .checker img { max-width: 100%; max-height: 
 .review-none { border: 1px dashed var(--line); border-radius: 6px; padding: 18px 8px; text-align: center; }
 .card-thumb { margin-top: 6px; } .card-thumb img { max-height: 84px; }
 .approval h2 { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.breakdown { list-style: none; padding: 0; margin: 8px 0; display: grid; gap: 8px; } .breakdown .row { margin: 0; flex-wrap: wrap; } .breakdown input.grow { min-width: 180px; }
