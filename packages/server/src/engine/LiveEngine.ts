@@ -1,6 +1,6 @@
 import { join, relative, isAbsolute } from 'node:path';
 import { readFileSync } from 'node:fs';
-import { serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, type ServerEvent, type Status } from '@planestro/shared';
+import { serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, type ServerEvent, type Status } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import type { Ports, TurnPhase, TurnResult, TurnTools, PermissionRequest } from './ports.ts';
@@ -847,6 +847,53 @@ export class LiveEngine implements Engine {
     const phase = this.phaseFor(fm.status);
     if (message && phase) this.runJob(id, () => this.runTurnFor(id, phase, `${this.resumeNote(id, 'a decision from the user')}\n\n${message}`));
     else void this.tick();
+  }
+
+  /**
+   * User-driven "close as done": the work landed some other way, so the item finishes without a
+   * pull request. The worktree and branch are removed only on positive evidence that they hold
+   * nothing (invariant 7: a clean tree and no commit ahead of a freshly fetched base); anything
+   * else is left in place and named in the Activity log — closing never discards work.
+   */
+  async closeAsDone(id: string, reason?: string): Promise<void> {
+    const item = this.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    const d = this.store.derived(item);
+    if (!findTransition(fm.status, 'FINISHED', 'user', d.flavor)) throw new Error(`${id} is ${fm.status}; it cannot be closed as done from there`);
+    if (fm.pr) throw new Error(`${id} has pull request #${fm.pr}; merge or close that instead`);
+    if (this.turns.has(id) || this.jobs.has(id)) throw new Error(`${id} has a step running; wait for it to park, then close it`);
+    const left = d.flavor === 'worker' && fm.worktree && fm.branch ? await this.releaseUnusedWorktree(this.absWorktree(fm.worktree), fm.branch, d.base_branch) : undefined;
+    this.store.mutateItem(id, [
+      { transition: { to: 'FINISHED', actor: 'user' } },
+      { activity: { actor: 'user', text: `closed as done without a pull request${reason?.trim() ? `: ${reason.trim()}` : ''}` } },
+      ...(left ? [{ activity: { actor: 'app' as const, text: left } }] : []),
+    ], 'user', { commit: `${id}: close as done` });
+    this.note('info', `${id}: closed as done`);
+    void this.tick();
+  }
+
+  /** Returns the Activity line describing what was removed, or what was left in place and why. */
+  private async releaseUnusedWorktree(cwd: string, branch: string, base: string | undefined): Promise<string> {
+    const keep = (why: string) => `left worktree ${cwd} and branch ${branch} in place: ${why}`;
+    if (!base) return keep('the base branch could not be resolved');
+    const brief = (e: unknown) => (e as Error).message.replace(/\s+/g, ' ').slice(0, 200);
+    let remote: string | null;
+    try {
+      const { clean, dirty } = await this.ports.git.status(cwd);
+      if (!clean) return keep(`uncommitted changes (${dirty.slice(0, 5).join(', ')})`);
+      await this.ports.git.fetch(this.repo);
+      const { ahead } = await this.ports.git.aheadBehind(cwd, `origin/${base}`, 'HEAD');
+      if (ahead > 0) return keep(`${ahead} commit(s) are not on origin/${base}`);
+      remote = await this.ports.git.remoteBranchSha(this.repo, branch);
+      if (remote && !await this.ports.git.isAncestor(this.repo, remote, `origin/${base}`)) return keep(`the pushed branch has commits that are not on origin/${base}`);
+    } catch (e) { return keep(`could not verify it is unused (${brief(e)})`); }
+    try {
+      await this.ports.git.worktreeRemove(this.repo, cwd, false);
+      await this.ports.git.worktreePrune(this.repo);
+      await this.ports.git.deleteLocalBranch(this.repo, branch);
+      if (remote) await this.ports.git.deleteRemoteBranch(this.repo, branch);
+    } catch (e) { return `removing the unused worktree ${cwd} / branch ${branch} stopped partway (${brief(e)}); finish it by hand`; }
+    return `removed unused worktree and branch ${branch} (clean, nothing ahead of origin/${base})`;
   }
 
   private withGodotLock<T>(fn: () => Promise<T>): Promise<T> {

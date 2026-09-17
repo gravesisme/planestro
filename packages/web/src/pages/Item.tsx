@@ -7,6 +7,8 @@ import { Markdown } from '../components/Markdown.tsx';
 import { statusLabel } from '../components/ItemCard.tsx';
 import { ItemConsole } from '../components/ItemConsole.tsx';
 
+const CLOSE_HINT = 'The work already landed some other way: finish this item without a pull request';
+
 function useAutosave(id: string, section: 'Description' | 'Notes' | 'Plan', initial: string) {
   const [text, setText] = useState(initial);
   const saved = useRef(initial);
@@ -44,6 +46,8 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
   const epics = state.items.filter((i) => i.frontmatter.kind === 'epic' && i.id !== item.id);
   const others = state.items.filter((i) => i.id !== item.id && i.derived.lane !== 'done');
   const field = (fields: Record<string, unknown>) => act(() => api.patchItem(item.id, { fields }));
+  const canClose = transitions.some((t) => t.to === 'FINISHED');
+  const closeAsDone = () => { const r = prompt(`Close ${item.id} as done without a pull request?\n\nIts worktree and branch are removed only if they hold no changes. Optional reason for the log:`); if (r !== null) void act(() => api.transition(item.id, 'FINISHED', r.trim() || undefined)); };
   const onPaste = (e: React.ClipboardEvent) => { const f = [...e.clipboardData.files][0]; if (f) { e.preventDefault(); void act(() => api.uploadAttachment(item.id, f)); } };
   const awaitingData = fm.awaiting_data as { questions?: { question: string; header?: string; options: { label: string; description?: string }[]; multiSelect?: boolean }[]; tool?: string; input?: Record<string, unknown> } | undefined;
 
@@ -57,7 +61,9 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           {fm.awaiting && <span className={`pill ${d.needs_you ? 'await' : ''}`}>awaiting {fm.awaiting.replace(/_/g, ' ')}</span>}
           {fm.op && <span className="pill">{fm.op.replace(/_/g, ' ')}</span>}
           {transitions.filter((t) => !(t.to === 'IN_PROGRESS' && fm.status === 'PLAN_READY') && !(t.to === 'PLAN_IN_PROGRESS' && fm.status === 'PLAN_READY')).map((t) => (
-            <button key={t.to} disabled={t.to === 'QUEUED' && (!d.deps_satisfied || !!d.base_branch_error)} title={d.base_branch_error ?? (!d.deps_satisfied ? 'dependencies not merged' : '')} onClick={() => act(() => api.transition(item.id, t.to))}>{t.label}</button>
+            t.to === 'FINISHED'
+              ? <button key={t.to} title={CLOSE_HINT} onClick={closeAsDone}>{t.label}…</button>
+              : <button key={t.to} disabled={t.to === 'QUEUED' && (!d.deps_satisfied || !!d.base_branch_error)} title={d.base_branch_error ?? (!d.deps_satisfied ? 'dependencies not merged' : '')} onClick={() => act(() => api.transition(item.id, t.to))}>{t.label}</button>
           ))}
           {fm.blocked && <button className="danger" onClick={() => { const m = prompt(`Unblock ${item.id} (${fm.blocked_reason}). Optional message for the session:`) ; if (m !== null) void act(() => api.unblock(item.id, m || undefined)); }}>unblock…</button>}
         </div>
@@ -82,7 +88,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
             <h2 style={{ margin: '0 0 8px' }}>Plan needs your approval</h2>
             {item.activity.filter((a) => a.actor === 'orchestrator').slice(-3).map((a, i) => <p key={i} className="small"><b>orchestrator:</b> {a.text}</p>)}
             <textarea placeholder="Optional notes to pass to the implementer" value={approval} onChange={(e) => setApproval(e.target.value)} style={{ minHeight: 60 }} />
-            <div className="row"><button className="primary" onClick={() => act(() => api.approvePlan(item.id, approval || undefined))}>Approve &amp; implement</button><span className="grow" /><input className="grow" placeholder="What should change?" value={reject} onChange={(e) => setReject(e.target.value)} /><button className="danger" disabled={!reject.trim()} onClick={() => act(() => api.rejectPlan(item.id, reject))}>Request changes</button></div>
+            <div className="row"><button className="primary" onClick={() => act(() => api.approvePlan(item.id, approval || undefined))}>Approve &amp; implement</button>{canClose && <button title={CLOSE_HINT} onClick={closeAsDone}>Already done — close…</button>}<span className="grow" /><input className="grow" placeholder="What should change?" value={reject} onChange={(e) => setReject(e.target.value)} /><button className="danger" disabled={!reject.trim()} onClick={() => act(() => api.rejectPlan(item.id, reject))}>Request changes</button></div>
           </div>
         )}
         {fm.awaiting === 'question' && awaitingData?.questions && (

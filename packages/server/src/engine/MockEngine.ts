@@ -22,6 +22,9 @@ export class MockEngine implements Engine {
   }
   async message(id: string, text: string): Promise<void> { this.store.mutateItem(id, [{ activity: { actor: 'user', text: `message (no engine): ${text}` } }], 'user'); }
   async respond(): Promise<void> { throw new Error('no engine is running'); }
+  async closeAsDone(id: string, reason?: string): Promise<void> {
+    this.store.mutateItem(id, [{ transition: { to: 'FINISHED', actor: 'user' } }, { activity: { actor: 'user', text: `closed as done without a pull request${reason?.trim() ? `: ${reason.trim()}` : ''}` } }], 'user', { commit: `${id}: close as done` });
+  }
   sessions(): SessionView[] { return []; }
   private note(level: 'info' | 'warn' | 'error', message: string): void { const e: ServerEvent = { type: 'engine.log', level, message }; this.log.push(e); this.emit(e); }
 }

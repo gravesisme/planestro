@@ -79,8 +79,10 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   api.post('/items/:id/transition', async (c) => {
     try {
       const id = c.req.param('id');
-      const { to } = z.object({ to: z.enum(STATUSES) }).parse(await c.req.json());
+      const { to, reason } = z.object({ to: z.enum(STATUSES), reason: z.string().optional() }).parse(await c.req.json());
       const it = store.requireItem(id);
+      // Closing without a PR goes through the engine: it decides what happens to the worktree and branch.
+      if (to === 'FINISHED') { await engine.closeAsDone(id, reason); return c.json(itemView(store, store.requireItem(id))); }
       const d = store.derived(it);
       if (to === 'QUEUED' && !d.deps_satisfied) throw new Error('dependencies are not merged yet');
       if (to === 'QUEUED' && d.base_branch_error) throw new Error(d.base_branch_error);
