@@ -7,6 +7,8 @@ import type { Runner } from '@planestro/shared';
 export interface WorktreeEntry { path: string; head: string; branch?: string; bare?: boolean; prunable?: boolean }
 export interface RebaseResult { ok: boolean; conflicts: string[]; head: string }
 
+export interface ChangedFile { path: string; change: 'added' | 'modified' | 'deleted'; bytes?: number }
+
 export interface GitPort {
   fetch(repo: string): Promise<void>;
   revParse(cwd: string, ref: string): Promise<string>;
@@ -33,6 +35,11 @@ export interface GitPort {
   deleteLocalBranch(repo: string, branch: string): Promise<void>;
   isAncestor(repo: string, ancestor: string, descendant: string): Promise<boolean>;
   log(cwd: string, range: string, n: number): Promise<string>;
+  /** What `head` changed since it left `base` (three-dot: against their merge base), with the size of each surviving file. */
+  changedFiles(cwd: string, base: string, head: string): Promise<ChangedFile[]>;
+  mergeBase(cwd: string, a: string, b: string): Promise<string | null>;
+  /** A file's bytes at a ref, or null when it does not exist there. */
+  readBlob(cwd: string, ref: string, path: string): Promise<Buffer | null>;
 }
 
 export type CiState = 'none' | 'pending' | 'success' | 'failure' | 'cancelled';

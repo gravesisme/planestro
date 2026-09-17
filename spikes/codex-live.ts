@@ -73,6 +73,7 @@ async function until(what: string, pred: () => boolean, ms = 15 * 60_000) {
 const failIfBlocked = (id: string) => { if (fm(id).blocked) throw new Error(`${id} blocked (${fm(id).blocked_reason}): ${store.getItem(id)!.file.sections.find((s) => s.title === 'Activity')!.body.split('\n').slice(-2).join(' | ')}`); return false; };
 const onMain = (path: string) => { git(repo, 'fetch', '-q', 'origin'); try { return execFileSync('git', ['-C', repo, 'cat-file', '-s', `origin/main:${path}`], { encoding: 'utf8' }).trim(); } catch { return undefined; } };
 
+const before0Ref: { v: Buffer | null } = { v: null };
 async function artItem(sendBack: boolean) {
   const item = store.createItem({ title: 'App icon: a teal wave', implementer: 'codex-art', description: 'Generate the app icon and save it as `assets/icon.png`: a single stylised teal ocean wave on a dark navy rounded-square tile, flat vector look, transparent outside the tile, 1024×1024. Commit it.' });
   store.transition(item.id, 'QUEUED', 'user');
@@ -83,9 +84,12 @@ async function artItem(sendBack: boolean) {
   await until('Codex committed, PR opened, CI green, parked for review', () => failIfBlocked(item.id) || fm(item.id).awaiting === 'review');
   log(`  codex thread ${fm(item.id).agent_sessions?.codex} · ${fm(item.id).agent_turns} turn(s) · ${fm(item.id).tokens} tokens · PR #${fm(item.id).pr}`);
   if (sendBack) {
-    await (engine as any).requestArtChanges(item.id, 'Make the tile background a lighter, brighter blue so the wave has less contrast with it. Keep everything else.');
+    log(`  reviewing: ${(await engine.reviewImages(item.id)).map((i) => `${i.path} ${i.width}x${i.height} ${i.bytes}B`).join(', ')}`);
+    before0Ref.v = await engine.reviewImage(item.id, 'assets/icon.png', 'after');
+    await engine.requestReviewChanges(item.id, 'Make the tile background a lighter, brighter blue so the wave has less contrast with it. Keep everything else.');
     await until('sent back; Codex revised on the same thread and it is parked for review again', () => failIfBlocked(item.id) || (fm(item.id).awaiting === 'review' && (fm(item.id).agent_turns ?? 0) >= 2));
   }
+  if (sendBack) { const after = await engine.reviewImage(item.id, 'assets/icon.png', 'after'); log(`  revision differs from the first delivery: ${Boolean(before0Ref.v && after && !after.equals(before0Ref.v))}`); }
   await engine.releaseHold(item.id, 'approved in the live acceptance run');
   await until('merged and cleaned up', () => failIfBlocked(item.id) || fm(item.id).status === 'FINISHED');
   const size = onMain('assets/icon.png');

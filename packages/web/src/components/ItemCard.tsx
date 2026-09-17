@@ -24,6 +24,7 @@ export function ItemCard({ item, sortable = true, onSelect }: { item: ItemView; 
       <ContextMenu.Trigger asChild>
         <div ref={setNodeRef} style={style} {...attributes} {...listeners} className={`card ${d.needs_you ? 'needs' : ''} ${fm.blocked ? 'blocked' : ''} ${isDragging ? 'dragging' : ''}`} onClick={() => onSelect?.(item.id)} onDoubleClick={() => nav(`/items/${item.id}`)}>
           <div><span className="id">{item.id}</span><span className="title">{fm.title}</span></div>
+          {fm.awaiting === 'review' && <div className="checker card-thumb"><img src={`/api/items/${item.id}/thumb?v=${encodeURIComponent(fm.updated_at)}`} alt="" onError={(e) => { (e.currentTarget.parentElement as HTMLElement).hidden = true; }} /></div>}
           <div className="meta">
             <span className="tag">{fm.category}</span>
             {fm.kind === 'epic' && <span className="tag epic">EPIC {children.length ? `${merged}/${children.length}` : ''}</span>}

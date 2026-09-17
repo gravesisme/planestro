@@ -213,6 +213,8 @@ export const Config = z.object({
     auto_push: z.boolean().default(true),
     checkpoint_interval_min: z.number().positive().default(60),
   }).default({ auto_commit: true, auto_push: true, checkpoint_interval_min: 60 }),
+  /** Reviewing what a hold_for_review model made: thumbnails are also shown at `image_scale`× (a pixel-art project sets its display scale), and one changed file over `max_file_bytes` blocks the item before a PR is opened. */
+  review: z.object({ image_scale: z.number().int().min(1).max(16).default(1), max_file_bytes: z.number().int().positive().default(10_000_000) }).default({ image_scale: 1, max_file_bytes: 10_000_000 }),
   attachments: z.object({ managed_max_bytes: z.number().int().positive().default(2_000_000) }).default({ managed_max_bytes: 2_000_000 }),
 });
 export type Config = z.infer<typeof Config>;

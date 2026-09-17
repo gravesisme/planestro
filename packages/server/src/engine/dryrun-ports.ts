@@ -1,3 +1,4 @@
+import { placeholderPng } from './placeholderPng.ts';
 import type { GitPort, GhPort, ProcPort, ClaudePort, AgentPort, AgentTurnOptions, WorktreeEntry, RebaseResult, CiStatus, PrInfo, TurnOptions, TurnResult, CustomTurnOptions } from './ports.ts';
 
 /**
@@ -11,6 +12,8 @@ export class FakeWorld {
   localBranches = new Set<string>();
   remoteBranches = new Map<string, string>();     // branch → sha
   commits = new Map<string, number>();            // worktree → commits ahead
+  /** Files a fake agent "committed", by branch — so a dry run has real images to review. */
+  files = new Map<string, Map<string, Buffer>>();
   dirty = new Set<string>();
   prs = new Map<number, PrInfo & { polls: number; failOnce: boolean }>();
   nextPr = 100;
@@ -23,6 +26,9 @@ export class FakeWorld {
 
 export class DryRunGitPort implements GitPort {
   constructor(private readonly w: FakeWorld) {}
+  async changedFiles(_cwd: string, _base: string, head: string) { return [...(this.w.files.get(head.replace(/^origin\//, '')) ?? new Map<string, Buffer>()).entries()].map(([path, buf]) => ({ path, change: 'added' as const, bytes: buf.length })); }
+  async mergeBase() { return null; }
+  async readBlob(_cwd: string, ref: string, path: string) { return this.w.files.get(ref.replace(/^origin\//, ''))?.get(path) ?? null; }
   private say(m: string) { this.w.log(`Would ${m}`); }
   async fetch(repo: string) { this.say(`git fetch origin (in ${repo})`); }
   async revParse(cwd: string, ref: string) { if (ref === 'HEAD') return this.w.worktrees.get(cwd)?.head ?? this.w.sha(); return this.w.remoteBranches.get(ref.replace(/^origin\//, '')) ?? this.w.baseBranches[ref] ?? this.w.sha(); }
@@ -98,6 +104,14 @@ export class DryRunCodexPort implements AgentPort<AgentTurnOptions> {
     o.onOutput(`(dry-run codex) prompt: ${o.prompt.slice(0, 120).replace(/\n/g, ' ')}…`);
     await o.tools.append_activity('dry-run codex: pretended to generate the assets and commit them');
     this.w.commits.set(o.cwd, (this.w.commits.get(o.cwd) ?? 0) + 1);
+    // A picture per turn, so reviewing (and sending back) shows something real in a dry run.
+    const branch = this.w.worktrees.get(o.cwd)?.branch;
+    if (branch) {
+      const files = this.w.files.get(branch) ?? new Map<string, Buffer>();
+      const path = [...files.keys()][0] ?? `assets/${o.itemId.toLowerCase()}.png`;
+      files.set(path, placeholderPng(`${o.itemId}#${this.w.commits.get(o.cwd)}`));
+      this.w.files.set(branch, files);
+    }
     const summary = `Dry-run Codex turn for ${o.itemId}: assets generated and committed (simulated).`;
     await o.tools.report_done(summary);
     return { sessionId, subtype: 'success', isError: false, costUsd: 0, tokens: 1500, numTurns: 1, text: summary, done: summary };

@@ -7,6 +7,7 @@ import { Markdown } from '../components/Markdown.tsx';
 import { statusLabel } from '../components/ItemCard.tsx';
 import { ItemConsole } from '../components/ItemConsole.tsx';
 import { CLOSE_HINT, confirmMove, promptCloseAsDone } from '../components/QuickActions.tsx';
+import { ReviewPanel } from '../components/ReviewPanel.tsx';
 
 function useAutosave(id: string, section: 'Description' | 'Notes' | 'Plan', initial: string) {
   const [text, setText] = useState(initial);
@@ -103,11 +104,12 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
             <QuestionForm questions={awaitingData.questions} onSubmit={(answers) => act(() => api.respond(item.id, { kind: 'question', answers }))} />
           </div>
         )}
-        {fm.status === 'IN_REVIEW' && (fm.awaiting === 'review' || fm.skip_merge) && (
+        <ReviewPanel item={item} />
+        {fm.status === 'IN_REVIEW' && fm.skip_merge && (
           <div className="approval">
-            <h2 style={{ margin: '0 0 8px' }}>{fm.awaiting === 'review' ? 'Waiting for your review before it merges' : 'Held out of the merge queue'}</h2>
-            <p className="small">{fm.awaiting === 'review' ? `CI is green. ${implementerDef?.label ?? 'This model'} is a hold-for-review model: look at what it made${fm.pr ? ` (PR #${fm.pr})` : ''}, then let it merge.` : 'Releasing it sends it back through sync and CI before it merges.'}</p>
-            <div className="row"><button className="primary" onClick={() => { const n = prompt(`Let ${item.id} merge? Optional note for the log:`); if (n !== null) void act(() => api.releaseHold(item.id, n || undefined)); }}>{fm.awaiting === 'review' ? 'Approve & merge' : 'Release hold'}</button></div>
+            <h2 style={{ margin: '0 0 8px' }}>Held out of the merge queue</h2>
+            <p className="small">Releasing it sends it back through sync and CI before it merges.</p>
+            <div className="row"><button className="primary" onClick={() => { const n = prompt(`Let ${item.id} merge? Optional note for the log:`); if (n !== null) void act(() => api.releaseHold(item.id, n || undefined)); }}>Release hold</button></div>
           </div>
         )}
         {fm.awaiting === 'permission' && awaitingData && (

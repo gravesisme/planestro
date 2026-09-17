@@ -6,6 +6,10 @@ import type { Engine, SessionView } from './Engine.ts';
 import type { Ports, TurnPhase, TurnResult, TurnTools, PermissionRequest } from './ports.ts';
 import { makePolicy, ruleFor, allowedByRules, BASE_ALLOWED } from './policy.ts';
 import { Orchestrator } from './orchestrator.ts';
+import { pngSize } from './placeholderPng.ts';
+import type { ReviewImage } from './Engine.ts';
+
+const IMAGE_FILE = /\.(png|jpe?g|webp|gif|svg)$/i;
 
 export interface EngineOptions { sleep?: (ms: number) => Promise<void>; tickMs?: number; now?: () => string; ciWorkflow?: string }
 
@@ -392,11 +396,13 @@ export class LiveEngine implements Engine {
     const { ahead } = await this.ports.git.aheadBehind(cwd, `origin/${base}`, 'HEAD');
     if (fm.status === 'IN_PROGRESS') {
       if (ahead === 0) { this.block(id, 'no_commits', 'the session reported done but the branch has no commits ahead of its base'); return; }
+      if (await this.blockOversize(id)) return;
       if (!result.done) this.store.mutateItem(id, [{ activity: { actor: 'app', text: 'turn ended with commits but without report_done; proceeding to a pull request' } }], 'engine');
       await this.openPr(id, result.done);
       return;
     }
     if (fm.status === 'IN_REVIEW') {
+      if (await this.blockOversize(id)) return;
       const head = await this.ports.git.revParse(cwd, 'HEAD');
       const moved = head !== fm.ci_head_sha;
       this.store.mutateItem(id, [
@@ -888,6 +894,51 @@ export class LiveEngine implements Engine {
     const phase = this.phaseFor(fm.status);
     if (message && phase) this.runJob(id, () => this.runTurnFor(id, phase, `${this.resumeNote(id, 'a decision from the user')}\n\n${message}`));
     else void this.tick();
+  }
+
+  // ---- review: what did the branch make? Answered from git alone; no model is asked.
+  private reviewRefs(id: string): { cwd: string; base: string; head: string } | undefined {
+    const item = this.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    const base = this.store.derived(item).base_branch;
+    if (!fm.branch || !base || fm.status === 'FINISHED') return undefined;
+    return { cwd: fm.worktree ? this.absWorktree(fm.worktree) : this.repo, base: `origin/${base}`, head: fm.branch };
+  }
+
+  /** One file over `review.max_file_bytes` stops the item before a pull request carries it anywhere. */
+  private async blockOversize(id: string): Promise<boolean> {
+    const refs = this.reviewRefs(id);
+    if (!refs) return false;
+    const limit = this.store.config.review.max_file_bytes;
+    const big = (await this.ports.git.changedFiles(refs.cwd, refs.base, refs.head).catch(() => [])).filter((f) => (f.bytes ?? 0) > limit);
+    if (!big.length) return false;
+    this.block(id, 'asset_too_large', `${big.map((f) => `${f.path} (${Math.round((f.bytes ?? 0) / 1e6 * 10) / 10} MB)`).join(', ')} exceed${big.length === 1 ? 's' : ''} review.max_file_bytes (${Math.round(limit / 1e6 * 10) / 10} MB); shrink it, or raise the limit`);
+    return true;
+  }
+
+  async reviewImages(id: string): Promise<ReviewImage[]> {
+    const refs = this.reviewRefs(id);
+    if (!refs) return [];
+    const files = (await this.ports.git.changedFiles(refs.cwd, refs.base, refs.head).catch(() => [])).filter((f) => IMAGE_FILE.test(f.path));
+    return Promise.all(files.map(async (f) => ({ ...f, ...(f.change !== 'deleted' && /\.png$/i.test(f.path) ? pngSize(await this.ports.git.readBlob(refs.cwd, refs.head, f.path)) : {}) })));
+  }
+
+  /** Only files the branch actually changed can be read through here. */
+  async reviewImage(id: string, path: string, side: 'before' | 'after'): Promise<Buffer | null> {
+    const refs = this.reviewRefs(id);
+    if (!refs || !(await this.reviewImages(id)).some((f) => f.path === path)) return null;
+    if (side === 'after') return this.ports.git.readBlob(refs.cwd, refs.head, path);
+    const mb = await this.ports.git.mergeBase(refs.cwd, refs.base, refs.head);
+    return mb ? this.ports.git.readBlob(refs.cwd, mb, path) : null;
+  }
+
+  /** Send a reviewed item back to the session that made it. The hold stays: the revision comes back for review. */
+  async requestReviewChanges(id: string, note: string): Promise<void> {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    if (fm.status !== 'IN_REVIEW' || fm.awaiting !== 'review') throw new Error(`${id} is not waiting for a review`);
+    if (!note.trim()) throw new Error('say what should change');
+    this.store.mutateItem(id, [{ unset: ['awaiting', 'awaiting_data'] }, { activity: { actor: 'user', text: `review: changes requested: ${note.trim()}` } }], 'user', { commit: `${id}: request review changes` });
+    this.runJob(id, () => this.runTurnFor(id, 'fix', `${this.resumeNote(id, 'your review')}\n\nThe user reviewed what you delivered and asks for changes:\n\n${note.trim()}\n\nRevise it in your worktree, commit on your branch, leave the tree clean, and finish as before. It will come back to the user for another look.`));
   }
 
   /**

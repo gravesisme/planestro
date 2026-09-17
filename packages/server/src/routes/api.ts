@@ -95,6 +95,25 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
     } catch (e) { return fail(c, e); }
   });
   api.post('/items/:id/plan/approve', async (c) => { try { const { notes } = z.object({ notes: z.string().optional() }).parse(await c.req.json().catch(() => ({}))); await engine.approvePlan(c.req.param('id'), notes); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
+  api.get('/items/:id/images', async (c) => { try { return c.json(await engine.reviewImages(c.req.param('id'))); } catch (e) { return fail(c, e); } });
+  api.get('/items/:id/thumb', async (c) => {
+    const id = c.req.param('id');
+    const first = (await engine.reviewImages(id).catch(() => [])).find((f) => f.change !== 'deleted' && !/\.svg$/i.test(f.path));
+    const buf = first ? await engine.reviewImage(id, first.path, 'after').catch(() => null) : null;
+    if (!first || !buf) return c.json({ error: 'not found' }, 404);
+    const ext = first.path.split('.').pop()!.toLowerCase();
+    return new Response(new Uint8Array(buf), { headers: { 'content-type': ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : `image/${ext}`, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' } });
+  });
+  api.get('/items/:id/image', async (c) => {
+    const path = c.req.query('path') ?? ''; const side = c.req.query('side') === 'before' ? 'before' : 'after';
+    const buf = await engine.reviewImage(c.req.param('id'), path, side).catch(() => null);
+    if (!buf) return c.json({ error: 'not found' }, 404);
+    const ext = path.split('.').pop()!.toLowerCase();
+    const type = ({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', svg: 'image/svg+xml' } as Record<string, string>)[ext] ?? 'application/octet-stream';
+    // SVG can carry script: serve it as an image only, never as a document.
+    return new Response(new Uint8Array(buf), { headers: { 'content-type': type, 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'", 'x-content-type-options': 'nosniff' } });
+  });
+  api.post('/items/:id/review/changes', async (c) => { try { const { note } = z.object({ note: z.string().min(1) }).parse(await c.req.json()); await engine.requestReviewChanges(c.req.param('id'), note); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
   api.post('/items/:id/hold/release', async (c) => { try { const { note } = z.object({ note: z.string().optional() }).parse(await c.req.json().catch(() => ({}))); await engine.releaseHold(c.req.param('id'), note); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
   api.post('/items/:id/plan/reject', async (c) => { try { const { message } = z.object({ message: z.string().min(1) }).parse(await c.req.json()); await engine.rejectPlan(c.req.param('id'), message); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
   api.post('/items/:id/message', async (c) => { try { const { text } = z.object({ text: z.string().min(1) }).parse(await c.req.json()); await engine.message(c.req.param('id'), text); return c.json({ ok: true }); } catch (e) { return fail(c, e); } });

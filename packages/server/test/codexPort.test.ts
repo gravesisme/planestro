@@ -56,7 +56,8 @@ describe('LiveCodexPort (against a recorded fake codex)', () => {
     expect(t.calls).toEqual(['done:Generated icon.png and committed it.']);
     const a = t.args();
     expect(a.slice(0, 5)).toEqual(['exec', '-s', 'workspace-write', '-C', t.dir]);
-    for (const flag of ['--json', '--ignore-user-config', '--output-schema', '--add-dir', '-m', '-i']) expect(a, flag).toContain(flag);
+    for (const flag of ['--json', '--ignore-user-config', '--output-schema', '-m', '-i']) expect(a, flag).toContain(flag);
+    expect(a).not.toContain('--add-dir');                       // it grants write access; the data dir stays read-only to a worker
     expect(a[a.length - 1]).toMatch(/^RULES\n\n---\n\ndraw it/);
     expect(t.output).toEqual(['Drawing the icon.', "→ 'git add -A && git commit -m icon'"]);
   });
@@ -69,6 +70,8 @@ describe('LiveCodexPort (against a recorded fake codex)', () => {
     const a = t.args();
     expect(a.slice(0, 3)).toEqual(['exec', 'resume', 'thread-9']);
     expect(a).not.toContain('-s'); expect(a).not.toContain('-C');
+    expect(a[a.indexOf('-c') + 1]).toBe('sandbox_mode="workspace-write"'); // a resumed thread comes back read-only otherwise
+    expect(a).toContain('--output-schema');
     const b = await t.port.runTurn(t.opts('STUCK'));
     expect(b.blocked).toBe('the sandbox refused the network');
     expect(t.calls).toEqual(['blocked:the sandbox refused the network']);
