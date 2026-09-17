@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
-import type { Status } from '@planestro/shared';
+import { canPlan, type Status } from '@planestro/shared';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { Markdown } from '../components/Markdown.tsx';
@@ -68,7 +68,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
         </div>
         <div className="controls">
           <label>category <select value={fm.category} onChange={(e) => field({ category: e.target.value })}>{state.config.categories.map((c) => <option key={c}>{c}</option>)}</select></label>
-          {fm.kind !== 'epic' && <label>planner <select value={fm.planner ?? ''} onChange={(e) => field({ planner: e.target.value })}>{state.config.models.filter((m) => !m.external).map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}</select></label>}
+          {fm.kind !== 'epic' && <label>planner <select value={fm.planner ?? ''} onChange={(e) => field({ planner: e.target.value })}>{state.config.models.filter(canPlan).map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}</select></label>}
           {fm.kind !== 'epic' && <label>implementer <select value={fm.implementer ?? ''} onChange={(e) => field({ implementer: e.target.value })}>{state.config.models.map((m) => <option key={m.id} value={m.id}>{m.label}{m.external ? ' (external)' : ''}</option>)}</select></label>}
           {fm.kind !== 'epic' && <label>parent epic <select value={fm.parent ?? ''} onChange={(e) => field({ parent: e.target.value || null })}><option value="">none</option>{epics.map((e) => <option key={e.id} value={e.id}>{e.id} {e.frontmatter.title}</option>)}</select></label>}
           {fm.kind !== 'epic' && !d.external && <label><input type="checkbox" checked={!!fm.auto_approve_plan} onChange={(e) => field({ auto_approve_plan: e.target.checked })} disabled title="Available once the orchestrator exists (Phase 4)" /> auto-approve plan</label>}

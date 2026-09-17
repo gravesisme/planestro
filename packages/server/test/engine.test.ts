@@ -11,7 +11,7 @@ import { makeFixture, git, sleep } from './helpers.ts';
 let store: DataStore | undefined; let engine: LiveEngine | undefined;
 afterEach(async () => { await engine?.stop(); store?.close(); store = undefined; engine = undefined; });
 
-async function setup(opts: { ci?: string; claude?: (world: FakeWorld) => Ports['claude'] } = {}) {
+async function setup(opts: { ci?: string; claude?: (world: FakeWorld) => Ports['agents']['claude'] } = {}) {
   const { dataDir, codeRepo } = makeFixture();
   mkdirSync(join(codeRepo, '.git', 'info'), { recursive: true });
   const cfg = join(dataDir, 'planestro.yml');
@@ -21,7 +21,7 @@ async function setup(opts: { ci?: string; claude?: (world: FakeWorld) => Ports['
   const events: ServerEvent[] = [];
   store = await DataStore.open(dataDir, { emit: (e) => events.push(e) });
   const world = new FakeWorld(() => {}, { 'origin/trunk': 'f'.repeat(40) });
-  const ports: Ports = { mode: 'dry-run', git: new DryRunGitPort(world), gh: new DryRunGhPort(world), proc: new DryRunProcPort(world), claude: opts.claude ? opts.claude(world) : new DryRunClaudePort(world) };
+  const ports: Ports = { mode: 'dry-run', git: new DryRunGitPort(world), gh: new DryRunGhPort(world), proc: new DryRunProcPort(world), agents: { claude: opts.claude ? opts.claude(world) : new DryRunClaudePort(world) } };
   engine = new LiveEngine(store, ports, (e) => events.push(e), { sleep: async () => {}, tickMs: 50 });
   return { store, engine, world, events, dataDir, codeRepo };
 }
@@ -174,7 +174,7 @@ describe('LiveEngine lifecycle (dry-run ports)', () => {
     const it2 = store.createItem({ title: 'Chain' });
     store.mutateItem(it2.id, [{ set: { status: 'IN_PROGRESS', branch: 'tp/x', worktree: '.claude/worktrees/tp-x', awaiting: 'permission', awaiting_data: { tool: 'Bash', input: { command: chain } } } }], 'engine');
     let oneShotResult: string | undefined;
-    (engine as any).ports.claude.runTurn = async (o: TurnOptions) => {
+    (engine as any).ports.agents.claude.runTurn = async (o: TurnOptions) => {
       oneShotResult = (await o.onPermission({ tool: 'Bash', input: { command: chain } })).action;
       expect((await o.onPermission({ tool: 'Bash', input: { command: chain } })).action).toBe('park'); // consumed
       return { sessionId: 's2', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', parked: 'permission' };
@@ -283,7 +283,7 @@ describe('LiveEngine lifecycle (dry-run ports)', () => {
     const world2 = new FakeWorld(() => {}, { 'origin/trunk': 'f'.repeat(40) });
     const wtPath = join(store.codeRepoPath(), '.claude/worktrees/tp-1-paused');
     world2.worktrees.set(wtPath, { path: wtPath, head: 'a'.repeat(40), branch: 'tp/1-paused' });
-    const engine2 = new LiveEngine(store, { mode: 'dry-run', git: new DryRunGitPort(world2), gh: new DryRunGhPort(world2), proc: new DryRunProcPort(world2), claude: new DryRunClaudePort(world2) }, () => {}, { sleep: async () => {}, tickMs: 50 });
+    const engine2 = new LiveEngine(store, { mode: 'dry-run', git: new DryRunGitPort(world2), gh: new DryRunGhPort(world2), proc: new DryRunProcPort(world2), agents: { claude: new DryRunClaudePort(world2) } }, () => {}, { sleep: async () => {}, tickMs: 50 });
     await engine2.start();
     await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
     const activity = store.getItem(item.id)!.file.sections.find((s) => s.title === 'Activity')!.body;

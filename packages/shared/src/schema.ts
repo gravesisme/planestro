@@ -134,13 +134,25 @@ export const PromptFrontmatter = z.object({
 export type PromptFrontmatter = z.infer<typeof PromptFrontmatter>;
 export const PROMPT_KEY_ORDER: readonly string[] = ['schema', 'name', 'kind', 'role', 'title', 'description', 'model', 'favorite'];
 
+/** Which agent CLI runs a model's turns. `claude` plans and implements; `codex` implements only. */
+export const RUNNERS = ['claude', 'codex'] as const;
+export type Runner = typeof RUNNERS[number];
+
 export const ModelDef = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
+  runner: z.enum(RUNNERS).default('claude'),
   claude_model: z.string().optional(),
+  /** Passed to `codex exec -m`; omitted, Codex uses the model its own config names. */
+  codex_model: z.string().optional(),
+  /** One line on what the model is for. The epic planner routes children by it. */
+  description: z.string().optional(),
   external: z.boolean().default(false),
 });
 export type ModelDef = z.infer<typeof ModelDef>;
+
+/** A planner needs plan mode and the `submit_plan` tool: only the Claude runner has them. */
+export function canPlan(m: Pick<ModelDef, 'runner' | 'external'>): boolean { return !m.external && (m.runner ?? 'claude') === 'claude'; }
 
 export const Config = z.object({
   schema_version: z.number().int().positive(),

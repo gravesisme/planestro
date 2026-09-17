@@ -42,7 +42,7 @@ export const TRANSITIONS: readonly Transition[] = [
   { from: 'IN_PROGRESS', to: 'FINISHED', by: U, flavors: ['worker', 'external'], sets: 'finished_at', label: CLOSE_AS_DONE },
 ];
 
-export function flavorOf(item: Pick<ItemFrontmatter, 'kind' | 'implementer'>, models: readonly ModelDef[]): Flavor {
+export function flavorOf(item: Pick<ItemFrontmatter, 'kind' | 'implementer'>, models: readonly Pick<ModelDef, 'id' | 'external'>[]): Flavor {
   if (item.kind === 'epic') return 'epic';
   const m = models.find((x) => x.id === item.implementer);
   return m?.external ? 'external' : 'worker';

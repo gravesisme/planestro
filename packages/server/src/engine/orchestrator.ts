@@ -36,7 +36,7 @@ export class Orchestrator {
     private readonly pausedRef: () => boolean,
   ) {}
 
-  get enabled(): boolean { return typeof this.ports.claude.runCustomTurn === 'function'; }
+  get enabled(): boolean { return typeof this.ports.agents.claude.runCustomTurn === 'function'; }
 
   private get stateFile(): string { return join(this.store.dataDir, '.planestro', 'orchestrator.yml'); }
   private readState(): OrchState {
@@ -78,7 +78,7 @@ export class Orchestrator {
     const prompt = `${state.session_id ? '' : this.systemIntro() + '\n\n'}# Wake: ${events.map((e) => e.type).join(', ')} — ${isoLocal()}\n\n${packet}\n\nHandle what needs judgment using the planestro tools, then call done_with_wake with a one-line summary. Everything mechanical is already handled by the app; do not attempt git or gh operations.`;
     let doneSummary = '';
     const model = this.store.config.models.find((m) => m.id === cfg.model)?.claude_model ?? cfg.model;
-    const result: TurnResult = await this.ports.claude.runCustomTurn!({
+    const result: TurnResult = await this.ports.agents.claude.runCustomTurn!({
       label: events.map((e) => e.type).join(','), cwd: this.store.codeRepoPath(), model,
       permissionMode: 'dontAsk', prompt, resume: state.session_id, maxTurns: 30,
       systemAppend: this.systemIntro(),

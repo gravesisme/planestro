@@ -1,3 +1,4 @@
+import type { Runner } from '@planestro/shared';
 /**
  * Everything that touches the world goes through a port. `Live*` ports act; `DryRun*`
  * ports log `Would …` and keep an in-memory fake world so the pipeline still advances.
@@ -65,25 +66,38 @@ export interface TurnTools {
   get_item(): Promise<string>;
 }
 export interface PermissionRequest { tool: string; input: Record<string, unknown> }
-export interface TurnOptions {
+/** What every runner needs for a worker turn. */
+export interface AgentTurnOptions {
   itemId: string;
   phase: TurnPhase;
   cwd: string;
-  model: string;
-  permissionMode: 'plan' | 'acceptEdits';
+  /** The runner's own model id; undefined lets the CLI use its configured default. */
+  model?: string;
   prompt: string;
   systemAppend: string;
   resume?: string;
-  allowedTools: string[];
   extraDirs: string[];
-  maxBudgetUsd?: number;
+  /** Files to attach to the prompt, for runners that take images (absolute paths). */
+  images?: string[];
   tools: TurnTools;
-  /** Decide a permission prompt. Return 'park' to persist + deny + park, 'deny' with a reason, or 'allow'. */
-  onPermission(req: PermissionRequest): Promise<{ action: 'allow' } | { action: 'deny'; message: string } | { action: 'park' }>;
   onQuestion(questions: unknown[]): Promise<void>;
   onOutput(text: string): void;
   signal?: AbortSignal;
 }
+/**
+ * What only the Claude runner can honour: a permission mode, a tool allow-list, per-command
+ * permission decisions and a dollar budget. A runner typed on `AgentTurnOptions` cannot read these,
+ * so ignoring them is a fact of its type rather than an oversight.
+ */
+export interface ClaudeTurnExtras {
+  model: string;
+  permissionMode: 'plan' | 'acceptEdits';
+  allowedTools: string[];
+  maxBudgetUsd?: number;
+  /** Decide a permission prompt. Return 'park' to persist + deny + park, 'deny' with a reason, or 'allow'. */
+  onPermission(req: PermissionRequest): Promise<{ action: 'allow' } | { action: 'deny'; message: string } | { action: 'park' }>;
+}
+export type TurnOptions = AgentTurnOptions & ClaudeTurnExtras;
 export interface TurnResult {
   sessionId?: string;
   subtype: string;            // success | error_max_turns | error_max_budget_usd | error_during_execution | killed | spawn_error
@@ -118,10 +132,20 @@ export interface CustomTurnOptions {
   onOutput(text: string): void;
   signal?: AbortSignal;
 }
-export interface ClaudePort {
-  runTurn(opts: TurnOptions): Promise<TurnResult>;
+export interface AgentPort<O extends AgentTurnOptions = TurnOptions> {
+  runTurn(opts: O): Promise<TurnResult>;
   /** A turn with an arbitrary tool surface (the orchestrator). Non-planestro tool prompts are denied, never parked. Optional: test doubles may omit it. */
   runCustomTurn?(opts: CustomTurnOptions): Promise<TurnResult>;
 }
 
-export interface Ports { git: GitPort; gh: GhPort; proc: ProcPort; claude: ClaudePort; mode: 'live' | 'dry-run' }
+/** The name the first runner's port had before there were two. */
+export type ClaudePort = AgentPort;
+export type { Runner };
+
+/**
+ * Agents by runner. Claude is always present (it plans, and the orchestrator is a Claude session);
+ * another runner is present when its CLI is usable. The engine always passes full `TurnOptions`;
+ * each port's own type says how much of it it can see.
+ */
+export interface AgentPorts { claude: AgentPort; codex?: AgentPort<AgentTurnOptions> }
+export interface Ports { git: GitPort; gh: GhPort; proc: ProcPort; agents: AgentPorts; mode: 'live' | 'dry-run' }

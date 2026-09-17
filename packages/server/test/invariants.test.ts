@@ -18,3 +18,11 @@ describe('invariant 8: no literal default branch in engine code', () => {
     expect(offenders).toEqual([]);
   });
 });
+
+/** The agent seam: the lifecycle asks `ports.agents[runner]` and never learns which CLIs exist. */
+describe('agent seam: lifecycle code does not name a runner', () => {
+  it('LiveEngine and the orchestrator never mention codex; only ports, makePorts and sessions/ do', () => {
+    const dir = join(import.meta.dirname, '..', 'src', 'engine');
+    for (const f of ['LiveEngine.ts', 'orchestrator.ts', 'policy.ts']) expect(readFileSync(join(dir, f), 'utf8'), f).not.toMatch(/codex/i);
+  });
+});
