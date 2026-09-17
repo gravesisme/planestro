@@ -98,10 +98,22 @@ export class LiveEngine implements Engine {
     if (this._paused || this.stopping) return;
     try {
       this.admit();
+      this.nudgeStaleReviews();
       await this.driveEpics();
       await this.driveExternal();
       this.driveInReview();
     } catch (e) { this.note('error', `tick: ${(e as Error).message}`); }
+  }
+
+  /** A review nobody has looked at for `review.nudge_after_min` wakes the orchestrator once — to remind, never to approve. */
+  private nudgeStaleReviews(): void {
+    const after = this.store.config.review.nudge_after_min * 60_000;
+    for (const item of this.store.listItems()) {
+      const fm = item.file.frontmatter;
+      if (fm.awaiting !== 'review' || fm.op_data?.review_nudged || Date.now() - new Date(fm.updated_at).getTime() < after) continue;
+      this.store.mutateItem(item.id, [{ set: { op_data: { ...(fm.op_data ?? {}), review_nudged: true } } }], 'engine');
+      this.wakeOrchestrator('review_pending', item.id, { waiting_min: Math.round((Date.now() - new Date(fm.updated_at).getTime()) / 60_000) });
+    }
   }
 
   private admit(): void {
@@ -190,7 +202,7 @@ export class LiveEngine implements Engine {
     }
     this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }], 'engine');
     this.store.journal.end(opId, id, 'ok');
-    await this.runTurnFor(id, 'plan', this.store.renderPrompt('plan-item', this.store.requireItem(id)));
+    await this.runTurnFor(id, 'plan', this.withDelivered(id, 'plan-item', this.store.renderPrompt('plan-item', this.store.requireItem(id))));
   }
 
   async approvePlan(id: string, notes?: string): Promise<void> {
@@ -202,7 +214,7 @@ export class LiveEngine implements Engine {
       { set: { op_data: { ...(item.file.frontmatter.op_data ?? {}), approval_notes: notes ?? '' } } },
       ...(notes ? [{ activity: { actor: 'user' as const, text: `approval notes: ${notes}` } }] : []),
     ], 'user', { commit: `${id}: approve plan` });
-    this.runJob(id, () => this.runTurnFor(id, 'implement', this.store.renderPrompt('implement-plan', this.store.requireItem(id), { approval_notes: notes?.trim() || '(none)' })));
+    this.runJob(id, () => this.runTurnFor(id, 'implement', this.withDelivered(id, 'implement-plan', this.store.renderPrompt('implement-plan', this.store.requireItem(id), { approval_notes: notes?.trim() || '(none)' }))));
   }
 
   async rejectPlan(id: string, message: string): Promise<void> {
@@ -299,6 +311,7 @@ export class LiveEngine implements Engine {
     // Runners that report tokens instead of dollars are budgeted in worker turns.
     const metered = runner === 'claude';
     if (!metered && (fm.agent_turns ?? 0) >= this.store.config.budget_turns_per_item) { this.block(id, 'turn_budget', `${def.label} has used ${fm.agent_turns} of ${this.store.config.budget_turns_per_item} turns on this item (budget_turns_per_item); raise it or take the item over by hand`); return undefined; }
+    if (!metered && (fm.tokens ?? 0) >= this.store.config.budget_tokens_per_item) { this.block(id, 'token_budget', `${def.label} has used ${(fm.tokens ?? 0).toLocaleString()} of ${this.store.config.budget_tokens_per_item.toLocaleString()} tokens on this item (budget_tokens_per_item); raise it or take the item over by hand`); return undefined; }
     const resumeId = metered ? fm.session_id : fm.agent_sessions?.[runner];
     const images = fm.attachments.map((a) => this.store.attachmentAbsPath(a)).filter((p) => /\.(png|jpe?g|webp|gif)$/i.test(p));
     const policy = makePolicy(this.store.config, d.base_branch!, cwd);
@@ -537,7 +550,9 @@ export class LiveEngine implements Engine {
       this.store.journal.end(opId, id, 'aborted', { reason: 'held_after_ci' });
       return;
     }
-    this.store.mutateItem(id, [{ set: { op: 'merging', op_started_at: this.now(), ci_result: 'green' } }], 'engine');
+    // Record what this branch changed while it still exists: dependents are told from this, not from a summary.
+    const delivered = await this.deliveredBy(id).catch(() => undefined);
+    this.store.mutateItem(id, [{ set: { op: 'merging', op_started_at: this.now(), ci_result: 'green', ...(delivered ? { delivered } : {}) } }], 'engine');
     await this.ports.gh.mergePr(this.github, fm.pr!, { deleteBranch: true });
     const view = await this.ports.gh.prView(this.github, fm.pr!);
     if (view.state !== 'MERGED') { this.store.journal.end(opId, id, 'failed', { state: view.state }); this.block(id, 'merge_unverified', `gh reported the merge but PR #${fm.pr} is ${view.state}`); return; }
@@ -987,6 +1002,20 @@ export class LiveEngine implements Engine {
     else void this.tick();
   }
 
+  private async deliveredBy(id: string): Promise<ReviewImage[] | undefined> {
+    const refs = this.reviewRefs(id);
+    if (!refs) return undefined;
+    const files = (await this.ports.git.changedFiles(refs.cwd, refs.base, refs.head)).slice(0, 200);
+    return Promise.all(files.map(async (f) => ({ ...f, ...(f.change !== 'deleted' && /\.png$/i.test(f.path) ? pngSize(await this.ports.git.readBlob(refs.cwd, refs.head, f.path)) : {}) })));
+  }
+
+  /** A project whose copy of a template predates `{{dependencies.delivered}}` still gets the facts, appended. */
+  private withDelivered(id: string, template: string, rendered: string): string {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    if (!fm.depends_on.length || (this.store.getPrompt(template)?.file.body ?? '{{dependencies.delivered}}').includes('dependencies.delivered')) return rendered;
+    return `${rendered}\n\n## Delivered by the items this one waited on\n\n${this.store.deliveredText(fm.depends_on)}`;
+  }
+
   // ---- review: what did the branch make? Answered from git alone; no model is asked.
   private reviewRefs(id: string): { cwd: string; base: string; head: string } | undefined {
     const item = this.store.requireItem(id);
@@ -1028,7 +1057,7 @@ export class LiveEngine implements Engine {
     const fm = this.store.requireItem(id).file.frontmatter;
     if (fm.status !== 'IN_REVIEW' || fm.awaiting !== 'review') throw new Error(`${id} is not waiting for a review`);
     if (!note.trim()) throw new Error('say what should change');
-    this.store.mutateItem(id, [{ unset: ['awaiting', 'awaiting_data'] }, { activity: { actor: 'user', text: `review: changes requested: ${note.trim()}` } }], 'user', { commit: `${id}: request review changes` });
+    this.store.mutateItem(id, [{ unset: ['awaiting', 'awaiting_data'] }, { set: { op_data: { ...(fm.op_data ?? {}), review_nudged: false } } }, { activity: { actor: 'user', text: `review: changes requested: ${note.trim()}` } }], 'user', { commit: `${id}: request review changes` });
     this.runJob(id, () => this.runTurnFor(id, 'fix', `${this.resumeNote(id, 'your review')}\n\nThe user reviewed what you delivered and asks for changes:\n\n${note.trim()}\n\nRevise it in your worktree, commit on your branch, leave the tree clean, and finish as before. It will come back to the user for another look.`));
   }
 

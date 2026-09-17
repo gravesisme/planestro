@@ -16,6 +16,12 @@ Your plan for {{item.id}} — "{{item.title}}" was approved. Implement it now in
 
 {{approval_notes}}
 
+## Delivered by the items this one waited on
+
+{{dependencies.delivered}}
+
+Those files are already in your base branch. Use them as they are: do not recreate, regenerate or edit them unless the request says so. If one you need is missing, that is a reason to report blocked, not to improvise a substitute.
+
 ## Rules
 
 - Follow the project's own instructions (CLAUDE.md / AGENTS.md) for conventions, tests and checks. Run the project's test suite or checks before you finish and fix what you break.

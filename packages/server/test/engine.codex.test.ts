@@ -116,6 +116,10 @@ describe('mixed runners (dry-run ports)', () => {
     expect(fmOf(store, auth.id).agent_turns).toBe(1);
     await engine.unblock(auth.id, 'try again');
     await waitFor(() => fmOf(store, auth.id).blocked_reason === 'turn_budget');
+    // the token budget is the other half: an item that has spent its tokens does not get another turn
+    store.mutateItem(auth.id, [{ set: { agent_turns: 0, tokens: 600_000 } }], 'engine');
+    await engine.unblock(auth.id, 'and again');
+    await waitFor(() => fmOf(store, auth.id).blocked_reason === 'token_budget');
   });
 
   it('review: the branch\'s images come from git, changes go back to the same thread and return for review, approval merges', async () => {
@@ -198,6 +202,60 @@ describe('mixed runners (dry-run ports)', () => {
     expect(fmOf(store, epic.id).awaiting).toBeUndefined();
     expect(store.derived(store.getItem(epic.id)!).children).toEqual(created);
   });
+
+  it('THE DEMO: one epic, planned once — Codex art, reviewed by eye, blocks Claude logic, which is told what was delivered — lands as one PR', async () => {
+    const turns: { item: string; runner: string; phase: string; prompt: string }[] = [];
+    const spy = (runner: string, make: (w: FakeWorld) => any) => (world: FakeWorld) => { const inner = make(world); return { async runTurn(o: any): Promise<TurnResult> { turns.push({ item: o.itemId, runner, phase: o.phase, prompt: o.prompt }); return inner.runTurn(o); }, runCustomTurn: inner.runCustomTurn?.bind(inner) }; };
+    const { store, engine } = await setup({ claude: spy('claude', (w) => new DryRunClaudePort(w)), codex: spy('codex', (w) => new DryRunCodexPort(w)) });
+    const epic = store.createItem({ title: 'Frost wand', description: 'Add a Frost Wand: icon, header art, and the weapon itself.', kind: 'epic', category: 'Game' });
+    await engine.start();
+
+    await engine.planEpic(epic.id);                                                  // 1. I queue it
+    await waitFor(() => fmOf(store, epic.id).awaiting === 'breakdown_approval');
+    const proposal = fmOf(store, epic.id).awaiting_data!.children as any[];
+    const [icon, art, code, docs] = await engine.approveBreakdown(epic.id, proposal.map((c, i) => i === 0 ? { ...c, title: 'Frost wand icon' } : c)); // 2. I fix one title and approve
+    const finished = (id: string) => fmOf(store, id).status === 'FINISHED';
+
+    // each child is still planned and its plan approved: the Claude planner turns the brief into a precise spec for the artist
+    await waitFor(() => fmOf(store, icon).status === 'PLAN_READY' && fmOf(store, art).status === 'PLAN_READY', 12000);
+    expect(turns.filter((t) => t.phase === 'plan' && (t.item === icon || t.item === art)).every((t) => t.runner === 'claude')).toBe(true);
+    await engine.approvePlan(icon); await engine.approvePlan(art);
+    // Codex draws both in their own worktrees; each parks with something to look at
+    await waitFor(() => fmOf(store, icon).awaiting === 'review' && fmOf(store, art).awaiting === 'review', 12000);
+    expect((await engine.reviewImages(icon))[0]).toMatchObject({ change: 'added', width: 96 });
+    // …while nothing that waits on them has so much as a worktree
+    for (const id of [code, docs]) expect(fmOf(store, id)).toMatchObject({ status: 'QUEUED' });
+    expect(turns.filter((t) => t.item === code || t.item === docs)).toEqual([]);
+
+    await engine.requestReviewChanges(art, 'colder palette');                        // 3. I send one back with a note
+    await waitFor(() => fmOf(store, art).awaiting === 'review' && fmOf(store, art).agent_turns === 2);
+    await engine.releaseHold(icon); await engine.releaseHold(art);                   // 4. I approve both
+    await waitFor(() => finished(icon) && finished(art), 12000);
+    expect(fmOf(store, icon).delivered).toEqual([{ path: `assets/${icon.toLowerCase()}.png`, change: 'added', bytes: expect.any(Number), width: 96, height: 96 }]);
+
+    // only then do the Claude items start — told which files their dependencies delivered
+    await waitFor(() => fmOf(store, code).status === 'PLAN_READY', 12000);
+    const planning = turns.find((t) => t.item === code && t.phase === 'plan')!;
+    expect(planning.runner).toBe('claude');
+    expect(planning.prompt).toContain(`${icon} — "Frost wand icon" (merged into your base branch)`);
+    expect(planning.prompt).toContain(`added \`assets/${icon.toLowerCase()}.png\` (96×96`);
+    expect(planning.prompt).toContain(`added \`assets/${art.toLowerCase()}.png\``);
+    expect(fmOf(store, docs).status).toBe('QUEUED');                                 // still waiting on the code
+    await engine.approvePlan(code);
+    await waitFor(() => finished(code), 12000);
+    await waitFor(() => fmOf(store, docs).status === 'PLAN_READY', 12000);
+    await engine.approvePlan(docs);
+
+    // they land, the epic PR opens, CI is green, it merges
+    await waitFor(() => finished(docs) && finished(epic.id), 20000);
+    const order = turns.map((t) => `${t.runner}:${t.item}:${t.phase}`);
+    const firstLogic = order.findIndex((o) => o.startsWith(`claude:${code}`));
+    const lastArt = Math.max(...order.map((o, i) => o.startsWith('codex:') ? i : -1));
+    expect(firstLogic).toBeGreaterThan(lastArt);                                     // no logic turn before the last art turn
+    expect(new Set(turns.filter((t) => t.runner === 'codex').map((t) => t.item))).toEqual(new Set([icon, art]));
+    expect(fmOf(store, epic.id).pr).toBeDefined();
+    expect(activityOf(store, epic.id)).toMatch(/merged PR #/);
+  }, 60000);
 
   it('an engine without the Codex runner says so instead of failing obscurely', async () => {
     const { store, engine } = await setup({ noCodex: true });

@@ -6,6 +6,7 @@
  *
  *   npm run spike:codex-live -- item      one art item: plan → Codex draws and commits → PR → CI → review hold → approve → merged
  *   npm run spike:codex-live -- review    the same, sent back once with a note before approval
+ *   npm run spike:codex-live -- epic      a planned epic: two art children drawn by Codex block a (stand-in) Claude logic child
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
@@ -54,15 +55,31 @@ class LocalMergeGh extends DryRunGhPort {
   }
   override async mergePr(r: string, number: number, opts: { deleteBranch: boolean }) {
     const pr = this.world.prs.get(number)!;
-    git(repo, 'fetch', '-q', 'origin');
-    git(repo, 'checkout', '-q', pr.baseRefName); git(repo, 'merge', '-q', '--no-ff', '-m', `Merge PR #${number}`, `origin/${pr.headRefName}`); git(repo, 'push', '-q', 'origin', pr.baseRefName);
+    // in a scratch clone, so the engine's own worktrees and checkouts are never disturbed
+    const scratch = mkdtempSync(join(root, 'merge-'));
+    execFileSync('git', ['clone', '-q', remote, scratch]);
+    git(scratch, 'checkout', '-q', pr.baseRefName); git(scratch, 'merge', '-q', '--no-ff', '-m', `Merge PR #${number}`, `origin/${pr.headRefName}`); git(scratch, 'push', '-q', 'origin', pr.baseRefName);
     await super.mergePr(r, number, opts);
   }
 }
 
+/** The Claude side is not under test here, but with real git its "work" has to be a real commit. */
+class CommittingClaude extends DryRunClaudePort {
+  override async runTurn(o: Parameters<DryRunClaudePort['runTurn']>[0]) {
+    if (o.phase !== 'plan') {
+      const seen = ['assets/icon.png', 'assets/header.png'].filter((p) => existsSync(join(o.cwd, p)));
+      writeFileSync(join(o.cwd, `src/${o.itemId.toLowerCase()}.js`), `// ${o.itemId}: written by the stand-in implementer\n// art present in my base: ${seen.join(', ') || 'NONE'}\n`);
+      git(o.cwd, 'add', '-A'); git(o.cwd, 'commit', '-q', '-m', `${o.itemId}: stand-in implementation`);
+      deliveredSeen.set(o.itemId, { files: seen, prompt: o.prompt });
+    }
+    return super.runTurn(o);
+  }
+}
+const deliveredSeen = new Map<string, { files: string[]; prompt: string }>();
+
 const store = await DataStore.open(dataDir);
 const world = new FakeWorld(() => {}, {});
-const ports: Ports = { mode: 'live', git: new LiveGitPort(), gh: new LocalMergeGh(world), proc: new LiveProcPort(), agents: { claude: new DryRunClaudePort(world), codex: new LiveCodexPort() } };
+const ports: Ports = { mode: 'live', git: new LiveGitPort(), gh: new LocalMergeGh(world), proc: new LiveProcPort(), agents: { claude: new CommittingClaude(world), codex: new LiveCodexPort() } };
 const engine = new LiveEngine(store, ports, (e) => { if (e.type === 'session.output') console.log(`    │ ${String((e as any).text).split('\n')[0].slice(0, 150)}`); if (e.type === 'engine.log') log(`engine: ${(e as any).message}`); }, { tickMs: 500, sleep: (ms) => sleep(Math.min(ms, 300)) }); // the fake CI needs no real waiting
 const fm = (id: string) => store.getItem(id)!.file.frontmatter;
 async function until(what: string, pred: () => boolean, ms = 15 * 60_000) {
@@ -98,9 +115,48 @@ async function artItem(sendBack: boolean) {
   return item.id;
 }
 
+/** The planner is the dry-run one (a canned two-art / two-logic breakdown); the two art children are drawn by the real Codex CLI. */
+async function mixedEpic() {
+  const epic = store.createItem({ title: 'Tide chart view', kind: 'epic', description: 'A chart of the day\'s tide for the CLI\'s HTML report, with its own icon and header illustration. Teal on dark navy, flat vector look.' });
+  await engine.start();
+  await engine.planEpic(epic.id);
+  await until('the planner proposed a breakdown', () => failIfBlocked(epic.id) || fm(epic.id).awaiting === 'breakdown_approval');
+  const proposal = fm(epic.id).awaiting_data!.children as { title: string; implementer: string; depends_on?: number[] }[];
+  log(`  proposed: ${proposal.map((c, i) => `#${i} ${c.title} → ${c.implementer}${c.depends_on?.length ? ` (waits on ${c.depends_on.join(',')})` : ''}`).join(' | ')}`);
+  // What the user does in the breakdown editor: the canned proposal says "matching the existing art", and this
+  // repository has none — so give the artist a real brief. (Left as proposed, Codex correctly asks for a reference.)
+  const briefs = [
+    'Draw the icon for the tide chart view and save it as `assets/icon.png`: a single stylised teal wave crest inside a circle, flat vector look, teal (#19d3c5) on dark navy (#0b2545), transparent outside the circle, 512×512 PNG. There is no existing art to match: this sets the style. Commit it.',
+    'Draw the header illustration for the tide chart view and save it as `assets/header.png`: a wide, calm seascape band — layered teal waves under a dark navy sky with a small pale moon, flat vector look, the same teal (#19d3c5) and navy (#0b2545) as the icon, 1200×400 PNG, no text. There is no existing art to match. Commit it.',
+  ];
+  const edited = (proposal as any[]).map((c, i) => i < 2 ? { ...c, description: briefs[i] } : c);
+  const [icon, header, code, docs] = await engine.approveBreakdown(epic.id, edited);
+  const ok = (id: string) => failIfBlocked(id);
+  for (const art of [icon, header]) { await until(`${art} planned`, () => ok(art) || fm(art).status === 'PLAN_READY'); await engine.approvePlan(art); }
+  log('both art plans approved — the real Codex CLI draws them (one at a time: runner_limits.codex is 1)');
+  await until('both art children drawn by Codex, through CI, parked for review', () => ok(icon) || ok(header) || (fm(icon).awaiting === 'review' && fm(header).awaiting === 'review'), 25 * 60_000);
+  for (const art of [icon, header]) log(`  ${art}: ${(await engine.reviewImages(art)).map((i) => `${i.path} ${i.width}x${i.height}`).join(', ')}`);
+  if (fm(code).status !== 'QUEUED' || deliveredSeen.has(code)) throw new Error('the logic child started before the art merged');
+  log('  ✓ the logic child is still QUEUED: it waits on the art');
+  await engine.releaseHold(icon); await engine.releaseHold(header);
+  await until('art merged into the epic branch', () => ok(icon) || ok(header) || (fm(icon).status === 'FINISHED' && fm(header).status === 'FINISHED'));
+  await until('logic child planned — after the art', () => ok(code) || fm(code).status === 'PLAN_READY');
+  await engine.approvePlan(code);
+  await until('logic child merged', () => ok(code) || fm(code).status === 'FINISHED');
+  const saw = deliveredSeen.get(code)!;
+  if (saw.files.length !== 2) throw new Error(`the logic child's worktree did not contain the art: saw ${saw.files.join(', ') || 'nothing'}`);
+  if (!saw.prompt.includes('assets/icon.png') || !saw.prompt.includes('merged into your base branch')) throw new Error('the logic child was not told what its dependencies delivered');
+  log(`  ✓ the logic child's worktree had ${saw.files.join(' and ')}, and its prompt listed them as delivered`);
+  await until('docs child planned', () => ok(docs) || fm(docs).status === 'PLAN_READY'); await engine.approvePlan(docs);
+  await until('epic PR opened and merged; epic finished', () => ok(docs) || ok(epic.id) || fm(epic.id).status === 'FINISHED');
+  for (const p of ['assets/icon.png', 'assets/header.png', `src/${code.toLowerCase()}.js`]) if (!onMain(p)) throw new Error(`${p} is not on origin/main`);
+  log('✓ origin/main has the icon, the header and the code that uses them');
+}
+
 try {
   if (scenario === 'item') await artItem(false);
   else if (scenario === 'review') await artItem(true);
+  else if (scenario === 'epic') await mixedEpic();
   else throw new Error(`unknown scenario ${scenario}`);
   log(`PASS (${scenario}) — everything is under ${root}`);
 } catch (e) {

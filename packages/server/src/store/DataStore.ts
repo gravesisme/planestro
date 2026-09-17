@@ -409,6 +409,20 @@ export class DataStore {
     return renderPrompt(body, this.promptContext(item, extra), (n) => this.prompts.get(n)?.file.body ?? this.shippedPrompt(n), name);
   }
 
+  /** What the items this one waited on put into the branch, from their `delivered` records: facts from git, not a summary. */
+  deliveredText(dependsOn: readonly string[]): string {
+    if (!dependsOn.length) return '(this item did not wait on any other item)';
+    const size = (f: { bytes?: number; width?: number; height?: number }) => [f.width ? `${f.width}×${f.height}` : '', f.bytes ? (f.bytes > 1e6 ? `${(f.bytes / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(f.bytes / 1024))} KB`) : ''].filter(Boolean).join(', ');
+    return dependsOn.map((id) => {
+      const dep = this.items.get(id)?.file.frontmatter;
+      if (!dep) return `- ${id}: unknown item`;
+      const files = dep.delivered ?? [];
+      const head = `- ${id} — "${dep.title}" (${dep.status === 'MERGED' || dep.status === 'FINISHED' ? 'merged into your base branch' : `NOT merged yet: ${dep.status}`})`;
+      if (!files.length) return `${head}\n  - no file list was recorded for it; look at the base branch`;
+      return [head, ...files.slice(0, 40).map((f) => `  - ${f.change} \`${f.path}\`${size(f) ? ` (${size(f)})` : ''}`), ...(files.length > 40 ? [`  - …and ${files.length - 40} more`] : [])].join('\n');
+    }).join('\n');
+  }
+
   /**
    * A data dir is seeded with the shipped prompts once, at init; a prompt planestro gained later (a
    * new runner's worker rules) is read from the tool itself until the project saves its own copy.
@@ -433,6 +447,7 @@ export class DataStore {
       base.worktree = fm.worktree ? (fm.worktree.startsWith('/') ? fm.worktree : join(this.codeRepoPath(), fm.worktree)) : undefined;
       base.attachments = fm.attachments.map((a) => `${this.attachmentAbsPath(a)} (${a.kind})`).join('\n') || '(none)';
       base.attachments_dir = join(this.attachmentsDir, fm.id);
+      base.dependencies = { delivered: this.deliveredText(fm.depends_on) };
       if (fm.pr) base.pr = { number: fm.pr, url: this.config.code_repo.github ? `https://github.com/${this.config.code_repo.github}/pull/${fm.pr}` : String(fm.pr) };
     }
     return { ...base, ...extra };

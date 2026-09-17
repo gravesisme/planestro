@@ -9,12 +9,15 @@ checklist at the bottom; M7–M9 were added by the author the same day.
 > I write one epic: *"Add a Frost Wand: icon, projectile sprite, and the weapon
 > itself."* I queue it. The Claude planner proposes four children — two art
 > items routed to Codex, two logic items routed to Claude, the logic waiting on
-> the art. I fix one title and approve. Codex draws the icon and the sprite in
-> their own worktrees; each parks with before/after thumbnails; I send one back
+> the art. I fix one title and approve. Each child is then planned in turn —
+> the Claude planner turns an art brief into an exact spec (paths, sizes, the
+> look to match) — and I approve those plans as they come up. Codex draws the
+> icon and the sprite in their own worktrees; each parks with before/after thumbnails; I send one back
 > with a note, approve both, and they merge into the epic branch. Only then do
 > the Claude items start, already seeing the new PNGs and told which files
 > their dependencies delivered. They land, the epic PR opens, CI is green, it
-> merges. I touched it four times and never opened a terminal.
+> merges. Every touch was a decision — a breakdown, a plan, a picture — and I
+> never opened a terminal.
 
 Every milestone below is judged by how much of that paragraph it makes true.
 
@@ -322,8 +325,8 @@ are well-shaped items for that. Otherwise tick them off here:
 - [x] M2 Codex implements — decisions: one art-only `codex-art` row; own concurrency (`runner_limits.codex: 1`); every hold_for_review model's PR parks on `awaiting: review` *after* CI. Live acceptance (`npm run spike:codex-live -- item`): real engine + real git + real Codex → icon generated, committed, PR, CI, review hold, approve, merged, worktree cleaned. The first live run found the worker rule about sandbox refusals was too strict (an optional check's cache write blocked the item); fixed in `worker-system-codex`.
 - [x] M3 art review — `GET /items/:id/images` from git (three-dot diff, both sides of each blob), `ReviewPanel` (checkerboard, 1× / display scale, zoom, pasted screenshots attached for the agent), `requestReviewChanges` resumes the same thread and the revision returns for review, `review.max_file_bytes` guard, `art-item` template. Live (`-- review`): delivered → sent back → revised on the same thread → approved → merged. The run found that a **resumed Codex thread loses its sandbox** (read-only) — fixed with `-c sandbox_mode`, and `--add-dir` was dropped because it grants write access to the data dir.
 - [x] M4 planner breakdown — `plan-epic` prompt fed the implementers and what each is for, `submit_breakdown` validated by code (`validateBreakdown`: known implementers/categories, real indexes, no cycles; a bad list goes back to the planner, never to the user), a read-only detached planning checkout, `BreakdownPanel` editor (retitle, re-route, drop, add, fix dependencies; same validation live), approval creates the children in dependency order and queues them. Only the user may approve a breakdown.
-- [ ] M5 art → logic handoff
+- [x] M5 art → logic handoff — a merging item records what it `delivered` (from git, at merge time, so it outlives the branch); dependents' plan and implement prompts list those files (`{{dependencies.delivered}}`, appended automatically for projects whose prompt copies predate it); stale reviews nudge the orchestrator once. The demo paragraph is an engine test (`THE DEMO`), asserting order. Live (`-- epic`): planner breakdown → two art children drawn by the real Codex CLI → reviewed → merged into the epic branch → the logic child started only then, with both PNGs in its worktree and named in its prompt → epic PR merged to main.
 - [ ] M6 hardening + demo
 - [ ] M7 documentation (added 2026-09-17)
-- [ ] M8 example project with Claude and Codex prompts (added 2026-09-17)
+- [x] M8 example project with Claude and Codex prompts — *tidepool* has art and an `AGENTS.md`; a `codex-art` model with a routing description; **Tide chart view**, a mixed epic to plan; **App icon**, a finished art item with its send-back-and-approve history and `delivered` record; favorited templates for both agents (`feature`, `bug-fixes`, `audit-recent-code`, `art-item`, `art-repaint`). `sample.test.ts` drives the mixed epic to FINISHED and asserts art ran on the Codex runner and code only after it.
 - [ ] M9 marketing site on GitHub Pages (added 2026-09-17)
