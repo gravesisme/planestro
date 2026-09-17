@@ -12,6 +12,8 @@ export interface EngineOptions { sleep?: (ms: number) => Promise<void>; tickMs?:
 const RESUMABLE_TURN_OPS = new Set(['planning_turn', 'implement_turn']);
 const JUDGMENT_BLOCKS = ['turn_error', 'no_plan', 'no_commits', 'dirty_tree', 'sync_conflict', 'ci_timeout', 'ci_blocked', 'base_red', 'pr_closed_externally', 'merge_unverified', 'agent_blocked', 'engine_error'] as const;
 const ACTIVE_FOR_SLOTS: Status[] = ['PLAN_IN_PROGRESS', 'IN_PROGRESS'];
+/** Turn failures with their own block reason, because the fix is the user's (log in, wait, start over) and not a judgment call. */
+const ACTIONABLE_FAILURES = new Set(['auth_required', 'rate_limited', 'session_lost', 'spawn_error']);
 
 /**
  * The Phase 3 lifecycle: one worker item at a time through
@@ -31,6 +33,8 @@ export class LiveEngine implements Engine {
   private readonly now: () => string;
   private readonly ciWorkflow: string;
   private localJobs = 0;
+  private runnerTurns = new Map<string, number>();
+  private runnerWaiters = new Map<string, (() => void)[]>();
   private localJobWaiters: (() => void)[] = [];
   readonly orchestrator: Orchestrator;
 
@@ -286,6 +290,11 @@ export class LiveEngine implements Engine {
     if (!agent) { this.block(id, 'runner_unavailable', `${def.label} needs the ${runner} runner, which is not available in this engine`); return undefined; }
     const model = runner === 'claude' ? def.claude_model : def[`${runner}_model`];
     if (runner === 'claude' && !model) throw new Error(`model ${modelId} has no claude_model`);
+    // Runners that report tokens instead of dollars are budgeted in worker turns.
+    const metered = runner === 'claude';
+    if (!metered && (fm.agent_turns ?? 0) >= this.store.config.budget_turns_per_item) { this.block(id, 'turn_budget', `${def.label} has used ${fm.agent_turns} of ${this.store.config.budget_turns_per_item} turns on this item (budget_turns_per_item); raise it or take the item over by hand`); return undefined; }
+    const resumeId = metered ? fm.session_id : fm.agent_sessions?.[runner];
+    const images = fm.attachments.map((a) => this.store.attachmentAbsPath(a)).filter((p) => /\.(png|jpe?g|webp|gif)$/i.test(p));
     const policy = makePolicy(this.store.config, d.base_branch!, cwd);
     const op = phase === 'plan' ? 'planning_turn' : 'implement_turn';
     const abort = new AbortController();
@@ -296,9 +305,9 @@ export class LiveEngine implements Engine {
     const budgetLeft = Math.max(0.5, this.store.config.budget_usd_per_item - (fm.cost_usd ?? 0));
     let result: TurnResult;
     try {
-      result = await agent.runTurn({
-        itemId: id, phase, cwd, model: model as string, permissionMode: phase === 'plan' ? 'plan' : 'acceptEdits', prompt, resume: fm.session_id,
-        systemAppend: this.store.renderPrompt('worker-system', item),
+      result = await this.withRunnerSlot(runner, () => agent.runTurn({
+        itemId: id, phase, cwd, model: model as string, permissionMode: phase === 'plan' ? 'plan' : 'acceptEdits', prompt, resume: resumeId, images,
+        systemAppend: this.store.renderPrompt(metered ? 'worker-system' : `worker-system-${runner}`, item),
         allowedTools: [...BASE_ALLOWED[phase], ...this.store.config.permissions.allow, ...extraAllowed],
         extraDirs: [this.store.dataDir], maxBudgetUsd: budgetLeft,
         tools: this.makeTools(id),
@@ -315,19 +324,30 @@ export class LiveEngine implements Engine {
         },
         onOutput: (text) => { const t = this.turns.get(id); if (t) t.lastOutput = text.slice(-400); this.emit({ type: 'session.output', id, text }); },
         signal: abort.signal,
-      });
+      }));
     } finally {
       this.turns.delete(id);
     }
     const after = this.store.requireItem(id).file.frontmatter;
     this.store.mutateItem(id, [
-      { set: { session_id: result.sessionId ?? after.session_id, cost_usd: Math.round(((after.cost_usd ?? 0) + result.costUsd) * 10000) / 10000, turns: (after.turns ?? 0) + result.numTurns } },
+      { set: {
+        ...(metered ? { session_id: result.sessionId ?? after.session_id } : result.sessionId ? { agent_sessions: { ...(after.agent_sessions ?? {}), [runner]: result.sessionId } } : {}),
+        cost_usd: Math.round(((after.cost_usd ?? 0) + result.costUsd) * 10000) / 10000, turns: (after.turns ?? 0) + result.numTurns,
+        ...(metered ? {} : { agent_turns: (after.agent_turns ?? 0) + 1 }),
+        ...(result.tokens ? { tokens: (after.tokens ?? 0) + result.tokens } : {}),
+      } },
       ...(after.op === op ? [{ unset: ['op', 'op_started_at'] } as ItemOp] : []),
     ], 'engine');
     this.store.journal.end(opId, id, result.isError ? 'failed' : 'ok', { subtype: result.subtype, cost: result.costUsd, parked: result.parked });
     this.emit({ type: 'session.ended', id, subtype: result.subtype });
     if (result.subtype === 'killed') { this.store.mutateItem(id, [{ activity: { actor: 'app', text: 'turn interrupted (engine stopping); resumable' } }], 'engine'); return result; }
-    if (result.isError) { this.block(id, 'turn_error', `${result.subtype}: ${result.error ?? result.text.slice(-300)}`); return result; }
+    if (result.isError) {
+      // A failure the person can act on keeps its own name; the rest are turn errors for the orchestrator to judge.
+      const reason = ACTIONABLE_FAILURES.has(result.subtype) ? result.subtype : 'turn_error';
+      if (result.subtype === 'session_lost' && !metered) { const { [runner]: _gone, ...rest } = this.store.requireItem(id).file.frontmatter.agent_sessions ?? {}; this.store.mutateItem(id, [{ set: { agent_sessions: rest } }], 'engine'); }
+      this.block(id, reason, `${result.subtype}: ${result.error ?? result.text.slice(-300)}`);
+      return result;
+    }
     await this.afterTurn(id, phase, result);
     return result;
   }
@@ -392,6 +412,8 @@ export class LiveEngine implements Engine {
     const fm = item.file.frontmatter;
     const cwd = this.absWorktree(fm.worktree!);
     const base = this.store.derived(item).base_branch!;
+    const implementer = this.store.config.models.find((m) => m.id === fm.implementer);
+    const held = Boolean(implementer?.hold_for_review);
     const opId = this.store.journal.begin('creating_pr', id, { branch: fm.branch, base });
     this.store.mutateItem(id, [{ set: { op: 'pushing', op_started_at: this.now() } }], 'engine');
     await this.ports.git.pushSetUpstream(cwd, fm.branch!);
@@ -403,9 +425,10 @@ export class LiveEngine implements Engine {
     });
     this.store.mutateItem(id, [
       { transition: { to: 'IN_REVIEW', actor: 'engine' } },
-      { set: { pr: pr.number, ci_result: 'pending' } },
+      { set: { pr: pr.number, ci_result: 'pending', ...(held ? { review_hold: true } : {}) } },
       { unset: ['op', 'op_started_at'] },
       { activity: { actor: 'app', text: `opened PR #${pr.number} → ${base} (${pr.url})` } },
+      ...(held ? [{ activity: { actor: 'app' as const, text: `will wait for your review before merging: ${implementer!.label} is a hold_for_review model` } }] : []),
     ], 'engine', { commit: `${id}: open PR #${pr.number}` });
     this.store.journal.end(opId, id, 'ok', { pr: pr.number });
     this.note('info', `${id}: PR #${pr.number} opened against ${base}`);
@@ -495,6 +518,12 @@ export class LiveEngine implements Engine {
 
     // 4. merge — re-check the holds: a skip_merge/block may have landed while we waited on CI
     const latest = this.store.requireItem(id).file.frontmatter;
+    if (latest.review_hold && !latest.skip_merge && !latest.blocked && !latest.awaiting) {
+      // Synced and green: everything a machine can check has passed. What is left is a person's eye.
+      this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { ci_result: 'green', awaiting: 'review' } }, { activity: { actor: 'app', text: 'CI is green; waiting for your review before merging' } }], 'engine', { commit: `${id}: awaiting review` });
+      this.store.journal.end(opId, id, 'aborted', { reason: 'awaiting_review' });
+      return;
+    }
     if (latest.skip_merge || latest.blocked || latest.awaiting) {
       this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { ci_result: 'green' } }, { activity: { actor: 'app', text: `CI is green but the item is held (${latest.skip_merge ? 'skip_merge' : latest.blocked ? 'blocked' : 'awaiting ' + latest.awaiting}); not merging` } }], 'engine');
       this.store.journal.end(opId, id, 'aborted', { reason: 'held_after_ci' });
@@ -862,6 +891,24 @@ export class LiveEngine implements Engine {
   }
 
   /**
+   * Let a held pull request merge: a review hold the user has now approved, or a plain `skip_merge`.
+   * The item goes back through the merge pipeline rather than straight to the merge — the base may
+   * have moved while it waited — so a CI result from before the hold is asked for again.
+   */
+  async releaseHold(id: string, note?: string): Promise<void> {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    if (fm.status !== 'IN_REVIEW') throw new Error(`${id} is ${fm.status}; only an item in review can be released to merge`);
+    if (!fm.review_hold && !fm.skip_merge) throw new Error(`${id} is not held`);
+    if (fm.awaiting && fm.awaiting !== 'review') throw new Error(`${id} is awaiting ${fm.awaiting}; answer that first`);
+    this.store.mutateItem(id, [
+      { unset: ['review_hold', 'skip_merge', ...(fm.awaiting === 'review' ? ['awaiting', 'awaiting_data'] : [])] },
+      { set: { ci_result: 'pending' } },
+      { activity: { actor: 'user', text: `approved for merge${note?.trim() ? `: ${note.trim()}` : ''}` } },
+    ], 'user', { commit: `${id}: release hold` });
+    void this.tick();
+  }
+
+  /**
    * User-driven "close as done": the work landed some other way, so the item finishes without a
    * pull request. The worktree and branch are removed only on positive evidence that they hold
    * nothing (invariant 7: a clean tree and no commit ahead of a freshly fetched base); anything
@@ -906,6 +953,14 @@ export class LiveEngine implements Engine {
       if (remote) await this.ports.git.deleteRemoteBranch(this.repo, branch);
     } catch (e) { return `removing the unused worktree ${cwd} / branch ${branch} stopped partway (${brief(e)}); finish it by hand`; }
     return `removed unused worktree and branch ${branch} (clean, nothing ahead of origin/${base})`;
+  }
+
+  /** `concurrency.runner_limits`: a runner with its own rate limit takes its turns a few at a time; unlisted runners are not limited here. */
+  private async withRunnerSlot<T>(runner: string, fn: () => Promise<T>): Promise<T> {
+    const limit = () => this.store.config.concurrency.runner_limits?.[runner];
+    while (limit() !== undefined && (this.runnerTurns.get(runner) ?? 0) >= limit()!) await new Promise<void>((r) => { const q = this.runnerWaiters.get(runner) ?? []; q.push(r); this.runnerWaiters.set(runner, q); });
+    this.runnerTurns.set(runner, (this.runnerTurns.get(runner) ?? 0) + 1);
+    try { return await fn(); } finally { this.runnerTurns.set(runner, (this.runnerTurns.get(runner) ?? 1) - 1); this.runnerWaiters.get(runner)?.shift()?.(); }
   }
 
   /**

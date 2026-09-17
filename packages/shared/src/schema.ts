@@ -12,7 +12,7 @@ export const STATUSES = [
 ] as const;
 export type Status = (typeof STATUSES)[number];
 
-export const AWAITING = ['plan_approval', 'permission', 'question', 'orchestrator', 'user'] as const;
+export const AWAITING = ['plan_approval', 'breakdown_approval', 'permission', 'question', 'review', 'orchestrator', 'user'] as const;
 export type Awaiting = (typeof AWAITING)[number];
 
 export const OPS = [
@@ -53,9 +53,9 @@ export const AUTHORITATIVE_KEYS = [
 export const OPERATIONAL_KEYS = [
   'created_at', 'updated_at', 'queued_at', 'started_at', 'plan_ready_at', 'plan_approved_at',
   'pr_created_at', 'merged_at', 'finished_at', 'iceboxed_at',
-  'branch', 'worktree', 'pr', 'session_id', 'awaiting', 'awaiting_data',
+  'branch', 'worktree', 'pr', 'session_id', 'agent_sessions', 'awaiting', 'awaiting_data',
   'op', 'op_started_at', 'op_data', 'ci_head_sha', 'ci_result', 'ci_failed_count',
-  'merge_order', 'skip_merge', 'blocked', 'blocked_reason', 'cost_usd', 'turns',
+  'merge_order', 'skip_merge', 'review_hold', 'blocked', 'blocked_reason', 'cost_usd', 'turns', 'agent_turns', 'tokens',
   'imported_from', 'dates_estimated',
 ] as const;
 export const DERIVED_KEYS = ['base_branch', 'lane', 'external', 'children', 'deps_satisfied', 'needs_you'] as const;
@@ -93,6 +93,8 @@ export const ItemFrontmatter = z.object({
   worktree: z.string().optional(),
   pr: z.number().int().positive().optional(),
   session_id: z.string().optional(),
+  /** Conversation ids of runners other than Claude, by runner: a Codex thread cannot resume a Claude session or vice versa. */
+  agent_sessions: z.record(z.string(), z.string()).optional(),
   awaiting: z.enum(AWAITING).optional(),
   awaiting_data: z.record(z.string(), z.unknown()).optional(),
   op: z.enum(OPS).optional(),
@@ -103,10 +105,15 @@ export const ItemFrontmatter = z.object({
   ci_failed_count: z.number().int().nonnegative().optional(),
   merge_order: z.number().int().optional(),
   skip_merge: z.boolean().optional(),
+  /** The PR goes through sync and CI as usual, then parks (`awaiting: review`) instead of merging, until a person releases it. */
+  review_hold: z.boolean().optional(),
   blocked: z.boolean().optional(),
   blocked_reason: z.string().optional(),
   cost_usd: z.number().nonnegative().optional(),
   turns: z.number().int().nonnegative().optional(),
+  /** Turns run by a runner that bills in tokens rather than dollars, and the uncached tokens they used. */
+  agent_turns: z.number().int().nonnegative().optional(),
+  tokens: z.number().int().nonnegative().optional(),
   imported_from: z.string().optional(),
   dates_estimated: z.boolean().optional(),
 }).passthrough();
@@ -147,6 +154,8 @@ export const ModelDef = z.object({
   codex_model: z.string().optional(),
   /** One line on what the model is for. The epic planner routes children by it. */
   description: z.string().optional(),
+  /** Hold this model's pull requests before merge until a person releases them (art is reviewed by eye). */
+  hold_for_review: z.boolean().optional(),
   external: z.boolean().default(false),
 });
 export type ModelDef = z.infer<typeof ModelDef>;
@@ -175,7 +184,13 @@ export const Config = z.object({
   categories: z.array(z.string().min(1)).min(1),
   /** Per-item spend ceiling across all of its turns; a turn starts with what remains. */
   budget_usd_per_item: z.number().positive().default(25),
-  concurrency: z.object({ max_sessions: z.number().int().positive().default(3), max_local_jobs: z.number().int().positive().default(1) }).default({ max_sessions: 3, max_local_jobs: 1 }),
+  /** The budget for runners that report tokens, not dollars: worker turns per item. */
+  budget_turns_per_item: z.number().int().positive().default(20),
+  concurrency: z.object({
+    max_sessions: z.number().int().positive().default(3), max_local_jobs: z.number().int().positive().default(1),
+    /** Simultaneous turns per runner, for runners with their own rate limits (image generation is slow). Unlisted runners are unlimited. */
+    runner_limits: z.record(z.string(), z.number().int().positive()).default({ codex: 1 }),
+  }).default({ max_sessions: 3, max_local_jobs: 1, runner_limits: { codex: 1 } }),
   permissions: z.object({ allow: z.array(z.string()).default([]), deny: z.array(z.string()).default([]) }).default({ allow: [], deny: [] }),
   ci: z.object({
     mode: z.enum(['github', 'github-or-local']).default('github'),
@@ -207,6 +222,7 @@ export const LocalConfig = z.object({
   code_repo_path: z.string().optional(),
   worktrees_root: z.string().optional(),
   claude_bin: z.string().optional(),
+  codex_bin: z.string().optional(),
   /** Optional Console API key: sessions then bill the API under the Commercial Terms instead of a claude.ai login. Local file only (gitignored). */
   anthropic_api_key: z.string().optional(),
   engine: z.object({ paused: z.boolean().default(false), mode: z.enum(['live', 'dry-run']).optional() }).default({ paused: false }),

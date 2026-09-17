@@ -318,8 +318,8 @@ data dir (`planestro init … --repo .`) and serve it on a second port; M1 and M
 are well-shaped items for that. Otherwise tick them off here:
 
 - [x] M0 spike gaps — image-to-image verdict: **go** (guided regeneration from the reference, not pixel-preserving); sandbox refusals never hang; SIGTERM exits 0; `--ignore-user-config` keeps `AGENTS.md`
-- [ ] M1 agent seam
-- [ ] M2 Codex implements (decisions 1–2 made: ______)
+- [x] M1 agent seam — `Ports.agents`, `AgentTurnOptions` vs `ClaudeTurnExtras`, `canPlan()`, seam invariant test
+- [x] M2 Codex implements — decisions: one art-only `codex-art` row; own concurrency (`runner_limits.codex: 1`); every hold_for_review model's PR parks on `awaiting: review` *after* CI. Live acceptance (`npm run spike:codex-live -- item`): real engine + real git + real Codex → icon generated, committed, PR, CI, review hold, approve, merged, worktree cleaned. The first live run found the worker rule about sandbox refusals was too strict (an optional check's cache write blocked the item); fixed in `worker-system-codex`.
 - [ ] M3 art review
 - [ ] M4 planner breakdown
 - [ ] M5 art → logic handoff

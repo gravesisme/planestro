@@ -136,7 +136,8 @@ describe('LiveEngine lifecycle (dry-run ports)', () => {
     expect(store.derived(store.getItem(item.id)!).needs_you).toBe(true);
     expect((store.getItem(item.id)!.file.frontmatter.awaiting_data as any).questions[0].question).toBe('Short or long?');
     await engine.respond(item.id, { kind: 'question', answers: { 'Short or long?': 'Long' } });
-    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    // PLAN_READY lands inside the turn (submit_plan); the turn's cost is booked when it returns
+    await waitFor(() => status(store, item.id) === 'PLAN_READY' && store.getItem(item.id)!.file.frontmatter.turns === 2);
     expect(store.getItem(item.id)!.file.frontmatter.cost_usd).toBeCloseTo(0.2);
     expect(store.getItem(item.id)!.file.frontmatter.turns).toBe(2);
   });

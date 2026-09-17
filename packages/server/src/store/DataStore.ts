@@ -404,9 +404,18 @@ export class DataStore {
 
   /** Render a prompt with the standard context for an item (plus extras). Throws RenderError on gaps. */
   renderPrompt(name: string, item: StoredItem | undefined, extra: Record<string, unknown> = {}): string {
-    const p = this.prompts.get(name);
-    if (!p) throw new Error(`unknown prompt ${name}`);
-    return renderPrompt(p.file.body, this.promptContext(item, extra), (n) => this.prompts.get(n)?.file.body, name);
+    const body = this.prompts.get(name)?.file.body ?? this.shippedPrompt(name);
+    if (body === undefined) throw new Error(`unknown prompt ${name}`);
+    return renderPrompt(body, this.promptContext(item, extra), (n) => this.prompts.get(n)?.file.body ?? this.shippedPrompt(n), name);
+  }
+
+  /**
+   * A data dir is seeded with the shipped prompts once, at init; a prompt planestro gained later (a
+   * new runner's worker rules) is read from the tool itself until the project saves its own copy.
+   */
+  private shippedPrompt(name: string): string | undefined {
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) return undefined;
+    try { return parsePromptFile(readFileSync(new URL(`../../prompts/${name}.md`, import.meta.url), 'utf8')).body; } catch { return undefined; }
   }
 
   promptContext(item: StoredItem | undefined, extra: Record<string, unknown> = {}): Record<string, unknown> {
