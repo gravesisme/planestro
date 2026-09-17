@@ -1,0 +1,110 @@
+# Configuration
+
+`planestro.yml` lives in the data dir and is versioned with it. `planestro.local.yml` sits
+beside it, is gitignored, and holds what is true of one machine only. Most keys can be
+changed in **Settings**; all of them can be edited by hand while planestro is not running.
+A test (`docs.test.ts`) fails if a key in the schema is missing from this page.
+
+## planestro.yml
+
+### Project and repository
+
+| Key | Default | |
+|---|---|---|
+| `schema_version` | — | The data dir's schema. Older than the tool: opens read-only until `planestro migrate`. Newer: read-only until you upgrade the tool. |
+| `tool_version` | — | Stamped by the tool that last migrated the dir. |
+| `project.name` | — | Shown in the header. |
+| `project.id_prefix` | — | Item ids are `<PREFIX>-<n>`. Uppercase letters and digits. |
+| `code_repo.path` | — | The code repository, relative to the data dir (or absolute). Overridden per machine by `code_repo_path`. |
+| `code_repo.default_branch` | — | The **base branch**: every branch planestro creates targets it, unless the item belongs to an epic or sets `base_branch_override`. |
+| `code_repo.release_branch` | none | Protected from workers like the base branch. |
+| `code_repo.github` | detected | `owner/repo`, for pull requests and CI. |
+
+### Worktrees and hooks
+
+| Key | Default | |
+|---|---|---|
+| `worktrees.root` | `.claude/worktrees` | Where item worktrees go, relative to the code repository. Overridden per machine by `worktrees_root`. |
+| `worktrees.branch_pattern` | `{{prefix_lower}}/{{number}}-{{slug}}` | Worker branch name. |
+| `worktrees.dir_pattern` | `{{prefix_lower}}-{{number}}-{{slug}}` | Worktree directory name. |
+| `hooks.after_worktree_create` | `[]` | Commands run in a new worktree before planning (install dependencies, import assets). A non-zero exit blocks the item as `hook_failed`. Not re-run when an item that went to the icebox is queued again and reuses its worktree. |
+
+### Models and defaults
+
+| Key | Default | |
+|---|---|---|
+| `models.id` | — | What items store as `planner` / `implementer`. |
+| `models.label` | — | What the UI shows. |
+| `models.runner` | `claude` | `claude` or `codex`. A `codex` model implements but never plans. See [Agents](agents.md). |
+| `models.claude_model` | — | The Claude model id; required for a `claude` runner. |
+| `models.codex_model` | Codex's own default | Passed to `codex exec -m`. |
+| `models.description` | none | One line on what the model is for. The epic planner routes children by it. |
+| `models.hold_for_review` | `false` | Park this model's pull requests on `awaiting: review` after CI until you approve them. |
+| `models.external` | `false` | Not run by planestro; its items are watched. |
+| `defaults.planner` | — | For new items. Must be a model that can plan. |
+| `defaults.implementer` | — | For new items. |
+| `defaults.category` | — | For new items. |
+| `categories` | — | The list items choose from. Rename and remove in Settings, which reassigns items. |
+
+### Budgets and concurrency
+
+| Key | Default | |
+|---|---|---|
+| `budget_usd_per_item` | `25` | Dollar ceiling across all of an item's Claude turns; each turn starts with what remains. |
+| `budget_turns_per_item` | `20` | Worker turns per item for runners that report tokens instead of dollars (Codex). Blocks as `turn_budget`. |
+| `budget_tokens_per_item` | `600000` | Uncached tokens per item for those runners. Blocks as `token_budget`. |
+| `concurrency.max_sessions` | `3` | Items admitted to planning/implementing at once. |
+| `concurrency.max_local_jobs` | `1` | Setup hooks and local check commands running at once. |
+| `concurrency.runner_limits` | `{ codex: 1 }` | Simultaneous turns per runner. Unlisted runners are not limited here. |
+
+### What Claude workers may do
+
+| Key | Default | |
+|---|---|---|
+| `permissions.allow` | `[]` | Extra allow rules (`Bash(npm test*)`, …) on top of the built-in ones. "Always allow" in the UI appends here. |
+| `permissions.deny` | `[]` | Extra deny patterns, checked before anything else. |
+
+Pushes, `gh pr`, protected branches, branch and worktree management and force operations
+are denied in code (`engine/policy.ts`) whatever these say. Codex workers are governed by
+their sandbox instead.
+
+### CI and merging
+
+| Key | Default | |
+|---|---|---|
+| `ci.mode` | `github` | `github-or-local` falls back to `local_check_command` when GitHub Actions cannot run (billing block, no workflow). |
+| `ci.require_green_base` | `true` | Do not merge into a base whose own tip is red. |
+| `ci.start_timeout_min` | `10` | How long a run may fail to appear before CI counts as blocked. |
+| `ci.timeout_min` | `45` | How long a run may take. |
+| `ci.local_check_command` | none | The fallback check, run in the item's worktree. |
+| `epics.auto_submit` | `true` | Open an epic's pull request when its last child merges. |
+| `review.image_scale` | `1` | Review thumbnails can also be shown at this integer scale, nearest-neighbour. |
+| `review.max_file_bytes` | `10000000` | One changed file over this blocks the item as `asset_too_large` before a pull request exists. |
+| `review.nudge_after_min` | `240` | A review nobody has looked at for this long wakes the orchestrator, once. |
+| `notifications.on_merge` | none | A command run after each merge (`say "PR merged"`). |
+
+### Orchestrator, engine, storage
+
+| Key | Default | |
+|---|---|---|
+| `orchestrator.model` | `claude-fable-5` | The judgment layer's model. |
+| `orchestrator.may_approve_plans` | `false` | Whether it may approve plans of items that opted in. It can never approve an epic's breakdown or release a review hold. |
+| `orchestrator.rotate_after_wakes` | `40` | Start a fresh orchestrator conversation after this many wakes… |
+| `orchestrator.rotate_after_days` | `3` | …or this many days. The files are its memory. |
+| `engine.mode` | `dry-run` | `dry-run` logs `Would …` against in-memory fakes; `live` acts. Overridden per machine by `engine.mode` in the local file. |
+| `git.auto_commit` | `true` | Commit data-dir changes with semantic messages. |
+| `git.auto_push` | `true` | Push the data dir at checkpoints, if it has a remote. |
+| `git.checkpoint_interval_min` | `60` | Telemetry (costs, timestamps) is checkpointed this often rather than per change. |
+| `attachments.managed_max_bytes` | `2000000` | Larger attachments are referenced in place instead of copied into the data dir. |
+
+## planestro.local.yml
+
+| Key | |
+|---|---|
+| `code_repo_path` | Where the code repository is on this machine. |
+| `worktrees_root` | Where worktrees go on this machine. |
+| `claude_bin` | Path to `claude`, if not on `PATH`. |
+| `codex_bin` | Path to `codex`, if not on `PATH`. Only used by models with `runner: codex`. |
+| `anthropic_api_key` | Bills Claude sessions to the API under the Commercial Terms instead of a claude.ai login. `ANTHROPIC_API_KEY` in the environment does the same. |
+| `engine.paused` | The PAUSE AUTOMATION lever, persisted. |
+| `engine.mode` | This machine's override of `engine.mode`. |

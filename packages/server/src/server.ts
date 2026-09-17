@@ -85,13 +85,13 @@ function warnOnCodexDrift(store: DataStore, log: (level: string, msg: string) =>
   if (!store.config.models.some((m) => m.runner === 'codex')) return;
   try {
     const v = execFileSync(store.local.codex_bin ?? 'codex', ['--version'], { encoding: 'utf8' }).trim().split(' ').pop();
-    if (v !== VALIDATED_CODEX_VERSION) log('warn', `⚠ Codex CLI changed ${VALIDATED_CODEX_VERSION} → ${v} since the Codex runner was last validated (docs/codex-integration.md)`);
+    if (v !== VALIDATED_CODEX_VERSION) log('warn', `⚠ Codex CLI changed ${VALIDATED_CODEX_VERSION} → ${v} since the Codex runner was last validated (docs/notes/codex-spike.md)`);
   } catch { log('warn', 'a model uses the codex runner but the codex CLI is not on PATH; its turns will fail to start'); }
 }
 
 function warnOnClaudeDrift(log: (level: string, msg: string) => void): void {
   try {
     const v = execFileSync('claude', ['--version'], { encoding: 'utf8' }).trim().split(' ')[0];
-    if (v !== VALIDATED_CLAUDE_VERSION) log('warn', `⚠ Claude Code changed ${VALIDATED_CLAUDE_VERSION} → ${v} since orchestration compatibility was last validated (docs/sdk-notes.md)`);
+    if (v !== VALIDATED_CLAUDE_VERSION) log('warn', `⚠ Claude Code changed ${VALIDATED_CLAUDE_VERSION} → ${v} since orchestration compatibility was last validated (docs/notes/sdk-notes.md)`);
   } catch { log('warn', 'claude CLI not found on PATH; sessions cannot run'); }
 }

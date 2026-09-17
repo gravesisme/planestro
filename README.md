@@ -3,8 +3,9 @@
 [![CI](https://github.com/gravesisme/planestro/actions/workflows/ci.yml/badge.svg)](https://github.com/gravesisme/planestro/actions/workflows/ci.yml)
 
 **A backlog that ships itself — with you as the conductor.** Local-first
-planning and [Claude Code](https://claude.com/claude-code) orchestration for a
-solo developer.
+planning and agent orchestration for a solo developer: [Claude Code](https://claude.com/claude-code)
+plans and writes the code, the [Codex CLI](https://developers.openai.com/codex/cli) draws the art,
+and one feature can need both.
 
 You write backlog items as markdown. planestro turns **Queue** into a plan you
 approve, an implementation on its own branch and worktree, a pull request, a
@@ -13,7 +14,9 @@ deterministic code doing everything mechanical. When something needs a human,
 the session is parked and you are told; answer whenever, and the same session
 resumes with its context intact.
 
-![The board: backlog, an item whose plan is waiting for approval, and the NEEDS YOU badge](docs/img/board.png)
+![One feature on the board: two art children drawn by Codex wait for a look, the code children wait for the art, the epic counts 0/4](docs/img/board.png)
+
+**[Read the manual →](docs/README.md)**
 
 It is used daily to build a commercial game that ships on the App Store:
 several agents working in parallel worktrees, every change through a reviewed
@@ -28,10 +31,10 @@ npm run sample          # http://127.0.0.1:4310
 ```
 
 `sample` builds a fictional project (*tidepool*, a tide-times CLI) with a full
-backlog — finished work with its history, a bug with repro notes, an epic with
-dependent children, an icebox — and serves it with the engine in **dry-run**.
-Git, GitHub and the agent are the in-memory fakes the test suite drives, so
-the whole lifecycle really runs:
+backlog — finished work with its history, a reviewed piece of art, a bug with
+repro notes, two epics, an icebox, prompt templates for both agents — and
+serves it with the engine in **dry-run**. Git, GitHub and both agents are the
+in-memory fakes the test suite drives, so the whole lifecycle really runs:
 
 1. Drag a card from **NOT YET SUBMITTED** to **QUEUED**. A worktree is
    "created" and a plan appears; the card turns red: it needs you.
@@ -39,9 +42,38 @@ the whole lifecycle really runs:
 3. Watch it open a PR, wait for CI, merge, clean up and land in **Done**. The
    Console tab shows every `Would …` the real engine would have run.
 
+4. Open the **Tide chart view** epic → **plan the breakdown**, and follow
+   [two agents, one feature](#two-agents-one-feature) below.
+
 `npm run sample -- --reset` rebuilds it from scratch.
 
 ![An item parked on plan approval](docs/img/item.png)
+
+## Two agents, one feature
+
+Some features need pictures *and* code. Write one epic; the Claude planner
+proposes the children, routes the raster art to a Codex model and the code to a
+Claude model, and makes the code wait for the art. Code checks the list (known
+implementers, no cycles) before you ever see it; you edit it and approve.
+
+![The proposed breakdown: two Codex art children, two Claude code children that wait on them](docs/img/breakdown.png)
+
+Codex draws in its own worktree and commits. The pull request goes through sync
+and CI like any other — then, instead of merging, it **parks for your eye**:
+before/after thumbnails from git, approve, or send it back to the same Codex
+thread with a note and a pasted screenshot.
+
+![An art item waiting for review: the image the branch added, on a checkerboard](docs/img/review.png)
+
+Only when the art has merged do the code children start — their worktrees cut
+from a branch that already holds the PNGs, their prompts listing exactly which
+files were delivered. Then the epic lands as one pull request.
+[The walkthrough →](docs/mixed-agent-epics.md)
+
+The two agents are trusted differently, and the tool says so: a Claude worker
+asks before anything unusual (a per-command policy, parked permission requests);
+a Codex worker cannot ask, so it runs in a sandbox that cannot write outside its
+worktree or reach the network. [Agents →](docs/agents.md)
 
 ## Why it is built this way
 
@@ -101,7 +133,8 @@ npm start -- ../myproject-planning --open     # http://127.0.0.1:4300
 ```
 
 Requirements: Node 24, git, the GitHub CLI (`gh`, authenticated) and Claude
-Code (`claude`, logged in). The engine starts in `dry-run`; flip `engine.mode`
+Code (`claude`, logged in); the Codex CLI (`codex`, logged in) if you route work
+to it. The engine starts in `dry-run`; flip `engine.mode`
 to `live` in Settings once you have watched a dry run against your repo.
 Project rules come from your repo's own `CLAUDE.md` / `AGENTS.md`; planestro
 adds nothing project-specific.
@@ -141,12 +174,12 @@ packages/server   store (atomic writes, journal, semantic commits), engine (port
                   policy, lifecycle, reconciler, orchestrator, SDK session port),
                   Hono API + WebSocket, CLI, the sample project
 packages/web      React + Vite UI: board, item, sessions, prompts, console, settings
-docs/             what the Agent SDK spike validated (sdk-notes.md)
+docs/             the manual (start at docs/README.md); spike records in docs/notes/
 spikes/           the runnable Phase 0 spike
 ```
 
 The engine talks to the world only through four ports (git, GitHub, processes,
-Claude). Live ports shell out; dry-run ports are an in-memory world. That seam
+agents — Claude and Codex behind one contract). Live ports shell out; dry-run ports are an in-memory world. That seam
 is why `npm test` can drive the real lifecycle — CI red then fixed, a rebase
 conflict handed to the session, parked questions and permissions, a restart in
 the middle of a turn, crash markers left on disk — in about twenty seconds with

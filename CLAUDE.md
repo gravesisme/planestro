@@ -75,5 +75,5 @@ rewritten or force-pushed; worker branches rebase with `--force-with-lease`.
   drives an item from it to FINISHED, so a schema or lifecycle change that would
   break the demo fails the suite. `docs/going-public.md` tracks what is left
   before the repository is made public.
-- SDK behaviour the engine relies on is recorded in `docs/sdk-notes.md`
+- SDK behaviour the engine relies on is recorded in `docs/notes/sdk-notes.md`
   (validated versions in `packages/server/src/compat.ts`).

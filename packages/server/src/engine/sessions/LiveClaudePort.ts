@@ -8,7 +8,7 @@ const PARK_MSG = 'Permission requires user approval; the request has been record
 /**
  * One `query()` per turn (invariant 2): the process lives only while the model is working.
  * planestro's tools are an in-process MCP server; `canUseTool` routes ExitPlanMode,
- * AskUserQuestion and every other prompt to the engine's policy (see docs/sdk-notes.md).
+ * AskUserQuestion and every other prompt to the engine's policy (see docs/notes/sdk-notes.md).
  */
 export class LiveClaudePort implements ClaudePort {
   constructor(private readonly claudeBin?: string, private readonly apiKey?: string) {}
