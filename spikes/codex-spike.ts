@@ -1,7 +1,7 @@
 #!/usr/bin/env -S npx tsx
 /**
  * Codex CLI spike — the questions planestro's Codex runner depends on. Findings live in
- * docs/codex-integration.md; packages/server/src/compat.ts pins the version this validated.
+ * docs/notes/codex-spike.md; packages/server/src/compat.ts pins the version this validated.
  *
  *   npm run spike:codex -- <step> [<step>…]     steps: basic i2i sandbox resume-missing kill-resume agents-md catalogue
  *

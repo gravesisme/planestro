@@ -1,7 +1,7 @@
 # Epic: mixed-agent features — Codex art blocking Claude logic
 
-Companion to [`codex-integration.md`](codex-integration.md) (spike findings and
-the design this plan stages). Written 2026-09-17. Progress is tracked in the
+Companion to [`codex-integration.md`](codex-integration.md) (how the Codex runner
+works) and [`notes/codex-spike.md`](notes/codex-spike.md) (what the spikes found). Written 2026-09-17. Progress is tracked in the
 checklist at the bottom; M7–M9 were added by the author the same day.
 
 ## The outcome, as one demo
@@ -327,6 +327,6 @@ are well-shaped items for that. Otherwise tick them off here:
 - [x] M4 planner breakdown — `plan-epic` prompt fed the implementers and what each is for, `submit_breakdown` validated by code (`validateBreakdown`: known implementers/categories, real indexes, no cycles; a bad list goes back to the planner, never to the user), a read-only detached planning checkout, `BreakdownPanel` editor (retitle, re-route, drop, add, fix dependencies; same validation live), approval creates the children in dependency order and queues them. Only the user may approve a breakdown.
 - [x] M5 art → logic handoff — a merging item records what it `delivered` (from git, at merge time, so it outlives the branch); dependents' plan and implement prompts list those files (`{{dependencies.delivered}}`, appended automatically for projects whose prompt copies predate it); stale reviews nudge the orchestrator once. The demo paragraph is an engine test (`THE DEMO`), asserting order. Live (`-- epic`): planner breakdown → two art children drawn by the real Codex CLI → reviewed → merged into the epic branch → the logic child started only then, with both PNGs in its worktree and named in its prompt → epic PR merged to main.
 - [ ] M6 hardening + demo
-- [ ] M7 documentation (added 2026-09-17)
+- [x] M7 documentation — a manual under `docs/` (getting started, concepts, agents, the Codex runner, mixed-agent epics, prompts, configuration, CLI, architecture, operations, troubleshooting); spike records moved to `docs/notes/`; `docs.test.ts` fails when a config key, a `blocked_reason` or an `awaiting` value is undocumented, or a relative link is dead.
 - [x] M8 example project with Claude and Codex prompts — *tidepool* has art and an `AGENTS.md`; a `codex-art` model with a routing description; **Tide chart view**, a mixed epic to plan; **App icon**, a finished art item with its send-back-and-approve history and `delivered` record; favorited templates for both agents (`feature`, `bug-fixes`, `audit-recent-code`, `art-item`, `art-repaint`). `sample.test.ts` drives the mixed epic to FINISHED and asserts art ran on the Codex runner and code only after it.
 - [ ] M9 marketing site on GitHub Pages (added 2026-09-17)

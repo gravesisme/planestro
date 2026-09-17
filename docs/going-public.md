@@ -17,7 +17,7 @@ one author. The `public-prep` PR did the first pass below.
       no longer a game studio's.
 - [x] The one-off importer moved to `packages/server/src/import/legacy/` with a
       header saying what it is and that only its shape is worth copying.
-- [x] Home-directory paths scrubbed from `docs/sdk-notes.md` and the spike
+- [x] Home-directory paths scrubbed from `docs/notes/sdk-notes.md` and the spike
       (which now requires `SPIKE_CWD` instead of defaulting to one).
 - [x] `planestro sample` / `npm run sample`: a seeded fictional project that
       runs the whole lifecycle in dry-run with no repo, remote or login; the

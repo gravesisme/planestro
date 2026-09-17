@@ -8,7 +8,7 @@ import type { AgentPort, AgentTurnOptions, TurnResult } from '../ports.ts';
  * Worker turns on the Codex CLI (`codex exec`). Codex has no plan mode and no planestro tools, so it
  * only implements, and it reports through its final message instead of calling tools: the turn must
  * end with JSON matching FINAL_SCHEMA, which this port turns into report_done / report_blocked / a
- * parked question. Everything here was established by spikes/codex-spike.ts (docs/codex-integration.md).
+ * parked question. Everything here was established by spikes/codex-spike.ts (docs/notes/codex-spike.md).
  *
  * Trust model: there is no per-command permission callback. The turn runs under Codex's
  * `workspace-write` sandbox — writes confined to the worktree, no network for its commands — and

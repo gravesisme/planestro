@@ -1,8 +1,8 @@
 import { deflateSync, crc32 } from 'node:zlib';
 
 /**
- * A real PNG with no dependency, for the dry-run art agent: a soft two-tone tile with a lighter disc,
- * tinted from the seed so different items get different pictures. It exists so a dry run has actual
+ * A real PNG with no dependency, for the dry-run art agent: a small seascape on a rounded tile —
+ * layered waves under a moon — tinted and shifted by the seed so different items get different pictures. It exists so a dry run has actual
  * images to review — never as a stand-in for art a live agent failed to make.
  */
 export function placeholderPng(seed: string, size = 96): Buffer {
@@ -13,17 +13,22 @@ export function placeholderPng(seed: string, size = 96): Buffer {
     const f = (n: number) => { const k = (n + hue / 30) % 12; return Math.round(255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)))); };
     return [f(0), f(8), f(4)];
   };
-  const [dark, light] = [rgb(0.22), rgb(0.62)];
+  const [sky, far, mid, near, moon] = [rgb(0.16), rgb(0.34), rgb(0.48), rgb(0.64), rgb(0.9)];
   const raw = Buffer.alloc(size * (size * 4 + 1));
-  const r = size / 2, corner = size * 0.2;
+  const corner = size * 0.22, phase = (h % 628) / 100, mx = size * (0.3 + ((h >> 8) % 40) / 100), my = size * 0.27;
+  // three wave bands, back to front; each is a sine whose crest line the pixel is above or below
+  const crest = (x: number, base: number, amp: number, freq: number, shift: number) => size * base + Math.sin((x / size) * Math.PI * freq + phase + shift) * size * amp;
   for (let y = 0; y < size; y++) {
     raw[y * (size * 4 + 1)] = 0; // filter: none
     for (let x = 0; x < size; x++) {
       const o = y * (size * 4 + 1) + 1 + x * 4;
       const dx = Math.max(corner - x, x - (size - 1 - corner), 0), dy = Math.max(corner - y, y - (size - 1 - corner), 0);
       const inside = dx * dx + dy * dy <= corner * corner;
-      const disc = Math.hypot(x - r, y - r * 1.05) < size * 0.27;
-      const c = disc ? light : dark;
+      let c = sky;
+      if (Math.hypot(x - mx, y - my) < size * 0.085) c = moon;
+      if (y > crest(x, 0.5, 0.045, 2.2, 0)) c = far;
+      if (y > crest(x, 0.64, 0.055, 2.8, 1.7)) c = mid;
+      if (y > crest(x, 0.79, 0.05, 3.4, 3.1)) c = near;
       raw[o] = c[0]; raw[o + 1] = c[1]; raw[o + 2] = c[2]; raw[o + 3] = inside ? 255 : 0;
     }
   }
