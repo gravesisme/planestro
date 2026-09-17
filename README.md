@@ -56,6 +56,8 @@ proposes the children, routes the raster art to a Codex model and the code to a
 Claude model, and makes the code wait for the art. Code checks the list (known
 implementers, no cycles) before you ever see it; you edit it and approve.
 
+![Six frames from the sample: the epic, its proposed breakdown, art waiting for review on the board, the review, the code child starting once the art merged, everything in Done](docs/img/walkthrough.gif)
+
 ![The proposed breakdown: two Codex art children, two Claude code children that wait on them](docs/img/breakdown.png)
 
 Codex draws in its own worktree and commits. The pull request goes through sync
