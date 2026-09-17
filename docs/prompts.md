@@ -54,6 +54,10 @@ an unresolved placeholder is an error, never a half-filled prompt sent to an age
 | `repo.path`, `.default_branch`, `.release_branch`, `.github`, `project.name`, `data_dir` | the project |
 | `implementers`, `categories` | `plan-epic` only |
 
+A starting-point template may carry `model: <model id>` in its frontmatter: the New item dialog then
+preselects that implementer, so an art brief lands on the art model without anyone remembering to
+switch it. (Model ids are the project's own, so the shipped templates leave it unset.)
+
 In a *starting-point* template, any placeholder the project cannot resolve by itself
 (`{{subject}}`, `{{since}}`) becomes a required field in the New item dialog; the item is
 created with the text filled in.

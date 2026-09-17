@@ -32,6 +32,9 @@ export function NewItemDialog({ onClose, icebox, from }: { onClose: () => void; 
   const [title, setTitle] = useState(start?.frontmatter.title ?? '');
   const [category, setCategory] = useState(state?.config.defaults.category ?? '');
   const [kind, setKind] = useState<'item' | 'epic'>('item');
+  // A template may name the model its work is for (`model:` in its frontmatter): an art brief belongs with the art model.
+  const modelOf = (p?: PromptView) => state?.config.models.find((m) => m.id === p?.frontmatter.model && !m.external)?.id;
+  const [implementer, setImplementer] = useState(modelOf(start) ?? state?.config.defaults.implementer ?? '');
   const [parent, setParent] = useState('');
   const [description, setDescription] = useState(start?.body ?? '');
   const [values, setValues] = useState<Record<string, string>>({});
@@ -47,6 +50,7 @@ export function NewItemDialog({ onClose, icebox, from }: { onClose: () => void; 
     const p = library.find((x) => x.name === name);
     setTemplate(name);
     if (!p) return;
+    const forModel = modelOf(p); if (forModel) setImplementer(forModel);
     if (!title.trim() || library.some((x) => x.frontmatter.title === title)) setTitle(p.frontmatter.title);
     if (!description.trim() || library.some((x) => x.body === description) || confirm('Replace the description with this prompt?')) setDescription(p.body);
   };
@@ -57,7 +61,7 @@ export function NewItemDialog({ onClose, icebox, from }: { onClose: () => void; 
         e.preventDefault();
         let text: string;
         try { text = render(); } catch (err) { useStore.setState({ error: (err as Error).message }); return; }
-        const r = await act(() => api.createItem({ title, category, description: text, kind, parent: parent || undefined, status: icebox ? 'ICEBOX' : undefined }));
+        const r = await act(() => api.createItem({ title, category, description: text, kind, parent: parent || undefined, implementer: kind === 'item' ? implementer || undefined : undefined, status: icebox ? 'ICEBOX' : undefined }));
         if (r) { onClose(); nav(`/items/${r.id}`); }
       }}>
         <h2 style={{ margin: 0 }}>New {icebox ? 'icebox ' : ''}item</h2>
@@ -66,6 +70,7 @@ export function NewItemDialog({ onClose, icebox, from }: { onClose: () => void; 
         <div className="row">
           <select value={category} onChange={(e) => setCategory(e.target.value)}>{state?.config.categories.map((c) => <option key={c}>{c}</option>)}</select>
           <select value={kind} onChange={(e) => setKind(e.target.value as 'item' | 'epic')}><option value="item">item</option><option value="epic">epic (integration branch)</option></select>
+          {kind === 'item' && <select value={implementer} onChange={(e) => setImplementer(e.target.value)} title="Who implements it (the planner stays the project default)">{state?.config.models.filter((m) => !m.external).map((m) => <option key={m.id} value={m.id}>{m.label}{(m.runner ?? 'claude') !== 'claude' ? ` (${m.runner})` : ''}</option>)}</select>}
           {kind === 'item' && epics.length > 0 && <select value={parent} onChange={(e) => setParent(e.target.value)}><option value="">no parent epic</option>{epics.map((e) => <option key={e.id} value={e.id}>{e.id} {e.frontmatter.title}</option>)}</select>}
         </div>
         <textarea placeholder="Description / prompt (markdown)" value={description} onChange={(e) => setDescription(e.target.value)} />
