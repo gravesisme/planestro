@@ -76,9 +76,9 @@ Making the repo public publishes every commit, not just `main`'s tip.
       not a sandbox).
 - [ ] Issue templates are optional; turning **off** the wiki/projects/
       discussions tabs you will not tend is not.
-- [ ] Branch protection on `main` requiring the CI check, once CI has been
-      seen green on Linux (it has only ever run on macOS locally — expect a
-      path or default-branch assumption to surface on the first run).
+- [ ] Branch protection on `main` requiring the CI check. (CI is green on
+      Linux as of the `public-prep` PR; its first run found the one assumption
+      — a git identity — and the sample now supplies its own.)
 - [ ] Repo description, topics (`claude-code`, `agents`, `orchestration`,
       `kanban`, `local-first`), social preview image (the mark on the dark
       tile, 1280×640).
