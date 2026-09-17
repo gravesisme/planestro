@@ -375,6 +375,22 @@ export class DataStore {
     return stored;
   }
 
+  /** A new library prompt. Refuses an existing name: `putPrompt` is the edit path. */
+  createPrompt(input: { name: string; title: string; kind: PromptFile['frontmatter']['kind']; description?: string; body: string }, actor: Actor = 'user'): StoredPrompt {
+    if (this.prompts.has(input.name) || existsSync(join(this.promptsDir, `${input.name}.md`))) throw new Error(`a prompt named ${input.name} already exists`);
+    const file = parsePromptFile(serializePromptFile({ frontmatter: { schema: 1, name: input.name, kind: input.kind, title: input.title.trim(), ...(input.description?.trim() ? { description: input.description.trim() } : {}) }, body: input.body }));
+    return this.putPrompt(file, actor);
+  }
+
+  /** The key is only ever `true` or absent, so unfavorited files stay as they were. */
+  setPromptFavorite(name: string, favorite: boolean, actor: Actor = 'user'): StoredPrompt {
+    const p = this.prompts.get(name);
+    if (!p) throw new Error(`unknown prompt ${name}`);
+    if (Boolean(p.file.frontmatter.favorite) === favorite) return p;
+    const { favorite: _was, ...rest } = p.file.frontmatter;
+    return this.putPrompt({ frontmatter: favorite ? { ...rest, favorite: true } : rest, body: p.file.body }, actor);
+  }
+
   deletePrompt(name: string, actor: Actor = 'user'): void {
     this.assertWritable();
     const p = this.prompts.get(name);

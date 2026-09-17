@@ -4,7 +4,7 @@ import { useStore, act } from './store.ts';
 import { api } from './api.ts';
 
 export function App() {
-  const { state, error, connected, connect } = useStore();
+  const { state, error, connected, connect, updateReady } = useStore();
   const nav = useNavigate();
   useEffect(() => { connect(); }, [connect]);
   const needs = state?.items.filter((i) => i.derived.needs_you && i.derived.lane === 'board') ?? [];
@@ -13,8 +13,9 @@ export function App() {
   const paused = state?.engine.paused ?? false;
   return (
     <div className="app">
+      {updateReady && <button className="banner warn" style={{ border: 0, borderRadius: 0, textAlign: 'left' }} onClick={() => location.reload()}>planestro was updated — click to reload (held back so nothing you were typing is lost)</button>}
       <header className="topbar">
-        <div className="brand"><span className="logo">◆</span> planestro <span className="project">{state?.config.project.name ?? '…'}</span></div>
+        <div className="brand"><img className="logo" src="/favicon.svg" alt="" width={22} height={22} /> planestro <span className="project">{state?.config.project.name ?? '…'}</span></div>
         <nav>
           <NavLink to="/" end>Board</NavLink>
           <NavLink to="/icebox">Icebox</NavLink>

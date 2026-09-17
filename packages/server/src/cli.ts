@@ -12,7 +12,10 @@ const USAGE = `planestro ${TOOL_VERSION}
   planestro init <data_dir> --repo <code_repo> [--name N] [--prefix HH] [--default-branch B] [--release-branch B] [--github owner/repo] [--layout dir|orphan-branch] [--no-commit]
   planestro check [data_dir]        validate every file and report
   planestro migrate [data_dir]      apply schema migrations (${SCHEMA_VERSION} is current)
-  planestro serve [data_dir] [--port N] [--host H] [--mock]   run the web UI + engine (default host 127.0.0.1; use 0.0.0.0 for LAN access)
+  planestro serve [data_dir] [--port N] [--host H] [--mock] [--watch] [--open]
+                                    run the web UI + engine (default host 127.0.0.1; use 0.0.0.0 for LAN access)
+                                    --watch  restart on planestro source changes (between agent turns) and rebuild the UI
+                                    --open   open the UI in a browser once it is up
   planestro version
 `;
 
@@ -22,7 +25,7 @@ const { values, positionals } = parseArgs({
     repo: { type: 'string' }, name: { type: 'string' }, prefix: { type: 'string' }, 'default-branch': { type: 'string' },
     'release-branch': { type: 'string' }, github: { type: 'string' }, layout: { type: 'string' }, 'no-commit': { type: 'boolean' },
     commit: { type: 'boolean' }, 'copy-small': { type: 'boolean' }, data: { type: 'string' },
-    help: { type: 'boolean', short: 'h' }, port: { type: 'string' }, host: { type: 'string' }, mock: { type: 'boolean' },
+    help: { type: 'boolean', short: 'h' }, port: { type: 'string' }, host: { type: 'string' }, mock: { type: 'boolean' }, watch: { type: 'boolean' }, open: { type: 'boolean' },
   },
 });
 const [cmd, arg] = positionals;
@@ -86,6 +89,13 @@ try {
     }
     case 'serve': {
       const dir = locateDataDir(arg);
+      const host = values.host ?? '127.0.0.1'; const port = values.port ? Number(values.port) : 4300;
+      if (values.watch) {
+        const { supervise } = await import('./supervise.ts');
+        await supervise({ serveArgs: [dir, ...(values.port ? ['--port', values.port] : []), ...(values.host ? ['--host', values.host] : []), ...(values.mock ? ['--mock'] : [])], host, port, open: values.open });
+        break;
+      }
+      if (values.open) void import('./supervise.ts').then((m) => m.openWhenUp(`http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`, log));
       const { startServer } = await import('./server.ts');
       await startServer({ dataDir: dir, port: values.port ? Number(values.port) : undefined, host: values.host, mock: values.mock });
       break;

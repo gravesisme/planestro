@@ -113,6 +113,22 @@ describe('DataStore', () => {
     expect(store.config.categories).not.toContain('Tooling');
   });
 
+  it('prompts can be created and favorited; the favorite key is true or absent, and a title with a colon survives', async () => {
+    const { dataDir } = makeFixture();
+    store = await DataStore.open(dataDir);
+    const made = store.createPrompt({ name: 'weekly-audit', title: 'Audit: the last week', kind: 'template', description: 'What landed', body: 'Review since {{since}}.' });
+    expect(made.file.frontmatter).toMatchObject({ name: 'weekly-audit', kind: 'template', title: 'Audit: the last week', description: 'What landed' });
+    expect(() => store!.createPrompt({ name: 'weekly-audit', title: 'again', kind: 'template', body: 'x' })).toThrow(/already exists/);
+    const raw = () => readFileSync(join(dataDir, 'prompts', 'weekly-audit.md'), 'utf8');
+    expect(raw()).not.toContain('favorite');
+    expect(store.setPromptFavorite('weekly-audit', true).file.frontmatter.favorite).toBe(true);
+    expect(raw()).toContain('favorite: true');
+    expect(store.setPromptFavorite('weekly-audit', false).file.frontmatter.favorite).toBeUndefined();
+    expect(raw()).not.toContain('favorite');
+    expect(raw()).toContain('Review since {{since}}.');
+    expect(() => store!.setPromptFavorite('nope', true)).toThrow(/unknown prompt/);
+  });
+
   it('prompt rendering uses the item context and fails on gaps', async () => {
     const { dataDir } = makeFixture();
     store = await DataStore.open(dataDir);

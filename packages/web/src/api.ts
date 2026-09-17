@@ -6,7 +6,7 @@ export interface ItemView {
   activity: { at: string; actor: string; text: string }[];
   derived: { lane: 'board' | 'icebox' | 'done'; needs_you: boolean; external: boolean; flavor: 'worker' | 'epic' | 'external'; base_branch?: string; base_branch_error?: string; deps_satisfied: boolean; children: string[] };
 }
-export interface PromptView { name: string; path: string; frontmatter: PromptFrontmatter; body: string }
+export interface PromptView { name: string; path: string; frontmatter: PromptFrontmatter; body: string; text?: string }
 export interface SessionView { item: string; session_id?: string; model?: string; op?: string; started_at?: string; busy: boolean; last_output?: string }
 export interface State {
   schema: string; readOnly: boolean; dataDir: string; codeRepo: string; config: Config; local: LocalConfig;
@@ -41,6 +41,8 @@ export const api = {
   uploadAttachment: (id: string, file: File) => { const fd = new FormData(); fd.append('file', file, file.name); return req<{ path: string }>('POST', `/api/items/${id}/attachments`, undefined, fd); },
   referenceAttachment: (id: string, path: string) => req<{ path: string }>('POST', `/api/items/${id}/attachments`, { path }),
   removeAttachment: (id: string, path: string) => req<{ ok: true }>('DELETE', `/api/items/${id}/attachments?path=${encodeURIComponent(path)}`),
+  createPrompt: (body: { name: string; title: string; kind: 'template' | 'action' | 'partial'; description?: string; body: string }) => req<PromptView>('POST', '/api/prompts', body),
+  favoritePrompt: (name: string, favorite: boolean) => req<PromptView>('POST', `/api/prompts/${name}/favorite`, { favorite }),
   putPrompt: (name: string, text: string) => req<PromptView>('PUT', `/api/prompts/${name}`, { text }),
   deletePrompt: (name: string) => req<{ ok: true }>('DELETE', `/api/prompts/${name}`),
   renderPrompt: (name: string, itemId?: string) => req<{ text: string }>('POST', `/api/prompts/${name}/render`, { itemId }),
