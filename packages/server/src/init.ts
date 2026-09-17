@@ -14,10 +14,14 @@ export interface InitOptions {
   releaseBranch?: string;
   github?: string;
   layout?: 'dir' | 'orphan-branch';
-  gdignore?: boolean;          // default: auto-detect project.godot in the code repo
+  gdignore?: boolean;          // default: auto-detect project.godot in the code repo (keeps the Godot editor out of the data dir)
+  categories?: string[];       // default: DEFAULT_CATEGORIES; the last one is where uncategorized items land
+  register?: boolean;          // remember it in ~/.planestro so a bare `planestro serve` finds it (default true)
   commit?: boolean;            // git commit the seed (default true when the data dir is a git checkout)
   log?: (m: string) => void;
 }
+
+export const DEFAULT_CATEGORIES = ['Feature', 'Bug', 'Chore', 'Docs', 'Not Yet Categorized'];
 
 const SHIPPED_PROMPTS = new URL('../prompts/', import.meta.url);
 
@@ -43,6 +47,7 @@ export function initDataDir(o: InitOptions): { created: string[] } {
   const defaultBranch = o.defaultBranch ?? detectDefaultBranch(codeRepo);
   const github = o.github ?? detectGithub(codeRepo);
   const relRepo = relative(dataDir, codeRepo) || '.';
+  const categories = o.categories?.length ? o.categories : DEFAULT_CATEGORIES;
   const gd = o.gdignore ?? existsSync(join(codeRepo, 'project.godot'));
 
   write(CONFIG_FILE, `# planestro project config — versioned. Machine-specific paths go in planestro.local.yml.
@@ -68,16 +73,12 @@ models:
 defaults:
   planner: fable-5
   implementer: opus-5
-  category: Not Yet Categorized
+  category: ${yamlStr(categories.at(-1)!)}
 categories:
-  - Game
-  - Marketing Site
-  - Chores
-  - Tools
-  - Not Yet Categorized
+${categories.map((c) => `  - ${yamlStr(c)}`).join('\n')}
 concurrency:
   max_sessions: 3
-  max_godot_jobs: 1
+  max_local_jobs: 1
 permissions:
   allow: []
   deny: []
@@ -114,7 +115,7 @@ attachments:
     const rel = relative(codeRepo, dataDir) + '/';
     if (!existsSync(exclude) || !readFileSync(exclude, 'utf8').split('\n').includes(rel)) { appendFileSync(exclude, `${rel}\n`); log(`added ${rel} to ${exclude}`); }
   }
-  registerProject({ name, data_dir: dataDir, last_used: isoLocal() });
+  if (o.register !== false) registerProject({ name, data_dir: dataDir, last_used: isoLocal() });
   if ((o.commit ?? true) && existsSync(join(dataDir, '.git')) && created.length) {
     execFileSync('git', ['-C', dataDir, 'add', '-A']);
     execFileSync('git', ['-C', dataDir, 'commit', '-q', '-m', `planestro: init schema ${SCHEMA_VERSION}`, '-m', `Planestro-Version: ${TOOL_VERSION}`]);

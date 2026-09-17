@@ -16,6 +16,9 @@ const USAGE = `planestro ${TOOL_VERSION}
                                     run the web UI + engine (default host 127.0.0.1; use 0.0.0.0 for LAN access)
                                     --watch  restart on planestro source changes (between agent turns) and rebuild the UI
                                     --open   open the UI in a browser once it is up
+  planestro sample [dir] [--reset] [--no-serve] [--port N]
+                                    build a fictional project with a full backlog and serve it in dry-run:
+                                    no repo, GitHub remote or Claude login needed (default dir .planestro/sample, port 4310)
   planestro version
 `;
 
@@ -25,7 +28,7 @@ const { values, positionals } = parseArgs({
     repo: { type: 'string' }, name: { type: 'string' }, prefix: { type: 'string' }, 'default-branch': { type: 'string' },
     'release-branch': { type: 'string' }, github: { type: 'string' }, layout: { type: 'string' }, 'no-commit': { type: 'boolean' },
     commit: { type: 'boolean' }, 'copy-small': { type: 'boolean' }, data: { type: 'string' },
-    help: { type: 'boolean', short: 'h' }, port: { type: 'string' }, host: { type: 'string' }, mock: { type: 'boolean' }, watch: { type: 'boolean' }, open: { type: 'boolean' },
+    help: { type: 'boolean', short: 'h' }, port: { type: 'string' }, host: { type: 'string' }, mock: { type: 'boolean' }, watch: { type: 'boolean' }, open: { type: 'boolean' }, reset: { type: 'boolean' }, 'no-serve': { type: 'boolean' },
   },
 });
 const [cmd, arg] = positionals;
@@ -67,7 +70,7 @@ try {
       if (!arg) throw new Error('usage: planestro import-prompts <file> [--data <dir>] [--commit]');
       const dir = locateDataDir(values.data);
       const store = await DataStore.open(dir, { log: (l, m) => log(`[${l}] ${m}`) });
-      const { importPrompts } = await import('./import/promptsImport.ts');
+      const { importPrompts } = await import('./import/legacy/handMaintainedPrompts.ts');
       const r = importPrompts(store, resolve(arg), { commit: Boolean(values.commit), copySmall: Boolean(values['copy-small']) });
       for (const row of r.rows) log(`${row.kind.padEnd(7)} ${(row.id ?? row.name ?? '').padEnd(8)} ${(row.status ?? '').padEnd(18)} ${(row.category ?? '').padEnd(16)} ${row.title.slice(0, 70)}${row.flags.length ? '  [' + row.flags.join('; ') + ']' : ''}`);
       log(`${values.commit ? 'imported' : 'would import'}: ${r.items} items, ${r.prompts} prompts (${r.skipped} skipped)${values.commit ? '' : ' — re-run with --commit to write'}`);
@@ -98,6 +101,19 @@ try {
       if (values.open) void import('./supervise.ts').then((m) => m.openWhenUp(`http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`, log));
       const { startServer } = await import('./server.ts');
       await startServer({ dataDir: dir, port: values.port ? Number(values.port) : undefined, host: values.host, mock: values.mock });
+      break;
+    }
+    case 'sample': {
+      const { seedSample } = await import('./sample.ts');
+      const r = await seedSample(arg ?? '.planestro/sample', { reset: values.reset, log });
+      log(`sample project: ${r.codeRepo}\nplanning data:  ${r.dataDir}${r.items ? ` (${r.items} items seeded)` : ''}`);
+      if (values['no-serve']) { log(`serve it with: planestro serve ${r.dataDir} --port 4310`); break; }
+      const port = values.port ? Number(values.port) : 4310;
+      log('dry-run engine: queue an item and watch it go plan → approval → PR → CI → merge with fake git, GitHub and agent');
+      const { openWhenUp } = await import('./supervise.ts');
+      void openWhenUp(`http://127.0.0.1:${port}`, log);
+      const { startServer } = await import('./server.ts');
+      await startServer({ dataDir: r.dataDir, port, host: values.host });
       break;
     }
     case 'version': log(TOOL_VERSION); break;

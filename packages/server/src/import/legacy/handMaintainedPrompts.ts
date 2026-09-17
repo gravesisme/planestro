@@ -2,10 +2,16 @@ import { readFileSync, existsSync, statSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { isoLocal, slugify } from '@planestro/shared';
-import type { DataStore } from '../store/DataStore.ts';
+import type { DataStore } from '../../store/DataStore.ts';
 
 /**
- * One-time import of the hand-maintained BACKLOG_PROMPTS.md format:
+ * LEGACY, PROJECT-SPECIFIC. Before planestro existed its author tracked one game's backlog in a
+ * single hand-maintained markdown file; this is the one-off importer that moved those ~90 entries
+ * in. Its block grammar, model names and category rules describe that file and nothing else. It is
+ * kept as a worked example of a bulk importer (dry-run by default, idempotent by body hash, every
+ * write through the DataStore) — copy its shape, not its regexes.
+ *
+ * The format:
  * blocks separated by `---` lines, section banners (`# COMMON TERMS`, `# [ICEBOX] GAME …`),
  * headers like `# FABLE 5: FINISHED` / `# codex-5.6.sol: FINISHED` (any count, `##` variant),
  * then `## TITLE` and the prompt body. Idempotent by body hash. Dry-run unless {commit: true}.

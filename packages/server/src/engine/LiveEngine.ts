@@ -30,7 +30,8 @@ export class LiveEngine implements Engine {
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly now: () => string;
   private readonly ciWorkflow: string;
-  private godotLock: Promise<void> = Promise.resolve();
+  private localJobs = 0;
+  private localJobWaiters: (() => void)[] = [];
   readonly orchestrator: Orchestrator;
 
   constructor(private readonly store: DataStore, private readonly ports: Ports, private readonly emit: (e: ServerEvent) => void, private readonly opts: EngineOptions = {}) {
@@ -175,7 +176,7 @@ export class LiveEngine implements Engine {
     else await this.ports.git.worktreeAdd(this.repo, dir, branch, `origin/${base}`);
     this.store.mutateItem(id, [{ set: { op: 'importing', op_started_at: this.now() } }], 'engine');
     for (const hook of kept ? [] : this.store.config.hooks.after_worktree_create) {
-      const r = await this.withGodotLock(() => this.ports.proc.run(hook, { cwd: dir, timeoutMs: 20 * 60_000 }));
+      const r = await this.withLocalJobSlot(() => this.ports.proc.run(hook, { cwd: dir, timeoutMs: 20 * 60_000 }));
       if (r.code !== 0) { this.store.journal.end(opId, id, 'failed', { hook, code: r.code }); this.block(id, 'hook_failed', `${hook} exited ${r.code}: ${r.stderr.slice(-400)}`); return; }
       this.store.mutateItem(id, [{ activity: { actor: 'app', text: `hook ok: ${hook}` } }], 'engine');
     }
@@ -479,7 +480,7 @@ export class LiveEngine implements Engine {
     if (verdict === 'blocked') {
       if (cfg.mode === 'github-or-local' && cfg.local_check_command) {
         this.store.mutateItem(id, [{ set: { op: 'running_local_checks', op_started_at: this.now() } }, { activity: { actor: 'app', text: `GitHub Actions is blocked; running local gate: ${cfg.local_check_command}` } }], 'engine');
-        const r = await this.withGodotLock(() => this.ports.proc.run(cfg.local_check_command!, { cwd, timeoutMs: cfg.timeout_min * 60_000 }));
+        const r = await this.withLocalJobSlot(() => this.ports.proc.run(cfg.local_check_command!, { cwd, timeoutMs: cfg.timeout_min * 60_000 }));
         if (r.code !== 0) { await this.onCiRed(id, opId, headSha, `local checks exited ${r.code}\n${(r.stdout + r.stderr).split('\n').filter((l) => /FAIL|Error/i.test(l)).slice(-40).join('\n')}`, 'local'); return; }
         this.store.mutateItem(id, [{ activity: { actor: 'app', text: 'local checks passed (used as the CI gate)' } }], 'engine');
       } else { this.store.journal.end(opId, id, 'aborted', { reason: 'ci_blocked' }); this.block(id, 'ci_blocked', 'GitHub Actions did not run (billing blocked or workflow missing); set ci.mode to github-or-local with a local_check_command, or re-run by hand'); return; }
@@ -901,10 +902,15 @@ export class LiveEngine implements Engine {
     return `removed unused worktree and branch ${branch} (clean, nothing ahead of origin/${base})`;
   }
 
-  private withGodotLock<T>(fn: () => Promise<T>): Promise<T> {
-    const run = this.godotLock.then(fn);
-    this.godotLock = run.then(() => undefined, () => undefined);
-    return run;
+  /**
+   * Setup hooks and local check commands are the heavy processes planestro starts itself (an asset
+   * import, a full test suite); `concurrency.max_local_jobs` bounds how many run at once. The limit
+   * is read at each acquire, so changing it in Settings applies to the next job.
+   */
+  private async withLocalJobSlot<T>(fn: () => Promise<T>): Promise<T> {
+    while (this.localJobs >= Math.max(1, this.store.config.concurrency.max_local_jobs)) await new Promise<void>((r) => this.localJobWaiters.push(r));
+    this.localJobs += 1;
+    try { return await fn(); } finally { this.localJobs -= 1; this.localJobWaiters.shift()?.(); }
   }
 
   private absWorktree(rel: string): string { return isAbsolute(rel) ? rel : join(this.repo, rel); }

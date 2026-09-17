@@ -1,58 +1,79 @@
 # planestro
 
-Local-first backlog planning and Claude Code orchestration for a solo developer.
+[![CI](https://github.com/gravesisme/planestro/actions/workflows/ci.yml/badge.svg)](https://github.com/gravesisme/planestro/actions/workflows/ci.yml)
 
-You write backlog items as markdown. planestro turns "Queue" into a plan you
-approve, an implementation on its own branch and worktree, a pull request,
-a rebase, a CI wait, a merge and a cleanup — with a Claude session doing the
-thinking and deterministic code doing everything mechanical. When something
-needs a human, the session is parked and you are told; answer whenever, and the
-same session resumes with its context intact.
+**A backlog that ships itself — with you as the conductor.** Local-first
+planning and [Claude Code](https://claude.com/claude-code) orchestration for a
+solo developer.
 
-## What it is
+You write backlog items as markdown. planestro turns **Queue** into a plan you
+approve, an implementation on its own branch and worktree, a pull request, a
+rebase, a CI wait, a merge and a cleanup — a Claude session doing the thinking,
+deterministic code doing everything mechanical. When something needs a human,
+the session is parked and you are told; answer whenever, and the same session
+resumes with its context intact.
 
-- **Files are the truth.** One markdown file per item (`items/HH-143.md`: YAML
-  frontmatter + `# Description`, `# Notes`, `# Plan`, `# Activity`), a prompt
-  library (`prompts/*.md`), small attachments, and an NDJSON journal, all in a
-  git-versioned *data dir* with meaningful commits (`HH-143: approve plan`).
-  Readable and editable without the tool.
-- **Deterministic orchestration.** Git, worktrees, GitHub, CI polling, state
-  transitions, persistence, cleanup and scheduling are code. Claude is used for
-  planning, implementing and (later) judgment calls — never for polling.
-- **Parked, resumable sessions.** No process ever waits on a human. Plan
-  approval, permission prompts and agent questions park the session; the UI
-  shows a **NEEDS YOU** badge; resuming restores the conversation.
-- **Safe by default.** Dry-run mode logs `Would …` instead of acting, a global
-  **AUTOMATION PAUSED** lever stops everything new, and nothing is ever deleted
-  without positive evidence the work is merged (see `CLAUDE.md` invariants).
-- **Project-neutral.** A project is `{code_repo, data_dir}`; the data dir can
-  live anywhere — for example an orphan branch of the code repo checked out as
-  a nested worktree, so planning history never touches the code's branches.
+![The board: backlog, an item whose plan is waiting for approval, and the NEEDS YOU badge](docs/img/board.png)
 
-## Quick start
+It is used daily to build a commercial game that ships on the App Store:
+several agents working in parallel worktrees, every change through a reviewed
+plan, a pull request and green CI.
+
+## Try it in a minute — no repo, no GitHub, no Claude login
 
 ```sh
-npm install
-# create a data dir next to (or inside) your repo
-npx tsx packages/server/src/cli.ts init ../myproject-planning --repo ../myproject --name "My Project" --prefix MP
-npm run build                     # web UI
-npm start -- ../myproject-planning   # http://127.0.0.1:4300
+git clone https://github.com/gravesisme/planestro && cd planestro
+npm install && npm run build
+npm run sample          # http://127.0.0.1:4310
 ```
 
-Requirements: Node 24, git, the GitHub CLI (`gh`, authenticated) and Claude
-Code (`claude`, logged in). The engine starts in `dry-run`; flip `engine.mode`
-to `live` in Settings once you have watched a dry run.
+`sample` builds a fictional project (*tidepool*, a tide-times CLI) with a full
+backlog — finished work with its history, a bug with repro notes, an epic with
+dependent children, an icebox — and serves it with the engine in **dry-run**.
+Git, GitHub and the agent are the in-memory fakes the test suite drives, so
+the whole lifecycle really runs:
 
-## Authentication and billing
+1. Drag a card from **NOT YET SUBMITTED** to **QUEUED**. A worktree is
+   "created" and a plan appears; the card turns red: it needs you.
+2. Open it, read the plan, **Approve & implement**.
+3. Watch it open a PR, wait for CI, merge, clean up and land in **Done**. The
+   Console tab shows every `Would …` the real engine would have run.
 
-Worker sessions are Claude Code sessions launched through the official Agent SDK.
-By default they use whatever `claude` is logged in as. Anthropic's Agent SDK docs
-ask that SDK-built agents use **API-key authentication** rather than a claude.ai
-login, and the SDK is governed by the Commercial Terms — so set an Anthropic
-Console key (Settings → *This machine* → Anthropic API key, stored in the
-gitignored `planestro.local.yml`, or `ANTHROPIC_API_KEY` in the environment) to
-bill the API directly. Never offer a claude.ai login to other users of a tool
-built on this.
+`npm run sample -- --reset` rebuilds it from scratch.
+
+![An item parked on plan approval](docs/img/item.png)
+
+## Why it is built this way
+
+The interesting part is not that an LLM writes code; it is everything around
+it that has to be boring and correct. The rules the codebase is held to (the
+full list, with reasons, is in [`CLAUDE.md`](CLAUDE.md)):
+
+- **Files are the truth.** One markdown file per item (YAML frontmatter +
+  `# Description`, `# Notes`, `# Plan`, `# Activity`), a prompt library,
+  small attachments and an NDJSON journal, in a git-versioned *data dir* with
+  meaningful commits (`TD-6: approve plan`). Readable, greppable and editable
+  without the tool.
+- **Don't ask an LLM what a state machine can know.** Git, worktrees, GitHub,
+  CI polling, transitions, persistence, cleanup and scheduling are code.
+  Claude plans, implements and makes judgment calls — it never polls.
+- **No process ever waits on a human.** Plan approval, a permission prompt or
+  an agent's question parks the session: the request is persisted, the turn
+  ends, the process exits, and the UI shows **NEEDS YOU**. Your answer resumes
+  the same conversation — after a restart, too.
+- **Claude is never the sole holder of anything needed to recover.** Every
+  turn is rendered from persisted state; a reconciler cross-checks that state
+  against the real world at startup and converges crash leftovers.
+- **Destructive operations require positive evidence.** Nothing is deleted
+  because state says it should be safe: cleanup needs a fresh fetch, the PR
+  reported merged, and the tip proven reachable from the base. Ambiguity
+  blocks with a reason; it never deletes.
+- **Dry-run and a big red lever.** `engine.mode: dry-run` logs `Would …`
+  instead of acting, and **PAUSE AUTOMATION** stops everything new after the
+  current safe operation, across restarts.
+- **Project-neutral.** A project is `{code_repo, data_dir}`. The data dir can
+  live anywhere — for example an orphan branch of the code repo checked out as
+  a nested worktree, so planning history never touches the code's branches.
 
 ## Lifecycle
 
@@ -61,28 +82,98 @@ NOT_YET_SUBMITTED → QUEUED → PLAN_IN_PROGRESS → PLAN_READY → IN_PROGRESS
                                   (planner)     (you approve)  (implementer)   (rebase, CI, merge)  (cleanup)
 ```
 
-`ICEBOX` holds ideas; `blocked` / `awaiting` are orthogonal flags so an item never
-loses its phase when it needs you. Epics own a `feature/<slug>` integration branch
-for chained children; externally driven items (e.g. another agent) are watched.
+`ICEBOX` holds ideas; `blocked` / `awaiting` are orthogonal flags, so an item
+never loses its phase when it needs you. Epics own a `feature/<slug>`
+integration branch for chained children; items driven by something else
+(another agent, a colleague) are watched rather than run. **Close as done**
+finishes an item whose work landed some other way, without a PR.
+
+An orchestrator session (a separate, freely rotated Claude conversation) wakes
+on the ambiguous events — a plan to review, a second red CI run, a conflict —
+and can instruct workers or escalate to you; it never owns state.
+
+## Using it on your own project
+
+```sh
+npm install && npm run build
+npx tsx packages/server/src/cli.ts init ../myproject-planning --repo ../myproject --name "My Project" --prefix MP
+npm start -- ../myproject-planning --open     # http://127.0.0.1:4300
+```
+
+Requirements: Node 24, git, the GitHub CLI (`gh`, authenticated) and Claude
+Code (`claude`, logged in). The engine starts in `dry-run`; flip `engine.mode`
+to `live` in Settings once you have watched a dry run against your repo.
+Project rules come from your repo's own `CLAUDE.md` / `AGENTS.md`; planestro
+adds nothing project-specific.
+
+`serve --watch` is for working on planestro itself: web source changes rebuild
+the UI and open pages reload; server changes restart it between agent turns
+(automation is paused until running turns finish, then resumed).
+
+> **The web UI has no authentication.** It binds to `127.0.0.1` by default and
+> can start agents that edit and push code. `--host 0.0.0.0` exposes that to
+> your network; only do it on a network you trust.
+
+### Authentication and billing
+
+Worker sessions are Claude Code sessions launched through the official Agent
+SDK. By default they use whatever `claude` is logged in as. Anthropic's Agent
+SDK docs ask that SDK-built agents use **API-key authentication** rather than a
+claude.ai login, and the SDK is governed by the Commercial Terms — so set an
+Anthropic Console key (Settings → *This machine* → Anthropic API key, stored in
+the gitignored `planestro.local.yml`, or `ANTHROPIC_API_KEY` in the
+environment) to bill the API directly. Never offer a claude.ai login to other
+users of a tool built on this.
+
+### What agents may do
+
+Workers run with a permission policy (`packages/server/src/engine/policy.ts`):
+pushes, PR operations and anything touching the base or release branches are
+denied outright — integration is planestro's job, not the agent's — an allow
+list covers the routine, and everything else parks as a permission request you
+answer in the UI. A per-item budget (`budget_usd_per_item`) caps spend.
 
 ## Layout
 
 ```
 packages/shared   schema, item/prompt file codecs, ranks, transitions, placeholders
 packages/server   store (atomic writes, journal, semantic commits), engine (ports,
-                  policy, lifecycle, SDK session port), Hono API + WebSocket, CLI
-packages/web      React + Vite UI: board, item, sessions, prompts, settings
-docs/sdk-notes.md what the Claude Agent SDK spike validated and the gotchas
+                  policy, lifecycle, reconciler, orchestrator, SDK session port),
+                  Hono API + WebSocket, CLI, the sample project
+packages/web      React + Vite UI: board, item, sessions, prompts, console, settings
+docs/             what the Agent SDK spike validated (sdk-notes.md)
 spikes/           the runnable Phase 0 spike
 ```
 
-`npm test` runs the vitest suites (file codecs, ranks, transitions, store,
-migrations, and the engine lifecycle on dry-run ports, including CI-red,
-rebase-conflict, parked question/permission and restart recovery scenarios).
+The engine talks to the world only through four ports (git, GitHub, processes,
+Claude). Live ports shell out; dry-run ports are an in-memory world. That seam
+is why `npm test` can drive the real lifecycle — CI red then fixed, a rebase
+conflict handed to the session, parked questions and permissions, a restart in
+the middle of a turn, crash markers left on disk — in about twenty seconds with
+no network.
+
+```sh
+npm test            # vitest
+npm run typecheck
+```
 
 ## Data dir editing rules
 
 Hand-edit freely while planestro is not running — it commits your edits as
 `manual: …` at startup. While it runs, planestro is the only writer; worker
 sessions never touch the files either: they use the `submit_plan`, `add_note`,
-`append_activity`, `report_done` and `report_blocked` tools instead.
+`append_activity`, `report_done` and `report_blocked` tools instead. Schema
+changes ship as migrations (`planestro migrate <data_dir>`); an older dir
+opens read-only until you run it, a newer one until you upgrade the tool.
+
+## Status
+
+A working tool built for one person's workflow, shared as-is. Developed and
+used on macOS; Linux runs the test suite in CI; Windows is untried. One project
+per server process. The Claude Code and Agent SDK versions it was validated
+against are pinned in `packages/server/src/compat.ts`, and it warns when the
+installed CLI has drifted.
+
+## License
+
+[MIT](LICENSE)

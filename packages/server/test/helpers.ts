@@ -16,7 +16,7 @@ export function makeFixture(opts: { git?: boolean } = {}): { root: string; codeR
   const dataDir = join(root, 'planning');
   mkdirSync(dataDir);
   if (opts.git !== false) git(dataDir, 'init', '-q', '-b', 'planning');
-  initDataDir({ dataDir, codeRepo, name: 'Test Project', prefix: 'TP', defaultBranch: 'trunk', commit: opts.git !== false });
+  initDataDir({ dataDir, codeRepo, name: 'Test Project', prefix: 'TP', defaultBranch: 'trunk', categories: ['Game', 'Marketing Site', 'Chores', 'Tools', 'Not Yet Categorized'], commit: opts.git !== false });
   return { root, codeRepo, dataDir };
 }
 

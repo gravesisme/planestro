@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DataStore } from '../src/store/DataStore.ts';
-import { importPrompts, splitBlocks, parseBlock } from '../src/import/promptsImport.ts';
+import { importPrompts, splitBlocks, parseBlock } from '../src/import/legacy/handMaintainedPrompts.ts';
 import { makeFixture } from './helpers.ts';
 
 let store: DataStore | undefined;

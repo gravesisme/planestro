@@ -26,8 +26,25 @@ describe('migrations', () => {
     writeFileSync(cfg, readFileSync(cfg, 'utf8').replace(`schema_version: ${SCHEMA_VERSION}`, 'schema_version: 0'));
     const r = await migrate(dataDir);
     expect(r.from).toBe(0);
-    expect(r.applied).toEqual([1]);
+    expect(r.applied).toEqual([1, 2]);
     expect(currentVersion(dataDir)).toBe(SCHEMA_VERSION);
     expect(readFileSync(cfg, 'utf8')).toContain('# planestro project config'); // comments preserved
+  });
+  it('schema 2 renames the local job limit, keeps its value, and the dir opens writable again', async () => {
+    const { dataDir } = makeFixture({ git: false });
+    const cfg = join(dataDir, 'planestro.yml');
+    writeFileSync(cfg, readFileSync(cfg, 'utf8').replace(`schema_version: ${SCHEMA_VERSION}`, 'schema_version: 1').replace('max_local_jobs: 1', 'max_godot_jobs: 4'));
+    const before = await DataStore.open(dataDir, { lock: false });
+    expect(before.readOnly).toBe(true); // an older dir is never rewritten behind the user's back
+    before.close();
+    const r = await migrate(dataDir);
+    expect(r.applied).toEqual([2]);
+    const text = readFileSync(cfg, 'utf8');
+    expect(text).toContain('max_local_jobs: 4');
+    expect(text).not.toContain('godot');
+    const store = await DataStore.open(dataDir, { lock: false });
+    expect(store.readOnly).toBe(false);
+    expect(store.config.concurrency.max_local_jobs).toBe(4);
+    store.close();
   });
 });

@@ -70,5 +70,10 @@ rewritten or force-pushed; worker branches rebase with `--force-with-lease`.
   mutation touched; telemetry is checkpointed (`planestro: checkpoint <ts>`).
 - Schema changes go through `packages/server/src/migrations` and bump
   `SCHEMA_VERSION`; a newer data dir opens read-only.
+- `planestro sample` (`packages/server/src/sample.ts`) is the no-credentials demo
+  the README leads with; it writes through the DataStore and `sample.test.ts`
+  drives an item from it to FINISHED, so a schema or lifecycle change that would
+  break the demo fails the suite. `docs/going-public.md` tracks what is left
+  before the repository is made public.
 - SDK behaviour the engine relies on is recorded in `docs/sdk-notes.md`
   (validated versions in `packages/server/src/compat.ts`).
