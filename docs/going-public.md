@@ -4,8 +4,9 @@ What stands between this repository and flipping it to public, written so a
 later session can pick it up cold. Delete this file when the repo is public and
 the list is empty; it is a working document, not documentation.
 
-**State on 2026-09-17:** private repo, ~35 commits, ~7k lines of TypeScript,
-one author. The `public-prep` PR did the first pass below.
+**State on 2026-09-17:** private repo, one author. The `public-prep` PR did the
+first pass below; the `codex-epic` branch added the Codex runner, mixed-agent
+epics, the manual and the site.
 
 ## Done in the first pass
 
@@ -105,7 +106,7 @@ Making the repo public publishes every commit, not just `main`'s tip.
 - [ ] **Model ids are hardcoded in the init template** (`claude-fable-5`,
       `claude-opus-5`). They age; `init` could ask `claude` what exists, or the
       README should say where to edit them.
-- [ ] **The dry-run agent's plan is a stub** ("1. Inspect the code…"). For the
+- [ ] **The dry-run planner's plans are stubs** (the dry-run *art* is now a real generated picture, and the epic breakdown is a plausible canned one) ("1. Inspect the code…"). For the
       demo, a handful of canned, item-aware plans — or a recorded real session
       replayed — would make the sample far more convincing.
 - [ ] **Bundle size**: one 700 kB chunk. Harmless locally, but it is the first
@@ -127,15 +128,25 @@ Making the repo public publishes every commit, not just `main`'s tip.
 - [ ] A second, real recording: one actual item on the real project, sped up,
       showing a parked question and a resume after restart — the part that is
       hard and that the fake cannot show.
-- [ ] `docs/architecture.md`: the four ports, the state machine table, the
-      reconciler, the park/resume protocol, with one diagram. `CLAUDE.md` has
-      the rules; nothing yet has the picture.
+- [x] `docs/architecture.md` — and a whole manual under `docs/`, held to the
+      code by `docs.test.ts`.
 - [ ] A short write-up of three war stories already in the git log — the stale
       base-red gate, the double-counted CI run, budget caps that surfaced as
       `no_plan` — each is a "tell me about a bug" answer with a commit to show.
 - [ ] Numbers from real use: items shipped, PRs merged, median queue-to-merge
       time, spend per item. The journal and item files already hold all of it;
       a `planestro stats` command would make the README's claim checkable.
+
+## The site
+
+- [x] `site/` — a static marketing page, and `.github/workflows/pages.yml` to publish it.
+- [ ] Turn it on: Settings → Pages → *Build and deployment: GitHub Actions*; then
+      Settings → Secrets and variables → Actions → Variables → `PAGES_ENABLED` = `true`;
+      then run the *Pages* workflow once (or push a change under `site/`). Pages on a
+      private repository needs a paid plan — on a free plan this waits for the flip.
+- [ ] After the first deploy: put the Pages URL in the repository's "About" box and make
+      `og:image` an absolute URL (share cards ignore relative ones).
+- [ ] A custom domain, if wanted: `site/CNAME` plus the DNS record.
 
 ## The flip itself
 
