@@ -320,7 +320,7 @@ are well-shaped items for that. Otherwise tick them off here:
 - [x] M0 spike gaps — image-to-image verdict: **go** (guided regeneration from the reference, not pixel-preserving); sandbox refusals never hang; SIGTERM exits 0; `--ignore-user-config` keeps `AGENTS.md`
 - [x] M1 agent seam — `Ports.agents`, `AgentTurnOptions` vs `ClaudeTurnExtras`, `canPlan()`, seam invariant test
 - [x] M2 Codex implements — decisions: one art-only `codex-art` row; own concurrency (`runner_limits.codex: 1`); every hold_for_review model's PR parks on `awaiting: review` *after* CI. Live acceptance (`npm run spike:codex-live -- item`): real engine + real git + real Codex → icon generated, committed, PR, CI, review hold, approve, merged, worktree cleaned. The first live run found the worker rule about sandbox refusals was too strict (an optional check's cache write blocked the item); fixed in `worker-system-codex`.
-- [ ] M3 art review
+- [x] M3 art review — `GET /items/:id/images` from git (three-dot diff, both sides of each blob), `ReviewPanel` (checkerboard, 1× / display scale, zoom, pasted screenshots attached for the agent), `requestReviewChanges` resumes the same thread and the revision returns for review, `review.max_file_bytes` guard, `art-item` template. Live (`-- review`): delivered → sent back → revised on the same thread → approved → merged. The run found that a **resumed Codex thread loses its sandbox** (read-only) — fixed with `-c sandbox_mode`, and `--add-dir` was dropped because it grants write access to the data dir.
 - [ ] M4 planner breakdown
 - [ ] M5 art → logic handoff
 - [ ] M6 hardening + demo

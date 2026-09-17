@@ -118,6 +118,46 @@ describe('mixed runners (dry-run ports)', () => {
     await waitFor(() => fmOf(store, auth.id).blocked_reason === 'turn_budget');
   });
 
+  it('review: the branch\'s images come from git, changes go back to the same thread and return for review, approval merges', async () => {
+    const { store, engine } = await setup();
+    const item = store.createItem({ title: 'Tide chart icon', description: 'x', implementer: 'codex-art' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => fmOf(store, item.id).status === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => fmOf(store, item.id).awaiting === 'review');
+    const images = await engine.reviewImages(item.id);
+    expect(images).toEqual([{ path: `assets/${item.id.toLowerCase()}.png`, change: 'added', bytes: expect.any(Number), width: 96, height: 96 }]);
+    const first = (await engine.reviewImage(item.id, images[0].path, 'after'))!;
+    expect(first.subarray(1, 4).toString()).toBe('PNG');
+    expect(await engine.reviewImage(item.id, images[0].path, 'before')).toBeNull();      // it is new
+    expect(await engine.reviewImage(item.id, '../../etc/passwd', 'after')).toBeNull();     // only what the branch changed
+    await expect(engine.requestReviewChanges(item.id, '  ')).rejects.toThrow(/what should change/);
+    const thread = fmOf(store, item.id).agent_sessions!.codex;
+    await engine.requestReviewChanges(item.id, 'warmer colours');
+    await waitFor(() => fmOf(store, item.id).awaiting === 'review' && fmOf(store, item.id).agent_turns === 2);
+    expect(fmOf(store, item.id).agent_sessions!.codex).toBe(thread);
+    expect(fmOf(store, item.id).review_hold).toBe(true);
+    const second = (await engine.reviewImage(item.id, images[0].path, 'after'))!;
+    expect(second.equals(first)).toBe(false);                                            // a new picture, same path
+    expect(activityOf(store, item.id)).toContain('review: changes requested: warmer colours');
+    await engine.releaseHold(item.id);
+    await waitFor(() => fmOf(store, item.id).status === 'FINISHED');
+    expect(await engine.reviewImages(item.id)).toEqual([]);
+  });
+
+  it('a file over review.max_file_bytes blocks the item before any pull request exists', async () => {
+    const { store, engine } = await setup({ config: (y) => `${y}\nreview:\n  max_file_bytes: 100\n` });
+    const item = store.createItem({ title: 'Huge splash', description: 'x', implementer: 'codex-free' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => fmOf(store, item.id).status === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => fmOf(store, item.id).blocked === true);
+    expect(fmOf(store, item.id)).toMatchObject({ status: 'IN_PROGRESS', blocked_reason: 'asset_too_large' });
+    expect(fmOf(store, item.id).pr).toBeUndefined();
+  });
+
   it('an engine without the Codex runner says so instead of failing obscurely', async () => {
     const { store, engine } = await setup({ noCodex: true });
     const item = store.createItem({ title: 'No runner', description: 'x', implementer: 'codex-art' });

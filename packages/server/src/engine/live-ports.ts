@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { existsSync } from 'node:fs';
-import type { GitPort, GhPort, ProcPort, WorktreeEntry, RebaseResult, CiStatus, PrInfo } from './ports.ts';
+import type { GitPort, GhPort, ProcPort, WorktreeEntry, RebaseResult, CiStatus, PrInfo, ChangedFile } from './ports.ts';
 
 const execFileP = promisify(execFile);
 
@@ -20,6 +20,21 @@ async function gh(args: string[]): Promise<string> {
 }
 
 export class LiveGitPort implements GitPort {
+  async changedFiles(cwd: string, base: string, head: string): Promise<ChangedFile[]> {
+    const out = (await git(cwd, ['diff', '--name-status', '--no-renames', '-z', `${base}...${head}`])).stdout.split('\0');
+    const files: ChangedFile[] = [];
+    for (let i = 0; i + 1 < out.length; i += 2) {
+      const change = out[i][0] === 'A' ? 'added' : out[i][0] === 'D' ? 'deleted' : 'modified';
+      const path = out[i + 1];
+      const size = change === 'deleted' ? undefined : Number((await git(cwd, ['cat-file', '-s', `${head}:${path}`], true)).stdout.trim()) || undefined;
+      files.push({ path, change, bytes: size });
+    }
+    return files;
+  }
+  async mergeBase(cwd: string, a: string, b: string) { const r = await git(cwd, ['merge-base', a, b], true); return r.code === 0 ? r.stdout.trim() : null; }
+  async readBlob(cwd: string, ref: string, path: string): Promise<Buffer | null> {
+    try { return (await execFileP('git', ['-C', cwd, 'show', `${ref}:${path}`], { encoding: 'buffer', maxBuffer: 64 * 1024 * 1024 })).stdout as unknown as Buffer; } catch { return null; }
+  }
   async fetch(repo: string) { await git(repo, ['fetch', '--prune', 'origin']); }
   async revParse(cwd: string, ref: string) { return (await git(cwd, ['rev-parse', ref])).stdout.trim(); }
   async refExists(repo: string, ref: string) { return (await git(repo, ['rev-parse', '--verify', '--quiet', ref], true)).code === 0; }

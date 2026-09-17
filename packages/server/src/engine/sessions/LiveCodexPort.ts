@@ -67,11 +67,13 @@ export class LiveCodexPort implements AgentPort<AgentTurnOptions> {
     const schemaFile = join(scratch, 'final.schema.json');
     const lastFile = join(scratch, 'last.json');
     writeFileSync(schemaFile, JSON.stringify(FINAL_SCHEMA));
-    // `resume` takes fewer flags than a fresh `exec`: the sandbox and cwd of the thread are kept.
-    const shared = ['--json', '--ignore-user-config', '-o', lastFile, ...this.extraArgs, ...(o.model ? ['-m', o.model] : []), ...(o.images ?? []).flatMap((p) => ['-i', p])];
+    // A resumed thread does NOT keep its sandbox: without the user's config it comes back read-only, and
+    // `resume` has no `-s`. The config override works for both, so both get it. No `--add-dir`: that
+    // grants WRITE access, and a worker must never be able to write the data dir (reads are unrestricted).
+    const shared = ['--json', '--ignore-user-config', '-c', 'sandbox_mode="workspace-write"', '--output-schema', schemaFile, '-o', lastFile, ...this.extraArgs, ...(o.model ? ['-m', o.model] : []), ...(o.images ?? []).flatMap((p) => ['-i', p])];
     const args = o.resume
       ? ['exec', 'resume', o.resume, ...shared]
-      : ['exec', '-s', 'workspace-write', '-C', o.cwd, '--output-schema', schemaFile, ...o.extraDirs.flatMap((d) => ['--add-dir', d]), ...shared];
+      : ['exec', '-s', 'workspace-write', '-C', o.cwd, ...shared];
     // There is no system-prompt flag: the worker rules ride at the top of the prompt, every turn.
     const prompt = `${o.systemAppend.trim()}\n\n---\n\n${o.prompt.trim()}\n\nEnd your turn with ONLY the JSON object described above: {"outcome": "done" | "blocked" | "question", "summary": "...", "question": "..." or null}.`;
 
