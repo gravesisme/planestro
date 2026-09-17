@@ -73,7 +73,12 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           {fm.kind !== 'epic' && <label>parent epic <select value={fm.parent ?? ''} onChange={(e) => field({ parent: e.target.value || null })}><option value="">none</option>{epics.map((e) => <option key={e.id} value={e.id}>{e.id} {e.frontmatter.title}</option>)}</select></label>}
           {fm.kind !== 'epic' && !d.external && <label><input type="checkbox" checked={!!fm.auto_approve_plan} onChange={(e) => field({ auto_approve_plan: e.target.checked })} disabled title="Available once the orchestrator exists (Phase 4)" /> auto-approve plan</label>}
           {d.external && <label>merge policy <select value={fm.merge_policy ?? 'watch'} onChange={(e) => field({ merge_policy: e.target.value })}><option value="watch">watch (someone else merges)</option><option value="app">app (planestro merges)</option></select></label>}
-          <label>depends on <select multiple size={Math.min(4, Math.max(2, others.length))} value={fm.depends_on} onChange={(e) => field({ depends_on: [...e.target.selectedOptions].map((o) => o.value) })}>{others.map((o) => <option key={o.id} value={o.id}>{o.id} {o.frontmatter.title}</option>)}</select></label>
+          <span className="deps">depends on
+            {fm.depends_on.length === 0 && <span className="muted"> nothing</span>}
+            {fm.depends_on.map((dep) => { const o = state.items.find((x) => x.id === dep); const done = o && ['MERGED', 'FINISHED'].includes(o.frontmatter.status); return (
+              <span key={dep} className={`tag ${done ? 'ok' : ''}`} title={o ? `${o.frontmatter.title} — ${statusLabel(o.frontmatter.status)}` : 'unknown item'}><Link to={`/items/${dep}`}>{dep}</Link> <button className="chip-x" title={`Stop waiting on ${dep}`} onClick={() => field({ depends_on: fm.depends_on.filter((x) => x !== dep) })}>×</button></span>); })}
+            <select value="" onChange={(e) => e.target.value && field({ depends_on: [...fm.depends_on, e.target.value] })}><option value="">add…</option>{others.filter((o) => !fm.depends_on.includes(o.id)).map((o) => <option key={o.id} value={o.id}>{o.id} {o.frontmatter.title.slice(0, 70)}</option>)}</select>
+          </span>
         </div>
         {(d.external || fm.kind === 'epic') && (
           <div className="controls">

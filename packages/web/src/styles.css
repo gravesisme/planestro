@@ -109,3 +109,5 @@ html { -webkit-text-size-adjust: 100%; }
 .column.drop-ok { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--panel)); } .column.drop-no { border-color: var(--hot); opacity: .7; }
 .quick-actions { flex-wrap: wrap; margin: 8px 0 10px; }
 .dialog form label.row code { color: var(--muted); }
+.deps { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; color: var(--muted); font-size: 12px; } .deps .tag { color: var(--text); } .deps select { max-width: 220px; padding: 3px 6px; }
+.chip-x { background: transparent; border: 0; padding: 0 2px; color: var(--muted); line-height: 1; } .chip-x:hover { color: var(--hot); }
