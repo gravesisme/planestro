@@ -33,6 +33,7 @@ export class DryRunGitPort implements GitPort {
   async fetch(repo: string) { this.say(`git fetch origin (in ${repo})`); }
   async revParse(cwd: string, ref: string) { if (ref === 'HEAD') return this.w.worktrees.get(cwd)?.head ?? this.w.sha(); return this.w.remoteBranches.get(ref.replace(/^origin\//, '')) ?? this.w.baseBranches[ref] ?? this.w.sha(); }
   async refExists(_repo: string, ref: string) { return this.w.remoteBranches.has(ref.replace(/^(origin|refs\/heads)\//, '')) || ref.startsWith('origin/'); }
+  async worktreeAddDetached(_repo: string, path: string, ref: string) { this.say(`git worktree add --detach ${path} ${ref}`); this.w.worktrees.set(path, { path, head: this.w.sha() }); }
   async worktreeAdd(_repo: string, path: string, branch: string, startRef: string) { this.say(`git worktree add -b ${branch} ${path} ${startRef}`); this.w.worktrees.set(path, { path, head: this.w.sha(), branch }); this.w.localBranches.add(branch); }
   async worktreeRemove(_repo: string, path: string, force: boolean) { this.say(`git worktree remove${force ? ' --force' : ''} ${path}`); this.w.worktrees.delete(path); }
   async worktreePrune() { this.say('git worktree prune'); }
@@ -135,6 +136,23 @@ export class DryRunClaudePort implements ClaudePort {
     const sessionId = o.resume ?? `dryrun-${o.itemId}-${this.w.sha().slice(-6)}`;
     const base: TurnResult = { sessionId, subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '' };
     o.onOutput(`(dry-run) prompt: ${o.prompt.slice(0, 120).replace(/\n/g, ' ')}…`);
+    if (o.phase === 'plan' && /## Break this epic down/.test(o.prompt)) {
+      const ids = [...o.prompt.matchAll(/^- `([^`]+)` — .*\(runner (\w+)\)/gm)].map((m) => ({ id: m[1], runner: m[2] }));
+      const art = ids.find((m) => m.runner !== 'claude')?.id; const code = ids.find((m) => m.runner === 'claude')?.id ?? ids[0]?.id ?? 'unknown';
+      const title = /^You are planning EPIC \S+ — "(.*)"/m.exec(o.prompt)?.[1] ?? 'the epic';
+      const children = art ? [
+        { title: `${title}: icon`, description: `Draw the icon for "${title}" and save it as assets/icon.png (256×256 PNG, transparent background), matching the existing art.`, implementer: art, depends_on: [] },
+        { title: `${title}: illustration`, description: `Draw the header illustration for "${title}" and save it as assets/header.png (1200×400 PNG), matching the existing art.`, implementer: art, depends_on: [] },
+        { title: `${title}: implementation`, description: `Implement "${title}". It uses assets/icon.png and assets/header.png, which the art children deliver; do not create or edit them.`, implementer: code, depends_on: [0, 1] },
+        { title: `${title}: docs`, description: `Document "${title}" in the README, with the header illustration at assets/header.png.`, implementer: code, depends_on: [1, 2] },
+      ] : [
+        { title: `${title}: implementation`, description: `Implement "${title}" as described in the epic, with tests.`, implementer: code, depends_on: [] },
+        { title: `${title}: docs`, description: `Document "${title}" in the README once the implementation has landed.`, implementer: code, depends_on: [0] },
+      ];
+      const plan = `# Epic plan (dry-run)\n\n${art ? 'Art first, in parallel, on the art implementer; then the code that consumes it; docs last.' : 'Implementation, then docs.'} Children never share files.`;
+      const answer = await o.tools.submit_breakdown(plan, children);
+      return { ...base, planSubmitted: answer.startsWith('Rejected') ? undefined : plan, text: answer };
+    }
     if (o.phase === 'plan') {
       const plan = `# Plan (dry-run)\n\n1. Inspect the code the request touches.\n2. Make the change.\n3. Run the project's checks.\n\nRequest:\n${o.prompt.split('## Request')[1]?.split('##')[0]?.trim() ?? ''}`;
       await o.tools.submit_plan(plan);

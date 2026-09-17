@@ -1,4 +1,5 @@
 import type { ItemFrontmatter, PromptFrontmatter, Config, LocalConfig, Status, JournalEntry } from '@planestro/shared';
+import type { BreakdownChild } from '@planestro/shared';
 
 export interface ItemView {
   id: string; path: string; frontmatter: ItemFrontmatter;
@@ -36,6 +37,7 @@ export const api = {
   reviewImages: (id: string) => req<ReviewImage[]>('GET', `/api/items/${id}/images`),
   requestReviewChanges: (id: string, note: string) => req<ItemView>('POST', `/api/items/${id}/review/changes`, { note }),
   releaseHold: (id: string, note?: string) => req<ItemView>('POST', `/api/items/${id}/hold/release`, { note }),
+  approveBreakdown: (id: string, children: BreakdownChild[], queue: boolean) => req<{ created: string[]; item: ItemView }>('POST', `/api/items/${id}/breakdown/approve`, { children, queue }),
   approvePlan: (id: string, notes?: string) => req<ItemView>('POST', `/api/items/${id}/plan/approve`, { notes }),
   rejectPlan: (id: string, message: string) => req<ItemView>('POST', `/api/items/${id}/plan/reject`, { message }),
   message: (id: string, text: string) => req<{ ok: true }>('POST', `/api/items/${id}/message`, { text }),

@@ -14,6 +14,8 @@ export interface GitPort {
   revParse(cwd: string, ref: string): Promise<string>;
   refExists(repo: string, ref: string): Promise<boolean>;
   worktreeAdd(repo: string, path: string, branch: string, startRef: string): Promise<void>;
+  /** A worktree on no branch, for sessions that only read (an epic's planner): nothing to merge, nothing to delete but the directory. */
+  worktreeAddDetached(repo: string, path: string, ref: string): Promise<void>;
   worktreeRemove(repo: string, path: string, force: boolean): Promise<void>;
   worktreePrune(repo: string): Promise<void>;
   worktreeList(repo: string): Promise<WorktreeEntry[]>;
@@ -66,6 +68,8 @@ export interface ProcPort {
 export type TurnPhase = 'plan' | 'implement' | 'fix';
 export interface TurnTools {
   submit_plan(plan: string): Promise<string>;
+  /** Epics only: the epic-level plan and its proposed children. A rejection is returned as text for the planner to fix. */
+  submit_breakdown(plan: string, children: unknown): Promise<string>;
   add_note(markdown: string): Promise<string>;
   append_activity(text: string): Promise<string>;
   report_done(summary: string): Promise<string>;

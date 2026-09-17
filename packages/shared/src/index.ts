@@ -6,4 +6,5 @@ export * from './promptfile.ts';
 export * from './rank.ts';
 export * from './transitions.ts';
 export * from './placeholders.ts';
+export * from './breakdown.ts';
 export * from './events.ts';
