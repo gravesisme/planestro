@@ -4,7 +4,7 @@ Goal: one epic, planned once by the Claude planner, whose **art children run on
 the Codex CLI** and whose **logic children run on Claude Code**, with the logic
 blocked on the art — all driven by planestro.
 
-Status: spike done 2026-09-17, nothing built. The staged plan — milestones,
+Status: spike done 2026-09-17 (two passes). The staged plan — milestones,
 acceptance tests, open decisions — is in [`codex-epic-plan.md`](codex-epic-plan.md);
 this file holds the findings and the design it stages.
 
@@ -23,10 +23,20 @@ this file holds the findings and the design it stages.
 | g | Cost accounting | **PARTIAL** | `turn.completed.usage` has token counts (input / cached / output / reasoning), no dollars. A trivial two-turn session read 127k and 260k input tokens (mostly cached) — budgets for Codex items should be in turns or tokens, not USD. |
 | h | Noise | note | stderr carries `rmcp … AuthRequired` errors from the user's own configured MCP servers failing to auth. Harmless; pass `--ignore-user-config` or a dedicated `-p planestro` profile so a worker never inherits personal MCP servers, rules or hooks. |
 
-Not yet tested: `-i <image>` for image-to-image (needed for repaint pipelines
-that start from a rig render), how `exec` behaves when the model wants an
-approval under `workspace-write` (there is no callback — expect a refusal in
-the transcript rather than a prompt), long sessions, rate-limit errors.
+### Second pass (M0, `npm run spike:codex -- <step>`, same day and version)
+
+| # | Question | Result | Notes |
+|---|---|---|---|
+| i | **Image-to-image** with `-i ref.png`? | **PASS, with a caveat** | The image tool *edits from* the attached image headless: same bottle, pose, lighting and framing, liquid recoloured red → blue. It is a strongly guided regeneration, not a pixel-preserving edit — the cork's texture changed. Good for repaints from a reference; anything that must keep exact pixels (a head transplant, a palette gate) still needs the project's own deterministic finishing step. |
+| j | What happens when the sandbox forbids something? | **PASS** | A write outside the workspace fails with `operation not permitted`; network fails with `Could not resolve host`. No prompt, no hang: the turn ends normally and, asked to report rather than work around it, the agent answered `outcome: blocked` with both error texts. |
+| k | Killed mid-turn | **PASS, note the exit code** | SIGTERM ends the process with **exit 0** and no final message. "Killed" therefore cannot be read from the exit status: the port must remember it sent the signal, and treat *exit 0 without a final message* as an incomplete turn. `codex exec resume <thread_id>` afterwards recalled the codeword; stderr logs one harmless `Custom tool call output is missing` for the interrupted call. |
+| l | Resuming a thread that does not exist | **PASS** | Exit 1 in under a second, stderr `Error: thread/resume: … no rollout found for thread id …`, no events. Map to a resumable-session-lost block, not a generic turn error. |
+| m | Config isolation | **PASS** | `--ignore-user-config` keeps the login and **still reads the repo's `AGENTS.md`** (a rule planted there was obeyed) while dropping the user's personal MCP servers — the `rmcp … AuthRequired` stderr noise disappears. Use it for every worker turn. |
+| n | Event catalogue | — | Seen: `thread.started{thread_id}`, `turn.started`, `item.started` / `item.completed` with `item.type` `agent_message{text}` or `command_execution{command, aggregated_output, exit_code, status}`, `turn.completed{usage{input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens}}`. Image generation appears as ordinary `command_execution` items (the agent reads its imagegen skill, then copies the PNG out of `~/.codex/generated_images/<thread_id>/`). With stdin ignored Codex still prints `Reading additional input from stdin...` to stderr once and proceeds. |
+
+Still untested, because they cannot be provoked on demand: an expired login and
+a rate limit. M6 handles both by pattern-matching stderr and needs a real
+occurrence to confirm the patterns.
 
 ## What planestro already has
 
