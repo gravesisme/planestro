@@ -7,3 +7,7 @@
 export const VALIDATED_CLAUDE_VERSION = '2.1.251';
 export const VALIDATED_SDK_VERSION = '0.3.251';
 export const VALIDATED_ON = '2026-08-30';
+
+/** The Codex CLI the Codex runner was validated against (spikes/codex-spike.ts, docs/codex-integration.md). */
+export const VALIDATED_CODEX_VERSION = '0.154.0';
+export const CODEX_VALIDATED_ON = '2026-09-17';

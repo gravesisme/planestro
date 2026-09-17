@@ -1,7 +1,8 @@
 # Epic: mixed-agent features — Codex art blocking Claude logic
 
 Companion to [`codex-integration.md`](codex-integration.md) (spike findings and
-the design this plan stages). Written 2026-09-17; nothing below is built.
+the design this plan stages). Written 2026-09-17. Progress is tracked in the
+checklist at the bottom; M7–M9 were added by the author the same day.
 
 ## The outcome, as one demo
 
@@ -47,6 +48,10 @@ graph LR
   M3 --> M5[M5 art → logic handoff]
   M4 --> M5
   M5 --> M6[M6 hardening + demo]
+  M6 --> M7[M7 documentation]
+  M5 --> M8[M8 example project]
+  M7 --> M9[M9 marketing site]
+  M8 --> M9
 ```
 
 ### M0 — Close the spike's gaps · ½ session · go/no-go gate
@@ -215,6 +220,76 @@ art children are MERGED) and the delivered-files text in the logic prompt.
   README gains a mixed-agent section and one screenshot of an art review;
   `docs/going-public.md` updated; a recording of the M5 demo.
 
+### M7 — Full documentation, Codex included · 1–2 sessions
+
+One documentation set a stranger can learn the tool from, not a README plus
+design notes.
+
+- `docs/` becomes a small manual: **getting started** (install, `sample`,
+  first real project), **concepts** (items, the lifecycle, parking, epics,
+  dependencies, holds), **agents** (the Claude runner, the Codex runner, the
+  two trust models side by side, models and routing), **mixed-agent epics**
+  (breakdown, art review, hand-off — the M4/M3/M5 flow as a walkthrough),
+  **prompts** (the library, placeholders, partials, favorites, templates vs
+  roles), **configuration reference** (every `planestro.yml` and
+  `planestro.local.yml` key, generated from the schema so it cannot drift),
+  **CLI reference**, **architecture** (ports, state machine table, reconciler,
+  park/resume protocol, one diagram), **operations** (watch mode, migrations,
+  recovery, the big red lever), **troubleshooting** (every `blocked_reason`
+  and what to do about it).
+- `codex-integration.md` is rewritten from "design" to "how it works"; the
+  spike tables move to `docs/notes/`.
+- A docs check in the test suite: every config key in the schema and every
+  `blocked_reason` the engine can raise appears in the reference pages.
+
+**Acceptance:** the docs check passes; every relative link resolves; the README
+links into the manual instead of duplicating it.
+
+### M8 — The example project shows both agents · 1 session
+
+`npm run sample` is the product's front door; it should show the headline
+feature.
+
+- *tidepool* gains art: an icon set and a splash image, so there is something
+  for an art agent to draw. The seeded backlog gains a **mixed epic** ("Tide
+  chart view") with Codex art children and Claude logic children wired by
+  `depends_on`, plus one finished art item with its review history.
+- The sample's prompt library gains worked **Codex prompts** (an art item
+  template with size / palette / target-path / provenance slots, a "repaint
+  from reference" template using an attachment) beside the **Claude prompts**
+  (bug fix, feature, audit), each startable from the Prompts page and favorited
+  so the picker leads with them.
+- `codex-art` is a configured model in the sample, with the routing
+  `description` the planner reads.
+- In dry-run the fake Codex port writes a generated placeholder PNG, so art
+  review thumbnails are real in the demo.
+
+**Acceptance:** `sample.test.ts` drives the mixed epic to FINISHED on dry-run
+ports and asserts the art children ran on the Codex runner and the logic
+children started only after them.
+
+### M9 — A marketing site on GitHub Pages · 1–2 sessions
+
+A public page that explains planestro in thirty seconds and sends people to the
+one-minute demo.
+
+- `site/`: a static, dependency-free page (HTML + CSS, no build step) in the
+  product's own visual language — the dark board palette, the baton mark.
+  Sections: what it is in one sentence; the lifecycle as an animated strip;
+  **two agents, one feature** (the mixed-agent epic); the invariants as the
+  reasons to trust it; screenshots from the sample; quick start; links to the
+  manual and the repository.
+- `.github/workflows/pages.yml` deploys `site/` with the official Pages
+  actions on pushes to `main` that touch it. Pages on a private repository
+  needs a paid plan, so the workflow is written to be inert until the repo is
+  public (or Pages is enabled) rather than failing every push.
+- Responsive to phone width, light and dark, no external requests (fonts
+  included or system), Open Graph image from the mark.
+
+**Acceptance:** the page renders from `file://` and from a local static server
+with no console errors and no network requests to other hosts; screenshots at
+desktop and phone width reviewed; the workflow validates.
+
 ## Decisions to make before M2 starts
 
 1. **Default Codex model id** and whether art and (any future) Codex *code*
@@ -242,10 +317,13 @@ To run this epic through planestro itself, give the planestro repo its own
 data dir (`planestro init … --repo .`) and serve it on a second port; M1 and M2
 are well-shaped items for that. Otherwise tick them off here:
 
-- [ ] M0 spike gaps — image-to-image verdict: ______
+- [x] M0 spike gaps — image-to-image verdict: **go** (guided regeneration from the reference, not pixel-preserving); sandbox refusals never hang; SIGTERM exits 0; `--ignore-user-config` keeps `AGENTS.md`
 - [ ] M1 agent seam
 - [ ] M2 Codex implements (decisions 1–2 made: ______)
 - [ ] M3 art review
 - [ ] M4 planner breakdown
 - [ ] M5 art → logic handoff
 - [ ] M6 hardening + demo
+- [ ] M7 documentation (added 2026-09-17)
+- [ ] M8 example project with Claude and Codex prompts (added 2026-09-17)
+- [ ] M9 marketing site on GitHub Pages (added 2026-09-17)

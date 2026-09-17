@@ -10,6 +10,7 @@
   ],
   "scripts": {
     "spike": "tsx spikes/sdk-spike.ts",
+    "spike:codex": "tsx spikes/codex-spike.ts",
     "planestro": "tsx packages/server/src/cli.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
