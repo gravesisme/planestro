@@ -55,7 +55,7 @@ in any that are missing.
 | An item is blocked | The reason is on the card and in its Activity log: see [Troubleshooting](troubleshooting.md). **unblock…** clears it and, with a message, resumes the session with your decision. |
 | The work landed some other way | **close as done…** — finishes the item without a pull request; its worktree and branch are removed only if they hold nothing. |
 | You iceboxed an item that was in flight | Queue it again: it picks its existing worktree back up (setup hooks are not re-run). |
-| A pull request was held | **Approve & merge** (a review hold) or **Release hold** (`skip_merge`): either way it goes back through sync and CI, because the base may have moved. |
+| A pull request was held | **Approve & merge** (a review hold) or **Release hold** (`skip_merge`): either way it goes back through sync and CI, because the base may have moved (a branch still on the base tip is not re-pushed; its green run is reused). |
 | You edited files by hand while it ran | **Reload from disk** (Settings → Data). Prefer stopping planestro first. |
 
 ## Backups and history

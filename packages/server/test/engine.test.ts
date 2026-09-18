@@ -64,6 +64,36 @@ describe('LiveEngine lifecycle (dry-run ports)', () => {
     expect(store.journal.openOps()).toEqual([]);
   });
 
+  it('a branch already on the base tip is neither rebased nor pushed; its CI run is reused', async () => {
+    const { store, engine, world } = await setup();
+    const item = store.createItem({ title: 'Up to date', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    const cwd = (engine as any).absWorktree(store.getItem(item.id)!.file.frontmatter.worktree!);
+    world.behind.set(cwd, 0);
+    await engine.approvePlan(item.id);
+    await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
+    const activity = activityOf(store, item.id);
+    expect(activity).toContain('already on trunk@');
+    expect(activity).not.toContain('rebased onto');
+    expect(store.getItem(item.id)!.file.frontmatter.ci_result).toBe('green');
+  });
+
+  it('a stale head sha right after the push is propagation lag, not a moved head', async () => {
+    const { store, engine, world } = await setup();
+    world.headLagPolls = 3; // gh pr view keeps reporting the replaced sha for three polls after a push
+    const item = store.createItem({ title: 'Laggy head', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
+    const activity = activityOf(store, item.id);
+    expect(activity.match(/rebased onto/g)?.length ?? 0).toBe(1);
+    expect(JSON.stringify(store.journal.read({ item: item.id }))).not.toContain('head_moved');
+  });
+
   it('the same red run re-observed is not a second failure', async () => {
     const { store, engine, world } = await setup({ ci: 'red-once' });
     world.ciMode = 'red-once';

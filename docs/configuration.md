@@ -73,7 +73,7 @@ their sandbox instead.
 | Key | Default | |
 |---|---|---|
 | `ci.mode` | `github` | `github-or-local` falls back to `local_check_command` when GitHub Actions cannot run (billing block, no workflow). |
-| `ci.require_green_base` | `true` | Do not merge into a base whose own tip is red. |
+| `ci.require_green_base` | `true` | Do not merge into a base whose own tip is red. Needs a `push`-event run of the CI workflow on the base; a repo whose workflow only runs on PRs gives it no signal (every red it sees is stale and ignored). |
 | `ci.start_timeout_min` | `10` | How long a run may fail to appear before CI counts as blocked. |
 | `ci.timeout_min` | `45` | How long a run may take. |
 | `ci.local_check_command` | none | The fallback check, run in the item's worktree. |

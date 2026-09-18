@@ -20,6 +20,11 @@ export class FakeWorld {
   seq = 0;
   ciMode: 'green' | 'red-once' | 'conflict-once' = (process.env.PLANESTRO_DRYRUN_CI as any) ?? 'green';
   conflictArmed = this.ciMode === 'conflict-once';
+  /** Commits a worktree is behind its base (default 1: the base is assumed to have moved, so every dry run exercises the sync). */
+  behind = new Map<string, number>();
+  /** How many `gh pr view` polls after a push still report the replaced head — GitHub's real propagation lag. */
+  headLagPolls = 0;
+  staleHeads = new Map<string, { sha: string; polls: number }>();
   constructor(readonly log: (msg: string) => void, readonly baseBranches: Record<string, string> = {}) {}
   sha(): string { return (0x100000 + ++this.seq).toString(16).padStart(40, '0'); }
 }
@@ -39,7 +44,7 @@ export class DryRunGitPort implements GitPort {
   async worktreePrune() { this.say('git worktree prune'); }
   async worktreeList() { return [...this.w.worktrees.values()]; }
   async status(cwd: string) { return { clean: !this.w.dirty.has(cwd), dirty: this.w.dirty.has(cwd) ? ['src/fake.ts'] : [] }; }
-  async aheadBehind(cwd: string) { return { ahead: this.w.commits.get(cwd) ?? 0, behind: 0 }; }
+  async aheadBehind(cwd: string) { return { ahead: this.w.commits.get(cwd) ?? 0, behind: this.w.behind.get(cwd) ?? 1 }; }
   async rebase(cwd: string, onto: string): Promise<RebaseResult> {
     if (this.w.conflictArmed) { this.w.conflictArmed = false; this.say(`git rebase ${onto} in ${cwd} → CONFLICT (simulated)`); return { ok: false, conflicts: ['src/conflicted.ts'], head: this.w.worktrees.get(cwd)?.head ?? '' }; }
     this.say(`git rebase ${onto} in ${cwd}`); const wt = this.w.worktrees.get(cwd); const head = this.w.sha(); if (wt) wt.head = head; return { ok: true, conflicts: [], head };
@@ -50,8 +55,13 @@ export class DryRunGitPort implements GitPort {
   }
   async inProgressOp() { return null; }
   async abortInProgress() {}
-  async pushForceWithLease(cwd: string, branch: string) { this.say(`git push --force-with-lease origin ${branch} (from ${cwd})`); this.w.remoteBranches.set(branch, this.w.worktrees.get(cwd)?.head ?? this.w.sha()); }
-  async pushSetUpstream(cwd: string, branch: string) { this.say(`git push -u origin ${branch} (from ${cwd})`); this.w.remoteBranches.set(branch, this.w.worktrees.get(cwd)?.head ?? this.w.sha()); }
+  private setRemote(branch: string, sha: string) {
+    const previous = this.w.remoteBranches.get(branch);
+    if (previous && previous !== sha && this.w.headLagPolls > 0) this.w.staleHeads.set(branch, { sha: previous, polls: this.w.headLagPolls });
+    this.w.remoteBranches.set(branch, sha);
+  }
+  async pushForceWithLease(cwd: string, branch: string) { this.say(`git push --force-with-lease origin ${branch} (from ${cwd})`); this.setRemote(branch, this.w.worktrees.get(cwd)?.head ?? this.w.sha()); }
+  async pushSetUpstream(cwd: string, branch: string) { this.say(`git push -u origin ${branch} (from ${cwd})`); this.setRemote(branch, this.w.worktrees.get(cwd)?.head ?? this.w.sha()); }
   async pushRef(_repo: string, src: string, dst: string) { this.say(`git push origin ${src}:refs/heads/${dst}`); this.w.remoteBranches.set(dst, this.w.sha()); }
   async remoteHeads(): Promise<Map<string, string>> { return new Map(this.w.remoteBranches); }
   async remoteBranchSha(_repo: string, branch: string) { return this.w.remoteBranches.get(branch) ?? null; }
@@ -71,7 +81,12 @@ export class DryRunGhPort implements GhPort {
     this.w.prs.set(number, { number, url: `https://github.com/${repo}/pull/${number}`, state: 'OPEN', headRefOid: this.w.remoteBranches.get(a.head) ?? this.w.sha(), headRefName: a.head, baseRefName: a.base, polls: 0, failOnce: this.w.ciMode === 'red-once' });
     return { number, url: `https://github.com/${repo}/pull/${number}` };
   }
-  async prView(_repo: string, number: number) { const p = this.w.prs.get(number); if (!p) throw new Error(`no PR ${number}`); p.headRefOid = this.w.remoteBranches.get(p.headRefName) ?? p.headRefOid; return { ...p }; }
+  async prView(_repo: string, number: number) {
+    const p = this.w.prs.get(number); if (!p) throw new Error(`no PR ${number}`);
+    const stale = this.w.staleHeads.get(p.headRefName);
+    if (stale && stale.polls > 0) { stale.polls -= 1; return { ...p, headRefOid: stale.sha }; }
+    p.headRefOid = this.w.remoteBranches.get(p.headRefName) ?? p.headRefOid; return { ...p };
+  }
   async prList(_repo: string, f: { head?: string; base?: string }) { return [...this.w.prs.values()].filter((p) => (!f.head || p.headRefName === f.head) && (!f.base || p.baseRefName === f.base)); }
   async ciForSha(_repo: string, branch: string, sha: string): Promise<CiStatus> {
     const p = [...this.w.prs.values()].find((x) => x.headRefName === branch);

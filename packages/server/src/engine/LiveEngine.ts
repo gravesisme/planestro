@@ -24,6 +24,9 @@ const ACTIONABLE_FAILURES = new Set(['auth_required', 'rate_limited', 'session_l
  * QUEUED → worktree → plan → (approval) → implement → PR → rebase → CI → merge → cleanup → FINISHED.
  * Deterministic; every step persists `op` before acting and journals begin/end.
  */
+/** How long a just-pushed head may still read as the old sha from `gh pr view` before it counts as a real move. */
+const HEAD_PROPAGATION_GRACE_MS = 90_000;
+
 export class LiveEngine implements Engine {
   readonly mode: 'live' | 'dry-run';
   log: ServerEvent[] = [];
@@ -503,28 +506,41 @@ export class LiveEngine implements Engine {
     if (!clean) { this.store.journal.end(opId, id, 'aborted', { reason: 'dirty' }); this.block(id, 'dirty_tree', 'the worktree has uncommitted changes; it cannot be synced'); return; }
     const baseSha = await this.ports.git.revParse(this.repo, `origin/${base}`);
     const expected = await this.ports.git.remoteBranchSha(this.repo, fm.branch!);
-    const sync = integration ? await this.ports.git.merge(cwd, `origin/${base}`) : await this.ports.git.rebase(cwd, `origin/${base}`);
-    if (!sync.ok) {
-      this.store.mutateItem(id, [
-        { unset: ['op', 'op_started_at'] },
-        { set: { ci_result: 'unknown', op_data: { ...(fm.op_data ?? {}), needs_session_rebase: canFix } } },
-        { activity: { actor: 'app', text: `${integration ? 'merge of' : 'rebase onto'} origin/${base} (${baseSha.slice(0, 7)}) conflicted in ${sync.conflicts.join(', ')}${canFix ? '; handing to the session' : ''}` } },
-      ], 'engine', { commit: `${id}: ${integration ? 'merge' : 'rebase'} conflict` });
-      this.store.journal.end(opId, id, 'aborted', { reason: 'conflict', files: sync.conflicts });
-      if (canFix) this.queueFollowUp(id, () => this.runTurnFor(id, 'fix', this.store.renderPrompt('rebase-conflict', this.store.requireItem(id), { conflict_files: sync.conflicts.join('\n'), base_sha: baseSha.slice(0, 12) })));
-      else this.block(id, 'sync_conflict', `conflicts with ${base} in ${sync.conflicts.join(', ')} and no session to hand them to; resolve by hand`);
-      return;
+    const localHead = await this.ports.git.revParse(cwd, 'HEAD');
+    const { behind } = await this.ports.git.aheadBehind(cwd, `origin/${base}`, 'HEAD');
+    let headSha: string;
+    if (behind === 0 && expected === localHead) {
+      // Already on the base tip and the remote matches: there is nothing to sync, and the CI
+      // run for this head is still the truth. Re-pushing the same commit bought nothing, and
+      // rebasing here whenever an item merely entered the pipeline is what made every open
+      // PR re-run CI after every merge.
+      headSha = localHead;
+      this.store.mutateItem(id, [{ set: { op: 'awaiting_ci', op_started_at: this.now(), ci_head_sha: headSha, ci_result: 'pending' } }, { activity: { actor: 'app', text: `already on ${base}@${baseSha.slice(0, 7)}; no sync needed, reusing CI for ${headSha.slice(0, 7)}; waiting for CI` } }], 'engine');
+    } else {
+      const sync = integration ? await this.ports.git.merge(cwd, `origin/${base}`) : await this.ports.git.rebase(cwd, `origin/${base}`);
+      if (!sync.ok) {
+        this.store.mutateItem(id, [
+          { unset: ['op', 'op_started_at'] },
+          { set: { ci_result: 'unknown', op_data: { ...(fm.op_data ?? {}), needs_session_rebase: canFix } } },
+          { activity: { actor: 'app', text: `${integration ? 'merge of' : 'rebase onto'} origin/${base} (${baseSha.slice(0, 7)}) conflicted in ${sync.conflicts.join(', ')}${canFix ? '; handing to the session' : ''}` } },
+        ], 'engine', { commit: `${id}: ${integration ? 'merge' : 'rebase'} conflict` });
+        this.store.journal.end(opId, id, 'aborted', { reason: 'conflict', files: sync.conflicts });
+        if (canFix) this.queueFollowUp(id, () => this.runTurnFor(id, 'fix', this.store.renderPrompt('rebase-conflict', this.store.requireItem(id), { conflict_files: sync.conflicts.join('\n'), base_sha: baseSha.slice(0, 12) })));
+        else this.block(id, 'sync_conflict', `conflicts with ${base} in ${sync.conflicts.join(', ')} and no session to hand them to; resolve by hand`);
+        return;
+      }
+
+      // 2. push (integration branches push plainly; worker branches force-with-lease their rebase)
+      this.store.mutateItem(id, [{ set: { op: 'pushing', op_started_at: this.now() } }], 'engine');
+      if (integration) await this.ports.git.pushSetUpstream(cwd, fm.branch!);
+      else await this.ports.git.pushForceWithLease(cwd, fm.branch!, expected);
+      headSha = sync.head;
+      this.store.mutateItem(id, [{ set: { op: 'awaiting_ci', op_started_at: this.now(), ci_head_sha: headSha, ci_result: 'pending' } }, { activity: { actor: 'app', text: `rebased onto ${base}@${baseSha.slice(0, 7)} and pushed ${headSha.slice(0, 7)}; waiting for CI` } }], 'engine');
     }
 
-    // 2. push (integration branches push plainly; worker branches force-with-lease their rebase)
-    this.store.mutateItem(id, [{ set: { op: 'pushing', op_started_at: this.now() } }], 'engine');
-    if (integration) await this.ports.git.pushSetUpstream(cwd, fm.branch!);
-    else await this.ports.git.pushForceWithLease(cwd, fm.branch!, expected);
-    const headSha = sync.head;
-    this.store.mutateItem(id, [{ set: { op: 'awaiting_ci', op_started_at: this.now(), ci_head_sha: headSha, ci_result: 'pending' } }, { activity: { actor: 'app', text: `rebased onto ${base}@${baseSha.slice(0, 7)} and pushed ${headSha.slice(0, 7)}; waiting for CI` } }], 'engine');
-
-    // 3. wait for CI
-    const verdict = await this.waitForCi(id, fm.branch!, headSha, fm.pr!);
+    // 3. wait for CI. `expected` is the head the push replaced: GitHub keeps reporting it for a
+    // few seconds, and that must read as propagation lag, not as someone moving the branch.
+    const verdict = await this.waitForCi(id, fm.branch!, headSha, fm.pr!, expected);
     if (verdict === 'moved') { this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { ci_result: 'pending' } }], 'engine'); this.store.journal.end(opId, id, 'aborted', { reason: 'head_moved' }); void this.tick(); return; }
     if (verdict === 'timeout') { this.store.journal.end(opId, id, 'aborted', { reason: 'ci_timeout' }); this.block(id, 'ci_timeout', `CI for ${headSha.slice(0, 7)} did not finish within ${cfg.timeout_min} min`); return; }
     if (verdict === 'blocked') {
@@ -601,8 +617,17 @@ export class LiveEngine implements Engine {
     this.queueFollowUp(id, () => this.runTurnFor(id, 'fix', this.store.renderPrompt('ci-failed', this.store.requireItem(id), { ci: { attempt: String(count), run_url: ci?.url ?? '(local run)', failed_log: log } })));
   }
 
-  /** Poll the named workflow for `sha`. 10 s cadence for the first 2 min, then 30 s. */
-  private async waitForCi(id: string, branch: string, sha: string, pr: number): Promise<'green' | 'red' | 'blocked' | 'moved' | 'timeout'> {
+  /**
+   * Poll the named workflow for `sha`. 10 s cadence for the first 2 min, then 30 s.
+   *
+   * `previousSha` is the head the pipeline's own push replaced. GitHub's API lags a push by a
+   * few seconds, so the first `gh pr view` after a force-push still reports that sha; reading
+   * it as "someone moved the head" aborted the merge in ~4 s, released the merge chain, and
+   * the next item rebased and pushed too — one merge fired a fresh CI run for every open PR.
+   * Within HEAD_PROPAGATION_GRACE_MS the old sha is lag and we keep polling; anything else is
+   * a real move.
+   */
+  private async waitForCi(id: string, branch: string, sha: string, pr: number, previousSha: string | null = null): Promise<'green' | 'red' | 'blocked' | 'moved' | 'timeout'> {
     const cfg = this.store.config.ci;
     const started = Date.now();
     let sawRun = false;
@@ -610,7 +635,12 @@ export class LiveEngine implements Engine {
       if (this.stopping) return 'timeout';
       const view = await this.ports.gh.prView(this.github, pr);
       if (view.state === 'MERGED') return 'green';
-      if (view.headRefOid !== sha) return 'moved';
+      if (view.headRefOid !== sha) {
+        const lagging = previousSha !== null && view.headRefOid === previousSha && Date.now() - started < HEAD_PROPAGATION_GRACE_MS;
+        if (!lagging) return 'moved';
+        await this.sleep(10_000);
+        continue;
+      }
       const ci = await this.ports.gh.ciForSha(this.github, branch, sha, this.ciWorkflow);
       const elapsedMin = (Date.now() - started) / 60_000;
       if (ci.runId) { sawRun = true; const cur = this.store.requireItem(id).file.frontmatter; if ((cur.op_data?.ci as any)?.runId !== ci.runId) this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), ci: { runId: ci.runId, url: ci.url } } } }], 'engine'); }
