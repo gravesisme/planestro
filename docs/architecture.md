@@ -64,11 +64,18 @@ orthogonal to status, so needing a human never loses an item its phase.
 ## The merge pipeline
 
 For each IN_REVIEW item, serialised: sync the branch with its base (worker branches rebase
-with `--force-with-lease`; integration branches merge, never rewritten) → wait for CI on
+with `--force-with-lease`; integration branches merge, never rewritten — and a branch
+already on the base tip whose remote matches is left alone, its existing CI run reused,
+so entering the pipeline never re-pushes an identical commit) → wait for CI on
 that exact commit (GitHub, or the local check when Actions cannot run) → re-check holds →
 record what the branch delivered → merge → verify GitHub says MERGED → **cleanup**, which
 deletes the worktree and branches only after a fresh fetch proves the tip is reachable from
 the base. Red CI goes back to the item's session with the log; a second red blocks.
+
+GitHub reports a just-replaced head for a few seconds after a push. `waitForCi` treats the
+pre-push sha as propagation lag (90 s grace) rather than as a moved head; before that, the
+first poll aborted the merge as `head_moved`, released the chain, and every queued item
+rebased and pushed in turn — one merge fired a fresh CI run per open PR.
 
 ## The reconciler
 

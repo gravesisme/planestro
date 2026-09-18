@@ -49,6 +49,10 @@ Evaluate every change against these; they are the architecture.
 **Worker branches rebase. Integration branches merge.** An epic's
 `feature/<slug>` branch is synced by merging its base into it and is never
 rewritten or force-pushed; worker branches rebase with `--force-with-lease`.
+Sync only when behind: a branch already on the base tip is neither rebased nor
+re-pushed, and the CI run for its head is reused. Right after a push GitHub still
+reports the old head for a few seconds; `waitForCi` reads that as propagation lag,
+never as a moved head (the `head_moved` storm re-ran every open PR per merge).
 
 ## Data model notes
 
