@@ -8,7 +8,7 @@ button.danger { border-color: var(--hot); color: var(--hot); } button:disabled {
 textarea { width: 100%; min-height: 120px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
 .app { display: flex; flex-direction: column; min-height: 100vh; }
 .topbar { display: flex; align-items: center; gap: 18px; padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
-.brand { font-weight: 700; display: flex; gap: 8px; align-items: center; } .brand .logo { display: block; border-radius: 6px; box-shadow: 0 0 0 1px var(--line); } .brand .project { color: var(--muted); font-weight: 400; }
+.brand { font-weight: 700; display: flex; gap: 8px; align-items: center; color: var(--text); } .brand .logo { display: block; border-radius: 6px; box-shadow: 0 0 0 1px var(--line); } .brand .project { color: var(--muted); font-weight: 400; }
 .topbar nav { display: flex; gap: 4px; } .topbar nav a { padding: 5px 10px; border-radius: 6px; color: var(--muted); } .topbar nav a.active { background: var(--panel2); color: var(--text); }
 .status { margin-left: auto; display: flex; align-items: center; gap: 12px; } .summary { color: var(--muted); font-size: 12px; }
 /* two tones for "needs you": amber is a decision waiting on you (a plan, a question, a review), red is a block */

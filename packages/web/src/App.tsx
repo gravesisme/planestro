@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { NavLink, Outlet, useLocation, useNavigate } from 'react-router';
+import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router';
 import { useStore, act } from './store.ts';
 import { api } from './api.ts';
 
@@ -27,8 +27,8 @@ export function App() {
     <div className="app">
       {updateReady && <button className="banner warn" style={{ border: 0, borderRadius: 0, textAlign: 'left' }} onClick={() => location.reload()}>planestro was updated — click to reload (held back so nothing you were typing is lost)</button>}
       <header className="topbar">
-        <div className="brand"><img className="logo" src="/favicon.svg" alt="" width={22} height={22} /> <span className="wordmark">planestro</span> <span className="project">{state?.config.project.name ?? '…'}</span>
-          <span className="engine phone-only">{paused ? 'paused' : state?.engine.mode === 'live' ? 'live' : 'dry-run'} · {state?.engine.sessions.length ?? 0} agent{state?.engine.sessions.length === 1 ? '' : 's'} running</span></div>
+        <Link className="brand" to="/" title="Board"><img className="logo" src="/favicon.svg" alt="" width={22} height={22} /> <span className="wordmark">planestro</span> <span className="project">{state?.config.project.name ?? '…'}</span>
+          <span className="engine phone-only">{paused ? 'paused' : state?.engine.mode === 'live' ? 'live' : 'dry-run'} · {state?.engine.sessions.length ?? 0} agent{state?.engine.sessions.length === 1 ? '' : 's'} running</span></Link>
         <nav>
           <NavLink to="/" end>Board</NavLink>
           <NavLink to="/icebox">Icebox</NavLink>

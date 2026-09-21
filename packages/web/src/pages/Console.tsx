@@ -33,8 +33,12 @@ export function ConsolePage() {
     <div>
       <div className="section"><h2>Orchestrator</h2>
         <p className="muted small">The judgment layer: woken on plan submissions, merges, repeated CI failures and blocks. Message it with context or answers; it records decisions on the items.</p>
-        {questions.length > 0 && <div>{questions.map((q, i) => <p key={i}>🟠 <b>{String((q.data as any)?.question)}</b> {q.item && <Link to={`/items/${q.item}`}>{q.item}</Link>} <span className="muted small">{q.ts.slice(0, 16).replace('T', ' ')}</span></p>)}</div>}
-        <div className="row"><input className="grow" placeholder="Message the orchestrator (it wakes with your text + current state)" value={msg} onChange={(e) => setMsg(e.target.value)} /><button disabled={!msg.trim()} onClick={() => { void act(() => api.orchestratorMessage(msg)); setMsg(''); }}>Send</button></div>
+        <form className="row" onSubmit={(e) => { e.preventDefault(); if (!msg.trim()) return; void act(() => api.orchestratorMessage(msg)); setMsg(''); }}><input className="grow" placeholder="Message the orchestrator (it wakes with your text + current state)" value={msg} onChange={(e) => setMsg(e.target.value)} /><button type="submit" disabled={!msg.trim()}>Send</button></form>
+        {questions.length > 0 && <>
+          <h3 className="drawer-h">Its questions for you</h3>
+          {questions.slice(0, 3).map((q, i) => <Question key={i} q={q} />)}
+          {questions.length > 3 && <details className="small"><summary className="muted">{questions.length - 3} older</summary>{questions.slice(3).map((q, i) => <Question key={i} q={q} />)}</details>}
+        </>}
       </div>
       <div className="section"><h2>Merge queue ({phone ? 'hold, then drag' : 'drag'} to reorder)</h2>
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onQueueDrag}>
@@ -63,4 +67,8 @@ function QueueRow({ n, id, title, base, ci, skip }: { n: number; id: string; tit
       <span className="id">#{n}</span> <Link to={`/items/${id}`}>{id}</Link> {title} <span className="muted small">→ {base}</span> {ci && <span className="tag">{ci}</span>} {skip && <span className="tag hot">held</span>}
     </div>
   );
+}
+
+function Question({ q }: { q: JournalEntry }) {
+  return <p>🟠 <b>{String((q.data as any)?.question)}</b> {q.item && <Link to={`/items/${q.item}`}>{q.item}</Link>} <span className="muted small">{q.ts.slice(0, 16).replace('T', ' ')}</span></p>;
 }

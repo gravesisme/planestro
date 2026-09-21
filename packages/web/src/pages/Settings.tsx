@@ -21,7 +21,7 @@ export function SettingsPage() {
             <button className="small danger" disabled={cfg.categories.length < 2} onClick={() => { const rest = cfg.categories.filter((x) => x !== c); const to = prompt(`Remove "${c}". Move its items to which category?\n${rest.join(', ')}`, rest[0]); if (to && rest.includes(to)) void act(() => api.categories({ op: 'remove', name: c, reassign_to: to })); }}>remove</button>
           </div>
         ))}
-        <div className="row"><input className="grow" placeholder="New category" value={newCat} onChange={(e) => setNewCat(e.target.value)} /><button disabled={!newCat.trim()} onClick={() => { void act(() => api.categories({ op: 'add', name: newCat.trim() })); setNewCat(''); }}>Add</button></div>
+        <form className="row" onSubmit={(e) => { e.preventDefault(); if (!newCat.trim()) return; void act(() => api.categories({ op: 'add', name: newCat.trim() })); setNewCat(''); }}><input className="grow" placeholder="New category" value={newCat} onChange={(e) => setNewCat(e.target.value)} /><button type="submit" disabled={!newCat.trim()}>Add</button></form>
       </div>
       <div className="section"><h2>Models &amp; defaults</h2>
         <table><tbody>{cfg.models.map((m) => <tr key={m.id}><td>{m.label}</td><td className="muted">{m.id}</td><td className="muted">{m.external ? 'external (watched)' : `${m.runner ?? 'claude'} · ${(m.runner ?? 'claude') === 'claude' ? m.claude_model : m.codex_model ?? 'CLI default'}`}</td></tr>)}</tbody></table>
