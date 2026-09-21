@@ -36,6 +36,8 @@ export function NewItemDialog({ onClose, icebox, from }: { onClose: () => void; 
   const modelOf = (p?: PromptView) => state?.config.models.find((m) => m.id === p?.frontmatter.model && !m.external)?.id;
   const [implementer, setImplementer] = useState(modelOf(start) ?? state?.config.defaults.implementer ?? '');
   const [parent, setParent] = useState('');
+  const [delegate, setDelegate] = useState(false);
+  const orch = state?.config.orchestrator;
   const [description, setDescription] = useState(start?.body ?? '');
   const [values, setValues] = useState<Record<string, string>>({});
   const epics = state?.items.filter((i) => i.frontmatter.kind === 'epic' && i.derived.lane === 'board') ?? [];
@@ -61,7 +63,7 @@ export function NewItemDialog({ onClose, icebox, from }: { onClose: () => void; 
         e.preventDefault();
         let text: string;
         try { text = render(); } catch (err) { useStore.setState({ error: (err as Error).message }); return; }
-        const r = await act(() => api.createItem({ title, category, description: text, kind, parent: parent || undefined, implementer: kind === 'item' ? implementer || undefined : undefined, status: icebox ? 'ICEBOX' : undefined }));
+        const r = await act(() => api.createItem({ title, category, description: text, kind, parent: parent || undefined, implementer: kind === 'item' ? implementer || undefined : undefined, auto_approve_plan: kind === 'item' && delegate ? true : undefined, status: icebox ? 'ICEBOX' : undefined }));
         if (r) { onClose(); nav(`/items/${r.id}`); }
       }}>
         <h2 style={{ margin: 0 }}>New {icebox ? 'icebox ' : ''}item</h2>
@@ -73,6 +75,7 @@ export function NewItemDialog({ onClose, icebox, from }: { onClose: () => void; 
           {kind === 'item' && <select value={implementer} onChange={(e) => setImplementer(e.target.value)} title="Who implements it (the planner stays the project default)">{state?.config.models.filter((m) => !m.external).map((m) => <option key={m.id} value={m.id}>{m.label}{(m.runner ?? 'claude') !== 'claude' ? ` (${m.runner})` : ''}</option>)}</select>}
           {kind === 'item' && epics.length > 0 && <select value={parent} onChange={(e) => setParent(e.target.value)}><option value="">no parent epic</option>{epics.map((e) => <option key={e.id} value={e.id}>{e.id} {e.frontmatter.title}</option>)}</select>}
         </div>
+        {kind === 'item' && orch?.may_approve_plans && <label className="row small" title={`The orchestrator reviews the plan and approves it, sends it back with fixes (up to ${orch.max_plan_revisions} rounds), or leaves it to you`}><input type="checkbox" checked={delegate} onChange={(e) => setDelegate(e.target.checked)} /> let the orchestrator approve the plan</label>}
         <textarea placeholder="Description / prompt (markdown)" value={description} onChange={(e) => setDescription(e.target.value)} />
         {asks.map((p) => <label key={p} className="row small"><code>{`{{${p}}}`}</code><input className="grow" required placeholder={`value for ${p}`} value={values[p] ?? ''} onChange={(e) => setValues((v) => ({ ...v, [p]: e.target.value }))} /></label>)}
         <div className="row"><span className="grow" /><button type="button" onClick={onClose}>Cancel</button><button className="primary" type="submit">Create</button></div>

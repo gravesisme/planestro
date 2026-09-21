@@ -54,7 +54,7 @@ export const OPERATIONAL_KEYS = [
   'created_at', 'updated_at', 'queued_at', 'started_at', 'plan_ready_at', 'plan_approved_at',
   'pr_created_at', 'merged_at', 'finished_at', 'iceboxed_at',
   'branch', 'worktree', 'pr', 'session_id', 'agent_sessions', 'awaiting', 'awaiting_data',
-  'op', 'op_started_at', 'op_data', 'ci_head_sha', 'ci_result', 'ci_failed_count',
+  'op', 'op_started_at', 'op_data', 'plan_revisions', 'ci_head_sha', 'ci_result', 'ci_failed_count',
   'merge_order', 'skip_merge', 'review_hold', 'delivered', 'blocked', 'blocked_reason', 'cost_usd', 'turns', 'agent_turns', 'tokens',
   'imported_from', 'dates_estimated',
 ] as const;
@@ -100,6 +100,8 @@ export const ItemFrontmatter = z.object({
   op: z.enum(OPS).optional(),
   op_started_at: ts.optional(),
   op_data: z.record(z.string(), z.unknown()).optional(),
+  /** How many times the orchestrator has sent this item's plan back for fixes; capped by `orchestrator.max_plan_revisions`. */
+  plan_revisions: z.number().int().nonnegative().optional(),
   ci_head_sha: z.string().optional(),
   ci_result: z.enum(CI_RESULTS).optional(),
   ci_failed_count: z.number().int().nonnegative().optional(),
@@ -206,9 +208,10 @@ export const Config = z.object({
   orchestrator: z.object({
     model: z.string().default('claude-fable-5'),
     may_approve_plans: z.boolean().default(false),
+    max_plan_revisions: z.number().int().nonnegative().default(2),
     rotate_after_wakes: z.number().int().positive().default(40),
     rotate_after_days: z.number().positive().default(3),
-  }).default({ model: 'claude-fable-5', may_approve_plans: false, rotate_after_wakes: 40, rotate_after_days: 3 }),
+  }).default({ model: 'claude-fable-5', may_approve_plans: false, max_plan_revisions: 2, rotate_after_wakes: 40, rotate_after_days: 3 }),
   engine: z.object({ mode: z.enum(['live', 'dry-run']).default('dry-run') }).default({ mode: 'dry-run' }),
   epics: z.object({ auto_submit: z.boolean().default(true) }).default({ auto_submit: true }),
   notifications: z.object({ on_merge: z.string().optional() }).default({}),

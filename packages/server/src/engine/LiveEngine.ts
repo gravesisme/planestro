@@ -53,8 +53,11 @@ export class LiveEngine implements Engine {
     this.ciWorkflow = opts.ciWorkflow ?? 'CI';
     this.orchestrator = new Orchestrator(store, ports, {
       message: (id, text) => this.message(id, text),
-      approvePlan: (id, notes) => this.approvePlan(id, notes),
-      rejectPlan: (id, m) => this.rejectPlan(id, m),
+      approvePlan: (id, notes) => this.approvePlan(id, notes, 'orchestrator'),
+      requestPlanChanges: (id, m) => this.orchestratorRequestsPlanChanges(id, m),
+      planDelegated: (id) => this.planDelegated(this.store.requireItem(id).file.frontmatter),
+      handPlanToUser: (id, reason) => this.handPlanToUser(id, `the orchestrator left it to you: ${reason}`),
+      planReviewEnded: (id) => this.handPlanToUser(id, 'the orchestrator reviewed it without deciding'),
       poke: () => this.poke(),
     }, emit, (l, m) => this.note(l, m), () => this._paused);
   }
@@ -90,7 +93,7 @@ export class LiveEngine implements Engine {
     await Promise.allSettled([...this.jobs.values()]);
   }
   pause(): void { this._paused = true; this.store.updateLocal({ engine: { ...this.store.local.engine, paused: true } }); this.emit({ type: 'engine.paused', paused: true }); this.note('warn', 'AUTOMATION PAUSED — running steps finish, nothing new starts'); }
-  resume(): void { this._paused = false; this.store.updateLocal({ engine: { ...this.store.local.engine, paused: false } }); this.emit({ type: 'engine.paused', paused: false }); this.note('info', 'automation resumed'); void this.tick(); }
+  resume(): void { this._paused = false; this.store.updateLocal({ engine: { ...this.store.local.engine, paused: false } }); this.emit({ type: 'engine.paused', paused: false }); this.note('info', 'automation resumed'); this.orchestrator.kick(); void this.tick(); }
   poke(): void { void this.tick(); }
   sessions(): SessionView[] {
     return [...this.turns.entries()].map(([item, t]) => ({ item, session_id: this.store.getItem(item)?.file.frontmatter.session_id, model: t.model, op: t.phase, started_at: t.startedAt, busy: true, last_output: t.lastOutput }));
@@ -103,6 +106,7 @@ export class LiveEngine implements Engine {
       this.admit();
       this.nudgeStaleReviews();
       this.driveStaleBlocks();
+      this.drivePlanReviews();
       await this.driveEpics();
       await this.driveExternal();
       this.driveInReview();
@@ -157,6 +161,52 @@ export class LiveEngine implements Engine {
       this.store.mutateItem(item.id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data'] }, { activity: { actor: 'app', text: 'cleared a stale agent_blocked flag (the session reported done after it); checking the work' } }], 'engine', { commit: `${item.id}: clear stale block` });
       this.runJob(item.id, () => this.afterWorkTurn(item.id, 'implement', { subtype: 'success', isError: false, costUsd: 0, numTurns: 0, text: '', done }));
     }
+  }
+
+  // ---- plan approval delegated to the orchestrator ----
+  /** The item opted in, the project allows it, and there is an orchestrator to ask. Never an epic's breakdown. */
+  private planDelegated(fm: { kind?: string; auto_approve_plan?: boolean }): boolean {
+    return Boolean(fm.auto_approve_plan) && fm.kind !== 'epic' && this.store.config.orchestrator.may_approve_plans && this.orchestrator.enabled;
+  }
+
+  /**
+   * A delegated plan is parked on the orchestrator (`awaiting: orchestrator`, which is not "needs
+   * you"), and nothing about that may depend on memory: the wake queue does not survive a restart,
+   * the box can be ticked after the plan arrived, and it can be unticked while the review runs.
+   */
+  private drivePlanReviews(): void {
+    for (const item of this.store.listItems()) {
+      const fm = item.file.frontmatter;
+      if (fm.status !== 'PLAN_READY' || fm.blocked) continue;
+      if (fm.awaiting === 'orchestrator') {
+        if (!this.planDelegated(fm)) this.handPlanToUser(item.id, 'its approval is no longer delegated to the orchestrator');
+        else if (!this.orchestrator.reviewing(item.id)) this.wakeOrchestrator('plan_review', item.id);
+      } else if (fm.awaiting === 'plan_approval' && this.planDelegated(fm) && !fm.op_data?.plan_handed_back) {
+        this.store.mutateItem(item.id, [{ set: { awaiting: 'orchestrator' } }, { activity: { actor: 'app', text: 'plan approval delegated to the orchestrator' } }], 'engine', { commit: `${item.id}: delegate plan approval` });
+        this.wakeOrchestrator('plan_review', item.id);
+      }
+    }
+  }
+
+  /** The decision goes back to the person, once per submitted plan: the flag stops the tick delegating it again. */
+  private handPlanToUser(id: string, why: string): void {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    if (fm.status !== 'PLAN_READY' || fm.awaiting !== 'orchestrator') return;
+    this.store.mutateItem(id, [{ set: { awaiting: 'plan_approval', op_data: { ...(fm.op_data ?? {}), plan_handed_back: true } } }, { activity: { actor: 'app', text: `plan needs your approval: ${why}` } }], 'engine', { commit: `${id}: plan approval handed to the user` });
+    this.note('info', `${id}: plan needs your approval — ${why}`);
+  }
+
+  /** The orchestrator's fixes are bounded: past the limit it may still approve, but it cannot send the plan round again. */
+  private async orchestratorRequestsPlanChanges(id: string, message: string): Promise<string> {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    const used = fm.plan_revisions ?? 0; const max = this.store.config.orchestrator.max_plan_revisions;
+    if (used >= max) {
+      if (fm.awaiting === 'orchestrator') this.handPlanToUser(id, `the orchestrator still wanted changes after ${used} fix round${used === 1 ? '' : 's'}: ${message}`);
+      else this.store.mutateItem(id, [{ activity: { actor: 'orchestrator', text: `would still change the plan (its ${max} fix round${max === 1 ? ' is' : 's are'} used): ${message}` } }], 'orchestrator');
+      return `not sent: all ${max} fix rounds for ${id} are used. The user decides this plan now; your feedback is on the item.`;
+    }
+    await this.rejectPlan(id, message, 'orchestrator');
+    return `sent back to planning (fix round ${used + 1} of ${max}); you will review the revised plan`;
   }
 
   private driveInReview(): void {
@@ -225,24 +275,32 @@ export class LiveEngine implements Engine {
     await this.runTurnFor(id, 'plan', this.withDelivered(id, 'plan-item', this.store.renderPrompt('plan-item', this.store.requireItem(id))));
   }
 
-  async approvePlan(id: string, notes?: string): Promise<void> {
+  async approvePlan(id: string, notes?: string, by: 'user' | 'orchestrator' = 'user'): Promise<void> {
     const item = this.store.requireItem(id);
-    if (item.file.frontmatter.kind === 'epic') { await this.approveBreakdown(id); return; }
+    if (item.file.frontmatter.kind === 'epic') { if (by !== 'user') throw new Error(`${id} is an epic: its breakdown is the user's to approve`); await this.approveBreakdown(id); return; }
     if (item.file.frontmatter.status !== 'PLAN_READY') throw new Error(`${id} is ${item.file.frontmatter.status}, not PLAN_READY`);
+    const { plan_handed_back: _spent, ...opData } = item.file.frontmatter.op_data ?? {};
     this.store.mutateItem(id, [
-      { transition: { to: 'IN_PROGRESS', actor: 'user' } },
-      { set: { op_data: { ...(item.file.frontmatter.op_data ?? {}), approval_notes: notes ?? '' } } },
-      ...(notes ? [{ activity: { actor: 'user' as const, text: `approval notes: ${notes}` } }] : []),
-    ], 'user', { commit: `${id}: approve plan` });
-    this.runJob(id, () => this.runTurnFor(id, 'implement', this.withDelivered(id, 'implement-plan', this.store.renderPrompt('implement-plan', this.store.requireItem(id), { approval_notes: notes?.trim() || '(none)' }))));
+      { transition: { to: 'IN_PROGRESS', actor: by } },
+      { set: { op_data: { ...opData, approval_notes: notes ?? '' } } },
+      ...(by === 'orchestrator' ? [{ activity: { actor: by, text: `approved the plan on your behalf${notes ? `: ${notes}` : ''}` } }] : notes ? [{ activity: { actor: by, text: `approval notes: ${notes}` } }] : []),
+    ], by, { commit: `${id}: approve plan${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
+    // queued, not dropped: the orchestrator can decide while the planner's turn is still ending
+    this.queueFollowUp(id, () => this.runTurnFor(id, 'implement', this.withDelivered(id, 'implement-plan', this.store.renderPrompt('implement-plan', this.store.requireItem(id), { approval_notes: notes?.trim() || '(none)' }))));
   }
 
-  async rejectPlan(id: string, message: string): Promise<void> {
+  async rejectPlan(id: string, message: string, by: 'user' | 'orchestrator' = 'user'): Promise<void> {
     const item = this.store.requireItem(id);
-    if (item.file.frontmatter.status !== 'PLAN_READY') throw new Error(`${id} is ${item.file.frontmatter.status}, not PLAN_READY`);
-    this.store.mutateItem(id, [{ transition: { to: 'PLAN_IN_PROGRESS', actor: 'user' } }, { activity: { actor: 'user', text: `plan changes requested: ${message}` } }], 'user', { commit: `${id}: request plan changes` });
+    const fm = item.file.frontmatter;
+    if (fm.status !== 'PLAN_READY') throw new Error(`${id} is ${fm.status}, not PLAN_READY`);
+    const round = (fm.plan_revisions ?? 0) + 1;
+    this.store.mutateItem(id, [
+      { transition: { to: 'PLAN_IN_PROGRESS', actor: by } },
+      ...(by === 'orchestrator' ? [{ set: { plan_revisions: round } } as ItemOp] : []),
+      { activity: { actor: by, text: by === 'orchestrator' ? `plan changes requested (fix round ${round} of ${this.store.config.orchestrator.max_plan_revisions}): ${message}` : `plan changes requested: ${message}` } },
+    ], by, { commit: `${id}: request plan changes${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
     const tool = item.file.frontmatter.kind === 'epic' ? 'submit_breakdown' : 'submit_plan';
-    this.runJob(id, () => this.runTurnFor(id, 'plan', `${this.resumeNote(id, 'your plan review')}\n\nChanges requested on your plan:\n\n${message}\n\nRevise it accordingly and submit it again with the ${tool} tool, then end your turn.`));
+    this.queueFollowUp(id, () => this.runTurnFor(id, 'plan', `${this.resumeNote(id, 'your plan review')}\n\nChanges requested on your plan:\n\n${message}\n\nRevise it accordingly and submit it again with the ${tool} tool, then end your turn.`));
   }
 
   async message(id: string, text: string): Promise<void> {
@@ -570,6 +628,8 @@ export class LiveEngine implements Engine {
     // few seconds, and that must read as propagation lag, not as someone moving the branch.
     const verdict = await this.waitForCi(id, fm.branch!, headSha, fm.pr!, expected);
     if (verdict === 'moved') { this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { ci_result: 'pending' } }], 'engine'); this.store.journal.end(opId, id, 'aborted', { reason: 'head_moved' }); void this.tick(); return; }
+    // The engine is stopping, which says nothing about CI: leave `op: awaiting_ci` on the item, and the next start re-enters the pipeline.
+    if (verdict === 'stopping') { this.store.journal.end(opId, id, 'aborted', { reason: 'engine_stopping' }); return; }
     if (verdict === 'timeout') { this.store.journal.end(opId, id, 'aborted', { reason: 'ci_timeout' }); this.block(id, 'ci_timeout', `CI for ${headSha.slice(0, 7)} did not finish within ${cfg.timeout_min} min`); return; }
     if (verdict === 'blocked') {
       if (cfg.mode === 'github-or-local' && cfg.local_check_command) {
@@ -653,14 +713,14 @@ export class LiveEngine implements Engine {
    * it as "someone moved the head" aborted the merge in ~4 s, released the merge chain, and
    * the next item rebased and pushed too — one merge fired a fresh CI run for every open PR.
    * Within HEAD_PROPAGATION_GRACE_MS the old sha is lag and we keep polling; anything else is
-   * a real move.
+   * a real move. 'stopping' is the engine shutting down, which says nothing about CI.
    */
-  private async waitForCi(id: string, branch: string, sha: string, pr: number, previousSha: string | null = null): Promise<'green' | 'red' | 'blocked' | 'moved' | 'timeout'> {
+  private async waitForCi(id: string, branch: string, sha: string, pr: number, previousSha: string | null = null): Promise<'green' | 'red' | 'blocked' | 'moved' | 'timeout' | 'stopping'> {
     const cfg = this.store.config.ci;
     const started = Date.now();
     let sawRun = false;
     while (true) {
-      if (this.stopping) return 'timeout';
+      if (this.stopping) return 'stopping';
       const view = await this.ports.gh.prView(this.github, pr);
       if (view.state === 'MERGED') return 'green';
       if (view.headRefOid !== sha) {
@@ -1024,9 +1084,14 @@ export class LiveEngine implements Engine {
         const ops: ItemOp[] = [{ section: 'Plan', body: plan }];
         // A late submit cures a no_plan block (e.g. after an MCP transport failure ate the first attempt).
         if (cur.blocked && cur.blocked_reason === 'no_plan') ops.push({ unset: ['blocked', 'blocked_reason'] });
+        const delegated = cur.status === 'PLAN_IN_PROGRESS' && this.planDelegated(cur);
         if (cur.status === 'PLAN_IN_PROGRESS') ops.push({ transition: { to: 'PLAN_READY', actor: 'engine' } });
+        // A new plan is a new decision: whoever had it last time, it starts with the orchestrator again if delegated.
+        const { plan_handed_back: _spent, ...opData } = cur.op_data ?? {};
+        if (cur.op_data?.plan_handed_back) ops.push({ set: { op_data: opData } });
+        if (delegated) ops.push({ set: { awaiting: 'orchestrator' } });
         s.mutateItem(id, ops, 'engine', { commit: `${id}: submit plan` });
-        this.note('info', `${id}: plan submitted — needs your approval`);
+        this.note('info', `${id}: plan submitted — ${delegated ? 'the orchestrator decides (you asked it to)' : 'needs your approval'}`);
         this.wakeOrchestrator('plan_review', id);
         return 'Plan recorded by planestro. End your turn now; you will be resumed once it is approved.';
       },

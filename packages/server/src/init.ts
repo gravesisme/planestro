@@ -93,6 +93,7 @@ ci:
 orchestrator:
   model: claude-fable-5
   may_approve_plans: false
+  max_plan_revisions: 2
   rotate_after_wakes: 40
   rotate_after_days: 3
 engine:

@@ -38,9 +38,10 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
       const body = z.object({
         title: z.string().min(1), category: z.string().optional(), description: z.string().optional(), notes: z.string().optional(),
         kind: z.enum(['item', 'epic']).optional(), parent: z.string().optional(), planner: z.string().optional(), implementer: z.string().optional(),
-        status: z.enum(['NOT_YET_SUBMITTED', 'ICEBOX']).optional(), depends_on: z.array(z.string()).optional(),
+        status: z.enum(['NOT_YET_SUBMITTED', 'ICEBOX']).optional(), depends_on: z.array(z.string()).optional(), auto_approve_plan: z.boolean().optional(),
       }).parse(await c.req.json());
-      return c.json(itemView(store, store.createItem(body)), 201);
+      const { auto_approve_plan, ...input } = body;
+      return c.json(itemView(store, store.createItem({ ...input, ...(auto_approve_plan ? { extra: { auto_approve_plan: true } } : {}) })), 201);
     } catch (e) { return fail(c, e); }
   });
   api.get('/items/:id', (c) => { const it = store.getItem(c.req.param('id')); return it ? c.json(itemView(store, it)) : c.json({ error: 'not found' }, 404); });
@@ -199,7 +200,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
         ci: z.object({ mode: z.enum(['github', 'github-or-local']), require_green_base: z.boolean(), local_check_command: z.string() }).partial().optional(),
         engine: z.object({ mode: z.enum(['live', 'dry-run']) }).partial().optional(),
         notifications: z.object({ on_merge: z.string() }).partial().optional(),
-        orchestrator: z.object({ may_approve_plans: z.boolean() }).partial().optional(),
+        orchestrator: z.object({ may_approve_plans: z.boolean(), max_plan_revisions: z.number().int().nonnegative() }).partial().optional(),
       }).parse(await c.req.json());
       const cfg = store.updateConfig((doc) => { for (const [section, values] of Object.entries(body)) for (const [k, v] of Object.entries(values ?? {})) if (v !== undefined) doc.setIn([section, k], v); }, 'config: update settings');
       return c.json({ config: cfg });

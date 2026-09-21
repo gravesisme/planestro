@@ -11,7 +11,14 @@ export interface WakeEvent { type: string; item?: string; data?: Record<string, 
 export interface OrchestratorHooks {
   message(id: string, text: string): Promise<void>;
   approvePlan(id: string, notes?: string): Promise<void>;
-  rejectPlan(id: string, message: string): Promise<void>;
+  /** Send a plan back for fixes, within the item's round limit. Returns what happened, for the tool result. */
+  requestPlanChanges(id: string, message: string): Promise<string>;
+  /** Whether this item's plan is the orchestrator's to approve (the item opted in and the project allows it). */
+  planDelegated(id: string): boolean;
+  /** Give a delegated plan's approval back to the user, with the reason. */
+  handPlanToUser(id: string, reason: string): void;
+  /** A wake that carried this item's plan review is over, however it ended. */
+  planReviewEnded(id: string): void;
   poke(): void;
 }
 
@@ -27,6 +34,8 @@ export class Orchestrator {
   private queue: WakeEvent[] = [];
   private running = false;
   private stopped = false;
+  /** Items whose events are in the wake running now (the queue holds the ones still to come). */
+  private inFlight = new Set<string>();
   constructor(
     private readonly store: DataStore,
     private readonly ports: Ports,
@@ -54,6 +63,11 @@ export class Orchestrator {
     void this.drain();
   }
 
+  /** Whether a wake about this item is queued or running — so the engine re-wakes only what a restart dropped. */
+  reviewing(id: string): boolean { return this.inFlight.has(id) || this.queue.some((e) => e.item === id); }
+  /** Serve what queued up while automation was paused. */
+  kick(): void { void this.drain(); }
+
   private async drain(): Promise<void> {
     if (this.running || this.stopped || this.pausedRef()) return;
     if (!this.queue.length) return;
@@ -61,7 +75,14 @@ export class Orchestrator {
     try {
       while (this.queue.length && !this.stopped && !this.pausedRef()) {
         const batch = this.queue.splice(0, this.queue.length);
-        await this.runWake(batch).catch((e) => this.log('error', `orchestrator wake failed: ${(e as Error).message}`));
+        this.inFlight = new Set(batch.flatMap((e) => (e.item ? [e.item] : [])));
+        try { await this.runWake(batch).catch((e) => this.log('error', `orchestrator wake failed: ${(e as Error).message}`)); }
+        finally {
+          this.inFlight = new Set();
+          // A delegated plan never waits on a wake that failed or decided nothing: the engine hands it to the user.
+          // (Unless a revised plan already queued its own review: that one is still to come.)
+          for (const e of batch) if (e.type === 'plan_review' && e.item && !this.queue.some((q) => q.type === 'plan_review' && q.item === e.item)) this.hooks.planReviewEnded(e.item);
+        }
       }
     } finally { this.running = false; }
   }
@@ -108,10 +129,30 @@ export class Orchestrator {
         const desc = getSection(item.file, 'Description'); if (desc) lines.push(`Description:\n${desc.slice(0, 1200)}`);
         const plan = getSection(item.file, 'Plan'); if (plan) lines.push(`Approved/submitted plan:\n${plan.slice(0, 2000)}`);
         const activity = getSection(item.file, 'Activity').split('\n').slice(-8).join('\n'); if (activity) lines.push(`Recent activity:\n${activity}`);
+        if (e.type === 'plan_review') lines.push(this.planPolicy(fm.id, fm.plan_revisions ?? 0));
       }
     }
     for (const [k, v] of Object.entries(e.data ?? {})) lines.push(`${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`.slice(0, 2000));
     return lines.join('\n');
+  }
+
+  /**
+   * Who approves this plan, said in the packet rather than the prompt library: a data dir's copy
+   * of orchestrator-system predates the rule, and the limit is the engine's to state, not the model's to remember.
+   */
+  private planPolicy(id: string, used: number): string {
+    if (!this.hooks.planDelegated(id)) return 'Plan approval: the user\'s. Review it and record what is risky, missing or out of scope with annotate_item; approve_plan is not permitted for this item.';
+    const max = this.store.config.orchestrator.max_plan_revisions;
+    const left = Math.max(0, max - used);
+    return [
+      'Plan approval: DELEGATED TO YOU. The user trusts your judgment on this item; decide it in this wake, with exactly one of:',
+      '- approve_plan — the plan is sound and matches the request. Implementation starts at once. Put anything the implementer should watch in `notes`.',
+      left > 0
+        ? `- request_plan_changes — small, specific fixes would make it approvable. Say exactly what to change; the planner revises and you review the result. ${used} of ${max} fix rounds used, so ${left} left.`
+        : `- (request_plan_changes is spent: all ${max} fix rounds are used. Approve it or hand it over.)`,
+      '- hand_plan_to_user — it needs the user: a product or scope decision, real risk, a large rework, or you are simply not confident. Give the reason; they approve it themselves.',
+      'Record your reasoning with annotate_item either way. If you decide nothing, the plan goes to the user.',
+    ].join('\n');
   }
 
   private tools(onDone: (summary: string) => void): CustomToolDef[] {
@@ -129,8 +170,9 @@ export class Orchestrator {
       { name: 'annotate_item', description: "Append an orchestrator note to an item's activity log.", schema: { ...idArg, text: z.string() }, handler: async (a) => { store.mutateItem(String(a.id), [{ activity: { actor: 'orchestrator', text: String(a.text) } }], 'orchestrator'); return 'noted'; } },
       { name: 'submit_item', description: 'Queue a NOT_YET_SUBMITTED worker item for planning.', schema: idArg, handler: async (a) => { store.transition(String(a.id), 'QUEUED', 'orchestrator'); this.hooks.poke(); return 'queued'; } },
       { name: 'mark_blocked', description: 'Block an item for the user with a reason.', schema: { ...idArg, reason: z.string() }, handler: async (a) => { store.mutateItem(String(a.id), [{ set: { blocked: true, blocked_reason: 'orchestrator', awaiting: 'user' } }, { activity: { actor: 'orchestrator', text: `blocked for the user: ${a.reason}` } }], 'orchestrator', { commit: `${a.id}: blocked (orchestrator)` }); return 'blocked'; } },
-      { name: 'approve_plan', description: 'Approve a PLAN_READY item (only allowed when the item opted into auto-approval and config permits).', schema: { ...idArg, notes: z.string().optional() }, handler: async (a) => { const fm = store.requireItem(String(a.id)).file.frontmatter; if (!this.store.config.orchestrator.may_approve_plans || !fm.auto_approve_plan) return 'not permitted: the user approves this plan (add review notes with annotate_item instead)'; await this.hooks.approvePlan(String(a.id), a.notes ? String(a.notes) : undefined); return 'approved'; } },
-      { name: 'request_plan_changes', description: 'Send a PLAN_READY item back to planning with feedback.', schema: { ...idArg, message: z.string() }, handler: async (a) => { await this.hooks.rejectPlan(String(a.id), String(a.message)); return 'sent back to planning'; } },
+      { name: 'approve_plan', description: 'Approve a PLAN_READY item (only allowed when the item opted into auto-approval and config permits).', schema: { ...idArg, notes: z.string().optional() }, handler: async (a) => { if (!this.hooks.planDelegated(String(a.id))) return 'not permitted: the user approves this plan (add review notes with annotate_item instead)'; await this.hooks.approvePlan(String(a.id), a.notes ? String(a.notes) : undefined); return 'approved'; } },
+      { name: 'request_plan_changes', description: 'Send a PLAN_READY item back to planning with specific fixes. Limited to a few rounds per item; past the limit the plan goes to the user instead.', schema: { ...idArg, message: z.string() }, handler: async (a) => this.hooks.requestPlanChanges(String(a.id), String(a.message)) },
+      { name: 'hand_plan_to_user', description: 'Leave the approval of a plan that was delegated to you to the user, with the reason (a decision that is theirs, real risk, a large rework, low confidence).', schema: { ...idArg, reason: z.string() }, handler: async (a) => { this.hooks.handPlanToUser(String(a.id), String(a.reason)); return 'handed to the user'; } },
       { name: 'ask_user', description: 'Ask the user something; the answer arrives as a later wake. Returns immediately.', schema: { question: z.string(), item: z.string().optional() }, handler: async (a) => { const entry = store.journal.append({ type: 'orchestrator.question', item: a.item ? String(a.item) : undefined, actor: 'orchestrator', data: { question: String(a.question) } }); if (a.item) store.mutateItem(String(a.item), [{ activity: { actor: 'orchestrator', text: `question for you: ${a.question}` } }], 'orchestrator'); this.emit({ type: 'engine.log', level: 'warn', message: `[orchestrator asks] ${a.question}` }); return `recorded at ${entry.ts}; the user will see it in the console`; } },
       { name: 'done_with_wake', description: 'Finish this wake with a one-line summary of what you decided.', schema: { summary: z.string() }, handler: async (a) => { onDone(String(a.summary)); return 'Recorded. End your turn now.'; } },
     ];

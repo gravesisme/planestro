@@ -39,6 +39,11 @@ export function SettingsPage() {
         <div className="row"><label className="grow">on merge, run <input className="grow" defaultValue={cfg.notifications.on_merge ?? ''} placeholder='say "PR merged"' onBlur={(e) => e.target.value !== (cfg.notifications.on_merge ?? '') && set('notifications', 'on_merge', e.target.value)} /></label></div>
         <p className="muted small">Base branch: <b>{cfg.code_repo.default_branch}</b> · release: {cfg.code_repo.release_branch ?? '—'} · GitHub: {cfg.code_repo.github ?? '—'} (edit in planestro.yml)</p>
       </div>
+      <div className="section"><h2>Orchestrator</h2>
+        <div className="row"><label><input type="checkbox" checked={cfg.orchestrator.may_approve_plans} onChange={(e) => set('orchestrator', 'may_approve_plans', e.target.checked)} /> may approve plans, for items that ask it to</label>
+          <label>fix rounds before it is yours <input type="number" min={0} key={cfg.orchestrator.max_plan_revisions} defaultValue={cfg.orchestrator.max_plan_revisions} onBlur={(e) => Number(e.target.value) !== cfg.orchestrator.max_plan_revisions && set('orchestrator', 'max_plan_revisions', Number(e.target.value))} style={{ width: 70 }} /></label></div>
+        <p className="muted small">An item opts in with <b>let the orchestrator approve the plan</b>. The orchestrator then approves the plan, sends it back to the planner with specific fixes, or leaves it to you; once the fix rounds are used it can only approve or leave it to you. It never approves an epic's breakdown or a review hold. Model: {cfg.orchestrator.model} (edit in planestro.yml).</p>
+      </div>
       <div className="section"><h2>This machine (planestro.local.yml)</h2>
         <div className="row"><label className="grow">code repo path <input className="grow" defaultValue={state.local.code_repo_path ?? ''} placeholder={state.codeRepo} onBlur={(e) => e.target.value !== (state.local.code_repo_path ?? '') && local('code_repo_path', e.target.value)} /></label></div>
         <div className="row"><label className="grow">worktrees root <input className="grow" defaultValue={state.local.worktrees_root ?? ''} placeholder={cfg.worktrees.root} onBlur={(e) => e.target.value !== (state.local.worktrees_root ?? '') && local('worktrees_root', e.target.value)} /></label></div>

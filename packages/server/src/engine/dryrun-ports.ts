@@ -138,12 +138,18 @@ export class DryRunCodexPort implements AgentPort<AgentTurnOptions> {
 export class DryRunClaudePort implements ClaudePort {
   constructor(private readonly w: FakeWorld) {}
 
-  /** Fake orchestrator: reads the wake, annotates nothing, and closes with done_with_wake. */
+  /** Fake orchestrator: approves the plans whose approval was delegated to it, annotates nothing else, and closes with done_with_wake. */
   async runCustomTurn(o: CustomTurnOptions): Promise<TurnResult> {
     this.w.log(`Would run an orchestrator wake (${o.label}) with ${o.model}${o.resume ? `, resuming ${o.resume.slice(0, 8)}` : ''}`);
     o.onOutput(`(dry-run) wake: ${o.prompt.slice(0, 120).replace(/\n/g, ' ')}…`);
+    const approve = o.mcpTools.find((t) => t.name === 'approve_plan');
+    const approved: string[] = [];
+    for (const packet of o.prompt.split('\n\n---\n\n')) {
+      const id = /^Item: (\S+)/m.exec(packet)?.[1];
+      if (id && approve && packet.includes('Plan approval: DELEGATED TO YOU') && String(await approve.handler({ id, notes: 'dry-run: approved without reading' })) === 'approved') approved.push(id);
+    }
     const done = o.mcpTools.find((t) => t.name === 'done_with_wake');
-    if (done) await done.handler({ summary: 'dry-run: reviewed the wake, no action needed' });
+    if (done) await done.handler({ summary: approved.length ? `dry-run: approved ${approved.join(', ')}` : 'dry-run: reviewed the wake, no action needed' });
     return { sessionId: o.resume ?? `dryrun-orch-${this.w.sha().slice(-6)}`, subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: 'wake handled (dry-run)' };
   }
   async runTurn(o: TurnOptions): Promise<TurnResult> {

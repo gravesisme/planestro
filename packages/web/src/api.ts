@@ -27,7 +27,7 @@ async function req<T>(method: string, url: string, body?: unknown, raw?: BodyIni
 
 export const api = {
   state: () => req<State>('GET', '/api/state'),
-  createItem: (body: { title: string; category?: string; description?: string; kind?: 'item' | 'epic'; parent?: string; implementer?: string; status?: 'NOT_YET_SUBMITTED' | 'ICEBOX' }) => req<ItemView>('POST', '/api/items', body),
+  createItem: (body: { title: string; category?: string; description?: string; kind?: 'item' | 'epic'; parent?: string; implementer?: string; status?: 'NOT_YET_SUBMITTED' | 'ICEBOX'; auto_approve_plan?: boolean }) => req<ItemView>('POST', '/api/items', body),
   patchItem: (id: string, body: { fields?: Record<string, unknown>; sections?: Record<string, string> }) => req<ItemView>('PATCH', `/api/items/${id}`, body),
   deleteItem: (id: string) => req<{ ok: true }>('DELETE', `/api/items/${id}`),
   move: (id: string, op: 'top' | 'bottom' | 'before' | 'after' | 'icebox' | 'backlog', ref?: string) => req<ItemView>('POST', `/api/items/${id}/move`, { op, ref }),

@@ -396,6 +396,31 @@ describe('LiveEngine lifecycle (dry-run ports)', () => {
     expect(dataDir).toBeTruthy();
   });
 
+  it('stopping while a pull request waits for CI is not a CI timeout: the wait resumes at the next start', async () => {
+    const { store, engine, world } = await setup();
+    const item = store.createItem({ title: 'Slow CI', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    (engine as any).sleep = () => sleep(15);
+    (engine as any).ports.gh.ciForSha = async (_r: string, _b: string, sha: string) => ({ state: 'pending', runId: 1, sha, url: 'https://example/run/1' });
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => store.getItem(item.id)!.file.frontmatter.op === 'awaiting_ci', 8000);
+    await engine.stop();
+    let fm = store.getItem(item.id)!.file.frontmatter;
+    expect(fm.blocked).toBeUndefined();
+    expect(fm.op).toBe('awaiting_ci');
+    expect(activityOf(store, item.id)).not.toContain('ci_timeout');
+
+    const engine2 = new LiveEngine(store, { mode: 'dry-run', git: new DryRunGitPort(world), gh: new DryRunGhPort(world), proc: new DryRunProcPort(world), agents: { claude: new DryRunClaudePort(world) } }, () => {}, { sleep: async () => {}, tickMs: 50 });
+    await engine2.start();
+    await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
+    fm = store.getItem(item.id)!.file.frontmatter;
+    expect(fm.blocked).toBeUndefined(); // the startup reconcile cleared the stale wait and the pipeline picked it up again
+    expect(activityOf(store, item.id)).not.toContain('ci_timeout');
+    await engine2.stop();
+  });
+
   it('a turn killed by a clean stop is resumed at the next start and does not sit holding a slot', async () => {
     // What a live port does on stop(): the turn ends 'killed', not with an error and not with a plan.
     const hanging = () => ({
@@ -588,3 +613,108 @@ describe('reconciler (chaos: crash markers left on disk)', () => {
     expect(wakes.filter((w) => w === 'orphans_found')).toHaveLength(1);
   });
 });
+
+describe('plan approval delegated to the orchestrator', () => {
+  /** An orchestrator whose plan reviews are scripted: each wake about a plan runs the next step. */
+  const reviewer = (steps: ((t: (n: string) => { handler(a: Record<string, unknown>): Promise<unknown> }, prompt: string) => Promise<void>)[], prompts: string[] = []) => (world: FakeWorld) => {
+    const inner = new DryRunClaudePort(world);
+    return {
+      runTurn: (o: TurnOptions) => inner.runTurn(o),
+      async runCustomTurn(o: any): Promise<TurnResult> {
+        if (o.label.includes('plan_review')) { prompts.push(o.prompt); await steps.shift()?.((n) => o.mcpTools.find((x: any) => x.name === n), o.prompt); }
+        return { sessionId: 'orch-1', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '' };
+      },
+    };
+  };
+  async function delegated(claude: (world: FakeWorld) => Ports['agents']['claude'], opts: { gate?: boolean; optIn?: boolean } = {}) {
+    const ctx = await setup({ claude });
+    const { readFileSync, writeFileSync } = await import('node:fs');
+    const cfg = `${ctx.store.dataDir}/planestro.yml`;
+    if (opts.gate !== false) { writeFileSync(cfg, readFileSync(cfg, 'utf8').replace('may_approve_plans: false', 'may_approve_plans: true')); ctx.store.reload(); }
+    const item = ctx.store.createItem({ title: 'Small fix', description: 'x' });
+    if (opts.optIn !== false) ctx.store.mutateItem(item.id, [{ set: { auto_approve_plan: true } }], 'user');
+    ctx.store.transition(item.id, 'QUEUED', 'user');
+    return { ...ctx, id: item.id };
+  }
+  const fmOf = (s: DataStore, id: string) => s.getItem(id)!.file.frontmatter;
+
+  it('approves a sound plan, and the item never needs you on the way to its pull request', async () => {
+    const prompts: string[] = []; const needed: boolean[] = [];
+    const { store, engine, id } = await delegated(reviewer([async (t) => { needed.push(store.derived(store.getItem(id)!).needs_you); expect(fmOf(store, id).awaiting).toBe('orchestrator'); expect(await t('approve_plan').handler({ id, notes: 'watch the flag name' })).toBe('approved'); }], prompts));
+    await engine.start();
+    await waitFor(() => status(store, id) === 'FINISHED', 8000);
+    expect(needed).toEqual([false]);
+    expect(prompts[0]).toContain('Plan approval: DELEGATED TO YOU');
+    expect(prompts[0]).toContain('0 of 2 fix rounds used');
+    expect(activityOf(store, id)).toContain('[orchestrator] approved the plan on your behalf: watch the flag name');
+    expect(activityOf(store, id)).not.toContain('plan needs your approval');
+  });
+
+  it('gets two fix rounds; a third request is refused and the plan is handed to you with what it still wanted', async () => {
+    const replies: unknown[] = [];
+    const ask = (msg: string) => async (t: any) => { replies.push(await t('request_plan_changes').handler({ id: 'TP-1', message: msg })); };
+    const { store, engine, id } = await delegated(reviewer([ask('name the flag'), ask('cover the empty case'), ask('one more thing')]));
+    await engine.start();
+    await waitFor(() => fmOf(store, id).awaiting === 'plan_approval', 8000);
+    expect(replies.map(String)).toEqual([expect.stringContaining('fix round 1 of 2'), expect.stringContaining('fix round 2 of 2'), expect.stringContaining('not sent: all 2 fix rounds')]);
+    expect(status(store, id)).toBe('PLAN_READY');
+    expect(fmOf(store, id).plan_revisions).toBe(2);
+    expect(store.derived(store.getItem(id)!).needs_you).toBe(true);
+    expect(activityOf(store, id)).toContain('plan needs your approval: the orchestrator still wanted changes after 2 fix rounds: one more thing');
+    await sleep(200); // handed back once: the tick does not delegate the same plan again
+    expect(fmOf(store, id).awaiting).toBe('plan_approval');
+    await engine.approvePlan(id);
+    await waitFor(() => status(store, id) === 'FINISHED', 8000);
+  });
+
+  it('hands the plan to you when the orchestrator says so, or decides nothing at all', async () => {
+    const a = await delegated(reviewer([async (t) => { await t('hand_plan_to_user').handler({ id: 'TP-1', reason: 'this changes pricing' }); }]));
+    await a.engine.start();
+    await waitFor(() => fmOf(a.store, a.id).awaiting === 'plan_approval');
+    expect(activityOf(a.store, a.id)).toContain('plan needs your approval: the orchestrator left it to you: this changes pricing');
+    await a.engine.stop(); a.store.close();
+    const b = await delegated(reviewer([async () => { /* looks, decides nothing */ }]));
+    await b.engine.start();
+    await waitFor(() => fmOf(b.store, b.id).awaiting === 'plan_approval');
+    expect(activityOf(b.store, b.id)).toContain('the orchestrator reviewed it without deciding');
+  });
+
+  it('is off unless both the project and the item say so', async () => {
+    for (const opts of [{ gate: false }, { optIn: false }]) {
+      const c = await delegated(reviewer([async (t, prompt) => { expect(prompt).toContain("Plan approval: the user's"); expect(String(await t('approve_plan').handler({ id: 'TP-1' }))).toContain('not permitted'); }]), opts);
+      await c.engine.start();
+      await waitFor(() => status(c.store, c.id) === 'PLAN_READY');
+      await sleep(250);
+      expect(fmOf(c.store, c.id).awaiting).toBe('plan_approval');
+      expect(status(c.store, c.id)).toBe('PLAN_READY');
+      await c.engine.stop(); c.store.close();
+    }
+  });
+
+  it('picks up a plan that was waiting when the box was ticked, and one whose review a restart dropped', async () => {
+    const { store, engine, id } = await delegated(reviewer([async () => {}, async (t) => { await t('approve_plan').handler({ id: 'TP-1' }); }]), { optIn: false });
+    await engine.start();
+    await waitFor(() => fmOf(store, id).awaiting === 'plan_approval');
+    store.mutateItem(id, [{ set: { auto_approve_plan: true } }], 'user'); // ticked after the plan arrived
+    await waitFor(() => status(store, id) !== 'PLAN_READY', 8000);
+    expect(activityOf(store, id)).toContain('plan approval delegated to the orchestrator');
+    await waitFor(() => status(store, id) === 'FINISHED', 8000);
+
+    await engine.stop(); store.close();
+
+    // after a restart: PLAN_READY + awaiting orchestrator on disk, and no wake queued in memory
+    const prompts: string[] = [];
+    const d = await setup({ claude: reviewer([async (t) => { await t('hand_plan_to_user').handler({ id: 'TP-1', reason: 'seen after the restart' }); }], prompts) });
+    const { readFileSync, writeFileSync } = await import('node:fs');
+    writeFileSync(`${d.store.dataDir}/planestro.yml`, readFileSync(`${d.store.dataDir}/planestro.yml`, 'utf8').replace('may_approve_plans: false', 'may_approve_plans: true'));
+    d.store.reload();
+    const parked = d.store.createItem({ title: 'Parked', description: 'x' });
+    d.store.mutateItem(parked.id, [{ set: { auto_approve_plan: true } }, { transition: { to: 'QUEUED', actor: 'user' } }, { transition: { to: 'PLAN_IN_PROGRESS', actor: 'engine' } }, { section: 'Plan', body: '# a plan' }, { transition: { to: 'PLAN_READY', actor: 'engine' } }, { set: { awaiting: 'orchestrator' } }], 'engine');
+    expect(d.store.derived(d.store.getItem(parked.id)!).needs_you).toBe(false);
+    await d.engine.start();
+    await waitFor(() => fmOf(d.store, parked.id).awaiting === 'plan_approval');
+    expect(prompts).toHaveLength(1);
+    expect(activityOf(d.store, parked.id)).toContain('seen after the restart');
+  });
+});
+

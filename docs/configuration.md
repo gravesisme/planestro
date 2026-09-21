@@ -88,7 +88,8 @@ their sandbox instead.
 | Key | Default | |
 |---|---|---|
 | `orchestrator.model` | `claude-fable-5` | The judgment layer's model. |
-| `orchestrator.may_approve_plans` | `false` | Whether it may approve plans of items that opted in. It can never approve an epic's breakdown or release a review hold. |
+| `orchestrator.may_approve_plans` | `false` | Whether it may approve plans of items that opted in (**let the orchestrator approve the plan** on the item). It can never approve an epic's breakdown or release a review hold. |
+| `orchestrator.max_plan_revisions` | `2` | How many times it may send one item's plan back to the planner with fixes. Past that it can only approve the plan or leave it to you. |
 | `orchestrator.rotate_after_wakes` | `40` | Start a fresh orchestrator conversation after this many wakes… |
 | `orchestrator.rotate_after_days` | `3` | …or this many days. The files are its memory. |
 | `engine.mode` | `dry-run` | `dry-run` logs `Would …` against in-memory fakes; `live` acts. Overridden per machine by `engine.mode` in the local file. |

@@ -50,6 +50,7 @@ Your answer resumes the same conversation — after an hour, after a restart.
 | `permission` | A Claude worker wants to run something outside its allow-list: once, always, or deny |
 | `review` | A held pull request is synced and green; look at what was made, approve or send back |
 | `user` | The item is blocked; read the reason ([Troubleshooting](troubleshooting.md)) |
+| `orchestrator` | Not you: the plan's approval was delegated, and the orchestrator has it (below) |
 
 `blocked` and `awaiting` sit beside the status, so an item never loses its phase when it
 needs you.
@@ -86,6 +87,25 @@ over, a second red CI run, a conflict, a review nobody has looked at for hours. 
 message workers, reorder the merge queue, hold an item, ask you a question. It never owns
 state (its session is rotated freely; the files are its memory) and it cannot approve an
 epic's breakdown or release a review hold: those are yours.
+
+### Letting it approve a plan
+
+For a small item you would wave through anyway, tick **let the orchestrator approve the
+plan** (on the item, or when creating it). It needs `orchestrator.may_approve_plans` on in
+Settings; with that off the box does nothing. When the planner submits, the item waits on
+the orchestrator instead of on you, and the orchestrator does exactly one of three things:
+
+- **approves** — implementation starts, with its notes handed to the implementer;
+- **sends the plan back with specific fixes** — the planner revises and it reviews again, at
+  most `orchestrator.max_plan_revisions` times (2) per item. The count is kept on the item
+  (`plan_revisions`) and enforced by the engine, not by the model's memory;
+- **leaves it to you** — a decision that is yours, real risk, a large rework, or it still
+  wants changes after its fix rounds. The item turns into an ordinary `plan_approval`, with
+  its reasons in the Activity log.
+
+A review that fails, or ends without deciding, also lands on you; so does unticking the box
+while it is looking. You can approve or send back the plan yourself at any point. Leave the
+box unticked for anything you want to read first.
 
 ## Externally driven items
 
