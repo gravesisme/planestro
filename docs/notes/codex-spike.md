@@ -26,3 +26,5 @@ pins the version so planestro can warn when the installed CLI drifts.
 Still unprovoked, so unverified: an expired login and a rate limit. The port classifies
 them from stderr patterns (`auth_required`, `rate_limited`); a real occurrence should
 confirm the patterns.
+
+**Later finding (2026-09-17):** `-i/--image` takes one or more files, so a prompt placed right after it is read as another image and `codex exec` falls back to stdin ("No prompt provided via stdin"). The port ends the options with `--` before the prompt.

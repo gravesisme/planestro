@@ -81,8 +81,10 @@ export class LiveCodexPort implements AgentPort<AgentTurnOptions> {
     this.lastError = undefined;
     let stderr = '';
     const exit = await new Promise<{ code: number | null; spawnError?: string }>((resolve) => {
-      // stdin MUST be ignored: given a pipe, `codex exec` waits on it forever.
-      const child = spawn(this.codexBin, [...args, prompt], { cwd: o.cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+      // stdin MUST be ignored: given a pipe, `codex exec` waits on it forever. And `--` MUST end the
+      // options: `-i` takes one or more files, so a prompt right after an image is read as another
+      // image, and codex, finding no prompt, reads stdin — and gets nothing ("No prompt provided via stdin").
+      const child = spawn(this.codexBin, [...args, '--', prompt], { cwd: o.cwd, stdio: ['ignore', 'pipe', 'pipe'] });
       const onAbort = () => { killed = true; child.kill('SIGTERM'); };
       if (o.signal?.aborted) onAbort(); else o.signal?.addEventListener('abort', onAbort, { once: true });
       let buf = '';
