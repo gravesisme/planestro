@@ -40,6 +40,8 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
   const [editPlan, setEditPlan] = useState(false);
   const plan = useAutosave(item.id, 'Plan', item.sections.Plan);
   const [title, setTitle] = useState(fm.title);
+  // The tab (and an installed web app, which has no address bar) says which item this is.
+  useEffect(() => { document.title = `${item.id} · ${fm.title}`; return () => { document.title = 'planestro'; }; }, [item.id, fm.title]);
   // The title wraps instead of running off a narrow screen, so its box grows to fit what it holds.
   const titleBox = useRef<HTMLTextAreaElement>(null);
   useLayoutEffect(() => {
@@ -66,7 +68,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
     <div className="item-page" onPaste={onPaste}>
       <div>
         <Link className="back phone-only" to={d.lane === 'icebox' ? '/icebox' : d.lane === 'done' ? '/done' : '/'}>‹ {d.lane === 'icebox' ? 'Icebox' : d.lane === 'done' ? 'Done' : 'Board'}</Link>
-        <h1><textarea ref={titleBox} rows={1} aria-label="Title" value={title} onChange={(e) => setTitle(e.target.value.replace(/\n/g, ' '))} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } }} onBlur={() => title.trim() && title !== fm.title && field({ title: title.trim() })} /></h1>
+        <h1><span className="title-id">{item.id}</span><textarea ref={titleBox} rows={1} aria-label="Title" value={title} onChange={(e) => setTitle(e.target.value.replace(/\n/g, ' '))} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } }} onBlur={() => title.trim() && title !== fm.title && field({ title: title.trim() })} /></h1>
         <div className="controls">
           <span className="pill">{statusLabel(fm.status)}</span>
           {fm.blocked && <span className="pill blocked">BLOCKED{fm.blocked_reason ? ` · ${fm.blocked_reason}` : ''}</span>}

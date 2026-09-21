@@ -17,6 +17,7 @@ export function App() {
   const { state, error, connected, connect, updateReady } = useStore();
   const nav = useNavigate();
   const { pathname } = useLocation();
+  useEffect(() => { if (!pathname.startsWith('/items/')) document.title = `${TABS.find((t) => t.to !== '/' && pathname.startsWith(t.to))?.label ?? (pathname === '/icebox' ? 'Icebox' : pathname === '/done' ? 'Done' : 'Board')} · ${state?.config.project.name ?? 'planestro'}`; }, [pathname, state?.config.project.name]);
   useEffect(() => { connect(); }, [connect]);
   const needs = state?.items.filter((i) => i.derived.needs_you && i.derived.lane === 'board') ?? [];
   const active = state?.items.filter((i) => ['PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW', 'MERGED'].includes(i.frontmatter.status)) ?? [];
