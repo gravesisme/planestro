@@ -121,6 +121,22 @@ requests, no protected branches, no force flags) are checked before anyone is as
 request the orchestrator refuses three times on one item comes to you. While it is deciding,
 the item is not "needs you"; you can still answer the request yourself.
 
+## Handing files to another item
+
+The merge-time hand-off above needs the giver's branch merged. When another item needs a
+worker's output *before* that — a generated image the code item integrates, a fixture, a
+schema — the worker calls **`hand_off`** (a Codex worker puts `hand_off` in its final
+message) with the receiver's id, the files (paths in its own worktree) and a note. It works
+only along an existing tie: the receiver's `depends_on` names the giver, or they are children
+of the same epic. planestro copies the files into the receiver's **attachments** (so every
+one of its turns lists them, and images reach the model as pictures), appends the note to
+its Notes, records the delivery on both items, and tells the receiver's session: an idle
+session is resumed with the hand-off, a busy or parked one reads it at its next turn, and an
+item that has not started finds it in its attachments and notes. Files are capped at
+`attachments.managed_max_bytes` each — the deliverable, not previews and scratch. The
+orchestrator has the same tool (`hand_off_files`) for a delivery a worker did not think to
+make.
+
 ## Externally driven items
 
 An item whose implementer is an `external: true` model is *watched*, not run: someone else

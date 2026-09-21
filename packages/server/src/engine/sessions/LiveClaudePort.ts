@@ -58,6 +58,9 @@ export class LiveClaudePort implements ClaudePort {
           async ({ summary }) => { result.done = summary; return text(await o.tools.report_done(summary)); }),
         tool('report_blocked', 'Report that you cannot proceed without a human decision. Then end your turn.', { reason: z.string() },
           async ({ reason }) => { result.blocked = reason; return text(await o.tools.report_blocked(reason)); }),
+        tool('hand_off', 'Give files you made to another backlog item that waits on this one (its depends_on names your item, or you share an epic): planestro copies them into that item\'s attachments and tells its session. Use it when your output is needed by another item before your branch merges. Paths are relative to your worktree.',
+          { to: z.string().describe('The receiving item id'), paths: z.array(z.string()).min(1).describe('Files in your worktree, relative paths'), note: z.string().describe('What they are and how to use them') },
+          async ({ to, paths, note }) => text(await o.tools.hand_off(to, paths, note))),
         tool('get_item', 'Read the backlog item file (frontmatter + sections).', {}, async () => text(await o.tools.get_item())),
       ],
     });
@@ -69,7 +72,7 @@ export class LiveClaudePort implements ClaudePort {
         cwd: o.cwd, model: o.model, permissionMode: o.permissionMode, resume: o.resume,
         systemPrompt: { type: 'preset', preset: 'claude_code', append: o.systemAppend },
         mcpServers: { planestro }, strictMcpConfig: true, settingSources: ['project'],
-        allowedTools: [...o.allowedTools, 'mcp__planestro__submit_plan', 'mcp__planestro__submit_breakdown', 'mcp__planestro__add_note', 'mcp__planestro__append_activity', 'mcp__planestro__report_done', 'mcp__planestro__report_blocked', 'mcp__planestro__get_item'],
+        allowedTools: [...o.allowedTools, 'mcp__planestro__submit_plan', 'mcp__planestro__submit_breakdown', 'mcp__planestro__add_note', 'mcp__planestro__append_activity', 'mcp__planestro__report_done', 'mcp__planestro__report_blocked', 'mcp__planestro__hand_off', 'mcp__planestro__get_item'],
         additionalDirectories: o.extraDirs, maxBudgetUsd: o.maxBudgetUsd, abortController,
         ...(this.claudeBin ? { pathToClaudeCodeExecutable: this.claudeBin } : {}),
         ...(this.apiKey ? { env: { ...process.env, ANTHROPIC_API_KEY: this.apiKey } } : {}),

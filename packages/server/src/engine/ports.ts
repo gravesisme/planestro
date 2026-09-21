@@ -74,6 +74,8 @@ export interface TurnTools {
   append_activity(text: string): Promise<string>;
   report_done(summary: string): Promise<string>;
   report_blocked(reason: string): Promise<string>;
+  /** Give files from this worktree to another item that waits on this one: they become its attachments and its session is told. */
+  hand_off(to: string, paths: string[], note: string): Promise<string>;
   get_item(): Promise<string>;
 }
 export interface PermissionRequest { tool: string; input: Record<string, unknown> }

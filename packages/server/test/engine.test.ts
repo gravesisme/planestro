@@ -823,3 +823,74 @@ describe('permission requests delegated to the orchestrator', () => {
   });
 });
 
+describe('hand-off between items', () => {
+  it('a worker hands files to the item that waits on it: attachments, notes, both logs, and the receiver\'s session is told', async () => {
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    const turns: { item: string; prompt: string }[] = [];
+    let art = '';
+    const port = () => ({
+      async runTurn(o: TurnOptions): Promise<TurnResult> {
+        turns.push({ item: o.itemId, prompt: o.prompt });
+        const ok = { sessionId: `s-${o.itemId}`, subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '' };
+        if (o.phase === 'plan') { await o.tools.submit_plan('# p'); return { ...ok, planSubmitted: '# p' }; }
+        if (o.itemId === art) {
+          writeFileSync(join(o.cwd, 'out.png'), Buffer.from('png-bytes'));
+          expect(await o.tools.hand_off('TP-9', ['out.png'], 'the tile')).toContain('no item TP-9');
+          writeFileSync(join(o.cwd, '..', 'escape.txt'), 'x');
+          expect(await o.tools.hand_off('TP-2', ['../escape.txt'], 'x')).toContain('outside the worktree');
+          expect(await o.tools.hand_off('TP-2', ['nope.png'], 'x')).toContain('does not exist');
+          expect(await o.tools.hand_off('TP-2', ['out.png'], 'Use it as the south wall tile.')).toMatch(/^Delivered to TP-2: 1 file attached; its session has been resumed/);
+          await o.tools.report_done('drew it');
+          return { ...ok, done: 'drew it' };
+        }
+        await o.tools.report_done('used it');
+        return { ...ok, done: 'used it' };
+      },
+    });
+    const { store, engine, world } = await setup({ claude: port });
+    const a = store.createItem({ title: 'Art', description: 'draw' }); art = a.id;
+    const b = store.createItem({ title: 'Code', description: 'use the art', depends_on: [] });
+    // b waits on a in spirit but is already implementing (a real worktree holds the copy source; b's session is idle, parked on nothing)
+    store.mutateItem(b.id, [{ set: { depends_on: [a.id] } }], 'user');
+    for (const it of [a, b]) {
+      const wt = join(store.codeRepoPath(), `.claude/worktrees/tp-${idNumberOf(it.id)}-${it.file.frontmatter.title.toLowerCase()}`);
+      mkdirSync(wt, { recursive: true }); world.worktrees.set(wt, { path: wt, head: 'a'.repeat(40), branch: `tp/${idNumberOf(it.id)}` }); world.commits.set(wt, 1);
+      store.mutateItem(it.id, [{ transition: { to: 'QUEUED', actor: 'user' } }, { transition: { to: 'PLAN_IN_PROGRESS', actor: 'engine' } }, { section: 'Plan', body: '# p' }, { transition: { to: 'PLAN_READY', actor: 'engine' } }, { transition: { to: 'IN_PROGRESS', actor: 'user' } }, { set: { branch: `tp/${idNumberOf(it.id)}`, worktree: `.claude/worktrees/tp-${idNumberOf(it.id)}-${it.file.frontmatter.title.toLowerCase()}`, session_id: `s-${it.id}` } }], 'engine');
+    }
+    await engine.start();
+    await engine.message(a.id, 'go');
+    await waitFor(() => turns.some((t) => t.item === b.id), 8000);
+    const bt = turns.find((t) => t.item === b.id)!;
+    expect(bt.prompt).toContain(`${a.id} handed off 1 file to you`);
+    expect(bt.prompt).toContain('Use it as the south wall tile.');
+    const bf = store.getItem(b.id)!.file;
+    expect(bf.frontmatter.attachments).toHaveLength(1);
+    expect(bf.frontmatter.attachments[0].path).toMatch(/^attachments\/TP-2\/\d{8}-\d{6}-out\.png$/);
+    expect(getSectionText(store, b.id, 'Notes')).toContain(`Hand-off from ${a.id}`);
+    expect(activityOf(store, b.id)).toContain(`received 1 file from ${a.id}'s worker: out.png`);
+    expect(activityOf(store, a.id)).toContain(`[worker] handed 1 file to ${b.id}: out.png`);
+    await waitFor(() => status(store, b.id) === 'FINISHED' && status(store, a.id) === 'FINISHED', 10000);
+  });
+
+  it('is refused between unrelated items, and queues for a busy or parked receiver', async () => {
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    const { store, engine } = await setup();
+    const a = store.createItem({ title: 'A' }); const b = store.createItem({ title: 'B' });
+    const wt = join(store.codeRepoPath(), '.claude/worktrees/tp-1-a'); mkdirSync(wt, { recursive: true }); writeFileSync(join(wt, 'f.txt'), 'hi');
+    store.mutateItem(a.id, [{ set: { worktree: '.claude/worktrees/tp-1-a' } }], 'engine');
+    expect(await engine.handOff(a.id, b.id, ['f.txt'], '')).toContain('does not wait on');
+    store.mutateItem(b.id, [{ set: { depends_on: [a.id] } }], 'user');
+    expect(await engine.handOff(a.id, b.id, ['f.txt'], '')).toMatch(/no session yet/);
+    // parked on a permission: the hand-off waits in its pending messages, the park is untouched
+    store.mutateItem(b.id, [{ transition: { to: 'QUEUED', actor: 'user' } }, { transition: { to: 'PLAN_IN_PROGRESS', actor: 'engine' } }, { set: { awaiting: 'permission', awaiting_data: { tool: 'Bash', input: { command: 'x' } } } }], 'engine');
+    expect(await engine.handOff(a.id, b.id, ['f.txt'], 'again')).toContain('parked (awaiting permission)');
+    const fm = store.getItem(b.id)!.file.frontmatter;
+    expect(fm.awaiting).toBe('permission');
+    expect((fm.op_data?.pending_messages as string[])[0]).toContain('handed off 1 file');
+    expect(fm.attachments).toHaveLength(2);
+  });
+});
+
+const idNumberOf = (id: string) => id.split('-')[1];
+const getSectionText = (s: DataStore, id: string, title: string) => s.getItem(id)!.file.sections.find((x) => x.title === title)!.body;
+

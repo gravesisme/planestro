@@ -25,6 +25,8 @@ export interface OrchestratorHooks {
   decidePermission(id: string, decision: 'allow' | 'deny' | 'ask_user', reason: string): Promise<string>;
   /** A wake that carried this item's permission request is over, however it ended. */
   permissionReviewEnded(id: string): void;
+  /** Copy files from one item's worktree to another item that waits on it (see LiveEngine.handOff). */
+  handOff(from: string, to: string, paths: string[], note: string): Promise<string>;
   poke(): void;
 }
 
@@ -201,6 +203,7 @@ export class Orchestrator {
       { name: 'request_plan_changes', description: 'Send a PLAN_READY item back to planning with specific fixes. Limited to a few rounds per item; past the limit the plan goes to the user instead.', schema: { ...idArg, message: z.string() }, handler: async (a) => this.hooks.requestPlanChanges(String(a.id), String(a.message)) },
       { name: 'hand_plan_to_user', description: 'Leave the approval of a plan that was delegated to you to the user, with the reason (a decision that is theirs, real risk, a large rework, low confidence).', schema: { ...idArg, reason: z.string() }, handler: async (a) => { this.hooks.handPlanToUser(String(a.id), String(a.reason)); return 'handed to the user'; } },
       { name: 'decide_permission', description: "Decide a worker's parked permission request that was delegated to you: allow (once), deny (with what to do instead), or ask_user (leave it to the user).", schema: { ...idArg, decision: z.enum(['allow', 'deny', 'ask_user']), reason: z.string() }, handler: async (a) => this.hooks.decidePermission(String(a.id), a.decision as 'allow' | 'deny' | 'ask_user', String(a.reason)) },
+      { name: 'hand_off_files', description: "Give files from one item's worktree to another item that waits on it (depends_on, or the same epic): they become the receiver's attachments and its session is told. For when a worker's output is needed elsewhere before its branch merges. Paths are relative to the giver's worktree.", schema: { from: z.string(), to: z.string(), paths: z.array(z.string()).min(1), note: z.string() }, handler: async (a) => this.hooks.handOff(String(a.from), String(a.to), a.paths as string[], String(a.note)) },
       { name: 'ask_user', description: 'Ask the user something; the answer arrives as a later wake. Returns immediately.', schema: { question: z.string(), item: z.string().optional() }, handler: async (a) => { const entry = store.journal.append({ type: 'orchestrator.question', item: a.item ? String(a.item) : undefined, actor: 'orchestrator', data: { question: String(a.question) } }); if (a.item) store.mutateItem(String(a.item), [{ activity: { actor: 'orchestrator', text: `question for you: ${a.question}` } }], 'orchestrator'); this.emit({ type: 'engine.log', level: 'warn', message: `[orchestrator asks] ${a.question}` }); return `recorded at ${entry.ts}; the user will see it in the console`; } },
       { name: 'done_with_wake', description: 'Finish this wake with a one-line summary of what you decided.', schema: { summary: z.string() }, handler: async (a) => { onDone(String(a.summary)); return 'Recorded. End your turn now.'; } },
     ];

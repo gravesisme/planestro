@@ -25,12 +25,15 @@ codex exec [resume <thread_id>] --json --ignore-user-config
 | progress | NDJSON events become console lines (`agent_message`, `→ command`, non-zero exits, errors); unknown events are skipped | the console is read by a person; the parser must survive a CLI upgrade |
 | result | the final message, constrained by `--output-schema` | the worker has no planestro tools, so its last words are the report |
 
-The final message is `{ "outcome": "done" | "blocked" | "question", "summary", "question" }`:
+The final message is `{ "outcome": "done" | "blocked" | "question", "summary", "question", "hand_off" }`:
 
 - **done** → `report_done(summary)`; the summary becomes the pull request body.
 - **blocked** → `report_blocked(summary)`; the item blocks as `agent_blocked`.
 - **question** → the item parks on `awaiting: question` with a free-text answer box; your
   answer resumes the same thread.
+- **hand_off** (`null`, or `{to, paths, note}`) → `hand_off(to, paths, note)` before the
+  outcome is handled: the named files go to the item that waits on this one
+  ([Concepts](concepts.md#handing-files-to-another-item)).
 
 After the turn the engine does what it does for any worker: a dirty tree is sent back to be
 committed, no commits ahead of the base blocks as `no_commits`, a changed file over

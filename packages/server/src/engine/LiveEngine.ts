@@ -1,5 +1,5 @@
 import { join, relative, isAbsolute } from 'node:path';
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, canPlan, validateBreakdown, dependencyOrder, type BreakdownChild, type ServerEvent, type Status } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
@@ -63,6 +63,7 @@ export class LiveEngine implements Engine {
       permissionsDelegated: () => this.permissionsDelegated(),
       decidePermission: (id, decision, reason) => this.orchestratorDecidesPermission(id, decision, reason),
       permissionReviewEnded: (id) => this.handPermissionToUser(id, 'the orchestrator looked at it without deciding'),
+      handOff: (from, to, paths, note) => this.handOff(from, to, paths, note, 'orchestrator'),
       poke: () => this.poke(),
     }, emit, (l, m) => this.note(l, m), () => this._paused);
   }
@@ -1167,8 +1168,66 @@ export class LiveEngine implements Engine {
         if (cur.op_data?.done_summary !== undefined) { const { done_summary: _withdrawn, ...rest } = cur.op_data; s.mutateItem(id, [{ set: { op_data: rest } }], 'engine'); }
         this.block(id, 'agent_blocked', reason, 'user'); return 'Recorded. End your turn now; planestro will resume you with the answer.';
       },
+      hand_off: async (to, paths, note) => this.handOff(id, to, paths, note, 'worker'),
       get_item: async () => serializeItemFile(s.requireItem(id).file),
     };
+  }
+
+  // ---- hand-off: one item's files, given to another before any branch merges ----
+  /**
+   * The receiving item must already be tied to the giver (it waits on it, or they share an epic):
+   * a hand-off is a delivery along a dependency, not a message to anyone. planestro does the
+   * copying (invariant 1: a worker writes only its worktree), the files become the receiver's
+   * attachments — which every one of its turns lists — and its session, if it has one, is told.
+   */
+  async handOff(from: string, to: string, paths: string[], note: string, by: 'worker' | 'orchestrator' | 'user' = 'worker'): Promise<string> {
+    const giver = this.store.requireItem(from);
+    const receiver = this.store.getItem(to);
+    if (!receiver) return `Rejected: no item ${to}.`;
+    if (to === from) return 'Rejected: an item cannot hand files to itself.';
+    const rfm = receiver.file.frontmatter; const gfm = giver.file.frontmatter;
+    if (this.store.derived(receiver).lane !== 'board') return `Rejected: ${to} is ${rfm.status}; only an item on the board can receive files.`;
+    const related = rfm.depends_on.includes(from) || (gfm.parent !== undefined && gfm.parent === rfm.parent) || rfm.parent === from;
+    if (!related) return `Rejected: ${to} does not wait on ${from} (its depends_on does not name it) and they share no epic. Ask the user to add the dependency, or report_blocked with what you need.`;
+    if (!gfm.worktree) return `Rejected: ${from} has no worktree to hand files from.`;
+    const root = realpathSync(this.absWorktree(gfm.worktree));
+    const max = this.store.config.attachments.managed_max_bytes;
+    const copied: string[] = [];
+    for (const p of paths) {
+      if (isAbsolute(p)) return `Rejected: "${p}" — paths are relative to your worktree.`;
+      let abs: string;
+      try { abs = realpathSync(join(root, p)); } catch { return `Rejected: "${p}" does not exist in the worktree.`; }
+      if (abs !== root && !abs.startsWith(root + '/')) return `Rejected: "${p}" is outside the worktree.`;
+      if (!statSync(abs).isFile()) return `Rejected: "${p}" is not a file.`;
+      const data = readFileSync(abs);
+      if (data.length > max) return `Rejected: "${p}" is ${data.length} bytes; a hand-off file may be at most ${max} (attachments.managed_max_bytes). Hand off the deliverable itself, not previews or scratch.`;
+      copied.push(this.store.addManagedAttachment(to, p.replace(/\//g, '__'), data, 'engine').path);
+    }
+    const absPaths = copied.map((rel) => join(this.store.dataDir, rel));
+    const who = by === 'worker' ? `${from}'s worker` : by === 'orchestrator' ? `the orchestrator, from ${from}` : `the user, from ${from}`;
+    const noteText = note.trim();
+    const memo = `Hand-off from ${from} (${isoLocal().slice(0, 16).replace('T', ' ')}): ${copied.length} file${copied.length === 1 ? '' : 's'} attached to this item — ${absPaths.join(', ')}${noteText ? `\n\n${noteText}` : ''}`;
+    const curNotes = getSection(this.store.requireItem(to).file, 'Notes');
+    this.store.mutateItem(to, [{ section: 'Notes', body: curNotes ? `${curNotes}\n\n${memo}` : memo }, { activity: { actor: 'app', text: `received ${copied.length} file${copied.length === 1 ? '' : 's'} from ${who}: ${paths.join(', ')}` } }], 'engine', { commit: `${to}: hand-off from ${from}` });
+    this.store.mutateItem(from, [{ activity: { actor: by === 'worker' ? 'worker' : by, text: `handed ${copied.length} file${copied.length === 1 ? '' : 's'} to ${to}: ${paths.join(', ')}` } }], 'engine');
+    this.store.journal.append({ type: 'item.handoff', item: to, actor: 'engine', data: { from, files: copied, note: noteText.slice(0, 500) } });
+    // Tell the receiver's session. Parked on something other than the user → it reads this at its next turn; idle → that turn starts now.
+    const phase = this.phaseFor(rfm.status);
+    let told = 'it has no session yet; the files and your note are in its attachments and notes for when it starts';
+    if (phase) {
+      const text = `${from} handed off ${copied.length} file${copied.length === 1 ? '' : 's'} to you, now attached to your item:\n${absPaths.map((p) => `- ${p}`).join('\n')}${noteText ? `\n\n${noteText}` : ''}`;
+      const cur = this.store.requireItem(to).file.frontmatter;
+      if (this.turns.has(to) || this.jobs.has(to) || (cur.awaiting && cur.awaiting !== 'user')) {
+        const pending = [...((cur.op_data?.pending_messages as string[] | undefined) ?? []), text];
+        this.store.mutateItem(to, [{ set: { op_data: { ...(cur.op_data ?? {}), pending_messages: pending } } }], 'engine');
+        told = cur.awaiting && cur.awaiting !== 'user' ? `its session is parked (awaiting ${cur.awaiting}) and will read the hand-off when it resumes` : 'its session is busy and will read the hand-off at its next turn';
+      } else {
+        this.store.mutateItem(to, [{ unset: ['awaiting', 'awaiting_data'] }], 'engine');
+        this.queueFollowUp(to, () => this.runTurnFor(to, phase, `${this.resumeNote(to, `a hand-off from ${from}`)}\n\n${text}`));
+        told = 'its session has been resumed with the hand-off';
+      }
+    }
+    return `Delivered to ${to}: ${copied.length} file${copied.length === 1 ? '' : 's'} attached; ${told}.`;
   }
 
   private block(id: string, reason: string, detail: string, awaiting: 'user' | undefined = 'user'): void {
