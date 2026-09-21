@@ -421,6 +421,28 @@ describe('LiveEngine lifecycle (dry-run ports)', () => {
     await engine2.stop();
   });
 
+  it('an unblock with nothing to resume starts a fresh conversation with the full phase prompt, not just the note', async () => {
+    const prompts: { phase: string; resume?: string; prompt: string }[] = [];
+    const port = () => ({ async runTurn(o: TurnOptions): Promise<TurnResult> { prompts.push({ phase: o.phase, resume: o.resume, prompt: o.prompt }); await o.tools.report_done('ok'); return { sessionId: 'fresh', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', done: 'ok' }; } });
+    const { store, engine, world } = await setup({ claude: port });
+    const item = store.createItem({ title: 'Lost thread', description: 'x' });
+    // the implement turn died at launch: IN_PROGRESS, a plan, approval notes, and no conversation id for this runner
+    store.mutateItem(item.id, [{ transition: { to: 'QUEUED', actor: 'user' } }, { transition: { to: 'PLAN_IN_PROGRESS', actor: 'engine' } }, { section: 'Plan', body: '# The plan\nDo the thing.' }, { transition: { to: 'PLAN_READY', actor: 'engine' } }, { transition: { to: 'IN_PROGRESS', actor: 'user' } },
+      { set: { branch: 'tp/1-lost-thread', worktree: '.claude/worktrees/tp-1-lost-thread', op_data: { approval_notes: 'mind the flag' }, blocked: true, blocked_reason: 'turn_error', awaiting: 'user' } }], 'engine');
+    const wt = join(store.codeRepoPath(), '.claude/worktrees/tp-1-lost-thread');
+    world.worktrees.set(wt, { path: wt, head: 'a'.repeat(40), branch: 'tp/1-lost-thread' }); world.commits.set(wt, 1);
+    await engine.start();
+    await engine.unblock(item.id, 'try again');
+    await waitFor(() => prompts.length === 1);
+    expect(prompts[0].resume).toBeUndefined();
+    expect(prompts[0].prompt).toContain('was approved. Implement it now');   // the implement-plan opener…
+    expect(prompts[0].prompt).toContain('Do the thing.');                    // …with the plan…
+    expect(prompts[0].prompt).toContain('mind the flag');                    // …and the approval notes…
+    expect(prompts[0].prompt).toContain('try again');                        // …then the message
+    expect(activityOf(store, item.id)).toContain('starting a fresh one with the full implement prompt');
+    await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
+  });
+
   it('a turn killed by a clean stop is resumed at the next start and does not sit holding a slot', async () => {
     // What a live port does on stop(): the turn ends 'killed', not with an error and not with a plan.
     const hanging = () => ({
@@ -715,6 +737,89 @@ describe('plan approval delegated to the orchestrator', () => {
     await waitFor(() => fmOf(d.store, parked.id).awaiting === 'plan_approval');
     expect(prompts).toHaveLength(1);
     expect(activityOf(d.store, parked.id)).toContain('seen after the restart');
+  });
+});
+
+describe('permission requests delegated to the orchestrator', () => {
+  /** A worker that asks for `node -e 1` on its first implement turn (and on every turn while `again` says so), then reports done. */
+  function world(decide: (t: (n: string) => { handler(a: Record<string, unknown>): Promise<unknown> }, prompt: string) => Promise<void>, opts: { again?: () => boolean } = {}) {
+    const seen = { prompts: [] as string[], oneShots: 0, implementPrompts: [] as string[] };
+    const claude = () => ({
+      async runTurn(o: TurnOptions): Promise<TurnResult> {
+        const ok = { sessionId: 's', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '' };
+        if (o.phase === 'plan') { await o.tools.submit_plan('# p'); return { ...ok, planSubmitted: '# p' }; }
+        seen.implementPrompts.push(o.prompt);
+        if (seen.implementPrompts.length === 1 || opts.again?.()) { expect((await o.onPermission({ tool: 'Bash', input: { command: 'node -e 1', description: 'try it' } })).action).toBe('park'); return { ...ok, parked: 'permission' as const }; }
+        await o.tools.report_done('did it');
+        return { ...ok, done: 'did it' };
+      },
+      async runCustomTurn(o: any): Promise<TurnResult> {
+        if (o.label.includes('permission_request')) { seen.prompts.push(o.prompt); await decide((n) => o.mcpTools.find((x: any) => x.name === n), o.prompt); }
+        return { sessionId: 'orch-1', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '' };
+      },
+    });
+    return { claude, seen };
+  }
+  async function begin(claude: () => Ports['agents']['claude'], on = true) {
+    const ctx = await setup({ claude });
+    if (on) { const { readFileSync, writeFileSync } = await import('node:fs'); const cfg = `${ctx.store.dataDir}/planestro.yml`; writeFileSync(cfg, readFileSync(cfg, 'utf8').replace('may_decide_permissions: false', 'may_decide_permissions: true')); ctx.store.reload(); }
+    const item = ctx.store.createItem({ title: 'P', description: 'x' });
+    ctx.store.transition(item.id, 'QUEUED', 'user');
+    await ctx.engine.start();
+    await waitFor(() => status(ctx.store, item.id) === 'PLAN_READY');
+    ctx.world.commits.set(join(ctx.store.codeRepoPath(), '.claude/worktrees/tp-1-p'), 1);
+    await ctx.engine.approvePlan(item.id);
+    return { ...ctx, id: item.id };
+  }
+  const fmOf = (s: DataStore, id: string) => s.getItem(id)!.file.frontmatter;
+
+  it('allows ordinary work without you: the session resumes with a one-shot pass and the item finishes', async () => {
+    const needed: boolean[] = [];
+    const w = world(async (t) => { needed.push(store!.derived(store!.getItem('TP-1')!).needs_you); expect(await t('decide_permission').handler({ id: 'TP-1', decision: 'allow', reason: 'a harmless local check' })).toContain('allowed once'); });
+    const ctx = await begin(w.claude);
+    await waitFor(() => status(ctx.store, ctx.id) === 'FINISHED', 8000);
+    expect(needed).toEqual([false]);
+    expect(w.seen.prompts[0]).toContain('Permission request: DELEGATED TO YOU');
+    expect(w.seen.prompts[0]).toContain('node -e 1');
+    expect(w.seen.implementPrompts[1]).toContain('The orchestrator approved `node -e 1`');
+    expect(activityOf(ctx.store, ctx.id)).toContain('[orchestrator] permission allow (a harmless local check): Bash(node -e 1)');
+    expect(ctx.store.config.permissions.allow).not.toContain('Bash(node -e 1)'); // it never writes allow rules
+  });
+
+  it('asks you when it says so or decides nothing, and you answer as before', async () => {
+    const w = world(async (t) => { await t('decide_permission').handler({ id: 'TP-1', decision: 'ask_user', reason: 'writes outside the worktree' }); });
+    const ctx = await begin(w.claude);
+    await waitFor(() => fmOf(ctx.store, ctx.id).awaiting === 'permission');
+    expect(ctx.store.derived(ctx.store.getItem(ctx.id)!).needs_you).toBe(true);
+    expect(activityOf(ctx.store, ctx.id)).toContain('permission needs your decision: the orchestrator left it to you: writes outside the worktree');
+    await sleep(200); // handed back once: the tick does not pass the same request round again
+    expect(fmOf(ctx.store, ctx.id).awaiting).toBe('permission');
+    await ctx.engine.respond(ctx.id, { kind: 'permission', decision: 'allow' });
+    await waitFor(() => status(ctx.store, ctx.id) === 'FINISHED', 8000);
+    await ctx.engine.stop(); ctx.store.close();
+
+    const silent = world(async () => { /* looks, decides nothing */ });
+    const c2 = await begin(silent.claude);
+    await waitFor(() => fmOf(c2.store, c2.id).awaiting === 'permission');
+    expect(activityOf(c2.store, c2.id)).toContain('the orchestrator looked at it without deciding');
+  });
+
+  it('a denial resumes the worker with the reason; after three denials on one item the requests come to you', async () => {
+    let denials = 0;
+    const w = world(async (t) => { denials += 1; await t('decide_permission').handler({ id: 'TP-1', decision: 'deny', reason: 'use the project check script instead' }); }, { again: () => true });
+    const ctx = await begin(w.claude);
+    await waitFor(() => fmOf(ctx.store, ctx.id).awaiting === 'permission', 8000);
+    expect(denials).toBe(3);
+    expect(w.seen.implementPrompts[1]).toContain('The orchestrator denied `node -e 1`: use the project check script instead');
+    expect(fmOf(ctx.store, ctx.id).op_data?.orchestrator_denials).toBe(3);
+  });
+
+  it('is off by default: the request parks on you and the orchestrator is never asked', async () => {
+    const w = world(async () => { throw new Error('should not be woken for a permission'); });
+    const ctx = await begin(w.claude, false);
+    await waitFor(() => fmOf(ctx.store, ctx.id).awaiting === 'permission');
+    await sleep(200);
+    expect(w.seen.prompts).toEqual([]);
   });
 });
 

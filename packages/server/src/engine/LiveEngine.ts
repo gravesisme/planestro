@@ -14,6 +14,8 @@ const IMAGE_FILE = /\.(png|jpe?g|webp|gif|svg)$/i;
 export interface EngineOptions { sleep?: (ms: number) => Promise<void>; tickMs?: number; now?: () => string; ciWorkflow?: string }
 
 const RESUMABLE_TURN_OPS = new Set(['planning_turn', 'implement_turn']);
+/** How many of one item's permission requests the orchestrator may refuse before they go to the user instead. */
+const MAX_ORCHESTRATOR_DENIALS = 3;
 const JUDGMENT_BLOCKS = ['turn_error', 'no_plan', 'no_commits', 'dirty_tree', 'sync_conflict', 'ci_timeout', 'ci_blocked', 'base_red', 'pr_closed_externally', 'merge_unverified', 'agent_blocked', 'engine_error'] as const;
 const ACTIVE_FOR_SLOTS: Status[] = ['PLAN_IN_PROGRESS', 'IN_PROGRESS'];
 /** Turn failures with their own block reason, because the fix is the user's (log in, wait, start over) and not a judgment call. */
@@ -58,6 +60,9 @@ export class LiveEngine implements Engine {
       planDelegated: (id) => this.planDelegated(this.store.requireItem(id).file.frontmatter),
       handPlanToUser: (id, reason) => this.handPlanToUser(id, `the orchestrator left it to you: ${reason}`),
       planReviewEnded: (id) => this.handPlanToUser(id, 'the orchestrator reviewed it without deciding'),
+      permissionsDelegated: () => this.permissionsDelegated(),
+      decidePermission: (id, decision, reason) => this.orchestratorDecidesPermission(id, decision, reason),
+      permissionReviewEnded: (id) => this.handPermissionToUser(id, 'the orchestrator looked at it without deciding'),
       poke: () => this.poke(),
     }, emit, (l, m) => this.note(l, m), () => this._paused);
   }
@@ -107,6 +112,7 @@ export class LiveEngine implements Engine {
       this.nudgeStaleReviews();
       this.driveStaleBlocks();
       this.drivePlanReviews();
+      this.drivePermissionReviews();
       await this.driveEpics();
       await this.driveExternal();
       this.driveInReview();
@@ -177,7 +183,7 @@ export class LiveEngine implements Engine {
   private drivePlanReviews(): void {
     for (const item of this.store.listItems()) {
       const fm = item.file.frontmatter;
-      if (fm.status !== 'PLAN_READY' || fm.blocked) continue;
+      if (fm.status !== 'PLAN_READY' || fm.blocked || fm.awaiting_data?.kind === 'permission') continue;
       if (fm.awaiting === 'orchestrator') {
         if (!this.planDelegated(fm)) this.handPlanToUser(item.id, 'its approval is no longer delegated to the orchestrator');
         else if (!this.orchestrator.reviewing(item.id)) this.wakeOrchestrator('plan_review', item.id);
@@ -186,6 +192,44 @@ export class LiveEngine implements Engine {
         this.wakeOrchestrator('plan_review', item.id);
       }
     }
+  }
+
+  // ---- permission requests delegated to the orchestrator ----
+  /** A project-wide choice: the hard deny rules have already run by the time anything is asked. */
+  private permissionsDelegated(): boolean { return this.store.config.orchestrator.may_decide_permissions && this.orchestrator.enabled; }
+
+  /** Same shape as plan reviews: nothing here may depend on a wake queue that a restart empties, or on a setting that can change while a request waits. */
+  private drivePermissionReviews(): void {
+    for (const item of this.store.listItems()) {
+      const fm = item.file.frontmatter;
+      if (fm.blocked || !this.phaseFor(fm.status)) continue;
+      if (fm.awaiting === 'orchestrator' && fm.awaiting_data?.kind === 'permission') {
+        if (!this.permissionsDelegated()) this.handPermissionToUser(item.id, 'permission requests are no longer delegated to the orchestrator');
+        else if (!this.orchestrator.reviewing(item.id)) this.wakeOrchestrator('permission_request', item.id);
+      } else if (fm.awaiting === 'permission' && this.permissionsDelegated() && !fm.awaiting_data?.handed_back && this.mayAskOrchestrator(fm)) {
+        this.store.mutateItem(item.id, [{ set: { awaiting: 'orchestrator', awaiting_data: { ...(fm.awaiting_data ?? {}), kind: 'permission' } } }, { activity: { actor: 'app', text: 'permission request passed to the orchestrator' } }], 'engine', { commit: `${item.id}: delegate permission` });
+        this.wakeOrchestrator('permission_request', item.id);
+      }
+    }
+  }
+
+  /** A worker that keeps asking for what the orchestrator keeps refusing is a conversation for a person. */
+  private mayAskOrchestrator(fm: { op_data?: Record<string, unknown> }): boolean { return Number(fm.op_data?.orchestrator_denials ?? 0) < MAX_ORCHESTRATOR_DENIALS; }
+
+  private handPermissionToUser(id: string, why: string): void {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    if (fm.awaiting !== 'orchestrator' || fm.awaiting_data?.kind !== 'permission') return;
+    this.store.mutateItem(id, [{ set: { awaiting: 'permission', awaiting_data: { ...fm.awaiting_data, handed_back: true } } }, { activity: { actor: 'app', text: `permission needs your decision: ${why}` } }], 'engine', { commit: `${id}: permission handed to the user` });
+    this.note('info', `${id}: permission needs your decision — ${why}`);
+  }
+
+  private async orchestratorDecidesPermission(id: string, decision: 'allow' | 'deny' | 'ask_user', reason: string): Promise<string> {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    if (fm.awaiting !== 'orchestrator' || fm.awaiting_data?.kind !== 'permission') return `nothing to decide: ${id} is not waiting on you for a permission`;
+    if (!this.permissionsDelegated()) { this.handPermissionToUser(id, 'permission requests are no longer delegated to the orchestrator'); return 'not permitted: the user decides permission requests'; }
+    if (decision === 'ask_user') { this.handPermissionToUser(id, `the orchestrator left it to you: ${reason}`); return 'handed to the user'; }
+    await this.respond(id, { kind: 'permission', decision, reason }, 'orchestrator');
+    return decision === 'allow' ? 'allowed once; the session resumes' : 'denied; the session resumes with your reason';
   }
 
   /** The decision goes back to the person, once per submitted plan: the flag stops the tick delegating it again. */
@@ -272,7 +316,7 @@ export class LiveEngine implements Engine {
     }
     this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }], 'engine');
     this.store.journal.end(opId, id, 'ok');
-    await this.runTurnFor(id, 'plan', this.withDelivered(id, 'plan-item', this.store.renderPrompt('plan-item', this.store.requireItem(id))));
+    await this.runTurnFor(id, 'plan', this.withDelivered(id, 'plan-item', this.store.renderPrompt('plan-item', this.store.requireItem(id))), [], [], { opener: true });
   }
 
   async approvePlan(id: string, notes?: string, by: 'user' | 'orchestrator' = 'user'): Promise<void> {
@@ -286,7 +330,7 @@ export class LiveEngine implements Engine {
       ...(by === 'orchestrator' ? [{ activity: { actor: by, text: `approved the plan on your behalf${notes ? `: ${notes}` : ''}` } }] : notes ? [{ activity: { actor: by, text: `approval notes: ${notes}` } }] : []),
     ], by, { commit: `${id}: approve plan${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
     // queued, not dropped: the orchestrator can decide while the planner's turn is still ending
-    this.queueFollowUp(id, () => this.runTurnFor(id, 'implement', this.withDelivered(id, 'implement-plan', this.store.renderPrompt('implement-plan', this.store.requireItem(id), { approval_notes: notes?.trim() || '(none)' }))));
+    this.queueFollowUp(id, () => this.runTurnFor(id, 'implement', this.withDelivered(id, 'implement-plan', this.store.renderPrompt('implement-plan', this.store.requireItem(id), { approval_notes: notes?.trim() || '(none)' })), [], [], { opener: true }));
   }
 
   async rejectPlan(id: string, message: string, by: 'user' | 'orchestrator' = 'user'): Promise<void> {
@@ -321,7 +365,7 @@ export class LiveEngine implements Engine {
     this.runJob(id, () => this.runTurnFor(id, phase, `${this.resumeNote(id, 'a message from the user')}\n\nMessage from the user:\n\n${text}`));
   }
 
-  async respond(id: string, payload: Record<string, unknown>): Promise<void> {
+  async respond(id: string, payload: Record<string, unknown>, by: 'user' | 'orchestrator' = 'user'): Promise<void> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
     const phase = this.phaseFor(fm.status);
@@ -331,26 +375,31 @@ export class LiveEngine implements Engine {
       const answers = payload.answers as Record<string, string>;
       const text = Object.entries(answers).map(([q, a]) => `- Q: ${q}\n  A: ${a}`).join('\n');
       this.store.mutateItem(id, [{ unset: ['awaiting', 'awaiting_data'] }, { activity: { actor: 'user', text: `answered: ${Object.values(answers).join(' / ')}` } }], 'user', { commit: `${id}: answer questions` });
-      this.runJob(id, () => this.runTurnFor(id, phase, `${this.resumeNote(id, 'your questions')}\n\nAnswers to your questions:\n\n${text}\n\nContinue.`));
+      this.queueFollowUp(id, () => this.runTurnFor(id, phase, `${this.resumeNote(id, 'your questions')}\n\nAnswers to your questions:\n\n${text}\n\nContinue.`));
       return;
     }
     if (payload.kind === 'permission') {
-      if (fm.awaiting !== 'permission') throw new Error(`${id} is not awaiting a permission decision`);
+      // The user may always decide, including while the orchestrator is still looking at it.
+      if (fm.awaiting !== 'permission' && !(fm.awaiting === 'orchestrator' && fm.awaiting_data?.kind === 'permission')) throw new Error(`${id} is not awaiting a permission decision`);
       const req = fm.awaiting_data as unknown as PermissionRequest;
       const decision = payload.decision as 'allow' | 'always' | 'deny';
+      if (by === 'orchestrator' && decision === 'always') throw new Error('only the user adds allow rules');
       const rule = ruleFor(req);
-      const ops: ItemOp[] = [{ unset: ['awaiting', 'awaiting_data'] }, { activity: { actor: 'user', text: `permission ${decision}: ${rule}` } }];
+      const who = by === 'orchestrator' ? 'The orchestrator' : 'The user';
+      const ops: ItemOp[] = [{ unset: ['awaiting', 'awaiting_data'] }, { activity: { actor: by, text: `permission ${decision}${by === 'orchestrator' && payload.reason ? ` (${String(payload.reason).slice(0, 300)})` : ''}: ${rule.slice(0, 400)}` } }];
+      if (by === 'orchestrator' && decision === 'deny') ops.push({ set: { op_data: { ...(fm.op_data ?? {}), orchestrator_denials: Number(fm.op_data?.orchestrator_denials ?? 0) + 1 } } });
       if (decision === 'always' && !this.store.config.permissions.allow.includes(rule)) this.store.updateConfig((doc) => { doc.setIn(['permissions', 'allow'], [...this.store.config.permissions.allow, rule]); }, `config: always allow ${rule.slice(0, 60)}`);
-      this.store.mutateItem(id, ops, 'user', { commit: `${id}: permission ${decision}` });
+      this.store.mutateItem(id, ops, by, { commit: `${id}: permission ${decision}${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
       const desc = req.tool === 'Bash' ? `\`${String(req.input.command)}\`` : `${req.tool} ${JSON.stringify(req.input).slice(0, 200)}`;
       const msg = decision === 'deny'
-        ? `${this.resumeNote(id, 'a permission decision')}\n\nThe user denied ${desc}${payload.reason ? `: ${payload.reason}` : ''}. Continue without it, or call report_blocked if you cannot.`
-        : `${this.resumeNote(id, 'a permission decision')}\n\nThe user approved ${desc}. It is now allowed; continue.`;
+        ? `${this.resumeNote(id, 'a permission decision')}\n\n${who} denied ${desc}${payload.reason ? `: ${payload.reason}` : ''}. Continue without it, or call report_blocked if you cannot.`
+        : `${this.resumeNote(id, 'a permission decision')}\n\n${who} approved ${desc}. It is now allowed; continue.`;
       // A chained/heredoc command can't be expressed as a matchable allow rule (the SDK's
       // matcher and segment matching both refuse it), so an approval is also carried into the
       // turn as a one-shot exact-command pass (consumed on first use).
       const oneShot = decision !== 'deny' && req.tool === 'Bash' ? [String(req.input.command ?? '')] : [];
-      this.runJob(id, () => this.runTurnFor(id, phase, msg, decision === 'deny' ? [] : [rule], oneShot));
+      // queued, not dropped: the orchestrator can answer while the turn that asked is still ending
+      this.queueFollowUp(id, () => this.runTurnFor(id, phase, msg, decision === 'deny' ? [] : [rule], oneShot));
       return;
     }
     throw new Error(`unknown response kind ${String(payload.kind)}`);
@@ -373,7 +422,7 @@ export class LiveEngine implements Engine {
   }
 
   // ---- turns ----
-  private async runTurnFor(id: string, phase: TurnPhase, prompt: string, extraAllowed: string[] = [], oneShotCommands: string[] = []): Promise<TurnResult | undefined> {
+  private async runTurnFor(id: string, phase: TurnPhase, prompt: string, extraAllowed: string[] = [], oneShotCommands: string[] = [], opts: { opener?: boolean } = {}): Promise<TurnResult | undefined> {
     const oneShot = new Set(oneShotCommands.map((c) => c.trim()));
     if (this.stopping) return undefined;
     const item = this.store.requireItem(id);
@@ -394,6 +443,14 @@ export class LiveEngine implements Engine {
     if (!metered && (fm.agent_turns ?? 0) >= this.store.config.budget_turns_per_item) { this.block(id, 'turn_budget', `${def.label} has used ${fm.agent_turns} of ${this.store.config.budget_turns_per_item} turns on this item (budget_turns_per_item); raise it or take the item over by hand`); return undefined; }
     if (!metered && (fm.tokens ?? 0) >= this.store.config.budget_tokens_per_item) { this.block(id, 'token_budget', `${def.label} has used ${(fm.tokens ?? 0).toLocaleString()} of ${this.store.config.budget_tokens_per_item.toLocaleString()} tokens on this item (budget_tokens_per_item); raise it or take the item over by hand`); return undefined; }
     const resumeId = metered ? fm.session_id : fm.agent_sessions?.[runner];
+    // "Continue where you left off" presumes a conversation to continue. When there is none — the
+    // opening turn died before the agent heard the task, or the thread was lost — a fresh conversation
+    // gets the phase's full prompt first, and the resume note after it.
+    if (!resumeId && !opts.opener && (phase === 'plan' || phase === 'implement')) {
+      const opener = phase === 'plan' ? this.withDelivered(id, 'plan-item', this.store.renderPrompt('plan-item', item)) : this.withDelivered(id, 'implement-plan', this.store.renderPrompt('implement-plan', item, { approval_notes: String(fm.op_data?.approval_notes ?? '').trim() || '(none)' }));
+      prompt = `${opener}\n\n---\n\n${prompt}`;
+      this.store.mutateItem(id, [{ activity: { actor: 'app', text: `no ${def.label} conversation to resume: starting a fresh one with the full ${phase} prompt` } }], 'engine');
+    }
     const images = fm.attachments.map((a) => this.store.attachmentAbsPath(a)).filter((p) => /\.(png|jpe?g|webp|gif)$/i.test(p));
     const policy = makePolicy(this.store.config, d.base_branch!, cwd);
     const op = phase === 'plan' ? 'planning_turn' : 'implement_turn';
@@ -416,7 +473,9 @@ export class LiveEngine implements Engine {
           if (why) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `denied ${req.tool}: ${why}` } }], 'engine'); return { action: 'deny', message: `Not allowed: ${why}` }; }
           if (req.tool === 'Bash' && oneShot.delete(String(req.input.command ?? '').trim())) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: 'one-shot approval consumed' } }], 'engine'); return { action: 'allow' }; }
           if (allowedByRules(req, [...BASE_ALLOWED[phase], ...this.store.config.permissions.allow, ...extraAllowed])) return { action: 'allow' };
-          this.store.mutateItem(id, [{ set: { awaiting: 'permission', awaiting_data: { tool: req.tool, input: req.input, requested_at: this.now() } } }, { activity: { actor: 'app', text: `parked: permission for ${req.tool} ${String(req.input.command ?? req.input.file_path ?? '').slice(0, 80)}` } }], 'engine', { commit: `${id}: awaiting permission` });
+          const ask = this.permissionsDelegated() && this.mayAskOrchestrator(this.store.requireItem(id).file.frontmatter);
+          this.store.mutateItem(id, [{ set: { awaiting: ask ? 'orchestrator' : 'permission', awaiting_data: { ...(ask ? { kind: 'permission' } : {}), tool: req.tool, input: req.input, requested_at: this.now() } } }, { activity: { actor: 'app', text: `parked: permission for ${req.tool} ${String(req.input.command ?? req.input.file_path ?? '').slice(0, 80)}${ask ? ' (asking the orchestrator)' : ''}` } }], 'engine', { commit: `${id}: awaiting permission` });
+          if (ask) this.wakeOrchestrator('permission_request', id);
           return { action: 'park' };
         },
         onQuestion: async (questions) => {
@@ -458,7 +517,7 @@ export class LiveEngine implements Engine {
     let fm = this.store.requireItem(id).file.frontmatter;
     // A permission request followed by report_done/submit_plan in the same turn is stale:
     // the worker proceeded without it. Clear it instead of stalling on a moot prompt.
-    if (fm.awaiting === 'permission' && (result.done || result.planSubmitted)) {
+    if ((fm.awaiting === 'permission' || (fm.awaiting === 'orchestrator' && fm.awaiting_data?.kind === 'permission')) && (result.done || result.planSubmitted)) {
       this.store.mutateItem(id, [{ unset: ['awaiting', 'awaiting_data'] }, { activity: { actor: 'app', text: 'cleared a stale permission request (the turn finished its work without it)' } }], 'engine');
       fm = this.store.requireItem(id).file.frontmatter;
     }
@@ -469,6 +528,9 @@ export class LiveEngine implements Engine {
       fm = this.store.requireItem(id).file.frontmatter;
     }
     if (fm.awaiting || fm.blocked) return;                       // parked or agent-blocked: nothing to drive
+    // This turn parked and was answered before it had finished ending (the orchestrator can be
+    // that quick): the answer's turn is queued behind this one, and it, not this, decides what is done.
+    if (result.parked && !result.done && !result.planSubmitted) return;
     const pending = (fm.op_data?.pending_messages as string[] | undefined) ?? [];
     if (pending.length) {
       this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), pending_messages: [] } } }], 'engine');
@@ -901,7 +963,7 @@ export class LiveEngine implements Engine {
       if (!(await this.ports.git.worktreeList(this.repo)).some((w) => w.path === dir && !w.prunable)) await this.ports.git.worktreeAddDetached(this.repo, dir, `origin/${base}`);
       this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }], 'engine');
       const implementers = this.store.config.models.filter((m) => !m.external).map((m) => `- \`${m.id}\` — ${m.label} (runner ${m.runner ?? 'claude'}): ${m.description ?? (canPlan(m) ? 'general software work: code, tests, docs. Cannot generate images.' : 'no description configured')}`).join('\n');
-      await this.runTurnFor(id, 'plan', this.store.renderPrompt('plan-epic', this.store.requireItem(id), { implementers, categories: this.store.config.categories.join(', ') }));
+      await this.runTurnFor(id, 'plan', this.store.renderPrompt('plan-epic', this.store.requireItem(id), { implementers, categories: this.store.config.categories.join(', ') }), [], [], { opener: true });
     });
   }
 
@@ -1082,6 +1144,8 @@ export class LiveEngine implements Engine {
         const cur = s.requireItem(id).file.frontmatter;
         if (cur.kind === 'epic') return 'Rejected: this is an epic. Hand in its children with submit_breakdown.';
         const ops: ItemOp[] = [{ section: 'Plan', body: plan }];
+        // The planner went on without the permission it had asked for: that request is moot, and must not be mistaken for the plan's own wait.
+        if (cur.awaiting === 'permission' || cur.awaiting_data?.kind === 'permission') ops.push({ unset: ['awaiting', 'awaiting_data'] });
         // A late submit cures a no_plan block (e.g. after an MCP transport failure ate the first attempt).
         if (cur.blocked && cur.blocked_reason === 'no_plan') ops.push({ unset: ['blocked', 'blocked_reason'] });
         const delegated = cur.status === 'PLAN_IN_PROGRESS' && this.planDelegated(cur);

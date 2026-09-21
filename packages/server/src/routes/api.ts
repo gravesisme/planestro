@@ -200,7 +200,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
         ci: z.object({ mode: z.enum(['github', 'github-or-local']), require_green_base: z.boolean(), local_check_command: z.string() }).partial().optional(),
         engine: z.object({ mode: z.enum(['live', 'dry-run']) }).partial().optional(),
         notifications: z.object({ on_merge: z.string() }).partial().optional(),
-        orchestrator: z.object({ may_approve_plans: z.boolean(), max_plan_revisions: z.number().int().nonnegative() }).partial().optional(),
+        orchestrator: z.object({ may_approve_plans: z.boolean(), max_plan_revisions: z.number().int().nonnegative(), may_decide_permissions: z.boolean() }).partial().optional(),
       }).parse(await c.req.json());
       const cfg = store.updateConfig((doc) => { for (const [section, values] of Object.entries(body)) for (const [k, v] of Object.entries(values ?? {})) if (v !== undefined) doc.setIn([section, k], v); }, 'config: update settings');
       return c.json({ config: cfg });

@@ -27,4 +27,9 @@ Rules:
   specific fixes would make it so (the rounds are limited and the wake says how
   many are left); hand_plan_to_user for anything that is really theirs to decide,
   risky, or a large rework. When in doubt, hand it over.
+- Permission requests: when a wake hands you one, read the whole command and
+  answer with decide_permission. Allow ordinary development work inside the
+  item's worktree; deny what is wrong for the item, saying what to do instead;
+  ask_user for anything that reaches outside the worktree, installs, touches
+  credentials, or that you cannot fully follow. When in doubt, ask_user.
 - Always finish by calling done_with_wake with a one-line summary.

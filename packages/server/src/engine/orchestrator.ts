@@ -19,6 +19,12 @@ export interface OrchestratorHooks {
   handPlanToUser(id: string, reason: string): void;
   /** A wake that carried this item's plan review is over, however it ended. */
   planReviewEnded(id: string): void;
+  /** Whether workers' permission requests come to the orchestrator before the user. */
+  permissionsDelegated(): boolean;
+  /** Decide a worker's parked permission request: allow it once, deny it with a reason, or leave it to the user. */
+  decidePermission(id: string, decision: 'allow' | 'deny' | 'ask_user', reason: string): Promise<string>;
+  /** A wake that carried this item's permission request is over, however it ended. */
+  permissionReviewEnded(id: string): void;
   poke(): void;
 }
 
@@ -82,6 +88,7 @@ export class Orchestrator {
           // A delegated plan never waits on a wake that failed or decided nothing: the engine hands it to the user.
           // (Unless a revised plan already queued its own review: that one is still to come.)
           for (const e of batch) if (e.type === 'plan_review' && e.item && !this.queue.some((q) => q.type === 'plan_review' && q.item === e.item)) this.hooks.planReviewEnded(e.item);
+          for (const e of batch) if (e.type === 'permission_request' && e.item && !this.queue.some((q) => q.type === 'permission_request' && q.item === e.item)) this.hooks.permissionReviewEnded(e.item);
         }
       }
     } finally { this.running = false; }
@@ -130,6 +137,7 @@ export class Orchestrator {
         const plan = getSection(item.file, 'Plan'); if (plan) lines.push(`Approved/submitted plan:\n${plan.slice(0, 2000)}`);
         const activity = getSection(item.file, 'Activity').split('\n').slice(-8).join('\n'); if (activity) lines.push(`Recent activity:\n${activity}`);
         if (e.type === 'plan_review') lines.push(this.planPolicy(fm.id, fm.plan_revisions ?? 0));
+        if (e.type === 'permission_request') lines.push(this.permissionPacket(fm));
       }
     }
     for (const [k, v] of Object.entries(e.data ?? {})) lines.push(`${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`.slice(0, 2000));
@@ -155,6 +163,25 @@ export class Orchestrator {
     ].join('\n');
   }
 
+  /** The request itself and the rule for deciding it. The hard denials (pushes, pull requests, protected branches, force flags) never get this far. */
+  private permissionPacket(fm: { awaiting?: string; awaiting_data?: Record<string, unknown>; worktree?: string }): string {
+    const data = fm.awaiting_data ?? {};
+    if (fm.awaiting !== 'orchestrator' || data.kind !== 'permission') return 'Permission request: already decided (nothing to do for this one).';
+    const input = (data.input ?? {}) as Record<string, unknown>;
+    const what = data.tool === 'Bash' ? String(input.command ?? '') : JSON.stringify(input, null, 2);
+    return [
+      `Permission request: DELEGATED TO YOU. The worker on this item wants to use ${String(data.tool)}, which its allow-list does not cover, and its session is parked until someone answers.`,
+      fm.worktree ? `Its worktree (the only place it should write, besides scratch files under /tmp or $TMPDIR): ${fm.worktree}` : '',
+      input.description ? `What the worker says it is for: ${String(input.description)}` : '',
+      `The request, in full:\n\`\`\`\n${what.slice(0, 6000)}\n\`\`\``,
+      'planestro has already refused the things no worker may do (git push, gh pr, touching protected branches, force flags, rm -rf of / or ~). Read the whole request, then call decide_permission with exactly one of:',
+      '- allow — ordinary development work for this item: reading and searching, building, running the project\'s tests and checks, generating or editing files inside its worktree, scratch files under a temp dir, git on its own branch. It is allowed this once and the session resumes.',
+      '- deny — not needed for this item or plainly the wrong way to do it. Say why and what to do instead; the worker continues without it.',
+      '- ask_user — anything that writes or deletes outside the worktree and temp dirs, installs or downloads software, talks to the network beyond the project\'s own tooling, reads or writes credentials, keys or env files, uses sudo, changes git config or history, or that you cannot fully read and understand. When in doubt, ask_user: the user sees the request exactly as you did.',
+      'Judge the command, not the worker\'s description of it. If you decide nothing, it goes to the user.',
+    ].filter(Boolean).join('\n');
+  }
+
   private tools(onDone: (summary: string) => void): CustomToolDef[] {
     const store = this.store;
     const idArg = { id: z.string() };
@@ -173,6 +200,7 @@ export class Orchestrator {
       { name: 'approve_plan', description: 'Approve a PLAN_READY item (only allowed when the item opted into auto-approval and config permits).', schema: { ...idArg, notes: z.string().optional() }, handler: async (a) => { if (!this.hooks.planDelegated(String(a.id))) return 'not permitted: the user approves this plan (add review notes with annotate_item instead)'; await this.hooks.approvePlan(String(a.id), a.notes ? String(a.notes) : undefined); return 'approved'; } },
       { name: 'request_plan_changes', description: 'Send a PLAN_READY item back to planning with specific fixes. Limited to a few rounds per item; past the limit the plan goes to the user instead.', schema: { ...idArg, message: z.string() }, handler: async (a) => this.hooks.requestPlanChanges(String(a.id), String(a.message)) },
       { name: 'hand_plan_to_user', description: 'Leave the approval of a plan that was delegated to you to the user, with the reason (a decision that is theirs, real risk, a large rework, low confidence).', schema: { ...idArg, reason: z.string() }, handler: async (a) => { this.hooks.handPlanToUser(String(a.id), String(a.reason)); return 'handed to the user'; } },
+      { name: 'decide_permission', description: "Decide a worker's parked permission request that was delegated to you: allow (once), deny (with what to do instead), or ask_user (leave it to the user).", schema: { ...idArg, decision: z.enum(['allow', 'deny', 'ask_user']), reason: z.string() }, handler: async (a) => this.hooks.decidePermission(String(a.id), a.decision as 'allow' | 'deny' | 'ask_user', String(a.reason)) },
       { name: 'ask_user', description: 'Ask the user something; the answer arrives as a later wake. Returns immediately.', schema: { question: z.string(), item: z.string().optional() }, handler: async (a) => { const entry = store.journal.append({ type: 'orchestrator.question', item: a.item ? String(a.item) : undefined, actor: 'orchestrator', data: { question: String(a.question) } }); if (a.item) store.mutateItem(String(a.item), [{ activity: { actor: 'orchestrator', text: `question for you: ${a.question}` } }], 'orchestrator'); this.emit({ type: 'engine.log', level: 'warn', message: `[orchestrator asks] ${a.question}` }); return `recorded at ${entry.ts}; the user will see it in the console`; } },
       { name: 'done_with_wake', description: 'Finish this wake with a one-line summary of what you decided.', schema: { summary: z.string() }, handler: async (a) => { onDone(String(a.summary)); return 'Recorded. End your turn now.'; } },
     ];

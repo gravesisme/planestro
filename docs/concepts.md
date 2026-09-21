@@ -50,7 +50,7 @@ Your answer resumes the same conversation — after an hour, after a restart.
 | `permission` | A Claude worker wants to run something outside its allow-list: once, always, or deny |
 | `review` | A held pull request is synced and green; look at what was made, approve or send back |
 | `user` | The item is blocked; read the reason ([Troubleshooting](troubleshooting.md)) |
-| `orchestrator` | Not you: the plan's approval was delegated, and the orchestrator has it (below) |
+| `orchestrator` | Not you: the orchestrator has it — a delegated plan approval, or a permission request it was asked to decide (below) |
 
 `blocked` and `awaiting` sit beside the status, so an item never loses its phase when it
 needs you.
@@ -106,6 +106,20 @@ the orchestrator instead of on you, and the orchestrator does exactly one of thr
 A review that fails, or ends without deciding, also lands on you; so does unticking the box
 while it is looking. You can approve or send back the plan yourself at any point. Leave the
 box unticked for anything you want to read first.
+
+### Letting it decide permission requests
+
+A worker that wants to run something outside its allow-list parks until someone answers,
+and "Always allow" only ever remembers that exact command. With
+`orchestrator.may_decide_permissions` on (Settings → Orchestrator), the request goes to the
+orchestrator first. It sees the whole command, the worker's stated purpose and the item, and
+does one of three things: **allow** it once (the session resumes, and no allow rule is
+written), **deny** it with what to do instead (the worker continues without it), or **ask you**
+— for anything that writes outside the worktree and temp dirs, installs or downloads, touches
+credentials, or that it cannot fully follow. planestro's hard rules (no pushes, no pull
+requests, no protected branches, no force flags) are checked before anyone is asked, and a
+request the orchestrator refuses three times on one item comes to you. While it is deciding,
+the item is not "needs you"; you can still answer the request yourself.
 
 ## Externally driven items
 
