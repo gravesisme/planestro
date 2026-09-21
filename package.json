@@ -14,7 +14,7 @@
     "spike:codex-live": "tsx spikes/codex-live.ts",
     "planestro": "tsx packages/server/src/cli.ts",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p packages/web/tsconfig.json",
     "dev": "tsx watch packages/server/src/cli.ts serve",
     "dev:web": "npm --workspace packages/web run dev",
     "build": "npm --workspace packages/web run build",

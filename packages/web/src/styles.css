@@ -64,7 +64,9 @@ main { padding: 16px; flex: 1; }
 .console { max-height: 340px; overflow: auto; }
 .drawer-backdrop { position: fixed; inset: 0; background: #0006; z-index: 14; }
 .drawer { position: fixed; top: 46px; right: 0; bottom: 0; width: min(460px, 92vw); background: var(--panel); border-left: 1px solid var(--line); box-shadow: -14px 0 34px #0007; padding: 14px 16px; overflow: auto; z-index: 15; }
-.drawer .id { font-size: 13px; } .drawer-foot { margin-top: 12px; }
+.drawer .id { font-size: 13px; } .drawer-head a { flex: none; } .drawer .approval, .drawer .blocked-panel { margin: 8px 0; } .drawer .approval .row { flex-wrap: wrap; }
+/* the drawer is too narrow for the log's three columns: a long orchestrator note ran down a 180px strip */
+.drawer .activity li { display: block; padding: 5px 0; } .drawer .activity .at, .drawer .activity .muted { margin-right: 8px; } .drawer-foot { margin-top: 12px; }
 .drawer-h { margin: 12px 0 6px; font-size: 12px; letter-spacing: .6px; color: var(--muted); text-transform: uppercase; }
 .drawer-desc { max-height: 260px; overflow: auto; background: var(--panel2); border: 1px solid var(--line); border-radius: var(--radius); padding: 4px 12px; }
 .drawer-console { max-height: 200px; }
@@ -86,8 +88,18 @@ button.checker { cursor: zoom-in; } .checker img { max-width: 100%; max-height: 
 .review-pair { display: flex; gap: 8px; margin-top: 6px; align-items: flex-start; } .review-side { margin: 0; min-width: 0; flex: 1; } .review-side figcaption { margin-bottom: 2px; }
 .review-none { border: 1px dashed var(--line); border-radius: 6px; padding: 18px 8px; text-align: center; }
 .card-thumb { margin-top: 6px; } .card-thumb img { max-height: 84px; }
+.blocked-panel { border: 1px solid var(--hot); background: #2b1616; border-radius: var(--radius); padding: 12px; margin-bottom: 12px; } .blocked-panel h2 { margin: 0 0 8px; font-size: 16px; color: #ffb3b3; }
+.blocked-said { margin: 0 0 8px; overflow-wrap: anywhere; } .blocked-panel .md p { margin: 4px 0; } .blocked-panel .row { flex-wrap: wrap; margin-top: 8px; }
 .approval h2 { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
 .breakdown { list-style: none; padding: 0; margin: 8px 0; display: grid; gap: 8px; } .breakdown .row { margin: 0; flex-wrap: wrap; } .breakdown input.grow { min-width: 180px; }
+
+/* On a wide screen the board is the page: it fills the window under the toolbar and scrolls inside
+   itself, so the sideways scrollbar sits at the bottom edge however short or tall the columns are. */
+@media (min-width: 841px) {
+  .app:has(.board-page) { height: 100vh; height: 100dvh; } .app:has(.board-page) main { display: flex; flex-direction: column; min-height: 0; padding-bottom: 6px; }
+  .board-page { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .board-page > .board, .board-page > .list { flex: 1; min-height: 0; overflow: auto; align-content: start; }
+}
 
 /* ---- phone ----
    Same palette and parts, arranged for one hand: a one-row header that keeps the pause lever in

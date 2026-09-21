@@ -1,0 +1,44 @@
+/**
+ * What each `blocked_reason` means and what to do about it, for the item page: a code alone
+ * ("ci_timeout") sends the reader to the manual. Same wording as docs/troubleshooting.md; a test
+ * keeps every reason the engine can raise present here, as it does for the manual. Markdown.
+ */
+export const BLOCK_HELP: Record<string, { meaning: string; todo: string }> = {
+  agent_blocked: { meaning: "The worker reported it cannot proceed and said what it needs (a decision, a missing reference image, a sandbox refusal of something the task requires).", todo: "Answer in the unblock message, or fix the item (attach the reference, correct the brief) and unblock." },
+  turn_error: { meaning: "A turn failed for a reason that needs judgment: an SDK error, the budget ran out mid-turn, a Codex turn that ended without its closing JSON. The orchestrator is woken for these.", todo: "Read the detail. Unblocking resumes the same conversation." },
+  no_plan: { meaning: "The planner ended its turn without submitting a plan (or an epic's breakdown).", todo: "Unblock with \"submit your plan\"; if the work is already done, **close as done…**." },
+  no_commits: { meaning: "The worker said it was done, but the branch has nothing ahead of its base.", todo: "If the work truly needed no change: **close as done…**. Otherwise unblock with what is missing." },
+  dirty_tree: { meaning: "Uncommitted changes remain after two reminders to commit.", todo: "Look in the worktree; commit or discard, then unblock." },
+  planner_cannot_plan: { meaning: "The item's planner is a model whose runner cannot plan (Codex).", todo: "Pick a Claude model as the planner." },
+  runner_unavailable: { meaning: "The model's runner is not present in this engine.", todo: "Check the model's `runner`." },
+  auth_required: { meaning: "The agent CLI is not logged in.", todo: "`codex login` (or `claude` login), then unblock." },
+  rate_limited: { meaning: "The agent hit a usage or rate limit.", todo: "Wait, then unblock. Lower `concurrency.runner_limits` if it recurs." },
+  session_lost: { meaning: "The conversation could not be resumed (its transcript is gone).", todo: "Unblock: the stored id was dropped, so the retry starts a fresh conversation with the full prompt." },
+  spawn_error: { meaning: "The agent CLI could not be started.", todo: "Install it, or set its path in Settings → This machine." },
+  hook_failed: { meaning: "An `after_worktree_create` command exited non-zero.", todo: "Fix the hook or the environment; unblock re-runs setup." },
+  worktree_missing: { meaning: "The item's worktree no longer exists. Nothing is recreated automatically: local commits could be lost.", todo: "Restore it, or close / re-create the item." },
+  worktree_taken: { meaning: "The path planestro would use already holds a worktree on a different branch.", todo: "Move it aside or remove it." },
+  sync_conflict: { meaning: "Syncing with the base conflicted and there is no session to hand the conflict to (an epic branch, an external item).", todo: "Resolve by hand in the directory named in the log, then unblock." },
+  asset_too_large: { meaning: "A changed file exceeds `review.max_file_bytes`. No pull request was opened.", todo: "Shrink it (or raise the limit), commit, unblock." },
+  ci_red: { meaning: "CI failed and there is no session to hand the failure to.", todo: "Fix the branch by hand." },
+  ci_red_twice: { meaning: "CI failed again after the session's fix.", todo: "Read both logs; message the session with what it is missing, or take over." },
+  ci_timeout: { meaning: "A run did not finish within `ci.timeout_min`.", todo: "Check the run; unblock to re-enter the pipeline." },
+  ci_blocked: { meaning: "GitHub Actions did not run at all (billing block, no workflow).", todo: "Set `ci.mode: github-or-local` with a `ci.local_check_command`, or re-run by hand." },
+  base_red: { meaning: "The base branch's own tip is red and `ci.require_green_base` is on.", todo: "Fix the base, or turn the gate off." },
+  merge_unverified: { meaning: "`gh` reported a merge but the pull request is not MERGED.", todo: "Look at the pull request; reconcile." },
+  pr_closed_externally: { meaning: "The pull request was closed without merging.", todo: "Reopen it, or close the item." },
+  cleanup_unverifiable: { meaning: "After the merge, the branch tip could not be proven reachable from the base. **Nothing was deleted.**", todo: "Check the merge; remove the worktree and branch by hand if it is right." },
+  cleanup_dirty: { meaning: "The worktree has uncommitted changes after the merge.", todo: "Discard or rescue them, then remove the worktree by hand." },
+  engine_error: { meaning: "An unexpected error inside a lifecycle step; the message is the exception.", todo: "If a retry makes sense, unblock; if it repeats, it is a bug — the Activity log and journal have what is needed to report it." },
+  turn_budget: { meaning: "A token-billed runner spent `budget_turns_per_item` on this item.", todo: "Raise the budget, or take the item over by hand." },
+  token_budget: { meaning: "A token-billed runner spent `budget_tokens_per_item` on this item.", todo: "Raise the budget, or take the item over by hand." },
+  orchestrator: { meaning: "The orchestrator stopped this item for you; its reason is in the log.", todo: "Decide what it asked; unblock, with a message if the session needs direction." },
+};
+
+/** Reasons built at run time (`interrupted_<op>`) share one entry. */
+export function blockHelp(reason: string | undefined): { meaning: string; todo: string } | undefined {
+  if (!reason) return undefined;
+  if (BLOCK_HELP[reason]) return BLOCK_HELP[reason];
+  if (reason.startsWith('interrupted_')) return { meaning: `planestro restarted in the middle of \`${reason.slice('interrupted_'.length)}\`, a step it will not blindly repeat.`, todo: 'Check the repository state named in the log, then unblock.' };
+  return undefined;
+}

@@ -8,3 +8,4 @@ export * from './transitions.ts';
 export * from './placeholders.ts';
 export * from './breakdown.ts';
 export * from './events.ts';
+export * from './blocks.ts';

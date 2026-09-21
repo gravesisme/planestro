@@ -6,6 +6,8 @@ import { ItemConsole } from './ItemConsole.tsx';
 import { statusLabel } from './ItemCard.tsx';
 import { QuickActions } from './QuickActions.tsx';
 import { ReviewPanel } from './ReviewPanel.tsx';
+import { BlockedPanel } from './BlockedPanel.tsx';
+import { AwaitingPanels } from './AwaitingPanels.tsx';
 
 const LIVE_STATUSES = ['PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW', 'MERGED'];
 
@@ -30,6 +32,7 @@ export function PreviewDrawer({ id, onClose }: { id: string; onClose: () => void
       <div className="row drawer-head">
         <span className="id">{id}</span>
         <b className="grow">{fm.title}</b>
+        <Link to={`/items/${id}`} onClick={onClose}><button className="small">Full details</button></Link>
         <button className="small" onClick={onClose} title="Close (Esc)">✕</button>
       </div>
       <div className="controls" style={{ margin: '8px 0' }}>
@@ -44,6 +47,8 @@ export function PreviewDrawer({ id, onClose }: { id: string; onClose: () => void
         {fm.branch ? <> · <code>{fm.branch}</code></> : null}
         {fm.pr ? <> · <a href={`https://github.com/${state!.config.code_repo.github}/pull/${fm.pr}`} target="_blank" rel="noreferrer">PR #{fm.pr}</a>{fm.ci_result ? ` (CI ${fm.ci_result})` : ''}</> : null}
       </p>
+      <BlockedPanel item={item} compact />
+      <AwaitingPanels item={item} />
       {fm.awaiting === 'review' ? <ReviewPanel item={item} compact /> : <QuickActions item={item} />}
       <div className="drawer-desc"><Markdown text={item.sections.Description || '_(no description)_'} /></div>
       {fm.status === 'PLAN_READY' && item.sections.Plan && (<><h3 className="drawer-h">Plan awaiting your approval</h3><div className="drawer-desc"><Markdown text={item.sections.Plan} /></div></>)}

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { Config, LocalConfig, AWAITING } from '@planestro/shared';
+import { Config, LocalConfig, AWAITING, blockHelp } from '@planestro/shared';
 
 const ROOT = resolve(import.meta.dirname, '..', '..', '..');
 const doc = (name: string) => readFileSync(join(ROOT, 'docs', name), 'utf8');
@@ -31,6 +31,7 @@ describe('the manual cannot drift from the code', () => {
     expect(reasons.size).toBeGreaterThan(20);
     const page = doc('troubleshooting.md');
     expect([...reasons].filter((r) => !page.includes(`\`${r}\``))).toEqual([]);
+    expect([...reasons].filter((r) => !blockHelp(r))).toEqual([]); // the item page explains a block from the same list
     const concepts = doc('concepts.md');
     expect(AWAITING.filter((a) => a !== 'orchestrator' && !concepts.includes(`\`${a}\``))).toEqual([]);
   });

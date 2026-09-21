@@ -9,6 +9,8 @@ import { ItemConsole } from '../components/ItemConsole.tsx';
 import { CLOSE_HINT, confirmMove, promptCloseAsDone } from '../components/QuickActions.tsx';
 import { ReviewPanel } from '../components/ReviewPanel.tsx';
 import { BreakdownPanel } from '../components/BreakdownPanel.tsx';
+import { BlockedPanel } from '../components/BlockedPanel.tsx';
+import { AwaitingPanels } from '../components/AwaitingPanels.tsx';
 
 function useAutosave(id: string, section: 'Description' | 'Notes' | 'Plan', initial: string) {
   const [text, setText] = useState(initial);
@@ -55,10 +57,10 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
   const others = state.items.filter((i) => i.id !== item.id && i.derived.lane !== 'done');
   const field = (fields: Record<string, unknown>) => act(() => api.patchItem(item.id, { fields }));
   const implementerDef = state.config.models.find((m) => m.id === fm.implementer);
+  const orch = state.config.orchestrator;
   const canClose = transitions.some((t) => t.to === 'FINISHED');
   const closeAsDone = () => promptCloseAsDone(item.id);
   const onPaste = (e: React.ClipboardEvent) => { const f = [...e.clipboardData.files][0]; if (f) { e.preventDefault(); void act(() => api.uploadAttachment(item.id, f)); } };
-  const awaitingData = fm.awaiting_data as { questions?: { question: string; header?: string; options: { label: string; description?: string }[]; multiSelect?: boolean }[]; tool?: string; input?: Record<string, unknown> } | undefined;
 
   return (
     <div className="item-page" onPaste={onPaste}>
@@ -75,7 +77,6 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
               ? <button key={t.to} title={CLOSE_HINT} onClick={closeAsDone}>{t.label}…</button>
               : <button key={t.to} disabled={t.to === 'QUEUED' && (!d.deps_satisfied || !!d.base_branch_error)} title={d.base_branch_error ?? (!d.deps_satisfied ? 'dependencies not merged' : '')} onClick={() => { if (confirmMove(item, t.to, t.label)) void act(() => api.transition(item.id, t.to)); }}>{t.label}</button>
           ))}
-          {fm.blocked && <button className="danger" onClick={() => { const m = prompt(`Unblock ${item.id} (${fm.blocked_reason}). Optional message for the session:`) ; if (m !== null) void act(() => api.unblock(item.id, m || undefined)); }}>unblock…</button>}
         </div>
         <div className="controls">
           <label>category <select value={fm.category} onChange={(e) => field({ category: e.target.value })}>{state.config.categories.map((c) => <option key={c}>{c}</option>)}</select></label>
@@ -83,7 +84,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           {fm.kind !== 'epic' && <label>implementer <select value={fm.implementer ?? ''} onChange={(e) => field({ implementer: e.target.value })}>{state.config.models.map((m) => <option key={m.id} value={m.id}>{m.label}{m.external ? ' (external)' : (m.runner ?? 'claude') !== 'claude' ? ` (${m.runner})` : ''}</option>)}</select></label>}
           {fm.kind !== 'epic' && implementerDef && (implementerDef.runner ?? 'claude') !== 'claude' && <span className="small muted" title="Claude workers get a per-command permission policy with parked requests. This runner has no such callback: its turns run inside its own sandbox (writes confined to the worktree, no network for its commands) and planestro verifies the result afterwards.">runs on {implementerDef.runner}: sandboxed, not per-command permissions ⓘ</span>}
           {fm.kind !== 'epic' && <label>parent epic <select value={fm.parent ?? ''} onChange={(e) => field({ parent: e.target.value || null })}><option value="">none</option>{epics.map((e) => <option key={e.id} value={e.id}>{e.id} {e.frontmatter.title}</option>)}</select></label>}
-          {fm.kind !== 'epic' && !d.external && <label><input type="checkbox" checked={!!fm.auto_approve_plan} onChange={(e) => field({ auto_approve_plan: e.target.checked })} disabled title="Available once the orchestrator exists (Phase 4)" /> auto-approve plan</label>}
+          {fm.kind !== 'epic' && !d.external && <label title={orch.may_approve_plans ? `The orchestrator reviews the plan and approves it, sends it back with fixes (up to ${orch.max_plan_revisions} round${orch.max_plan_revisions === 1 ? '' : 's'}), or leaves it to you` : 'Turn on "the orchestrator may approve plans" in Settings first'}><input type="checkbox" checked={!!fm.auto_approve_plan} disabled={!orch.may_approve_plans} onChange={(e) => field({ auto_approve_plan: e.target.checked })} /> let the orchestrator approve the plan{orch.may_approve_plans ? ` (up to ${orch.max_plan_revisions} fix round${orch.max_plan_revisions === 1 ? '' : 's'}, then you)` : ' — off in Settings'}</label>}
           {d.external && <label>merge policy <select value={fm.merge_policy ?? 'watch'} onChange={(e) => field({ merge_policy: e.target.value })}><option value="watch">watch (someone else merges)</option><option value="app">app (planestro merges)</option></select></label>}
           <span className="deps">depends on
             {fm.depends_on.length === 0 && <span className="muted"> nothing</span>}
@@ -99,38 +100,24 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           </div>
         )}
 
+        <BlockedPanel item={item} />
         {fm.status === 'PLAN_READY' && fm.kind === 'epic' && <BreakdownPanel item={item} />}
         {fm.status === 'PLAN_READY' && fm.kind !== 'epic' && (
           <div className="approval">
-            <h2 style={{ margin: '0 0 8px' }}>Plan needs your approval</h2>
+            <h2 style={{ margin: '0 0 8px' }}>{fm.awaiting === 'orchestrator' ? 'The orchestrator is reviewing this plan' : 'Plan needs your approval'}</h2>
+            {fm.awaiting === 'orchestrator' && <p className="small" style={{ marginTop: 0 }}>You asked it to decide: it approves, sends the plan back with fixes ({fm.plan_revisions ?? 0} of {orch.max_plan_revisions} rounds used), or leaves it to you. You can still decide yourself below.</p>}
             {item.activity.filter((a) => a.actor === 'orchestrator').slice(-3).map((a, i) => <p key={i} className="small"><b>orchestrator:</b> {a.text}</p>)}
             <textarea placeholder="Optional notes to pass to the implementer" value={approval} onChange={(e) => setApproval(e.target.value)} style={{ minHeight: 60 }} />
             <div className="row"><button className="primary" onClick={() => act(() => api.approvePlan(item.id, approval || undefined))}>Approve &amp; implement</button>{canClose && <button title={CLOSE_HINT} onClick={closeAsDone}>Already done — close…</button>}<span className="grow" /><input className="grow" placeholder="What should change?" value={reject} onChange={(e) => setReject(e.target.value)} /><button className="danger" disabled={!reject.trim()} onClick={() => act(() => api.rejectPlan(item.id, reject))}>Request changes</button></div>
           </div>
         )}
-        {fm.awaiting === 'question' && awaitingData?.questions && (
-          <div className="approval">
-            <h2 style={{ margin: '0 0 8px' }}>The agent asked</h2>
-            <QuestionForm questions={awaitingData.questions} onSubmit={(answers) => act(() => api.respond(item.id, { kind: 'question', answers }))} />
-          </div>
-        )}
+        <AwaitingPanels item={item} />
         <ReviewPanel item={item} />
         {fm.status === 'IN_REVIEW' && fm.skip_merge && (
           <div className="approval">
             <h2 style={{ margin: '0 0 8px' }}>Held out of the merge queue</h2>
             <p className="small">Releasing it sends it back through sync and CI before it merges.</p>
             <div className="row"><button className="primary" onClick={() => { const n = prompt(`Let ${item.id} merge? Optional note for the log:`); if (n !== null) void act(() => api.releaseHold(item.id, n || undefined)); }}>Release hold</button></div>
-          </div>
-        )}
-        {fm.awaiting === 'permission' && awaitingData && (
-          <div className="approval">
-            <h2 style={{ margin: '0 0 8px' }}>Permission requested: {awaitingData.tool}</h2>
-            <pre className="events">{JSON.stringify(awaitingData.input, null, 2)}</pre>
-            <div className="row">
-              <button className="primary" onClick={() => act(() => api.respond(item.id, { kind: 'permission', decision: 'allow' }))}>Allow once</button>
-              <button onClick={() => act(() => api.respond(item.id, { kind: 'permission', decision: 'always' }))}>Always allow</button>
-              <button className="danger" onClick={() => { const reason = prompt('Reason for denying?') ?? ''; void act(() => api.respond(item.id, { kind: 'permission', decision: 'deny', reason })); }}>Deny</button>
-            </div>
           </div>
         )}
 
@@ -183,19 +170,3 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
 }
 
 import { Fragment } from 'react';
-
-function QuestionForm({ questions, onSubmit }: { questions: { question: string; header?: string; options: { label: string; description?: string }[]; multiSelect?: boolean }[]; onSubmit: (answers: Record<string, string>) => void }) {
-  const [answers, setAnswers] = useState<Record<string, string>>({});
-  return (
-    <div>
-      {questions.map((q) => (
-        <div key={q.question} style={{ marginBottom: 10 }}>
-          <div><b>{q.header ? `${q.header}: ` : ''}{q.question}</b></div>
-          {q.options.map((o) => <label key={o.label} className="row"><input type={q.multiSelect ? 'checkbox' : 'radio'} name={q.question} onChange={(e) => setAnswers((a) => ({ ...a, [q.question]: q.multiSelect ? [...(a[q.question]?.split(', ').filter(Boolean) ?? []).filter((x) => x !== o.label), ...(e.target.checked ? [o.label] : [])].join(', ') : o.label }))} /> {o.label} <span className="muted small">{o.description}</span></label>)}
-          <input className="grow" style={{ width: '100%' }} placeholder={q.options.length ? 'Or type your own answer' : 'Your answer'} onChange={(e) => setAnswers((a) => ({ ...a, [q.question]: e.target.value }))} />
-        </div>
-      ))}
-      <button className="primary" disabled={questions.some((q) => !answers[q.question])} onClick={() => onSubmit(answers)}>Send answers</button>
-    </div>
-  );
-}

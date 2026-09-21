@@ -88,7 +88,7 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
   const columns = lane === 'board' ? BOARD_COLUMNS : [lane === 'icebox' ? 'ICEBOX' : 'FINISHED'];
   const done = lane === 'done' ? [...items].sort((a, b) => (b.frontmatter.finished_at ?? '').localeCompare(a.frontmatter.finished_at ?? '')) : items;
   return (
-    <div>
+    <div className="board-page">
       <nav className="lanes phone-only">{LANES.map((l) => <NavLink key={l.to} to={l.to} end>{l.label}<span className="n">{state.items.filter((i) => i.derived.lane === l.lane).length}</span></NavLink>)}</nav>
       <div className="toolbar">
         <input type="search" placeholder={phone ? 'Search…' : 'Search id, title, description…'} value={q} onChange={(e) => setQ(e.target.value)} />
