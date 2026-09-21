@@ -32,7 +32,7 @@ export function ItemCard({ item, sortable = true, onSelect }: { item: ItemView; 
             {d.external ? <span className="tag">{modelLabel(fm.implementer)} (external)</span> : <span className="tag">{modelLabel(fm.planner)} → {modelLabel(fm.implementer)}</span>}
             {fm.pr && <span className="tag ok">PR #{fm.pr}</span>}
             {fm.blocked && <span className="tag hot">BLOCKED{fm.blocked_reason ? `: ${fm.blocked_reason}` : ''}</span>}
-            {fm.awaiting && <span className={`tag ${d.needs_you ? 'hot' : ''}`}>awaiting {fm.awaiting.replace(/_/g, ' ')}</span>}
+            {fm.awaiting && <span className={`tag ${d.needs_you ? 'wait' : ''}`}>awaiting {fm.awaiting.replace(/_/g, ' ')}</span>}
             {fm.op && <span className="tag">{fm.op.replace(/_/g, ' ')}</span>}
             {!d.deps_satisfied && <span className="tag">waits on {fm.depends_on.join(', ')}</span>}
             {lane === 'done' && fm.finished_at && <span>{fm.finished_at.slice(0, 16).replace('T', ' ')}</span>}

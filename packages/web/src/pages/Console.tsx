@@ -1,15 +1,17 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import type { JournalEntry } from '@planestro/shared';
-import { DndContext, PointerSensor, useSensor, useSensors, closestCenter, type DragEndEvent } from '@dnd-kit/core';
+import { DndContext, MouseSensor, TouchSensor, useSensor, useSensors, closestCenter, type DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { api } from '../api.ts';
 import { act, useStore } from '../store.ts';
+import { usePhone } from '../usePhone.ts';
 
 export function ConsolePage() {
   const state = useStore((s) => s.state);
   const events = useStore((s) => s.events);
+  const phone = usePhone();
   const [journal, setJournal] = useState<JournalEntry[]>([]);
   const [questions, setQuestions] = useState<JournalEntry[]>([]);
   const [itemFilter, setItemFilter] = useState('');
@@ -18,7 +20,8 @@ export function ConsolePage() {
   const refresh = () => { void api.journal({ item: itemFilter || undefined, limit: 120 }).then((j) => setJournal(j.reverse())); void api.orchestratorQuestions().then((q) => setQuestions(q.reverse())); };
   useEffect(() => { refresh(); const t = setInterval(refresh, 5000); return () => clearInterval(t); }, [itemFilter]);
   const queue = (state?.items ?? []).filter((i) => i.frontmatter.status === 'IN_REVIEW').sort((a, b) => (a.frontmatter.merge_order ?? 1e9) - (b.frontmatter.merge_order ?? 1e9) || (a.frontmatter.rank ?? 0) - (b.frontmatter.rank ?? 0));
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
+  // A finger that moves is scrolling the page; one that rests on a row first is picking it up.
+  const sensors = useSensors(useSensor(MouseSensor, { activationConstraint: { distance: 6 } }), useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 8 } }));
   const onQueueDrag = (e: DragEndEvent) => {
     if (!e.over || e.active.id === e.over.id) return;
     const ids = queue.map((i) => i.id);
@@ -33,7 +36,7 @@ export function ConsolePage() {
         {questions.length > 0 && <div>{questions.map((q, i) => <p key={i}>🟠 <b>{String((q.data as any)?.question)}</b> {q.item && <Link to={`/items/${q.item}`}>{q.item}</Link>} <span className="muted small">{q.ts.slice(0, 16).replace('T', ' ')}</span></p>)}</div>}
         <div className="row"><input className="grow" placeholder="Message the orchestrator (it wakes with your text + current state)" value={msg} onChange={(e) => setMsg(e.target.value)} /><button disabled={!msg.trim()} onClick={() => { void act(() => api.orchestratorMessage(msg)); setMsg(''); }}>Send</button></div>
       </div>
-      <div className="section"><h2>Merge queue (drag to reorder)</h2>
+      <div className="section"><h2>Merge queue ({phone ? 'hold, then drag' : 'drag'} to reorder)</h2>
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onQueueDrag}>
           <SortableContext items={queue.map((i) => i.id)} strategy={verticalListSortingStrategy}>
             {queue.map((i, n) => <QueueRow key={i.id} n={n + 1} id={i.id} title={i.frontmatter.title} base={i.derived.base_branch} ci={i.frontmatter.ci_result} skip={i.frontmatter.skip_merge} />)}
@@ -56,7 +59,7 @@ export function ConsolePage() {
 function QueueRow({ n, id, title, base, ci, skip }: { n: number; id: string; title: string; base?: string; ci?: string; skip?: boolean }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
   return (
-    <div ref={setNodeRef} style={{ transform: CSS.Transform.toString(transform), transition }} {...attributes} {...listeners} className={`card ${isDragging ? 'dragging' : ''}`}>
+    <div ref={setNodeRef} style={{ transform: CSS.Transform.toString(transform), transition }} {...attributes} {...listeners} className={`card queue-row ${isDragging ? 'dragging' : ''}`}>
       <span className="id">#{n}</span> <Link to={`/items/${id}`}>{id}</Link> {title} <span className="muted small">→ {base}</span> {ci && <span className="tag">{ci}</span>} {skip && <span className="tag hot">held</span>}
     </div>
   );

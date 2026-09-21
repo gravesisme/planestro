@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { NavLink, useNavigate, useParams } from 'react-router';
+import { Link, NavLink, useNavigate, useParams } from 'react-router';
 import { api, type PromptView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { NewItemDialog, itemPrompts } from '../components/NewItemDialog.tsx';
@@ -76,7 +76,7 @@ export function PromptsPage() {
   const startable = !!prompt && itemPrompts([prompt]).length > 0;
   const row = (p: PromptView) => <li key={p.name}><NavLink to={`/prompts/${p.name}`}><span className="grow">{p.name} <span className="muted small">{p.frontmatter.kind}{p.frontmatter.role ? ` · ${p.frontmatter.role}` : ''}</span></span><Star prompt={p} /></NavLink></li>;
   return (
-    <div className="prompts">
+    <div className={`prompts ${prompt ? 'picked' : ''}`}>
       {creating && prompt && <NewItemDialog from={prompt.name} onClose={() => setCreating(false)} />}
       {adding && <NewPromptDialog taken={new Set(state.prompts.map((p) => p.name))} onClose={() => setAdding(false)} />}
       <div className="prompt-list">
@@ -87,6 +87,7 @@ export function PromptsPage() {
       </div>
       {prompt ? (
         <div>
+          <Link className="back phone-only" to="/prompts">‹ Prompts</Link>
           <div className="section"><h2><span><Star prompt={prompt} className="big" /> {prompt.frontmatter.title}</span> <span className="muted small">{prompt.path}</span></h2>
             <p className="muted small">{prompt.frontmatter.description}</p>
             <p className="small">{usage(prompt.frontmatter, startable)}</p>

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { canPlan, type Status } from '@planestro/shared';
 import { api, type ItemView } from '../api.ts';
@@ -38,6 +38,13 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
   const [editPlan, setEditPlan] = useState(false);
   const plan = useAutosave(item.id, 'Plan', item.sections.Plan);
   const [title, setTitle] = useState(fm.title);
+  // The title wraps instead of running off a narrow screen, so its box grows to fit what it holds.
+  const titleBox = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const fit = () => { const t = titleBox.current; if (t) { t.style.height = 'auto'; t.style.height = `${t.scrollHeight}px`; } };
+    fit(); window.addEventListener('resize', fit);
+    return () => window.removeEventListener('resize', fit);
+  }, [title]);
   const [approval, setApproval] = useState('');
   const [reject, setReject] = useState('');
   const [msg, setMsg] = useState('');
@@ -56,7 +63,8 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
   return (
     <div className="item-page" onPaste={onPaste}>
       <div>
-        <h1><input value={title} onChange={(e) => setTitle(e.target.value)} onBlur={() => title.trim() && title !== fm.title && field({ title: title.trim() })} /></h1>
+        <Link className="back phone-only" to={d.lane === 'icebox' ? '/icebox' : d.lane === 'done' ? '/done' : '/'}>‹ {d.lane === 'icebox' ? 'Icebox' : d.lane === 'done' ? 'Done' : 'Board'}</Link>
+        <h1><textarea ref={titleBox} rows={1} aria-label="Title" value={title} onChange={(e) => setTitle(e.target.value.replace(/\n/g, ' '))} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } }} onBlur={() => title.trim() && title !== fm.title && field({ title: title.trim() })} /></h1>
         <div className="controls">
           <span className="pill">{statusLabel(fm.status)}</span>
           {fm.blocked && <span className="pill blocked">BLOCKED{fm.blocked_reason ? ` · ${fm.blocked_reason}` : ''}</span>}

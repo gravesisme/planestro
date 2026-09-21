@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router';
+import { NavLink, useSearchParams } from 'react-router';
 import { DndContext, PointerSensor, useSensor, useSensors, useDroppable, closestCenter, pointerWithin, type CollisionDetection, type DragEndEvent, type DragOverEvent } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { findTransition, type Status } from '@planestro/shared';
@@ -8,9 +8,13 @@ import { act, useStore } from '../store.ts';
 import { ItemCard, statusLabel } from '../components/ItemCard.tsx';
 import { NewItemDialog } from '../components/NewItemDialog.tsx';
 import { PreviewDrawer } from '../components/PreviewDrawer.tsx';
+import { usePhone } from '../usePhone.ts';
 
 const BOARD_COLUMNS = ['NOT_YET_SUBMITTED', 'QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW', 'MERGED'];
 const COL = 'col:';
+/** The phone's stage strip has seven cells across one screen: names that fit, in the order of the columns. */
+const STAGE_SHORT: Record<string, string> = { NOT_YET_SUBMITTED: 'Backlog', QUEUED: 'Queued', PLAN_IN_PROGRESS: 'Planning', PLAN_READY: 'Plan ready', IN_PROGRESS: 'Working', IN_REVIEW: 'Review', MERGED: 'Merged' };
+const LANES = [{ to: '/', lane: 'board', label: 'Board' }, { to: '/icebox', lane: 'icebox', label: 'Icebox' }, { to: '/done', lane: 'done', label: 'Done' }] as const;
 
 /**
  * What dropping `item` on another column does, or why it does nothing. Only moves the user owns
@@ -46,6 +50,7 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
   const [preview, setPreview] = useState<string | null>(null);
   const [dragTarget, setDragTarget] = useState<{ status: string; ok: boolean } | null>(null);
   const needsOnly = params.get('needs') === '1';
+  const phone = usePhone();
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
   const items = useMemo(() => {
@@ -84,18 +89,23 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
   const done = lane === 'done' ? [...items].sort((a, b) => (b.frontmatter.finished_at ?? '').localeCompare(a.frontmatter.finished_at ?? '')) : items;
   return (
     <div>
+      <nav className="lanes phone-only">{LANES.map((l) => <NavLink key={l.to} to={l.to} end>{l.label}<span className="n">{state.items.filter((i) => i.derived.lane === l.lane).length}</span></NavLink>)}</nav>
       <div className="toolbar">
-        <input type="search" placeholder="Search id, title, description…" value={q} onChange={(e) => setQ(e.target.value)} />
-        <button className={`chip ${!category ? 'on' : ''}`} onClick={() => setCategory('')}>All</button>
-        {state.config.categories.map((c) => <button key={c} className={`chip ${category === c ? 'on' : ''}`} onClick={() => setCategory(category === c ? '' : c)}>{c}</button>)}
-        {needsOnly && <button className="chip on" onClick={() => setParams({})}>🔴 needs you ×</button>}
-        <span className="grow" />
-        <span className="muted small">{items.length} item{items.length === 1 ? '' : 's'}</span>
-        <button className="primary" onClick={() => setCreating(true)}>+ New item</button>
+        <input type="search" placeholder={phone ? 'Search…' : 'Search id, title, description…'} value={q} onChange={(e) => setQ(e.target.value)} />
+        <div className="chips">
+          <button className={`chip ${!category ? 'on' : ''}`} onClick={() => setCategory('')}>All</button>
+          {state.config.categories.map((c) => <button key={c} className={`chip ${category === c ? 'on' : ''}`} onClick={() => setCategory(category === c ? '' : c)}>{c}</button>)}
+          {needsOnly && <button className="chip on" onClick={() => setParams({})}>needs you ×</button>}
+        </div>
+        <span className="grow desk-only" />
+        <span className="muted small desk-only">{items.length} item{items.length === 1 ? '' : 's'}</span>
+        <button className="primary fab" onClick={() => setCreating(true)}>+ New item</button>
       </div>
       {creating && <NewItemDialog onClose={() => setCreating(false)} icebox={lane === 'icebox'} />}
       {preview && <PreviewDrawer id={preview} onClose={() => setPreview(null)} />}
-      {lane === 'done' ? (
+      {phone && lane !== 'done' ? (
+        <PhoneBoard columns={columns} items={items} filtered={!!q || !!category || needsOnly} onSelect={setPreview} />
+      ) : lane === 'done' ? (
         <div className="list card-list">{done.map((i) => <ItemCard key={i.id} item={i} sortable={false} onSelect={setPreview} />)}{!done.length && <p className="muted">Nothing finished yet.</p>}</div>
       ) : (
         <DndContext sensors={sensors} collisionDetection={columnFirst} onDragOver={onDragOver} onDragEnd={onDragEnd} onDragCancel={() => setDragTarget(null)}>
@@ -104,6 +114,34 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
           </div>
         </DndContext>
       )}
+    </div>
+  );
+}
+
+/**
+ * The board on a phone: every stage in one scroll, stages with nothing in them left out, and the
+ * strip above it showing all seven at once. Nothing drags here (a drag and a scroll are the same
+ * gesture on glass): moves are the preview's buttons and the long-press menu.
+ */
+function PhoneBoard({ columns, items, filtered, onSelect }: { columns: string[]; items: ItemView[]; filtered: boolean; onSelect: (id: string) => void }) {
+  const stages = columns.map((status) => ({ status, items: items.filter((i) => i.frontmatter.status === status) }));
+  return (
+    <div className="list">
+      {columns.length > 1 && (
+        <div className="pipeline">
+          {stages.map((s) => (
+            <button key={s.status} disabled={!s.items.length} className={s.items.some((i) => i.frontmatter.blocked) ? 'has hot' : s.items.some((i) => i.derived.needs_you) ? 'has wait' : s.items.length ? 'has' : ''} title={statusLabel(s.status)}
+              onClick={() => document.getElementById(`stage-${s.status}`)?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' })}><b>{s.items.length}</b><span>{STAGE_SHORT[s.status] ?? statusLabel(s.status)}</span></button>
+          ))}
+        </div>
+      )}
+      {stages.filter((s) => s.items.length).map((s) => (
+        <section key={s.status} id={`stage-${s.status}`} className="stage">
+          <h3><span>{statusLabel(s.status)}</span><span>{s.items.length}</span></h3>
+          {s.items.map((i) => <ItemCard key={i.id} item={i} sortable={false} onSelect={onSelect} />)}
+        </section>
+      ))}
+      {!items.length && <p className="muted">{filtered ? 'No item matches.' : 'Nothing here yet. Add an item with + New item.'}</p>}
     </div>
   );
 }

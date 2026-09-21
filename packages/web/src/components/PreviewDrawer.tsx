@@ -27,7 +27,7 @@ export function PreviewDrawer({ id, onClose }: { id: string; onClose: () => void
     <>
     <div className="drawer-backdrop" onClick={onClose} />
     <aside className="drawer" onClick={(e) => e.stopPropagation()}>
-      <div className="row">
+      <div className="row drawer-head">
         <span className="id">{id}</span>
         <b className="grow">{fm.title}</b>
         <button className="small" onClick={onClose} title="Close (Esc)">✕</button>
@@ -50,7 +50,7 @@ export function PreviewDrawer({ id, onClose }: { id: string; onClose: () => void
       {showConsole && (<><h3 className="drawer-h">Console</h3><ItemConsole id={id} tail={14} className="drawer-console" /></>)}
       <h3 className="drawer-h">Latest activity</h3>
       <ul className="activity">{item.activity.slice(-4).map((a, i) => <li key={i}><span className="at">{a.at.slice(5, 16).replace('T', ' ')}</span><span className="muted">{a.actor}</span><span>{a.text}</span></li>)}</ul>
-      <div className="row" style={{ marginTop: 12 }}>
+      <div className="row drawer-foot">
         <Link className="grow" to={`/items/${id}`} onClick={onClose}><button className="primary" style={{ width: '100%' }}>Open full details →</button></Link>
       </div>
     </aside>

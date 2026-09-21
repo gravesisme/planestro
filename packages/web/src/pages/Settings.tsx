@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { canPlan } from '@planestro/shared';
 import { api } from '../api.ts';
 import { act, useStore } from '../store.ts';
 
