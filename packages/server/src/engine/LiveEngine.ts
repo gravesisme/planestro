@@ -102,6 +102,7 @@ export class LiveEngine implements Engine {
     try {
       this.admit();
       this.nudgeStaleReviews();
+      this.driveStaleBlocks();
       await this.driveEpics();
       await this.driveExternal();
       this.driveInReview();
@@ -139,6 +140,22 @@ export class LiveEngine implements Engine {
       if (!d.base_branch) continue;
       free -= 1;
       this.runJob(item.id, () => this.startItem(item.id));
+    }
+  }
+
+  /**
+   * An IN_PROGRESS worker item that is agent_blocked yet carries a done_summary finished after its
+   * block (report_blocked drops any earlier summary), but nothing cleared the flag, so no turn end
+   * ever ran the done check. Clear it and run that check: clean tree + commits ahead → pull request.
+   */
+  private driveStaleBlocks(): void {
+    for (const item of this.store.listItems()) {
+      const fm = item.file.frontmatter;
+      if (fm.status !== 'IN_PROGRESS' || !fm.blocked || fm.blocked_reason !== 'agent_blocked' || (fm.awaiting && fm.awaiting !== 'user')) continue;
+      const done = fm.op_data?.done_summary as string | undefined;
+      if (!done || !fm.worktree || this.store.derived(item).flavor !== 'worker' || this.jobs.has(item.id) || this.turns.has(item.id)) continue;
+      this.store.mutateItem(item.id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data'] }, { activity: { actor: 'app', text: 'cleared a stale agent_blocked flag (the session reported done after it); checking the work' } }], 'engine', { commit: `${item.id}: clear stale block` });
+      this.runJob(item.id, () => this.afterWorkTurn(item.id, 'implement', { subtype: 'success', isError: false, costUsd: 0, numTurns: 0, text: '', done }));
     }
   }
 
@@ -239,7 +256,10 @@ export class LiveEngine implements Engine {
       return;
     }
     if (fm.awaiting && fm.awaiting !== 'user') throw new Error(`${id} is awaiting ${fm.awaiting}; answer that first`);
-    this.store.mutateItem(id, [{ unset: ['awaiting', 'awaiting_data'] }, { activity: { actor: 'user', text: `message: ${text}` } }], 'user');
+    // A message that resumes a blocked session is the answer to the block (unblock-with-message
+    // by another door). Leaving the flag set made afterTurn skip the finished turn, so a worker
+    // that then reported done sat IN_PROGRESS as "blocked" forever and no PR was ever opened.
+    this.store.mutateItem(id, [{ unset: ['awaiting', 'awaiting_data', ...(fm.blocked ? ['blocked', 'blocked_reason'] : [])] }, { activity: { actor: 'user', text: `message: ${text}` } }], 'user');
     this.runJob(id, () => this.runTurnFor(id, phase, `${this.resumeNote(id, 'a message from the user')}\n\nMessage from the user:\n\n${text}`));
   }
 
@@ -358,7 +378,9 @@ export class LiveEngine implements Engine {
         ...(metered ? {} : { agent_turns: (after.agent_turns ?? 0) + 1 }),
         ...(result.tokens ? { tokens: (after.tokens ?? 0) + result.tokens } : {}),
       } },
-      ...(after.op === op ? [{ unset: ['op', 'op_started_at'] } as ItemOp] : []),
+      // A turn killed by stop() keeps its op: that is what resumeInterrupted looks for at the next
+      // start. Cleared, the item sat in its phase with nothing to resume it, holding a session slot.
+      ...(after.op === op && !(result.subtype === 'killed' && this.stopping) ? [{ unset: ['op', 'op_started_at'] } as ItemOp] : []),
     ], 'engine');
     this.store.journal.end(opId, id, result.isError ? 'failed' : 'ok', { subtype: result.subtype, cost: result.costUsd, parked: result.parked });
     this.emit({ type: 'session.ended', id, subtype: result.subtype });
@@ -380,6 +402,12 @@ export class LiveEngine implements Engine {
     // the worker proceeded without it. Clear it instead of stalling on a moot prompt.
     if (fm.awaiting === 'permission' && (result.done || result.planSubmitted)) {
       this.store.mutateItem(id, [{ unset: ['awaiting', 'awaiting_data'] }, { activity: { actor: 'app', text: 'cleared a stale permission request (the turn finished its work without it)' } }], 'engine');
+      fm = this.store.requireItem(id).file.frontmatter;
+    }
+    // Same for an agent_blocked flag the worker outlived: it was resumed, did not block again this
+    // turn and reported done. Whatever door resumed it, the block is answered.
+    if (fm.blocked && fm.blocked_reason === 'agent_blocked' && result.done && !result.blocked) {
+      this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data'] }, { activity: { actor: 'app', text: 'cleared a stale agent_blocked flag (the resumed session reported done)' } }], 'engine');
       fm = this.store.requireItem(id).file.frontmatter;
     }
     if (fm.awaiting || fm.blocked) return;                       // parked or agent-blocked: nothing to drive
@@ -1005,7 +1033,11 @@ export class LiveEngine implements Engine {
       add_note: async (markdown) => { const cur = getSection(s.requireItem(id).file, 'Notes'); s.mutateItem(id, [{ section: 'Notes', body: cur ? `${cur}\n\n${markdown}` : markdown }], 'engine', { commit: `${id}: worker note` }); return 'Note recorded.'; },
       append_activity: async (text) => { s.mutateItem(id, [{ activity: { actor: 'worker', text } }], 'engine'); return 'Recorded.'; },
       report_done: async (summary) => { const cur = s.requireItem(id).file.frontmatter; s.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), done_summary: summary } } }, { activity: { actor: 'worker', text: `done: ${summary.slice(0, 300)}` } }], 'engine'); return 'Recorded. End your turn now.'; },
-      report_blocked: async (reason) => { this.block(id, 'agent_blocked', reason, 'user'); return 'Recorded. End your turn now; planestro will resume you with the answer.'; },
+      report_blocked: async (reason) => {
+        const cur = s.requireItem(id).file.frontmatter;
+        if (cur.op_data?.done_summary !== undefined) { const { done_summary: _withdrawn, ...rest } = cur.op_data; s.mutateItem(id, [{ set: { op_data: rest } }], 'engine'); }
+        this.block(id, 'agent_blocked', reason, 'user'); return 'Recorded. End your turn now; planestro will resume you with the answer.';
+      },
       get_item: async () => serializeItemFile(s.requireItem(id).file),
     };
   }

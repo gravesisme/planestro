@@ -216,6 +216,79 @@ describe('LiveEngine lifecycle (dry-run ports)', () => {
     expect(store.config.permissions.allow).toContain('Bash(node -e 1)');
   });
 
+  it('a message that resumes an agent_blocked session clears the block, so the finished turn opens its PR', async () => {
+    let work = 0;
+    const blocky = () => ({
+      async runTurn(o: TurnOptions): Promise<TurnResult> {
+        if (o.phase === 'plan') { await o.tools.submit_plan('# p'); return { sessionId: 's', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', planSubmitted: '# p' }; }
+        work += 1;
+        if (work === 1) { await o.tools.report_blocked('a permission was denied'); return { sessionId: 's', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '' }; }
+        expect(o.prompt).toContain('try the plain form');
+        await o.tools.report_done('did it');
+        return { sessionId: 's', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', done: 'did it' };
+      },
+    });
+    const { store, engine, world } = await setup({ claude: blocky });
+    const item = store.createItem({ title: 'B', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => store.getItem(item.id)!.file.frontmatter.blocked_reason === 'agent_blocked' && !(engine as any).jobs.has(item.id));
+    world.commits.set(join(store.codeRepoPath(), '.claude/worktrees/tp-1-b'), 1); // the resumed turn "commits"
+    await engine.message(item.id, 'try the plain form');
+    await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
+    expect(store.getItem(item.id)!.file.frontmatter.blocked).toBeUndefined();
+  });
+
+  it('an item stranded agent_blocked after its session reported done heals itself on the next tick', async () => {
+    const blocky = () => ({
+      async runTurn(o: TurnOptions): Promise<TurnResult> {
+        if (o.phase === 'plan') { await o.tools.submit_plan('# p'); return { sessionId: 's', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', planSubmitted: '# p' }; }
+        await o.tools.report_blocked('a permission was denied');
+        return { sessionId: 's', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', blocked: 'a permission was denied' };
+      },
+    });
+    const { store, engine, world } = await setup({ claude: blocky });
+    const item = store.createItem({ title: 'S', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => store.getItem(item.id)!.file.frontmatter.blocked_reason === 'agent_blocked' && !(engine as any).jobs.has(item.id));
+    // the stranded state on disk: done recorded after the block, flag never cleared, nobody clicks anything
+    world.commits.set(join(store.codeRepoPath(), '.claude/worktrees/tp-1-s'), 1);
+    store.mutateItem(item.id, [{ set: { op_data: { done_summary: 'did it' } } }], 'engine');
+    await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
+    expect(activityOf(store, item.id)).toContain('cleared a stale agent_blocked flag');
+    expect(world.prs.get(100)!.state).toBe('MERGED');
+  });
+
+  it('report_blocked after report_done withdraws the done, so a real block is never healed away', async () => {
+    const fickle = () => ({
+      async runTurn(o: TurnOptions): Promise<TurnResult> {
+        if (o.phase === 'plan') { await o.tools.submit_plan('# p'); return { sessionId: 's', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', planSubmitted: '# p' }; }
+        await o.tools.report_done('thought so');
+        await o.tools.report_blocked('actually stuck');
+        return { sessionId: 's', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', done: 'thought so', blocked: 'actually stuck' };
+      },
+    });
+    const { store, engine, world } = await setup({ claude: fickle });
+    const item = store.createItem({ title: 'F', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    world.commits.set(join(store.codeRepoPath(), '.claude/worktrees/tp-1-f'), 1);
+    await engine.approvePlan(item.id);
+    await waitFor(() => store.getItem(item.id)!.file.frontmatter.blocked_reason === 'agent_blocked' && !(engine as any).jobs.has(item.id));
+    await sleep(300); // several ticks
+    const fm = store.getItem(item.id)!.file.frontmatter;
+    expect(fm.status).toBe('IN_PROGRESS');
+    expect(fm.blocked).toBe(true);
+    expect(fm.op_data?.done_summary).toBeUndefined();
+    expect(world.prs.size).toBe(0);
+  });
+
   it('no commits after "done" blocks the item with a reason instead of opening a PR', async () => {
     const lazy = () => ({
       async runTurn(o: TurnOptions): Promise<TurnResult> {
@@ -321,6 +394,38 @@ describe('LiveEngine lifecycle (dry-run ports)', () => {
     expect(activity).toContain('interrupted by a restart; resuming');
     await engine2.stop();
     expect(dataDir).toBeTruthy();
+  });
+
+  it('a turn killed by a clean stop is resumed at the next start and does not sit holding a slot', async () => {
+    // What a live port does on stop(): the turn ends 'killed', not with an error and not with a plan.
+    const hanging = () => ({
+      async runTurn(o: TurnOptions): Promise<TurnResult> {
+        await new Promise<void>((done) => o.signal?.addEventListener('abort', () => done(), { once: true }));
+        return { sessionId: 'sess-k', subtype: 'killed', isError: false, costUsd: 0.2, numTurns: 1, text: '' };
+      },
+    });
+    const { store, engine } = await setup({ claude: hanging });
+    const item = store.createItem({ title: 'Stopped mid plan', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => engine.sessions().length === 1);
+    await engine.stop();
+    let fm = store.getItem(item.id)!.file.frontmatter;
+    expect(fm.status).toBe('PLAN_IN_PROGRESS');
+    expect(fm.op).toBe('planning_turn'); // the evidence the next start needs: without it nothing ever resumed the item
+    expect(fm.session_id).toBe('sess-k');
+    expect(activityOf(store, item.id)).toContain('turn interrupted (engine stopping); resumable');
+
+    const world2 = new FakeWorld(() => {}, { 'origin/trunk': 'f'.repeat(40) });
+    const wtPath = join(store.codeRepoPath(), fm.worktree!);
+    world2.worktrees.set(wtPath, { path: wtPath, head: 'a'.repeat(40), branch: fm.branch! });
+    const engine2 = new LiveEngine(store, { mode: 'dry-run', git: new DryRunGitPort(world2), gh: new DryRunGhPort(world2), proc: new DryRunProcPort(world2), agents: { claude: new DryRunClaudePort(world2) } }, () => {}, { sleep: async () => {}, tickMs: 50 });
+    await engine2.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    fm = store.getItem(item.id)!.file.frontmatter;
+    expect(fm.op).toBeUndefined();
+    expect(activityOf(store, item.id)).toContain('interrupted by a restart; resuming');
+    await engine2.stop();
   });
 });
 
