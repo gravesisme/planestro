@@ -2,29 +2,41 @@
 
 [![CI](https://github.com/gravesisme/planestro/actions/workflows/ci.yml/badge.svg)](https://github.com/gravesisme/planestro/actions/workflows/ci.yml)
 
-**A backlog that ships itself — with you as the conductor.** Local-first
-planning and agent orchestration for a solo developer: [Claude Code](https://claude.com/claude-code)
-plans and writes the code, the [Codex CLI](https://developers.openai.com/codex/cli) draws the art,
-and one feature can need both.
+**Your backlog, shipped by agents — with you at the decision points.**
+Local-first planning and agent orchestration for a solo developer: a web app,
+an API, anything that lives in a git repository with CI. Write an item in
+markdown; [Claude Code](https://claude.com/claude-code) plans it; Claude Code or
+the [Codex CLI](https://developers.openai.com/codex/cli) implements it; planestro
+does everything mechanical in between.
 
-You write backlog items as markdown. planestro turns **Queue** into a plan you
-approve, an implementation on its own branch and worktree, a pull request, a
-rebase, a CI wait, a merge and a cleanup — a Claude session doing the thinking,
-deterministic code doing everything mechanical. When something needs a human,
-the session is parked and you are told; answer whenever, and the same session
-resumes with its context intact.
+**Queue** an item and planestro turns it into a plan you approve, an
+implementation on its own branch and worktree, a pull request, a CI wait, a
+rebase when the base moves on, a merge and a cleanup. Models do the thinking;
+deterministic code does git, GitHub and CI. When an agent needs you — a plan to
+approve, a permission, a question — its session is parked and the item turns
+red. Answer whenever, even after a restart, and the same conversation resumes.
 
-![One feature on the board: two art children drawn by Codex wait for a look, the code children wait for the art, the epic counts 0/4](docs/img/board.png)
+![A bug fix waiting on plan approval: approve and implement, or say what should change](docs/img/item.png)
 
-Releases live beside the backlog: each version's notes, its store copy
-(counted against the store's character limits) and the items it shipped, in
-one file per release.
+- **Parallel work without babysitting.** Several items in flight, each in its
+  own worktree. A merge queue syncs each branch with the base and waits for
+  green CI, so they land one after another on a base that stays green.
+- **Pick the agent per item.** A Claude planner writes every plan; Claude or
+  Codex implements it. An orchestrator session reviews plans, handles a second
+  red CI run or a rebase conflict, and brings you only what needs you.
+- **Nothing lives only in a conversation.** Items are markdown files in a
+  git-versioned data dir, and every turn is rebuilt from them: kill the
+  process, rotate the session, and nothing is lost.
+- **Releases beside the backlog.** Each version's release notes, its store
+  copy (counted against the store's limits) and the items it shipped.
 
 **[Read the manual →](docs/README.md)**
 
-It is used daily to build [Hurricane Harrison](https://hurricaneharrison.com), a game on the App Store:
-several agents working in parallel worktrees, every change through a reviewed
-plan, a pull request and green CI.
+It is used daily to build [Hurricane Harrison](https://hurricaneharrison.com),
+a game on the App Store: several agents in parallel worktrees, every change
+through a reviewed plan, a pull request and green CI — including
+[features split across two agents](#features-split-across-two-agents), where
+Codex draws the art and Claude writes the code that uses it.
 
 ## Try it in a minute — no repo, no GitHub, no Claude login
 
@@ -46,19 +58,26 @@ in-memory fakes the test suite drives, so the whole lifecycle really runs:
 3. Watch it open a PR, wait for CI, merge, clean up and land in **Done**. The
    Console tab shows every `Would …` the real engine would have run.
 
-4. Open the **Tide chart view** epic → **plan the breakdown**, and follow
-   [two agents, one feature](#two-agents-one-feature) below.
+4. For one feature split across two agents, open the **Tide chart view**
+   epic → **plan the breakdown**, and follow
+   [features split across two agents](#features-split-across-two-agents) below.
 
 `npm run sample -- --reset` rebuilds it from scratch.
 
-![An item parked on plan approval](docs/img/item.png)
+## Features split across two agents
 
-## Two agents, one feature
+Each model in `planestro.yml` carries a one-line description of what it is
+for. Write one epic, and the Claude planner proposes the children, routes each
+to the model whose description fits, and wires which waits on which. Code
+checks the list (known implementers, no cycles) before you ever see it; you
+edit it and approve. The children land on the epic's integration branch and
+ship as one pull request.
 
-Some features need pictures *and* code. Write one epic; the Claude planner
-proposes the children, routes the raster art to a Codex model and the code to a
-Claude model, and makes the code wait for the art. Code checks the list (known
-implementers, no cycles) before you ever see it; you edit it and approve.
+The sample shows the case this was built for, pictures *and* code: raster art
+routed to a Codex model that can generate images, the code that uses it to
+Claude, waiting for the art.
+
+![One feature on the board: two art children drawn by Codex wait for a look, the code children wait for the art, the epic counts 0/4](docs/img/board.png)
 
 ![Six frames from the sample: the epic, its proposed breakdown, art waiting for review on the board, the review, the code child starting once the art merged, everything in Done](docs/img/walkthrough.gif)
 
@@ -79,7 +98,9 @@ files were delivered. Then the epic lands as one pull request.
 The two agents are trusted differently, and the tool says so: a Claude worker
 asks before anything unusual (a per-command policy, parked permission requests);
 a Codex worker cannot ask, so it runs in a sandbox that cannot write outside its
-worktree or reach the network. [Agents →](docs/agents.md)
+worktree or reach the network. A Codex item that has to install a package or
+reach a local database stops and says so, rather than working around it.
+[Agents →](docs/agents.md)
 
 ## Why it is built this way
 
@@ -94,7 +115,7 @@ full list, with reasons, is in [`CLAUDE.md`](CLAUDE.md)):
   without the tool.
 - **Don't ask an LLM what a state machine can know.** Git, worktrees, GitHub,
   CI polling, transitions, persistence, cleanup and scheduling are code.
-  Claude plans, implements and makes judgment calls — it never polls.
+  The models plan, implement and make judgment calls — they never poll.
 - **No process ever waits on a human.** Plan approval, a permission prompt or
   an agent's question parks the session: the request is persisted, the turn
   ends, the process exits, and the UI shows **NEEDS YOU**. Your answer resumes
@@ -167,11 +188,13 @@ users of a tool built on this.
 
 ### What agents may do
 
-Workers run with a permission policy (`packages/server/src/engine/policy.ts`):
+Claude workers run with a permission policy (`packages/server/src/engine/policy.ts`):
 pushes, PR operations and anything touching the base or release branches are
 denied outright — integration is planestro's job, not the agent's — an allow
 list covers the routine, and everything else parks as a permission request you
-answer in the UI. A per-item budget (`budget_usd_per_item`) caps spend.
+answer in the UI. Codex workers run in the Codex sandbox instead, and cannot
+push either. Per-item budgets cap spend (`budget_usd_per_item`, and turns and
+tokens for Codex).
 
 ## Layout
 
