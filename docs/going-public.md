@@ -129,6 +129,26 @@ Making the repo public publishes every commit, not just `main`'s tip.
 
 ## Portfolio / interview material
 
+- [ ] **planestro builds its own marketing site, with Claude and astra** (idea,
+      2026-09-22). "planestro's site was built by planestro" is the strongest
+      resume line available. Do it after flip day, so the site it improves is live.
+      1. A planning data dir for planestro itself, **outside this repo** (a sibling
+         folder with its own private remote), never an orphan branch here: the repo
+         is public and this checklist promises the data never lived in it.
+      2. Add astra as a Codex model, described as a peer to Opus for code, not art:
+         `{ id: astra, label: Astra, runner: codex, codex_model: <id>, description: "…" }`.
+         Needs astra's exact model id (what `codex -m` takes).
+      3. One epic, "Marketing site v2"; the Claude planner splits it and routes by
+         model description: copy and structure, the flip-day `CNAME` and `og:image` to
+         Claude; a section redesign or a responsive/accessibility pass to astra;
+         optionally an illustration to codex-art. A static site suits Codex's
+         no-network sandbox.
+      4. Keep the evidence: the epic's plans, reviews, CI runs and Activity log are
+         what an interviewer can be shown, and the screen recording below could be
+         this run.
+      Live work with real spend, not the dry-run sample. Also worth doing first:
+      per-model concurrency limits, so astra's code turns don't queue behind art.
+
 - [x] `item.png` (README lead image and site) retaken on 2026-09-22 from the current
       UI, cropped above the stub dry-run plan; `site/img/releases.png` added.
 - [ ] `board.png`, `breakdown.png` and `review.png` predate the Releases tab and
