@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { parseReleaseFile, serializeReleaseFile, setReleaseSection, getReleaseSection, compareVersions, sortReleases, nextVersions, releaseCandidates, releaseMarkdown, charCount } from '../src/releasefile.ts';
 import { Config, DEFAULT_RELEASE_SECTIONS, type ReleaseSectionDef } from '../src/schema.ts';
+import { canonicalTimestamp } from '../src/timestamps.ts';
+
+// Timestamps are written in the machine's offset, so the fixture is too (CI runs in UTC).
 
 const TEXT = `---
 schema: 1
@@ -8,8 +11,8 @@ version: 1.5.0
 status: released
 date: 2026-09-13
 items: [ HH-101, HH-104 ]
-created_at: 2026-09-10T09:00:00-04:00
-updated_at: 2026-09-13T18:00:00-04:00
+created_at: ${canonicalTimestamp('2026-09-10T09:00:00-04:00')}
+updated_at: ${canonicalTimestamp('2026-09-13T18:00:00-04:00')}
 ---
 
 # Release notes
