@@ -276,6 +276,8 @@ export const LocalConfig = z.object({
   worktrees_root: z.string().optional(),
   claude_bin: z.string().optional(),
   codex_bin: z.string().optional(),
+  /** Extra names this machine is reached by (a Tailscale name, a DNS alias); the server refuses any other Host. */
+  allowed_hosts: z.array(z.string().min(1)).optional(),
   /** Optional Console API key: sessions then bill the API under the Commercial Terms instead of a claude.ai login. Local file only (gitignored). */
   anthropic_api_key: z.string().optional(),
   engine: z.object({ paused: z.boolean().default(false), mode: z.enum(['live', 'dry-run']).optional() }).default({ paused: false }),

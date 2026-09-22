@@ -22,7 +22,7 @@ one file per release.
 
 **[Read the manual →](docs/README.md)**
 
-It is used daily to build a commercial game that ships on the App Store:
+It is used daily to build [Hurricane Harrison](https://hurricaneharrison.com), a game on the App Store:
 several agents working in parallel worktrees, every change through a reviewed
 plan, a pull request and green CI.
 
@@ -150,8 +150,9 @@ the UI and open pages reload; server changes restart it between agent turns
 (automation is paused until running turns finish, then resumed).
 
 > **The web UI has no authentication.** It binds to `127.0.0.1` by default and
-> can start agents that edit and push code. `--host 0.0.0.0` exposes that to
-> your network; only do it on a network you trust.
+> can start agents that edit and push code. Requests from other websites and
+> DNS-rebinding tricks are refused, but `--host 0.0.0.0` exposes the UI to your
+> whole network; only do that on a network you trust. See [SECURITY.md](SECURITY.md).
 
 ### Authentication and billing
 

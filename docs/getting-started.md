@@ -73,4 +73,5 @@ conventions, how to run the tests, where assets live — belong in your reposito
 `CLAUDE.md` / `AGENTS.md`; both agents read them. planestro adds nothing project-specific.
 
 > **The web UI has no authentication.** It binds to `127.0.0.1` and can start agents that
-> edit and push code. `--host 0.0.0.0` exposes that to your network.
+> edit and push code. Other websites can't drive it, but `--host 0.0.0.0` exposes it to your
+> network. See [SECURITY.md](../SECURITY.md).
