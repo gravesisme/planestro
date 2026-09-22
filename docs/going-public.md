@@ -129,14 +129,17 @@ Making the repo public publishes every commit, not just `main`'s tip.
 
 ## Portfolio / interview material
 
-- [ ] **Retake the screenshots.** `docs/img/item.png`, now the README's lead image,
-      predates the Releases tab and the id-before-title header, and shows the
-      stub dry-run plan. Retake it (and `board.png`) after the canned,
-      item-aware dry-run plans exist.
+- [x] `item.png` (README lead image and site) retaken on 2026-09-22 from the current
+      UI, cropped above the stub dry-run plan; `site/img/releases.png` added.
+- [ ] `board.png`, `breakdown.png` and `review.png` predate the Releases tab and
+      the id-before-title header. Retake them after the canned, item-aware
+      dry-run plans exist.
 - [x] **README leads with the pipeline, not the art** (2026-09-22): the audience
       is web and API developers. Codex is a peer implementer; art-plus-code
       features are one section, with Hurricane Harrison as the proof. The site
-      (`site/index.html`) still leads with the art story.
+      followed: "One backlog. Any agent. You conduct.", the score shows one
+      ordinary item (Claude plans, Codex implements and fixes a red CI run),
+      a Releases section, and a new share card.
 
 - [ ] A two-minute screen recording of the sample: queue → plan → approve →
       PR → CI red → fixed → merged → done (`PLANESTRO_DRYRUN_CI=red-once`
