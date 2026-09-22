@@ -129,14 +129,17 @@ Making the repo public publishes every commit, not just `main`'s tip.
 
 ## Portfolio / interview material
 
-- [ ] **Retake the screenshots.** `docs/img/item.png`, now the README's lead image,
-      predates the Releases tab and the id-before-title header, and shows the
-      stub dry-run plan. Retake it (and `board.png`) after the canned,
-      item-aware dry-run plans exist.
+- [x] `item.png` (README lead image and site) retaken on 2026-09-22 from the current
+      UI, cropped above the stub dry-run plan; `site/img/releases.png` added.
+- [ ] `board.png`, `breakdown.png` and `review.png` predate the Releases tab and
+      the id-before-title header. Retake them after the canned, item-aware
+      dry-run plans exist.
 - [x] **README leads with the pipeline, not the art** (2026-09-22): the audience
       is web and API developers. Codex is a peer implementer; art-plus-code
       features are one section, with Hurricane Harrison as the proof. The site
-      (`site/index.html`) still leads with the art story.
+      followed: "One backlog. Any agent. You conduct.", the score shows one
+      ordinary item (Claude plans, Codex implements and fixes a red CI run),
+      a Releases section, and a new share card.
 
 - [ ] A two-minute screen recording of the sample: queue → plan → approve →
       PR → CI red → fixed → merged → done (`PLANESTRO_DRYRUN_CI=red-once`
@@ -162,11 +165,24 @@ Making the repo public publishes every commit, not just `main`'s tip.
       private repository needs a paid plan — on a free plan this waits for the flip.
 - [ ] After the first deploy: put the Pages URL in the repository's "About" box and make
       `og:image` an absolute URL (share cards ignore relative ones).
-- [ ] **Domain: `planestro.com`, to be hosted on AWS** (registered 2026-09-22 in
-      Route 53). That replaces the GitHub Pages plan above: decide the AWS shape
-      (S3 + CloudFront with an ACM certificate is the usual one for a static
-      `site/`), then point `pages.yml` at it or replace it with a deploy workflow,
-      and make `og:image` an absolute `https://planestro.com/…` URL.
+- [ ] **`planestro.com`: live on flip day, not before.** Checked on 2026-09-22 (read-only):
+      registered in Route 53 (active, auto-renew, privacy on, expires 2027-09-22); its
+      hosted zone `Z0486840CWOMJDGGUPEH` exists with only NS and SOA, and its name servers
+      match the registrar's. The account hosts no sites on AWS itself; its other domains use
+      Route 53 for DNS and Vercel for hosting. Plan: **GitHub Pages**, since `pages.yml`
+      already exists and the site deploys from the same repo; Route 53 stays the DNS.
+      1. Add `site/CNAME` containing `planestro.com`.
+      2. In Route 53: apex `A` → `185.199.108.153`, `185.199.109.153`, `185.199.110.153`,
+         `185.199.111.153`; apex `AAAA` → `2606:50c0:8000::153` … `2606:50c0:8003::153`;
+         `www` `CNAME` → `gravesisme.github.io`.
+      3. Settings → Pages → custom domain `planestro.com`, then **Enforce HTTPS** once the
+         certificate is issued. Verify the domain for the account (Settings → Pages →
+         verified domains) so nobody else can claim it for their Pages site.
+      4. `og:image` → `https://planestro.com/og.png`; the "About" box → the domain.
+      Fallback if the site must be up before the flip: a Vercel project with root `site/`
+      (no build), with the same `216.198.79.1` / `vercel-dns-017` records the other domains use.
+- [ ] **Resume:** link `github.com/gravesisme/planestro` until the domain serves the site;
+      switch to `planestro.com` after step 3.
 
 ## The flip itself
 
