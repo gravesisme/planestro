@@ -99,6 +99,18 @@ their sandbox instead.
 | `git.checkpoint_interval_min` | `60` | Telemetry (costs, timestamps) is checkpointed this often rather than per change. |
 | `attachments.managed_max_bytes` | `2000000` | Larger attachments are referenced in place instead of copied into the data dir. |
 
+### Releases
+
+`releases.sections` is the list of sections a release has, in order ([Releases](releases.md)).
+Default: **Release notes** and **Notes**.
+
+| Key | Default | |
+|---|---|---|
+| `releases.sections.title` | — | The section's `# heading` in the release file. |
+| `releases.sections.max_chars` | none | A limit to count toward (a store field's); the page shows the count, red past it. |
+| `releases.sections.carry` | `false` | A new release starts with the previous release's text for this section. |
+| `releases.sections.hint` | none | One line shown under the heading. |
+
 ## planestro.local.yml
 
 | Key | |

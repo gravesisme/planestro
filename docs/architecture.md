@@ -87,7 +87,7 @@ are reported. It never deletes on its own authority.
 
 ## Storage
 
-Item and prompt files are written atomically (temp file + rename) and parsed back before a
+Item, prompt and release files are written atomically (temp file + rename) and parsed back before a
 write is accepted. Every operation is journaled begin/end in NDJSON. Semantic changes
 commit immediately with a message scoped to the paths they touched; telemetry (costs,
 timestamps) is checkpointed. A lock file makes planestro the single writer of a data dir.

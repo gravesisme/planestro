@@ -8,6 +8,7 @@ import { SessionsPage } from './pages/Sessions.tsx';
 import { SettingsPage } from './pages/Settings.tsx';
 import { ConsolePage } from './pages/Console.tsx';
 import { PromptsPage } from './pages/Prompts.tsx';
+import { ReleasesPage } from './pages/Releases.tsx';
 import './styles.css';
 
 createRoot(document.getElementById('root')!).render(
@@ -22,6 +23,8 @@ createRoot(document.getElementById('root')!).render(
           <Route path="sessions" element={<SessionsPage />} />
           <Route path="prompts" element={<PromptsPage />} />
           <Route path="prompts/:name" element={<PromptsPage />} />
+          <Route path="releases" element={<ReleasesPage />} />
+          <Route path="releases/:version" element={<ReleasesPage />} />
           <Route path="console" element={<ConsolePage />} />
           <Route path="settings" element={<SettingsPage />} />
         </Route>

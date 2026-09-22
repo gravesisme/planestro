@@ -9,6 +9,7 @@ data dir, as files you can read, grep and edit:
 planestro.yml          versioned project config          planestro.local.yml   this machine only (gitignored)
 items/MP-12.md         one item: YAML frontmatter + # Description, # Notes, # Plan, # Activity
 prompts/*.md           the prompt library
+releases/1.5.0.md      one release: notes, store copy, the items it shipped
 attachments/MP-12/     small files attached to an item
 journal/2026-09.ndjson every operation, begin and end
 ```

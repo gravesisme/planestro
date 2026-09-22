@@ -30,9 +30,8 @@ epics, the manual and the site.
 
 ## Decisions only the author can make
 
-- [ ] **MIT or something else.** MIT was chosen as the unsurprising default.
-      Apache-2.0 adds a patent grant; AGPL would stop a hosted clone. Change
-      `LICENSE` + `package.json` before the flip, not after.
+- [x] **MIT.** Confirmed by the author on 2026-09-22; `LICENSE` and `package.json`
+      already say so.
 - [ ] **Name the game or not.** The README says "a commercial game that ships
       on the App Store" and stops there, because the game's own public copy
       deliberately never mentions AI tooling. Linking the two is the stronger
@@ -40,8 +39,9 @@ epics, the manual and the site.
 - [ ] **Commit email.** Every commit carries a personal Gmail address. Fine for
       most people; if not, it needs a history rewrite (see below) and a
       GitHub `noreply` address going forward.
-- [ ] **The name.** Check `planestro` on npm, GitHub and as a trademark before
-      it is attached to a public identity. (`package.json` stays
+- [ ] **The name.** `planestro.com` was registered on 2026-09-22 (Route 53). Still
+      check `planestro` on npm, GitHub and as a trademark before it is attached to a
+      public identity. (`package.json` stays
       `"private": true` either way until publishing to npm is a decision.)
 - [x] **Keep or rewrite history.** Kept, with contents scrubbed (see the
       audit): the commit log is interview material — the bug stories below
@@ -51,9 +51,11 @@ epics, the manual and the site.
 
 Making the repo public publishes every commit, not just `main`'s tip.
 
-- [ ] `git log --all -p | grep -nE "sk-ant-|ghp_|github_pat_|BEGIN (RSA|OPENSSH)"`
-      — a `sk-ant-` search was clean on 2026-09-17; re-run all of them, and
-      run `gitleaks detect` or `trufflehog git file://.` once for a real scan.
+- [ ] `git log --all -p | grep -nE "sk-ant-|ghp_|gho_|github_pat_|BEGIN (RSA|OPENSSH|EC) |AKIA|xox[bp]-"`
+      — clean on 2026-09-22 (the only hits are this checklist and the `sk-ant-…`
+      placeholder in Settings). No home paths or game names in any blob either.
+      Still to do once: `gitleaks detect` or `trufflehog git file://.` (neither
+      is installed yet) for a real scan.
 - [x] History scrubbed on 2026-09-17: every commit's files were rewritten
       (`git filter-branch`, fixed string rules) so no blob or message in any
       commit names the project planestro was built for or a home directory;
@@ -65,9 +67,9 @@ Making the repo public publishes every commit, not just `main`'s tip.
       unreferenced objects) until it garbage-collects. For a private repo that
       is harmless; at the flip, publish by pushing to a **new** repository
       rather than toggling this one, or ask GitHub Support to purge first.
-- [ ] `git branch -a` and `git tag`: delete stale remote branches before the
-      flip; they become public too.
-- [ ] Confirm the *data* never lived here: the planning data dir is an orphan
+- [x] `git branch -a` and `git tag`: on 2026-09-22 only `main` exists, locally and
+      on the remote, and there are no tags. Re-check at the flip.
+- [x] Confirm the *data* never lived here (checked 2026-09-22): the planning data dir is an orphan
       branch of the game's repo, not of this one. `git log --all --stat -- items prompts journal` should be empty apart from
       `packages/server/prompts/` (the shipped defaults).
 - [ ] Read the shipped default prompts (`packages/server/prompts/*.md`) once as
@@ -75,6 +77,8 @@ Making the repo public publishes every commit, not just `main`'s tip.
 
 ## Repository hygiene
 
+- [x] `AGENTS.md` is a byte-identical copy of `CLAUDE.md` (Codex reads the former),
+      held together by `docs.test.ts`.
 - [ ] `CONTRIBUTING.md` — or a plain sentence in the README that this is a
       personal tool and PRs may sit. Setting expectations beats a template.
 - [ ] `SECURITY.md`: how to report, and the threat model in one paragraph (no
@@ -146,7 +150,11 @@ Making the repo public publishes every commit, not just `main`'s tip.
       private repository needs a paid plan — on a free plan this waits for the flip.
 - [ ] After the first deploy: put the Pages URL in the repository's "About" box and make
       `og:image` an absolute URL (share cards ignore relative ones).
-- [ ] A custom domain, if wanted: `site/CNAME` plus the DNS record.
+- [ ] **Domain: `planestro.com`, to be hosted on AWS** (registered 2026-09-22 in
+      Route 53). That replaces the GitHub Pages plan above: decide the AWS shape
+      (S3 + CloudFront with an ACM certificate is the usual one for a static
+      `site/`), then point `pages.yml` at it or replace it with a deploy workflow,
+      and make `og:image` an absolute `https://planestro.com/…` URL.
 
 ## The flip itself
 

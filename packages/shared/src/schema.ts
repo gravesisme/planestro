@@ -145,6 +145,48 @@ export const PromptFrontmatter = z.object({
 export type PromptFrontmatter = z.infer<typeof PromptFrontmatter>;
 export const PROMPT_KEY_ORDER: readonly string[] = ['schema', 'name', 'kind', 'role', 'title', 'description', 'model', 'favorite'];
 
+/**
+ * A release: one file per version under `releases/`, holding what the project tells the world
+ * when it ships (release notes, store copy) and what the person doing it needs to remember. Its
+ * sections are the project's own (`releases.sections`); planestro only counts and carries them.
+ */
+export const RELEASE_STATUSES = ['planned', 'submitted', 'released', 'cancelled'] as const;
+export type ReleaseStatus = (typeof RELEASE_STATUSES)[number];
+/** A file name as well as a version: `1.5.0`, `2026.09`, `v2-beta.1`. No slashes, no leading dot. */
+export const VERSION_RE = /^[0-9A-Za-z][0-9A-Za-z._+-]*$/;
+export const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+export const ReleaseFrontmatter = z.object({
+  schema: z.number().int().positive(),
+  // `version: 1.5` hand-written in YAML is a number; take it as the text it was meant to be.
+  version: z.preprocess((v) => (typeof v === 'number' ? String(v) : v), z.string().regex(VERSION_RE, 'version: letters, digits, dots, dashes')),
+  title: z.string().min(1).optional(),
+  status: z.enum(RELEASE_STATUSES),
+  /** The day it shipped; while planned, the day it is aimed at. */
+  date: z.string().regex(DATE_RE, 'date: YYYY-MM-DD').optional(),
+  tag: z.string().min(1).optional(),
+  /** The backlog items that shipped in it. */
+  items: z.array(id).default([]),
+  created_at: ts,
+  updated_at: ts,
+}).passthrough();
+export type ReleaseFrontmatter = z.infer<typeof ReleaseFrontmatter>;
+export const RELEASE_KEY_ORDER: readonly string[] = ['schema', 'version', 'title', 'status', 'date', 'tag', 'items', 'created_at', 'updated_at'];
+
+export const ReleaseSectionDef = z.object({
+  title: z.string().min(1).regex(/^[^\n#]+$/, 'a section title is one line without #'),
+  /** A store's limit for the field; the page counts toward it. */
+  max_chars: z.number().int().positive().optional(),
+  /** A new release starts with the previous release's text (store copy that rarely changes). */
+  carry: z.boolean().default(false),
+  /** One line under the heading on the release page. */
+  hint: z.string().optional(),
+});
+export type ReleaseSectionDef = z.infer<typeof ReleaseSectionDef>;
+export const DEFAULT_RELEASE_SECTIONS: ReleaseSectionDef[] = [
+  { title: 'Release notes', carry: false, hint: 'What users are told changed.' },
+  { title: 'Notes', carry: false, hint: 'Yours: the checklist, what went wrong, what to do differently.' },
+];
+
 /** Which agent CLI runs a model's turns. `claude` plans and implements; `codex` implements only. */
 export const RUNNERS = ['claude', 'codex'] as const;
 export type Runner = typeof RUNNERS[number];
@@ -224,6 +266,7 @@ export const Config = z.object({
   /** Reviewing what a hold_for_review model made: thumbnails are also shown at `image_scale`× (a pixel-art project sets its display scale), and one changed file over `max_file_bytes` blocks the item before a PR is opened. */
   review: z.object({ image_scale: z.number().int().min(1).max(16).default(1), max_file_bytes: z.number().int().positive().default(10_000_000), nudge_after_min: z.number().int().positive().default(240) }).default({ image_scale: 1, max_file_bytes: 10_000_000, nudge_after_min: 240 }),
   attachments: z.object({ managed_max_bytes: z.number().int().positive().default(2_000_000) }).default({ managed_max_bytes: 2_000_000 }),
+  releases: z.object({ sections: z.array(ReleaseSectionDef).min(1).default(DEFAULT_RELEASE_SECTIONS) }).default({ sections: DEFAULT_RELEASE_SECTIONS }),
 });
 export type Config = z.infer<typeof Config>;
 

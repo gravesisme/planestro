@@ -50,7 +50,7 @@ try {
       const dir = locateDataDir(arg);
       const store = await DataStore.open(dir, { lock: false, log: (l, m) => log(`[${l}] ${m}`) });
       const s = store.stats();
-      log(`${dir}: schema ${store.config.schema_version} (${store.schema}), ${s.items} items, ${s.prompts} prompts, ${s.invalid} invalid`);
+      log(`${dir}: schema ${store.config.schema_version} (${store.schema}), ${s.items} items, ${s.prompts} prompts, ${s.releases} releases, ${s.invalid} invalid`);
       for (const inv of store.invalid) log(`  INVALID ${inv.path}: ${inv.error}`);
       for (const item of store.listItems()) {
         const d = store.derived(item);

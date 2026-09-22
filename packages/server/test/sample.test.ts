@@ -6,6 +6,7 @@ import { DataStore } from '../src/store/DataStore.ts';
 import { LiveEngine } from '../src/engine/LiveEngine.ts';
 import { makePorts } from '../src/engine/makePorts.ts';
 import { seedSample } from '../src/sample.ts';
+import { releaseCandidates } from '@planestro/shared';
 import { sleep } from './helpers.ts';
 
 describe('planestro sample', () => {
@@ -29,6 +30,10 @@ describe('planestro sample', () => {
       expect(store.config.models.find((m) => m.id === 'codex-art')).toMatchObject({ runner: 'codex', hold_for_review: true });
       expect(store.listPrompts().filter((p) => p.file.frontmatter.favorite).map((p) => p.name).sort()).toEqual(['art-item', 'art-repaint', 'audit-recent-code', 'bug-fixes', 'feature']);
       expect(by('ICEBOX').length).toBe(2);
+      expect(store.listReleases().map((r) => [r.version, r.file.frontmatter.status])).toEqual([['0.4.0', 'planned'], ['0.3.0', 'released']]);
+      const next = store.getRelease('0.4.0')!;
+      expect(next.file.sections.find((x) => x.title === 'Tagline')!.body).toBe('Tide times for the beach you are standing on.'); // carried from 0.3.0
+      expect(releaseCandidates('0.4.0', store.listReleases().map((r) => r.file), store.listItems().map((i) => ({ id: i.id, fm: i.file.frontmatter }))).length).toBe(2);
       const epic = store.listItems().find((i) => i.file.frontmatter.kind === 'epic' && i.file.frontmatter.title === 'Offline mode')!;
       expect(store.derived(epic).children.length).toBe(2);
       const waiting = store.listItems().find((i) => i.file.frontmatter.depends_on.length)!;
