@@ -129,6 +129,15 @@ Making the repo public publishes every commit, not just `main`'s tip.
 
 ## Portfolio / interview material
 
+- [ ] **Retake the screenshots.** `docs/img/item.png`, now the README's lead image,
+      predates the Releases tab and the id-before-title header, and shows the
+      stub dry-run plan. Retake it (and `board.png`) after the canned,
+      item-aware dry-run plans exist.
+- [x] **README leads with the pipeline, not the art** (2026-09-22): the audience
+      is web and API developers. Codex is a peer implementer; art-plus-code
+      features are one section, with Hurricane Harrison as the proof. The site
+      (`site/index.html`) still leads with the art story.
+
 - [ ] A two-minute screen recording of the sample: queue → plan → approve →
       PR → CI red → fixed → merged → done (`PLANESTRO_DRYRUN_CI=red-once`
       gives the red run). Link it at the top of the README.
