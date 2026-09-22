@@ -32,10 +32,8 @@ epics, the manual and the site.
 
 - [x] **MIT.** Confirmed by the author on 2026-09-22; `LICENSE` and `package.json`
       already say so.
-- [ ] **Name the game or not.** The README says "a commercial game that ships
-      on the App Store" and stops there, because the game's own public copy
-      deliberately never mentions AI tooling. Linking the two is the stronger
-      portfolio story and cannot be undone once indexed.
+- [x] **Name the game.** Decided 2026-09-22: yes. The README links Hurricane
+      Harrison, and the resume names both.
 - [ ] **Commit email.** Every commit carries a personal Gmail address. Fine for
       most people; if not, it needs a history rewrite (see below) and a
       GitHub `noreply` address going forward.
@@ -63,10 +61,10 @@ Making the repo public publishes every commit, not just `main`'s tip.
       commit *message* ever named it — item ids like `HH-9` remain and are the
       same example prefix the docs use. A pre-rewrite bundle is kept outside
       the repo by the author; never push it.
-- [ ] GitHub keeps the pre-rewrite commits reachable by SHA (old PR refs,
-      unreferenced objects) until it garbage-collects. For a private repo that
-      is harmless; at the flip, publish by pushing to a **new** repository
-      rather than toggling this one, or ask GitHub Support to purge first.
+- [x] Pre-rewrite commits: the closed PR #1 (`public-prep`) still shows 36 of them,
+      and they name the game and one home-directory path. The game is named
+      publicly now, so this is harmless: **flip this repository**; no new repo is
+      needed. PRs #2–#4 are post-rewrite and clean (checked 2026-09-22).
 - [x] `git branch -a` and `git tag`: on 2026-09-22 only `main` exists, locally and
       on the remote, and there are no tags. Re-check at the flip.
 - [x] Confirm the *data* never lived here (checked 2026-09-22): the planning data dir is an orphan
@@ -81,10 +79,9 @@ Making the repo public publishes every commit, not just `main`'s tip.
       held together by `docs.test.ts`.
 - [ ] `CONTRIBUTING.md` — or a plain sentence in the README that this is a
       personal tool and PRs may sit. Setting expectations beats a template.
-- [ ] `SECURITY.md`: how to report, and the threat model in one paragraph (no
-      auth on the web UI by design, binds to loopback, agents run with the
-      user's own git/gh credentials, the permission policy is a guard rail and
-      not a sandbox).
+- [x] `SECURITY.md`: reporting and the threat model. Then turn on **private
+      vulnerability reporting** (Settings → Code security) at the flip, since
+      SECURITY.md points people to it.
 - [ ] Issue templates are optional; turning **off** the wiki/projects/
       discussions tabs you will not tend is not.
 - [ ] Branch protection on `main` requiring the CI check. (CI is green on
@@ -105,8 +102,14 @@ Making the repo public publishes every commit, not just `main`'s tip.
 - [ ] **Platform.** `open`, `say "PR merged"` and recursive `fs.watch` are
       macOS-shaped. `openWhenUp` already branches per platform; `--watch`
       needs Node ≥ 20 on Linux for recursive watch; say so or test it.
-- [ ] **Web UI has no auth.** Documented loudly; an optional shared-secret
-      token for `--host 0.0.0.0` would turn a warning into a feature.
+- [x] **Other websites could drive the UI** (found 2026-09-22): a cross-site POST
+      with `text/plain`, a DNS-rebinding `Host` and a cross-site WebSocket all
+      worked against `127.0.0.1`. Now refused by `guard.ts` (Host allowlist,
+      `Origin` / `Sec-Fetch-Site` checks), with `allowed_hosts` for extra names.
+- [ ] **An access token for non-loopback use.** With `--host 0.0.0.0` anyone on
+      the network can still drive it. Jupyter's shape fits: a random token,
+      printed once, exchanged for an HttpOnly cookie, required whenever the bind
+      address isn't loopback.
 - [ ] **Model ids are hardcoded in the init template** (`claude-fable-5`,
       `claude-opus-5`). They age; `init` could ask `claude` what exists, or the
       README should say where to edit them.
