@@ -4,10 +4,11 @@ import type YAML from 'yaml';
 import {
   parseItemFile, serializeItemFile, setSection, appendActivity, getSection, idNumber, slugify,
   parsePromptFile, serializePromptFile, renderPrompt,
+  parseReleaseFile, serializeReleaseFile, setReleaseSection, sortReleases, compareVersions, getReleaseSection, VERSION_RE, DATE_RE,
   applyTransition, flavorOf, laneOf, needsYou, baseBranchOf, depsSatisfied,
   rankForTop, rankForBottom, rankBefore, rankAfter, renormalize, sortByRank,
   isoLocal, SCHEMA_VERSION,
-  type ItemFile, type ItemFrontmatter, type PromptFile, type Status, type Actor, type Flavor, type Lane,
+  type ItemFile, type ItemFrontmatter, type PromptFile, type ReleaseFile, type ReleaseStatus, type Status, type Actor, type Flavor, type Lane,
   type Config, type LocalConfig, type ServerEvent, type ActivityActor,
 } from '@planestro/shared';
 import { atomicWrite, cleanStaleTemps } from './atomicWrite.ts';
@@ -19,6 +20,7 @@ import { readConfig, readLocalConfig, patchConfigFile, writeLocalConfig, resolve
 
 export interface StoredItem { id: string; path: string; file: ItemFile }
 export interface StoredPrompt { name: string; path: string; file: PromptFile }
+export interface StoredRelease { version: string; path: string; file: ReleaseFile }
 export interface InvalidFile { path: string; error: string }
 
 export interface Derived { lane: Lane; needs_you: boolean; external: boolean; flavor: Flavor; base_branch?: string; base_branch_error?: string; deps_satisfied: boolean; children: string[] }
@@ -38,6 +40,8 @@ export interface CreateItemInput {
   planner?: string; implementer?: string; status?: 'NOT_YET_SUBMITTED' | 'ICEBOX'; depends_on?: string[]; extra?: Record<string, unknown>;
 }
 
+export interface ReleaseFields { version?: string; title?: string | null; status?: ReleaseStatus; date?: string | null; tag?: string | null; items?: string[] }
+
 export interface DataStoreOptions { emit?: (e: ServerEvent) => void; log?: (level: 'info' | 'warn' | 'error', message: string) => void; lock?: boolean }
 
 const REORDER_COMMIT_DELAY_MS = 5 * 60_000;
@@ -53,6 +57,7 @@ export class DataStore {
   readonly local: LocalConfig;
   readonly items = new Map<string, StoredItem>();
   readonly prompts = new Map<string, StoredPrompt>();
+  readonly releases = new Map<string, StoredRelease>();
   readonly invalid: InvalidFile[] = [];
   readonly journal: Journal;
   readonly git: GitCommitter;
@@ -73,7 +78,7 @@ export class DataStore {
   static async open(dataDir: string, opts: DataStoreOptions = {}): Promise<DataStore> {
     const store = new DataStore(dataDir, opts);
     if (opts.lock !== false) store.acquireLock();
-    for (const d of ['items', 'prompts']) for (const f of cleanStaleTemps(join(dataDir, d))) opts.log?.('warn', `removed stale temp file ${d}/${f}`);
+    for (const d of ['items', 'prompts', 'releases']) for (const f of cleanStaleTemps(join(dataDir, d))) opts.log?.('warn', `removed stale temp file ${d}/${f}`);
     store.load();
     await store.commitHandEdits();
     return store;
@@ -82,6 +87,7 @@ export class DataStore {
   get readOnly(): boolean { return this.schema !== 'current'; }
   get itemsDir(): string { return join(this.dataDir, 'items'); }
   get promptsDir(): string { return join(this.dataDir, 'prompts'); }
+  get releasesDir(): string { return join(this.dataDir, 'releases'); }
   get attachmentsDir(): string { return join(this.dataDir, 'attachments'); }
   codeRepoPath(): string { return resolveCodeRepo(this.dataDir, this.config, this.local); }
   worktreesRoot(): string { return resolveWorktreesRoot(this.dataDir, this.config, this.local); }
@@ -114,7 +120,7 @@ export class DataStore {
 
   // ---- loading ----
   load(): void {
-    this.items.clear(); this.prompts.clear(); this.invalid.length = 0;
+    this.items.clear(); this.prompts.clear(); this.releases.clear(); this.invalid.length = 0;
     mkdirSync(this.itemsDir, { recursive: true }); mkdirSync(this.promptsDir, { recursive: true });
     for (const name of readdirSync(this.itemsDir).filter((f) => f.endsWith('.md')).sort()) {
       const path = join(this.itemsDir, name);
@@ -133,6 +139,15 @@ export class DataStore {
         this.prompts.set(file.frontmatter.name, { name: file.frontmatter.name, path, file });
       } catch (e) { this.invalid.push({ path, error: String((e as Error).message ?? e) }); this.emit({ type: 'invalid_file', path, error: String((e as Error).message ?? e) }); }
     }
+    // Created on first use: a data dir that has never had a release stays as it was.
+    if (existsSync(this.releasesDir)) for (const name of readdirSync(this.releasesDir).filter((f) => f.endsWith('.md')).sort()) {
+      const path = join(this.releasesDir, name);
+      try {
+        const file = parseReleaseFile(readFileSync(path, 'utf8'));
+        if (`${file.frontmatter.version}.md` !== name) throw new Error(`release version ${file.frontmatter.version} does not match file name`);
+        this.releases.set(file.frontmatter.version, { version: file.frontmatter.version, path, file });
+      } catch (e) { this.invalid.push({ path, error: String((e as Error).message ?? e) }); this.emit({ type: 'invalid_file', path, error: String((e as Error).message ?? e) }); }
+    }
   }
 
   /** Re-read everything from disk, config included (hand edits, external tools). */
@@ -146,7 +161,7 @@ export class DataStore {
   /** Files edited while planestro was not running are versioned as-is (only when every dirty file parses). */
   private async commitHandEdits(): Promise<void> {
     const { dirty } = await this.git.status();
-    const edits = dirty.filter((p) => p.startsWith('items/') || p.startsWith('prompts/') || p === 'planestro.yml' || p.startsWith('attachments/'));
+    const edits = dirty.filter((p) => p.startsWith('items/') || p.startsWith('prompts/') || p.startsWith('releases/') || p === 'planestro.yml' || p.startsWith('attachments/'));
     if (!edits.length) return;
     if (this.invalid.length) { this.log('warn', `${edits.length} file(s) changed outside planestro but ${this.invalid.length} file(s) are invalid; leaving the tree uncommitted`); return; }
     this.git.commit(`manual: ${edits.length} file(s) edited outside planestro`, edits.join('\n'));
@@ -315,6 +330,8 @@ export class DataStore {
     this.timers.set(key, t);
   }
 
+  private cancelCommit(key: string): void { const t = this.timers.get(key); if (t) { clearTimeout(t); this.timers.delete(key); } }
+
   async flushCommits(): Promise<void> {
     const pending = [...this.timers.entries()];
     this.timers.clear();
@@ -400,6 +417,108 @@ export class DataStore {
     this.journal.append({ type: 'prompt.deleted', actor, data: { name } });
     this.emit({ type: 'prompt.updated', name });
     this.git.commit(`prompts: delete ${name}`, undefined, [this.rel(p.path)]);
+  }
+
+  // ---- releases ----
+  getRelease(version: string): StoredRelease | undefined { return this.releases.get(version); }
+  requireRelease(version: string): StoredRelease { const r = this.releases.get(version); if (!r) throw new Error(`unknown release ${version}`); return r; }
+  listReleases(): StoredRelease[] { return sortReleases([...this.releases.values()].map((r) => ({ ...r, frontmatter: r.file.frontmatter }))).map(({ frontmatter: _, ...r }) => r); }
+
+  private writeRelease(file: ReleaseFile): StoredRelease {
+    const version = file.frontmatter.version;
+    const path = join(this.releasesDir, `${version}.md`);
+    atomicWrite(path, serializeReleaseFile(file));
+    const stored = { version, path, file: parseReleaseFile(readFileSync(path, 'utf8')) };
+    this.releases.set(version, stored);
+    return stored;
+  }
+
+  /**
+   * A new release starts with every section the project defines; the ones marked `carry` (store
+   * copy) begin as the text of the newest release before it, so only what changed needs writing.
+   */
+  createRelease(input: { version: string; title?: string; status?: ReleaseStatus; date?: string }, actor: Actor = 'user'): StoredRelease {
+    this.assertWritable();
+    const version = input.version.trim();
+    if (!VERSION_RE.test(version)) throw new Error('version: letters, digits, dots and dashes, starting with a letter or digit');
+    if (input.date && !DATE_RE.test(input.date)) throw new Error('date: YYYY-MM-DD');
+    if (this.releases.has(version) || existsSync(join(this.releasesDir, `${version}.md`))) throw new Error(`release ${version} already exists`);
+    const all = this.listReleases().filter((r) => r.file.frontmatter.status !== 'cancelled');
+    const previous = all.find((r) => compareVersions(r.version, version) < 0) ?? all[0];
+    const now = isoLocal();
+    const file: ReleaseFile = {
+      frontmatter: { schema: 1, version, ...(input.title?.trim() ? { title: input.title.trim() } : {}), status: input.status ?? 'planned', ...(input.date ? { date: input.date } : {}), items: [], created_at: now, updated_at: now },
+      sections: [],
+    };
+    const defs = this.config.releases.sections;
+    for (const d of defs) setReleaseSection(file, d.title, d.carry && previous ? getReleaseSection(previous.file, d.title) : '', defs);
+    const stored = this.writeRelease(file);
+    this.journal.append({ type: 'release.created', actor, data: { version, carried_from: previous?.version } });
+    this.emit({ type: 'release.updated', version });
+    this.git.commit(`releases: add ${version}`, previous ? `Store copy carried from ${previous.version}.` : undefined, [this.rel(stored.path)]);
+    return stored;
+  }
+
+  /**
+   * Status, version and item changes commit at once with a message saying what happened; text
+   * edits are written now and committed after a quiet period, like an item's sections.
+   */
+  editRelease(version: string, change: { fields?: ReleaseFields; sections?: Record<string, string> }, actor: Actor = 'user'): StoredRelease {
+    this.assertWritable();
+    const current = this.requireRelease(version);
+    const file = parseReleaseFile(readFileSync(current.path, 'utf8'));
+    const fm = file.frontmatter as ReleaseFile['frontmatter'] & Record<string, unknown>;
+    const f = change.fields ?? {};
+    const said: string[] = [];
+    const next = f.version?.trim() || version;
+    if (next !== version) {
+      if (!VERSION_RE.test(next)) throw new Error('version: letters, digits, dots and dashes, starting with a letter or digit');
+      if (this.releases.has(next) || existsSync(join(this.releasesDir, `${next}.md`))) throw new Error(`release ${next} already exists`);
+      fm.version = next; said.push(`rename ${version} → ${next}`);
+    }
+    for (const k of ['title', 'date', 'tag'] as const) {
+      const v = f[k];
+      if (v === undefined) continue;
+      if (k === 'date' && v && !DATE_RE.test(v)) throw new Error('date: YYYY-MM-DD');
+      if (v === null || !v.trim()) delete fm[k]; else fm[k] = v.trim();
+    }
+    if (f.status && f.status !== fm.status) {
+      fm.status = f.status; said.push(f.status);
+      // The day it shipped is the one fact everyone asks later. A target still ahead becomes today; a
+      // past date stays, so an old release can be recorded after the fact.
+      const today = isoLocal().slice(0, 10);
+      if (f.status === 'released' && f.date === undefined && (!fm.date || fm.date > today)) fm.date = today;
+    }
+    if (f.items) {
+      for (const id of f.items) this.requireItem(id);
+      const items = [...new Set(f.items)];
+      const added = items.filter((i) => !fm.items.includes(i)); const removed = fm.items.filter((i) => !items.includes(i));
+      if (added.length) said.push(`add ${added.join(', ')}`);
+      if (removed.length) said.push(`remove ${removed.join(', ')}`);
+      fm.items = items;
+    }
+    for (const [title, body] of Object.entries(change.sections ?? {})) setReleaseSection(file, title, body, this.config.releases.sections);
+    fm.updated_at = isoLocal();
+    const stored = this.writeRelease(file);
+    if (next !== version) { unlinkSync(current.path); this.releases.delete(version); }
+    this.journal.append({ type: 'release.updated', actor, data: { version: next, ...(next !== version ? { was: version } : {}), fields: Object.keys(f), sections: Object.keys(change.sections ?? {}) } });
+    this.emit({ type: 'release.updated', version: next });
+    if (said.length) {
+      this.cancelCommit(`release:${version}`); // the pending text edit rides along in this commit
+      this.git.commit(`releases: ${next !== version ? '' : `${next} `}${said.join('; ')}`, undefined, [this.rel(stored.path), ...(next !== version ? [this.rel(current.path)] : [])]);
+    } else this.scheduleCommit(`release:${next}`, `releases: edit ${next}`, EDIT_COMMIT_DELAY_MS, [this.rel(stored.path)]);
+    return stored;
+  }
+
+  deleteRelease(version: string, actor: Actor = 'user'): void {
+    this.assertWritable();
+    const r = this.requireRelease(version);
+    this.cancelCommit(`release:${version}`);
+    unlinkSync(r.path);
+    this.releases.delete(version);
+    this.journal.append({ type: 'release.deleted', actor, data: { version } });
+    this.emit({ type: 'release.updated', version });
+    this.git.commit(`releases: delete ${version}`, undefined, [this.rel(r.path)]);
   }
 
   /** Render a prompt with the standard context for an item (plus extras). Throws RenderError on gaps. */
@@ -500,11 +619,11 @@ export class DataStore {
   /** Path relative to the data dir (git pathspec). */
   private rel(abs: string): string { return relative(this.dataDir, abs); }
 
-  stats(): { items: number; prompts: number; invalid: number; attachmentsBytes: number } {
+  stats(): { items: number; prompts: number; releases: number; invalid: number; attachmentsBytes: number } {
     let attachmentsBytes = 0;
     const walk = (dir: string) => { if (!existsSync(dir)) return; for (const f of readdirSync(dir, { withFileTypes: true })) { const p = join(dir, f.name); if (f.isDirectory()) walk(p); else attachmentsBytes += statSync(p).size; } };
     walk(this.attachmentsDir);
-    return { items: this.items.size, prompts: this.prompts.size, invalid: this.invalid.length, attachmentsBytes };
+    return { items: this.items.size, prompts: this.prompts.size, releases: this.releases.size, invalid: this.invalid.length, attachmentsBytes };
   }
 }
 

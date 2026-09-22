@@ -138,6 +138,8 @@ export async function seedSample(out: string, opts: { reset?: boolean; log?: (m:
   const cfg = join(dataDir, CONFIG_FILE);
   writeFileSync(cfg, readFileSync(cfg, 'utf8')
     .replace(/^  - \{ id: opus-5,.*$/m, (line) => `${line.replace(' }', ', description: "Code, tests and docs. Cannot generate images." }')}\n  - { id: codex-art, label: Codex Art, runner: codex, hold_for_review: true, description: "All raster art: icons, illustrations, sprites. Does not write code." }`)
+    // Release sections are the project's own: a store-style tagline with a limit, carried from one release to the next.
+    .replace(/^releases:\n(?:  .*\n)+/m, 'releases:\n  sections:\n    - { title: Release notes, hint: "What users are told changed." }\n    - { title: Tagline, max_chars: 60, carry: true, hint: "The one line on the npm page and the README." }\n    - { title: Notes, hint: "Yours: the checklist, what went wrong." }\n')
     + '\nreview:\n  image_scale: 2\n');
 
   // The seed writes through the store like any other client, so it can never produce a file the tool would reject.
@@ -160,6 +162,15 @@ export async function seedSample(out: string, opts: { reset?: boolean; log?: (m:
       ];
       store.mutateItem(item.id, ops, 'user');
     }
+    // 0.3.0 predates planestro; 0.4.0 is being put together from what has merged since, two items still to place.
+    const dayOf = (d: number) => isoLocal(daysAgo(d)).slice(0, 10);
+    store.createRelease({ version: '0.3.0', status: 'released', date: dayOf(12) });
+    store.editRelease('0.3.0', { fields: { tag: 'v0.3.0' }, sections: { 'Release notes': '- `tidepool today` prints the day\'s highs and lows for a NOAA station.', Tagline: 'Tide times for the beach you are standing on.', Notes: '- [x] `npm publish`\n- [x] tag and push' } });
+    store.createRelease({ version: '0.4.0', title: 'Scriptable', date: dayOf(-5) });
+    store.editRelease('0.4.0', {
+      fields: { items: [ids.get('json')!, ids.get('station-error')!] },
+      sections: { 'Release notes': '- `--json` prints the predictions as data, for scripts.\n- An unknown station id says so and exits 2, instead of a stack trace.', Notes: '- [ ] Wait for the time-zone fix? It touches the `--json` path.\n- [ ] `npm publish`, then tag `v0.4.0`' },
+    });
     // The picker and the Prompts page lead with what a person starts work from: one set per kind of agent.
     for (const name of ['feature', 'bug-fixes', 'audit-recent-code', 'art-item', 'art-repaint']) if (store.getPrompt(name)) store.setPromptFavorite(name, true);
     await store.flushCommits();

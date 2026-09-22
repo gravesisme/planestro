@@ -7,7 +7,9 @@ mechanics, and Claude sessions are consulted only for judgment. TypeScript,
 Node 24, npm workspaces: `packages/shared` (schema + file codecs + pure logic),
 `packages/server` (store, engine, Hono API, CLI), `packages/web` (React + Vite).
 `npm test` (vitest), `npm run typecheck`, `npm run build`, `npm run dev` /
-`npm run dev:web` (Vite on :5173 proxies to the server on :4300).
+`npm run dev:web` (Vite on :5173 proxies to the server on :4300). `AGENTS.md`
+is a byte-identical copy of this file for Codex, held together by a test: edit
+one, then copy it over the other.
 
 ## Design invariants
 
@@ -72,6 +74,11 @@ never as a moved head (the `head_moved` storm re-ran every open PR per merge).
   `needs_you`, …) are never persisted. Dependencies unblock on MERGED.
 - Semantic git commits only (`HH-143: approve plan`), scoped to the paths the
   mutation touched; telemetry is checkpointed (`planestro: checkpoint <ts>`).
+- Releases (`releases/<version>.md`) are a second file type beside items: status
+  `planned | submitted | released | cancelled`, the item ids they shipped, and
+  sections named by the project's `releases.sections` (with `max_chars` / `carry`).
+  They never drive the engine; which finished items belong to one is date
+  arithmetic (`releaseCandidates`), offered to the user, never applied.
 - Schema changes go through `packages/server/src/migrations` and bump
   `SCHEMA_VERSION`; a newer data dir opens read-only.
 - `planestro sample` (`packages/server/src/sample.ts`) is the no-credentials demo

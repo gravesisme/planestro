@@ -162,6 +162,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           <dt>session</dt><dd>{fm.session_id ?? '—'}{Object.entries(fm.agent_sessions ?? {}).map(([r, sid]) => <div key={r}>{r}: {sid}</div>)}</dd>
           <dt>CI</dt><dd>{fm.ci_result ?? '—'}{fm.ci_failed_count ? ` (${fm.ci_failed_count} red)` : ''}</dd>
           <dt>cost</dt><dd>{fm.cost_usd !== undefined ? `$${fm.cost_usd.toFixed(2)} · ${fm.turns ?? 0} turns` : '—'}{fm.agent_turns ? <div>{fm.agent_turns} of {state.config.budget_turns_per_item} {implementerDef?.runner} turns · {(fm.tokens ?? 0).toLocaleString()} tokens</div> : null}</dd>
+          {(() => { const rs = (state.releases ?? []).filter((r) => r.frontmatter.items.includes(item.id)); return rs.length ? <><dt>release</dt><dd>{rs.map((r) => <div key={r.version}><Link to={`/releases/${encodeURIComponent(r.version)}`}>{r.version}</Link> <span className="muted small">{r.frontmatter.status}</span></div>)}</dd></> : null; })()}
           <dt>rank</dt><dd>{fm.rank ?? '—'}</dd>
           {(['created_at', 'updated_at', 'queued_at', 'started_at', 'plan_ready_at', 'plan_approved_at', 'pr_created_at', 'merged_at', 'finished_at', 'iceboxed_at'] as const).map((k) => fm[k] ? <Fragment key={k}><dt>{k.replace('_at', '')}</dt><dd>{fm[k]!.slice(0, 19).replace('T', ' ')}</dd></Fragment> : null)}
         </dl>

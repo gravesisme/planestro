@@ -58,6 +58,8 @@ main { padding: 16px; flex: 1; }
 .dialog form > select, .dialog form > input { width: 100%; min-width: 0; } .dialog form .row { flex-wrap: wrap; } .dialog form .row > select { flex: 1 1 140px; min-width: 0; }
 .events { font-family: ui-monospace, monospace; font-size: 12px; background: #0e1013; padding: 8px; border-radius: 6px; max-height: 300px; overflow: auto; white-space: pre-wrap; }
 .prompts { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 12px; align-items: start; } .prompts ul { list-style: none; padding: 0; margin: 0; } .prompts li a { display: flex; gap: 6px; align-items: flex-start; padding: 5px 4px 5px 8px; border-radius: 5px; } .prompts li a.active { background: var(--panel2); }
+.rel-dot { width: 9px; height: 9px; border-radius: 50%; margin-top: 6px; flex: none; background: var(--line); } .rel-dot.submitted { background: var(--warn); } .rel-dot.released { background: var(--ok); } .rel-dot.planned { background: var(--accent); }
+.releases .section h2 input { font-size: 14px; }
 .prompt-list > .row { margin: 0 0 8px; } .prompt-list input[type=search] { min-width: 0; }
 .star { background: transparent; border-color: transparent; padding: 0 4px; line-height: 1.3; color: var(--muted); opacity: 0; } .star.on { color: var(--warn); opacity: 1; } .prompts li a:hover .star, .prompts li a.active .star, .star:focus-visible, .star.big { opacity: 1; } .star:hover { color: var(--warn); border-color: transparent; } .star.big { font-size: 16px; }
 
@@ -129,7 +131,7 @@ html { -webkit-text-size-adjust: 100%; }
   main { padding: 10px max(var(--gutter), env(safe-area-inset-right)) calc(var(--tabbar-h) + var(--safe-b) + 28px) max(var(--gutter), env(safe-area-inset-left)); }
   .banner.error { position: fixed; left: 10px; right: 10px; bottom: calc(var(--tabbar-h) + var(--safe-b) + 10px); z-index: 40; border: 1px solid var(--hot); border-radius: 10px; padding: 12px 14px; box-shadow: 0 8px 28px #000b; }
 
-  .tabbar { display: grid; grid-template-columns: repeat(5, 1fr); position: fixed; left: 0; right: 0; bottom: 0; z-index: 12; padding: 0 env(safe-area-inset-right) var(--safe-b) env(safe-area-inset-left); background: color-mix(in srgb, var(--panel) 88%, transparent); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); border-top: 1px solid var(--line); }
+  .tabbar { display: grid; grid-template-columns: repeat(6, 1fr); position: fixed; left: 0; right: 0; bottom: 0; z-index: 12; padding: 0 env(safe-area-inset-right) var(--safe-b) env(safe-area-inset-left); background: color-mix(in srgb, var(--panel) 88%, transparent); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); border-top: 1px solid var(--line); }
   .tabbar a { display: grid; justify-items: center; align-content: center; gap: 3px; height: var(--tabbar-h); color: var(--muted); font-size: 10.5px; font-weight: 500; border-top: 2px solid transparent; margin-top: -1px; }
   .tabbar a.active { color: var(--accent); border-top-color: var(--accent); } .tabbar svg { width: 22px; height: 22px; }
   /* a keyboard is up: the bar and the + button would only sit on top of what is being typed */

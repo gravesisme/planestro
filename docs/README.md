@@ -9,6 +9,7 @@ Start with **Getting started** and **Concepts**; the rest is reference.
 | [Agents](agents.md) | The Claude runner and the Codex runner, their two trust models, models and routing. |
 | [The Codex runner](codex-integration.md) | How a Codex turn works, end to end. |
 | [Mixed-agent epics](mixed-agent-epics.md) | One feature, art by Codex, code by Claude: breakdown → review → hand-off, as a walkthrough. |
+| [Releases](releases.md) | Versions, release notes, store copy with character limits, and the items each one shipped. |
 | [Prompts](prompts.md) | The library, placeholders, partials, favorites, templates vs roles. |
 | [Configuration](configuration.md) | Every key of `planestro.yml` and `planestro.local.yml`. |
 | [CLI](cli.md) | Every command and flag. |

@@ -36,6 +36,10 @@ describe('the manual cannot drift from the code', () => {
     expect(AWAITING.filter((a) => a !== 'orchestrator' && !concepts.includes(`\`${a}\``))).toEqual([]);
   });
 
+  it('AGENTS.md is CLAUDE.md, byte for byte: Codex and Claude read the same rules', () => {
+    expect(readFileSync(join(ROOT, 'AGENTS.md')).equals(readFileSync(join(ROOT, 'CLAUDE.md')))).toBe(true);
+  });
+
   it('every relative link in the manual and the README points at a file that exists', () => {
     const files = [join(ROOT, 'README.md'), ...readdirSync(join(ROOT, 'docs')).filter((f) => f.endsWith('.md')).map((f) => join(ROOT, 'docs', f)), ...readdirSync(join(ROOT, 'docs', 'notes')).map((f) => join(ROOT, 'docs', 'notes', f))];
     const broken: string[] = [];

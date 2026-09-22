@@ -16,6 +16,10 @@ resumes with its context intact.
 
 ![One feature on the board: two art children drawn by Codex wait for a look, the code children wait for the art, the epic counts 0/4](docs/img/board.png)
 
+Releases live beside the backlog: each version's notes, its store copy
+(counted against the store's character limits) and the items it shipped, in
+one file per release.
+
 **[Read the manual →](docs/README.md)**
 
 It is used daily to build a commercial game that ships on the App Store:
@@ -171,11 +175,11 @@ answer in the UI. A per-item budget (`budget_usd_per_item`) caps spend.
 ## Layout
 
 ```
-packages/shared   schema, item/prompt file codecs, ranks, transitions, placeholders
+packages/shared   schema, item/prompt/release file codecs, ranks, transitions, placeholders
 packages/server   store (atomic writes, journal, semantic commits), engine (ports,
                   policy, lifecycle, reconciler, orchestrator, SDK session port),
                   Hono API + WebSocket, CLI, the sample project
-packages/web      React + Vite UI: board, item, sessions, prompts, console, settings
+packages/web      React + Vite UI: board, item, sessions, releases, prompts, console, settings
 docs/             the manual (start at docs/README.md); spike records in docs/notes/
 spikes/           the runnable Phase 0 spike
 ```

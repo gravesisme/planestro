@@ -3,11 +3,11 @@ import { z } from 'zod';
 import { basename, join, normalize } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import YAML from 'yaml';
-import { allowedTransitions, parsePromptFile, RenderError, STATUSES, PROMPT_KINDS, type Status, type Actor } from '@planestro/shared';
+import { allowedTransitions, parsePromptFile, RenderError, STATUSES, PROMPT_KINDS, RELEASE_STATUSES, type Status, type Actor } from '@planestro/shared';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Engine } from '../engine/Engine.ts';
 import type { ConsoleBuffer } from '../store/ConsoleBuffer.ts';
-import { itemView, promptView, stateView } from './views.ts';
+import { itemView, promptView, releaseView, stateView } from './views.ts';
 
 const EDITABLE_FIELDS = z.object({
   title: z.string().min(1).optional(), category: z.string().min(1).optional(), planner: z.string().optional(), implementer: z.string().optional(),
@@ -190,6 +190,25 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
       catch (e) { if (e instanceof RenderError) return c.json({ error: e.message, missing: e.missing }, 422); throw e; }
     } catch (e) { return fail(c, e); }
   });
+
+  api.get('/releases', (c) => c.json(store.listReleases().map((r) => releaseView(store, r))));
+  api.get('/releases/:version', (c) => { const r = store.getRelease(c.req.param('version')); return r ? c.json(releaseView(store, r)) : c.json({ error: 'not found' }, 404); });
+  api.post('/releases', async (c) => {
+    try {
+      const input = z.object({ version: z.string().min(1), title: z.string().optional(), status: z.enum(RELEASE_STATUSES).optional(), date: z.string().optional() }).parse(await c.req.json());
+      return c.json(releaseView(store, store.createRelease(input)), 201);
+    } catch (e) { return fail(c, e); }
+  });
+  api.patch('/releases/:version', async (c) => {
+    try {
+      const body = z.object({
+        fields: z.object({ version: z.string().min(1), title: z.string().nullable(), status: z.enum(RELEASE_STATUSES), date: z.string().nullable(), tag: z.string().nullable(), items: z.array(z.string()) }).partial().strict().optional(),
+        sections: z.record(z.string().min(1), z.string()).optional(),
+      }).parse(await c.req.json());
+      return c.json(releaseView(store, store.editRelease(c.req.param('version'), body)));
+    } catch (e) { return fail(c, e); }
+  });
+  api.delete('/releases/:version', (c) => { try { store.deleteRelease(c.req.param('version')); return c.json({ ok: true }); } catch (e) { return fail(c, e); } });
 
   api.get('/config', (c) => c.json({ config: store.config, local: store.local, configText: readFileSync(join(store.dataDir, 'planestro.yml'), 'utf8') }));
   api.put('/config', async (c) => {

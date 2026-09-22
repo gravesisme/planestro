@@ -106,6 +106,12 @@ git:
   checkpoint_interval_min: 60
 attachments:
   managed_max_bytes: 2000000
+# The sections every release file has. max_chars counts toward a store's limit; carry starts a
+# new release with the previous one's text (store copy that rarely changes).
+releases:
+  sections:
+    - { title: Release notes, hint: "What users are told changed." }
+    - { title: Notes, hint: "Yours: the checklist, what went wrong, what to do differently." }
 `);
   write('.gitignore', `.planestro/\nplanestro.local.yml\nlogs/\n.DS_Store\n`);
   if (gd) write('.gdignore', '');
@@ -153,6 +159,8 @@ is plain text and readable without the tool; git history is the audit trail.
   "unset"; \`null\` is never written. Timestamps are local time with offset.
 - \`prompts/<name>.md\` — the reusable prompt library (\`kind: template | action | partial\`,
   \`{{placeholders}}\`, \`{{> partial}}\`).
+- \`releases/<version>.md\` — one release: status, date, the items it shipped, and the sections
+  \`releases.sections\` in planestro.yml names (release notes, store copy, your notes).
 - \`attachments/${prefix}-<n>/\` — small managed attachments; large assets are referenced by path.
 - \`journal/YYYY-MM.ndjson\` — the operational event stream (high frequency; not the place to read history).
 

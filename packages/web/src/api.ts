@@ -1,4 +1,4 @@
-import type { ItemFrontmatter, PromptFrontmatter, Config, LocalConfig, Status, JournalEntry } from '@planestro/shared';
+import type { ItemFrontmatter, PromptFrontmatter, ReleaseFrontmatter, ReleaseStatus, Config, LocalConfig, Status, JournalEntry } from '@planestro/shared';
 import type { BreakdownChild } from '@planestro/shared';
 
 export interface ItemView {
@@ -9,10 +9,12 @@ export interface ItemView {
 }
 export interface ReviewImage { path: string; change: 'added' | 'modified' | 'deleted'; bytes?: number; width?: number; height?: number }
 export interface PromptView { name: string; path: string; frontmatter: PromptFrontmatter; body: string; text?: string }
+export interface ReleaseView { version: string; path: string; frontmatter: ReleaseFrontmatter; sections: { title: string; body: string }[]; candidates: string[] }
+export interface ReleaseFields { version?: string; title?: string | null; status?: ReleaseStatus; date?: string | null; tag?: string | null; items?: string[] }
 export interface SessionView { item: string; session_id?: string; model?: string; op?: string; started_at?: string; busy: boolean; last_output?: string }
 export interface State {
   schema: string; readOnly: boolean; dataDir: string; codeRepo: string; config: Config; local: LocalConfig;
-  items: ItemView[]; prompts: PromptView[]; invalid: { path: string; error: string }[];
+  items: ItemView[]; prompts: PromptView[]; releases?: ReleaseView[]; invalid: { path: string; error: string }[];
   engine: { mode: string; paused: boolean; sessions: SessionView[] };
   git: { dirty: string[]; branch: string; head?: string; ahead?: number };
   statuses: Status[];
@@ -52,6 +54,9 @@ export const api = {
   putPrompt: (name: string, text: string) => req<PromptView>('PUT', `/api/prompts/${name}`, { text }),
   deletePrompt: (name: string) => req<{ ok: true }>('DELETE', `/api/prompts/${name}`),
   renderPrompt: (name: string, itemId?: string) => req<{ text: string }>('POST', `/api/prompts/${name}/render`, { itemId }),
+  createRelease: (body: { version: string; title?: string; date?: string }) => req<ReleaseView>('POST', '/api/releases', body),
+  patchRelease: (version: string, body: { fields?: ReleaseFields; sections?: Record<string, string> }) => req<ReleaseView>('PATCH', `/api/releases/${encodeURIComponent(version)}`, body),
+  deleteRelease: (version: string) => req<{ ok: true }>('DELETE', `/api/releases/${encodeURIComponent(version)}`),
   putConfig: (body: Record<string, Record<string, unknown>>) => req<{ config: Config }>('PUT', '/api/config', body),
   putLocal: (body: Record<string, string>) => req<{ local: LocalConfig }>('PUT', '/api/config/local', body),
   categories: (body: Record<string, string>) => req<{ config: Config; affected: number }>('POST', '/api/config/categories', body),

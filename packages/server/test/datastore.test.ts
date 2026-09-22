@@ -3,7 +3,10 @@ import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DataStore } from '../src/store/DataStore.ts';
 import { makeFixture, git, sleep } from './helpers.ts';
-import { parseItemFile, getSection } from '@planestro/shared';
+import { parseItemFile, getSection, getReleaseSection, isoLocal } from '@planestro/shared';
+import type { StoredRelease } from '../src/store/DataStore.ts';
+
+const getReleaseSectionOf = (r: StoredRelease, title: string) => getReleaseSection(r.file, title);
 
 let store: DataStore | undefined;
 afterEach(() => { store?.close(); store = undefined; });
@@ -140,6 +143,43 @@ describe('DataStore', () => {
     expect(text).toContain('add --version');
     expect(text).toContain('`trunk`');
     expect(text).toContain('/repo/.claude/worktrees/tp-1-add-flag');
+  });
+
+  it('releases: store copy carries forward, shipping records the day, renames and item changes commit at once', async () => {
+    const { dataDir } = makeFixture();
+    writeFileSync(join(dataDir, 'planestro.yml'), readFileSync(join(dataDir, 'planestro.yml'), 'utf8').replace(/^releases:\n(?:  .*\n)+/m, '') + 'releases:\n  sections:\n    - { title: Release notes }\n    - { title: Subtitle, max_chars: 30, carry: true }\n');
+    git(dataDir, 'commit', '-qam', 'config');
+    store = await DataStore.open(dataDir);
+    expect(existsSync(join(dataDir, 'releases'))).toBe(false); // nothing on disk until the first release
+    const done = store.createItem({ title: 'Map' });
+    store.mutateItem(done.id, [{ set: { status: 'FINISHED', merged_at: '2026-09-10T10:00:00-04:00' } }], 'user');
+    store.createRelease({ version: '1.4.0', date: '2026-09-05', status: 'released' });
+    store.editRelease('1.4.0', { sections: { Subtitle: 'Survive the storm.', 'Release notes': '* boss polish' } });
+    const next = store.createRelease({ version: '1.5.0' });
+    expect(getReleaseSectionOf(next, 'Subtitle')).toBe('Survive the storm.');
+    expect(getReleaseSectionOf(next, 'Release notes')).toBe('');
+    expect(readFileSync(next.path, 'utf8')).toContain('# Release notes\n\n# Subtitle\n\nSurvive the storm.\n');
+    await settled(store);
+    expect(git(dataDir, 'log', '-1', '--format=%s%n%b')).toMatch(/^releases: add 1\.5\.0\nStore copy carried from 1\.4\.0\./);
+
+    store.editRelease('1.5.0', { fields: { date: '2999-01-01' } });
+    const shipped = store.editRelease('1.5.0', { fields: { status: 'released', items: [done.id] } });
+    expect(shipped.file.frontmatter.date).toBe(isoLocal().slice(0, 10)); // the target was still ahead: it shipped today
+    await settled(store);
+    expect(git(dataDir, 'log', '-1', '--format=%s').trim()).toBe(`releases: 1.5.0 released; add ${done.id}`);
+    expect(() => store!.editRelease('1.5.0', { fields: { items: ['TP-999'] } })).toThrow(/unknown item/);
+
+    store.editRelease('1.5.0', { fields: { version: '1.5.1', title: 'Map update' } });
+    await settled(store);
+    expect(existsSync(join(dataDir, 'releases', '1.5.0.md'))).toBe(false);
+    expect(store.listReleases().map((r) => r.version)).toEqual(['1.5.1', '1.4.0']);
+    expect(git(dataDir, 'status', '--porcelain', 'releases/1.5.0.md', 'releases/1.5.1.md')).toBe(''); // the rename is one commit
+    expect(() => store!.createRelease({ version: '1.4.0' })).toThrow(/already exists/);
+    expect(() => store!.createRelease({ version: '../x' })).toThrow(/version/);
+    store.deleteRelease('1.4.0');
+    store.close(); store = await DataStore.open(dataDir);
+    expect(store.invalid).toEqual([]);
+    expect(store.getRelease('1.5.1')!.file.frontmatter).toMatchObject({ title: 'Map update', status: 'released', items: [done.id] });
   });
 
   it('startup commits hand edits and flags invalid files without touching them', async () => {

@@ -22,6 +22,11 @@ export function parseItemFile(text: string): ItemFile {
 }
 
 export function parseSections(body: string): Section[] {
+  return ensureKnownSections(splitSections(body));
+}
+
+/** `# Heading` blocks in file order; text before the first heading is an untitled section. */
+export function splitSections(body: string): Section[] {
   const lines = body.replace(/\r\n/g, '\n').split('\n');
   const sections: Section[] = [];
   let current: Section | null = null;
@@ -33,7 +38,7 @@ export function parseSections(body: string): Section[] {
   }
   if (preamble.join('\n').trim()) sections.unshift({ title: '', body: preamble.join('\n') });
   for (const s of sections) s.body = s.body.replace(/\s+$/, '').replace(/^\n+/, '');
-  return ensureKnownSections(sections);
+  return sections;
 }
 
 /** Missing canonical sections are inserted in canonical order; unknown sections keep their place. */

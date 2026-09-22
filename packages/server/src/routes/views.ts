@@ -1,5 +1,5 @@
-import { getSection, parseActivity, serializePromptFile, type Status } from '@planestro/shared';
-import type { DataStore, StoredItem, StoredPrompt } from '../store/DataStore.ts';
+import { getSection, parseActivity, serializePromptFile, releaseCandidates, type Status } from '@planestro/shared';
+import type { DataStore, StoredItem, StoredPrompt, StoredRelease } from '../store/DataStore.ts';
 
 /** JSON shape of an item as the UI sees it: frontmatter + sections + derived values. */
 export function itemView(store: DataStore, item: StoredItem) {
@@ -19,6 +19,18 @@ export function promptView(p: StoredPrompt) {
   return { name: p.name, path: p.path, frontmatter: p.file.frontmatter, body: p.file.body, text: serializePromptFile(p.file) };
 }
 
+/** A release with its sections by title, and the finished work in its window that no release holds yet. */
+export function releaseView(store: DataStore, r: StoredRelease) {
+  const releases = store.listReleases().map((x) => x.file);
+  const items = store.listItems().map((i) => ({ id: i.id, fm: i.file.frontmatter }));
+  return {
+    version: r.version, path: r.path, frontmatter: r.file.frontmatter,
+    sections: r.file.sections.filter((s) => s.title).map((s) => ({ title: s.title, body: s.body })),
+    candidates: releaseCandidates(r.version, releases, items).map((i) => i.id),
+  };
+}
+export type ReleaseView = ReturnType<typeof releaseView>;
+
 export function stateView(store: DataStore, engine: { mode: string; paused: boolean; sessions(): unknown[] }, git: unknown) {
   return {
     schema: store.schema,
@@ -29,6 +41,7 @@ export function stateView(store: DataStore, engine: { mode: string; paused: bool
     local: store.local,
     items: store.listItems().map((i) => itemView(store, i)),
     prompts: store.listPrompts().map(promptView),
+    releases: store.listReleases().map((r) => releaseView(store, r)),
     invalid: store.invalid,
     engine: { mode: engine.mode, paused: engine.paused, sessions: engine.sessions() },
     git,

@@ -4,6 +4,7 @@ export type ServerEvent =
   | { type: 'item.updated'; id: string; source?: 'app' | 'external' }
   | { type: 'item.deleted'; id: string }
   | { type: 'prompt.updated'; name: string }
+  | { type: 'release.updated'; version: string }
   | { type: 'config.updated' }
   | { type: 'journal.appended'; entry: JournalEntry }
   | { type: 'git.committed'; message: string }

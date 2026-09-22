@@ -3,6 +3,7 @@ export * from './timestamps.ts';
 export * from './frontmatter.ts';
 export * from './itemfile.ts';
 export * from './promptfile.ts';
+export * from './releasefile.ts';
 export * from './rank.ts';
 export * from './transitions.ts';
 export * from './placeholders.ts';
