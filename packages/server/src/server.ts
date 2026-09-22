@@ -15,6 +15,7 @@ import { LiveEngine } from './engine/LiveEngine.ts';
 import { makePorts } from './engine/makePorts.ts';
 import { VALIDATED_CLAUDE_VERSION, VALIDATED_CODEX_VERSION } from './compat.ts';
 import { TOOL_VERSION } from './config.ts';
+import { allowedHosts, requestGuard } from './guard.ts';
 
 export interface ServeOptions { dataDir: string; port?: number; host?: string; mock?: boolean; engineFactory?: (store: DataStore, emit: (e: ServerEvent) => void) => Engine; log?: (level: string, msg: string) => void }
 
@@ -31,7 +32,11 @@ export async function startServer(o: ServeOptions) {
   };
   const engine = (o.engineFactory ?? defaultFactory)(store, emit);
 
+  const port = o.port ?? 4300;
+  const host = o.host ?? '127.0.0.1';
   const app = new Hono();
+  // Before every route, the WebSocket upgrade included: see guard.ts.
+  app.use('*', requestGuard(allowedHosts(host, store.local.allowed_hosts), (l, m) => log(l, m)));
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
   app.route('/api', apiRoutes(store, engine, consoles));
   app.route('/attachments', attachmentRoutes(store));
@@ -50,8 +55,6 @@ export async function startServer(o: ServeOptions) {
     app.get('/', (c) => c.text(`planestro ${TOOL_VERSION} API is up; the web UI is not built (run \`npm run build\`, or \`npm run dev:web\` for Vite on :5173).`));
   }
 
-  const port = o.port ?? 4300;
-  const host = o.host ?? '127.0.0.1';
   const server = serve({ fetch: app.fetch, port, hostname: host }, () => log('info', `planestro ${TOOL_VERSION} on http://${host}:${port} — data ${store.dataDir} (${store.schema}, ${store.items.size} items) — engine ${engine.mode}${engine.paused ? ' PAUSED' : ''}`));
   injectWebSocket(server);
   warnOnClaudeDrift(log);
