@@ -32,7 +32,7 @@ export class GitCommitter {
 
   async status(): Promise<{ dirty: string[]; branch: string; head?: string; ahead?: number }> {
     if (!existsSync(join(this.dir, '.git'))) return { dirty: [], branch: '(no git)' };
-    const { stdout } = await this.git(['status', '--porcelain']);
+    const { stdout } = await this.git(['status', '--porcelain', '--untracked-files=all']);
     const dirty = stdout.split('\n').filter(Boolean).map((l) => l.slice(3));
     const branch = (await this.git(['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => ({ stdout: '' }))).stdout.trim();
     const head = (await this.git(['rev-parse', '--short', 'HEAD']).catch(() => ({ stdout: '' }))).stdout.trim() || undefined;
