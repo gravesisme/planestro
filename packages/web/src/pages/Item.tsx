@@ -8,6 +8,7 @@ import { statusLabel } from '../components/ItemCard.tsx';
 import { ItemConsole } from '../components/ItemConsole.tsx';
 import { CLOSE_HINT, confirmMove, promptCloseAsDone } from '../components/QuickActions.tsx';
 import { ReviewPanel } from '../components/ReviewPanel.tsx';
+import { fallbackHint } from '../components/NewItemDialog.tsx';
 import { BreakdownPanel } from '../components/BreakdownPanel.tsx';
 import { BlockedPanel } from '../components/BlockedPanel.tsx';
 import { AwaitingPanels } from '../components/AwaitingPanels.tsx';
@@ -87,6 +88,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           {fm.kind !== 'epic' && implementerDef && (implementerDef.runner ?? 'claude') !== 'claude' && <span className="small muted" title="Claude workers get a per-command permission policy with parked requests. This runner has no such callback: its turns run inside its own sandbox (writes confined to the worktree, no network for its commands) and planestro verifies the result afterwards.">runs on {implementerDef.runner}: sandboxed, not per-command permissions ⓘ</span>}
           {fm.kind !== 'epic' && <label>parent epic <select value={fm.parent ?? ''} onChange={(e) => field({ parent: e.target.value || null })}><option value="">none</option>{epics.map((e) => <option key={e.id} value={e.id}>{e.id} {e.frontmatter.title}</option>)}</select></label>}
           {fm.kind !== 'epic' && !d.external && <label title={orch.may_approve_plans ? `The orchestrator reviews the plan and approves it, sends it back with fixes (up to ${orch.max_plan_revisions} round${orch.max_plan_revisions === 1 ? '' : 's'}), or leaves it to you` : 'Turn on "the orchestrator may approve plans" in Settings first'}><input type="checkbox" checked={!!fm.auto_approve_plan} disabled={!orch.may_approve_plans} onChange={(e) => field({ auto_approve_plan: e.target.checked })} /> let the orchestrator approve the plan{orch.may_approve_plans ? ` (up to ${orch.max_plan_revisions} fix round${orch.max_plan_revisions === 1 ? '' : 's'}, then you)` : ' — off in Settings'}</label>}
+          {!d.external && <label title="While the planner's or implementer's model is out of usage, turns run on its fallback (models: fallback in planestro.yml) instead of blocking as usage_exhausted"><input type="checkbox" checked={!!fm.allow_model_fallback} onChange={(e) => field({ allow_model_fallback: e.target.checked })} /> allow fallback model{fallbackHint(state.config, [fm.planner, fm.kind !== 'epic' ? fm.implementer : undefined])}{fm.kind === 'epic' ? ' — children created from its breakdown inherit this' : ''}</label>}
           {d.external && <label>merge policy <select value={fm.merge_policy ?? 'watch'} onChange={(e) => field({ merge_policy: e.target.value })}><option value="watch">watch (someone else merges)</option><option value="app">app (planestro merges)</option></select></label>}
           <span className="deps">depends on
             {fm.depends_on.length === 0 && <span className="muted"> nothing</span>}

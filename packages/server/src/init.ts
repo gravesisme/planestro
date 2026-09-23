@@ -68,7 +68,8 @@ ${o.releaseBranch ? `  release_branch: ${yamlStr(o.releaseBranch)}\n` : ''}${git
 hooks:
   after_worktree_create: []
 models:
-  - { id: fable-5, label: Fable 5, claude_model: claude-fable-5 }
+  # fallback: while a model is out of usage, items that allow it (and the orchestrator, if allowed) run on this one instead.
+  - { id: fable-5, label: Fable 5, claude_model: claude-fable-5, fallback: opus-5 }
   - { id: opus-5, label: Opus 5, claude_model: claude-opus-5 }
   # A model on the Codex CLI implements but never plans. Its description is what the epic planner routes by;
   # hold_for_review parks its pull requests for your eye before they merge.

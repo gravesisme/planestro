@@ -107,13 +107,15 @@ export interface ClaudeTurnExtras {
   permissionMode: 'plan' | 'acceptEdits';
   allowedTools: string[];
   maxBudgetUsd?: number;
+  /** The SDK's own fallback for an overloaded or unavailable model (the next model in the item's fallback chain). */
+  fallbackModel?: string;
   /** Decide a permission prompt. Return 'park' to persist + deny + park, 'deny' with a reason, or 'allow'. */
   onPermission(req: PermissionRequest): Promise<{ action: 'allow' } | { action: 'deny'; message: string } | { action: 'park' }>;
 }
 export type TurnOptions = AgentTurnOptions & ClaudeTurnExtras;
 export interface TurnResult {
   sessionId?: string;
-  subtype: string;            // success | error_max_turns | error_max_budget_usd | error_during_execution | killed | spawn_error
+  subtype: string;            // success | error_max_turns | error_max_budget_usd | error_during_execution | killed | spawn_error | usage_exhausted
   isError: boolean;
   costUsd: number;
   /** Uncached input + output tokens, from runners that report tokens instead of dollars. */
@@ -125,6 +127,8 @@ export interface TurnResult {
   done?: string;
   blocked?: string;
   parked?: 'question' | 'permission';
+  /** Set with subtype `usage_exhausted`: the model is out of usage (the provider's message, and its reset time when it gave one). */
+  usageLimit?: { message: string; resetsAt?: string };
 }
 export interface CustomToolDef {
   name: string;
@@ -144,6 +148,8 @@ export interface CustomTurnOptions {
   allowedTools: string[];
   mcpTools: CustomToolDef[];
   maxTurns?: number;
+  /** As for worker turns: the SDK's own fallback for an overloaded or unavailable model. */
+  fallbackModel?: string;
   onOutput(text: string): void;
   signal?: AbortSignal;
 }

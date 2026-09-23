@@ -29,7 +29,7 @@ page says which one an item runs under.
 
 ```yaml
 models:
-  - { id: fable-5, label: Fable 5, claude_model: claude-fable-5 }
+  - { id: fable-5, label: Fable 5, claude_model: claude-fable-5, fallback: opus-5 }
   - { id: opus-5, label: Opus 5, claude_model: claude-opus-5, description: "Code, tests and docs. Cannot generate images." }
   - { id: codex-art, label: Codex Art, runner: codex, hold_for_review: true,
       description: "All raster art: icons, sprites, illustrations. Does not write code." }
@@ -43,6 +43,9 @@ models:
   it, so write it as an instruction: what to send here, and what never to.
 - `hold_for_review` — park this model's pull requests on `awaiting: review` after CI,
   until you have looked. Meant for art; works for any model.
+- `fallback` — another model on the same runner that takes over, for items that tick
+  **allow fallback model**, while this one is out of usage. See
+  [Model fallback](configuration.md#model-fallback).
 - `external: true` — not run by planestro at all; its items are watched.
 
 ### Adding a Codex model

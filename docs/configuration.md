@@ -40,10 +40,12 @@ A test (`docs.test.ts`) fails if a key in the schema is missing from this page.
 | `models.codex_model` | Codex's own default | Passed to `codex exec -m`. |
 | `models.description` | none | One line on what the model is for. The epic planner routes children by it. |
 | `models.hold_for_review` | `false` | Park this model's pull requests on `awaiting: review` after CI until you approve them. |
+| `models.fallback` | none | Another model id on the same runner. An item that allows fallback (**allow fallback model**, `allow_model_fallback: true`) runs on it while this model is out of usage, and the Claude SDK also uses it when this model is overloaded. Chains are followed (`a → b → c`). See [Model fallback](#model-fallback). |
 | `models.external` | `false` | Not run by planestro; its items are watched. |
 | `defaults.planner` | — | For new items. Must be a model that can plan. |
 | `defaults.implementer` | — | For new items. |
 | `defaults.category` | — | For new items. |
+| `defaults.allow_model_fallback` | `false` | New items start with **allow fallback model** ticked; an epic's children inherit the epic's setting. |
 | `categories` | — | The list items choose from. Rename and remove in Settings, which reassigns items. |
 
 ### Budgets and concurrency
@@ -87,7 +89,8 @@ their sandbox instead.
 
 | Key | Default | |
 |---|---|---|
-| `orchestrator.model` | `claude-fable-5` | The judgment layer's model. |
+| `orchestrator.model` | `claude-fable-5` | The judgment layer's model: a model id from `models:` (Settings writes the id) or a Claude model string. |
+| `orchestrator.allow_model_fallback` | `false` | While the orchestrator's model is out of usage, wake on its `fallback` instead. |
 | `orchestrator.may_approve_plans` | `false` | Whether it may approve plans of items that opted in (**let the orchestrator approve the plan** on the item). It can never approve an epic's breakdown or release a review hold. |
 | `orchestrator.may_decide_permissions` | `false` | Whether workers' permission requests go to it before you. It allows ordinary work in the worktree, denies with a reason (three denials on one item and the rest come to you), and hands over anything outside the worktree, installing software or touching credentials. The hard rules run first regardless. |
 | `orchestrator.max_plan_revisions` | `2` | How many times it may send one item's plan back to the planner with fixes. Past that it can only approve the plan or leave it to you. |
@@ -121,5 +124,24 @@ Default: **Release notes** and **Notes**.
 | `allowed_hosts` | Extra names this machine is reached by — a Tailscale or DNS name for the phone. The server answers only requests addressed to `localhost`, `127.0.0.1`, the `--host` it is bound to (with `0.0.0.0`: this machine's hostname and interface addresses) and these; anything else, and any request from another website, gets a 403. |
 | `codex_bin` | Path to `codex`, if not on `PATH`. Only used by models with `runner: codex`. |
 | `anthropic_api_key` | Bills Claude sessions to the API under the Commercial Terms instead of a claude.ai login. `ANTHROPIC_API_KEY` in the environment does the same. |
+| `model_unavailable` | Models this machine's account cannot use right now, by model id: `{ until, reason, since, manual }`. Written when a turn fails on a usage limit and by **mark unavailable** in Settings; cleared there or when `until` passes. Per machine because usage belongs to the account logged in here. |
 | `engine.paused` | The PAUSE AUTOMATION lever, persisted. |
 | `engine.mode` | This machine's override of `engine.mode`. |
+
+## Model fallback
+
+A subscription model can run out of usage mid-week. planestro can carry on with another model
+until it resets, per item and for the orchestrator, without a code change:
+
+1. Give the model a fallback on the same runner: `- { id: fable-5, label: Fable 5, claude_model: claude-fable-5, fallback: opus-5-5 }`.
+2. Allow it: tick **allow fallback model** on an item (or set `defaults.allow_model_fallback: true` so new items and epic children start with it), and **orchestrator → allow fallback** in Settings.
+
+When a Claude turn fails because its model is out of usage (the CLI's usage-limit message, a
+`billing_error` / `rate_limit` / `model_not_found` from the API, or a rejected rate-limit event),
+planestro records the model as unavailable until the reset the provider reported (or an hour),
+notes it in the item's Activity log and runs the same turn again on the fallback, resuming the
+same conversation. Later turns go straight to the fallback until the reset; after it, the
+original model is tried first again. An item that does not allow a fallback blocks as
+`usage_exhausted` instead. You can also **mark unavailable until…** a model in Settings when you
+already know it is out, so no turn is spent discovering it.
+

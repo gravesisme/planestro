@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
-import { getSection, serializeItemFile, isoLocal, renormalize, laneOf, type ServerEvent } from '@planestro/shared';
+import { getSection, serializeItemFile, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent } from '@planestro/shared';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Ports, CustomToolDef, TurnResult } from './ports.ts';
 
@@ -96,7 +96,25 @@ export class Orchestrator {
     } finally { this.running = false; }
   }
 
-  private async runWake(events: WakeEvent[]): Promise<void> {
+  /**
+   * The orchestrator's model for this wake. `orchestrator.model` names a model row (by id or by its
+   * Claude model string) or is a raw model string; with `allow_model_fallback`, a row that is out of
+   * usage on this machine yields to its fallback chain, as a worker's turn does.
+   */
+  modelForWake(now = new Date(Date.now())): { model: string; label: string; fellBackFrom?: string; sdkFallback?: string; exhaustedUntil?: string } {
+    const cfg = this.store.config.orchestrator;
+    const def = findModel(this.store.config, cfg.model);
+    if (!def || (def.runner ?? 'claude') !== 'claude') return { model: def?.claude_model ?? cfg.model, label: def?.label ?? cfg.model };
+    const pick = resolveTurnModel(this.store.config, def, { allow: cfg.allow_model_fallback, unavailable: this.store.local.model_unavailable, now });
+    return {
+      model: pick.model ?? cfg.model, label: pick.def.label,
+      ...(pick.fellBackFrom ? { fellBackFrom: pick.fellBackFrom.label } : {}),
+      ...(pick.sdkFallback ? { sdkFallback: pick.sdkFallback } : {}),
+      ...(pick.exhaustedUntil ? { exhaustedUntil: pick.exhaustedUntil } : {}),
+    };
+  }
+
+  private async runWake(events: WakeEvent[], retried = false): Promise<void> {
     const cfg = this.store.config.orchestrator;
     let state = this.readState();
     const tooOld = state.started_at && (Date.now() - Date.parse(state.started_at)) / 86_400_000 > cfg.rotate_after_days;
@@ -107,15 +125,32 @@ export class Orchestrator {
     const packet = events.map((e) => this.renderPacket(e)).join('\n\n---\n\n');
     const prompt = `${state.session_id ? '' : this.systemIntro() + '\n\n'}# Wake: ${events.map((e) => e.type).join(', ')} — ${isoLocal()}\n\n${packet}\n\nHandle what needs judgment using the planestro tools, then call done_with_wake with a one-line summary. Everything mechanical is already handled by the app; do not attempt git or gh operations.`;
     let doneSummary = '';
-    const model = this.store.config.models.find((m) => m.id === cfg.model)?.claude_model ?? cfg.model;
+    const pick = this.modelForWake();
+    if (pick.fellBackFrom) this.log('info', `orchestrator: ${pick.fellBackFrom} is out of usage; waking on ${pick.label}`);
+    if (pick.exhaustedUntil) this.log('warn', `orchestrator: every model in its fallback chain is out of usage until ${pick.exhaustedUntil}; trying ${pick.label} anyway`);
+    const model = pick.model;
     const result: TurnResult = await this.ports.agents.claude.runCustomTurn!({
       label: events.map((e) => e.type).join(','), cwd: this.store.codeRepoPath(), model,
+      ...(pick.sdkFallback ? { fallbackModel: pick.sdkFallback } : {}),
       permissionMode: 'dontAsk', prompt, resume: state.session_id, maxTurns: 30,
       systemAppend: this.systemIntro(),
       allowedTools: ['Read', 'Grep', 'Glob', 'Bash(git log*)', 'Bash(git diff*)', 'Bash(git show*)', 'Bash(gh pr view*)', 'Bash(gh pr diff*)', 'Bash(gh run view*)'],
       mcpTools: this.tools((s) => { doneSummary = s; }),
       onOutput: (t) => this.emit({ type: 'engine.log', level: 'info', message: `[orchestrator] ${t.slice(0, 300)}` }),
     });
+    if (result.subtype === 'usage_exhausted') {
+      const def = findModel(this.store.config, model);
+      const now = new Date(Date.now());
+      const until = unavailableUntil(result.usageLimit?.resetsAt, now);
+      if (def) {
+        this.store.updateLocal({ model_unavailable: markUnavailable(this.store.local.model_unavailable, def.id, { until, reason: result.usageLimit?.message ?? 'usage limit' }, now) });
+        this.store.journal.append({ type: 'model.unavailable', actor: 'orchestrator', data: { model: def.id, until: until.toISOString(), reason: result.usageLimit?.message ?? '' } });
+      }
+      const root = findModel(this.store.config, cfg.model);
+      const another = root && cfg.allow_model_fallback && fallbackChain(this.store.config, root).some((m) => m.id !== def?.id && !unavailableEntry(this.store.local.model_unavailable, m.id, now));
+      this.log('warn', `orchestrator: ${def?.label ?? model} is out of usage until ${until.toISOString()}${another && !retried ? '; retrying the wake on its fallback' : ''}`);
+      if (another && !retried) return this.runWake(events, true);
+    }
     this.writeState({ session_id: result.sessionId ?? state.session_id, started_at: state.started_at ?? isoLocal(), wakes_served: state.wakes_served + 1 });
     this.store.journal.append({ type: 'orchestrator.done', actor: 'orchestrator', data: { events: events.map((e) => e.type), summary: doneSummary || result.text.slice(-300), cost: result.costUsd, subtype: result.subtype } });
     this.log('info', `orchestrator: ${doneSummary || result.subtype}`);

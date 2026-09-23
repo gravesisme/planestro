@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { basename, join, normalize } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import YAML from 'yaml';
-import { allowedTransitions, parsePromptFile, RenderError, STATUSES, PROMPT_KINDS, RELEASE_STATUSES, type Status, type Actor } from '@planestro/shared';
+import { allowedTransitions, parsePromptFile, RenderError, STATUSES, PROMPT_KINDS, RELEASE_STATUSES, findModel, canPlan, markUnavailable, type Status, type Actor } from '@planestro/shared';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Engine } from '../engine/Engine.ts';
 import type { ConsoleBuffer } from '../store/ConsoleBuffer.ts';
@@ -11,7 +11,7 @@ import { itemView, promptView, releaseView, stateView } from './views.ts';
 
 const EDITABLE_FIELDS = z.object({
   title: z.string().min(1).optional(), category: z.string().min(1).optional(), planner: z.string().optional(), implementer: z.string().optional(),
-  auto_approve_plan: z.boolean().optional(), depends_on: z.array(z.string()).optional(), parent: z.string().nullable().optional(),
+  auto_approve_plan: z.boolean().optional(), allow_model_fallback: z.boolean().nullable().optional(), depends_on: z.array(z.string()).optional(), parent: z.string().nullable().optional(),
   merge_policy: z.enum(['app', 'watch']).nullable().optional(), base_branch_override: z.string().nullable().optional(),
   branch: z.string().nullable().optional(), pr: z.number().int().positive().nullable().optional(),
   skip_merge: z.boolean().nullable().optional(),
@@ -39,6 +39,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
         title: z.string().min(1), category: z.string().optional(), description: z.string().optional(), notes: z.string().optional(),
         kind: z.enum(['item', 'epic']).optional(), parent: z.string().optional(), planner: z.string().optional(), implementer: z.string().optional(),
         status: z.enum(['NOT_YET_SUBMITTED', 'ICEBOX']).optional(), depends_on: z.array(z.string()).optional(), auto_approve_plan: z.boolean().optional(),
+        allow_model_fallback: z.boolean().optional(),
       }).parse(await c.req.json());
       const { auto_approve_plan, ...input } = body;
       return c.json(itemView(store, store.createItem({ ...input, ...(auto_approve_plan ? { extra: { auto_approve_plan: true } } : {}) })), 201);
@@ -214,16 +215,43 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   api.put('/config', async (c) => {
     try {
       const body = z.object({
-        defaults: z.object({ planner: z.string(), implementer: z.string(), category: z.string() }).partial().optional(),
+        defaults: z.object({ planner: z.string(), implementer: z.string(), category: z.string(), allow_model_fallback: z.boolean() }).partial().optional(),
         concurrency: z.object({ max_sessions: z.number().int().positive(), max_local_jobs: z.number().int().positive() }).partial().optional(),
         ci: z.object({ mode: z.enum(['github', 'github-or-local']), require_green_base: z.boolean(), local_check_command: z.string() }).partial().optional(),
         engine: z.object({ mode: z.enum(['live', 'dry-run']) }).partial().optional(),
         notifications: z.object({ on_merge: z.string() }).partial().optional(),
-        orchestrator: z.object({ may_approve_plans: z.boolean(), max_plan_revisions: z.number().int().nonnegative(), may_decide_permissions: z.boolean() }).partial().optional(),
+        orchestrator: z.object({ model: z.string().min(1), allow_model_fallback: z.boolean(), may_approve_plans: z.boolean(), max_plan_revisions: z.number().int().nonnegative(), may_decide_permissions: z.boolean() }).partial().optional(),
       }).parse(await c.req.json());
+      if (body.orchestrator?.model) {
+        const m = findModel(store.config, body.orchestrator.model);
+        if (!m || !canPlan(m)) throw new Error(`orchestrator.model: ${body.orchestrator.model} is not a Claude model in models:`);
+        body.orchestrator.model = m.id;
+      }
       const cfg = store.updateConfig((doc) => { for (const [section, values] of Object.entries(body)) for (const [k, v] of Object.entries(values ?? {})) if (v !== undefined) doc.setIn([section, k], v); }, 'config: update settings');
       return c.json({ config: cfg });
     } catch (e) { return fail(c, e); }
+  });
+  // A model this machine's account cannot use: marked by hand (you know it is out until a reset) or cleared.
+  api.put('/models/:id/unavailable', async (c) => {
+    try {
+      const id = c.req.param('id');
+      if (!store.config.models.some((m) => m.id === id)) throw new Error(`unknown model ${id}`);
+      const { until, reason } = z.object({ until: z.string().refine((v) => Number.isFinite(Date.parse(v)), 'until: an ISO date-time'), reason: z.string().optional() }).parse(await c.req.json());
+      const now = new Date(Date.now());
+      if (Date.parse(until) <= now.getTime()) throw new Error('until must be in the future');
+      store.updateLocal({ model_unavailable: markUnavailable(store.local.model_unavailable, id, { until: new Date(until), reason: reason?.trim() || 'marked unavailable in Settings', manual: true }, now) });
+      store.journal.append({ type: 'model.unavailable', actor: 'user', data: { model: id, until, reason: reason ?? '' } });
+      engine.poke();
+      return c.json({ local: store.local });
+    } catch (e) { return fail(c, e); }
+  });
+  api.delete('/models/:id/unavailable', (c) => {
+    const id = c.req.param('id');
+    const { [id]: _gone, ...rest } = store.local.model_unavailable ?? {};
+    store.updateLocal({ model_unavailable: rest });
+    store.journal.append({ type: 'model.available', actor: 'user', data: { model: id } });
+    engine.poke();
+    return c.json({ local: store.local });
   });
   api.put('/config/local', async (c) => {
     try { const body = z.object({ code_repo_path: z.string().optional(), worktrees_root: z.string().optional(), codex_bin: z.string().optional(), claude_bin: z.string().optional(), anthropic_api_key: z.string().optional() }).parse(await c.req.json()); return c.json({ local: store.updateLocal(body) }); }

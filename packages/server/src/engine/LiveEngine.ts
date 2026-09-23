@@ -1,6 +1,6 @@
 import { join, relative, isAbsolute } from 'node:path';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
-import { serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, canPlan, validateBreakdown, dependencyOrder, type BreakdownChild, type ServerEvent, type Status } from '@planestro/shared';
+import { serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, type BreakdownChild, type ServerEvent, type Status } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import type { Ports, TurnPhase, TurnResult, TurnTools, PermissionRequest } from './ports.ts';
@@ -431,14 +431,22 @@ export class LiveEngine implements Engine {
     const d = this.store.derived(item);
     const cwd = this.absWorktree(fm.worktree!);
     const modelId = phase === 'plan' ? fm.planner : fm.implementer;
-    const def = this.store.config.models.find((m) => m.id === modelId);
-    if (!def) throw new Error(`unknown model ${modelId}`);
+    const requested = this.store.config.models.find((m) => m.id === modelId);
+    if (!requested) throw new Error(`unknown model ${modelId}`);
+    const allowFallback = fm.allow_model_fallback === true;
+    const pick = resolveTurnModel(this.store.config, requested, { allow: allowFallback, unavailable: this.store.local.model_unavailable, now: new Date(Date.now()) });
+    if (pick.exhaustedUntil) {
+      this.block(id, 'usage_exhausted', `${fallbackChain(this.store.config, requested).map((m) => m.label).join(', ')} ${fallbackChain(this.store.config, requested).length > 1 ? 'are all' : 'is'} out of usage until ${pick.exhaustedUntil}`);
+      return undefined;
+    }
+    const def = pick.def;
+    if (pick.fellBackFrom) this.store.mutateItem(id, [{ activity: { actor: 'app', text: `${pick.fellBackFrom.label} is unavailable until ${pick.skipped?.until ?? 'later'} (${(pick.skipped?.reason ?? 'usage limit').slice(0, 120)}): this ${phase} turn runs on ${def.label}` } }], 'engine');
     const runner = def.runner ?? 'claude';
     if (phase === 'plan' && !canPlan(def)) { this.block(id, 'planner_cannot_plan', `${def.label} runs on ${runner}, which cannot plan; pick a Claude model as the planner`); return undefined; }
     const agent = this.ports.agents[runner];
     if (!agent) { this.block(id, 'runner_unavailable', `${def.label} needs the ${runner} runner, which is not available in this engine`); return undefined; }
     const model = runner === 'claude' ? def.claude_model : def[`${runner}_model`];
-    if (runner === 'claude' && !model) throw new Error(`model ${modelId} has no claude_model`);
+    if (runner === 'claude' && !model) throw new Error(`model ${def.id} has no claude_model`);
     // Runners that report tokens instead of dollars are budgeted in worker turns.
     const metered = runner === 'claude';
     if (!metered && (fm.agent_turns ?? 0) >= this.store.config.budget_turns_per_item) { this.block(id, 'turn_budget', `${def.label} has used ${fm.agent_turns} of ${this.store.config.budget_turns_per_item} turns on this item (budget_turns_per_item); raise it or take the item over by hand`); return undefined; }
@@ -456,7 +464,7 @@ export class LiveEngine implements Engine {
     const policy = makePolicy(this.store.config, d.base_branch!, cwd);
     const op = phase === 'plan' ? 'planning_turn' : 'implement_turn';
     const abort = new AbortController();
-    const opId = this.store.journal.begin(op, id, { phase, model: model ?? def.label, runner });
+    const opId = this.store.journal.begin(op, id, { phase, model: model ?? def.label, runner, ...(pick.fellBackFrom ? { fell_back_from: pick.fellBackFrom.id } : {}) });
     this.store.mutateItem(id, [{ set: { op, op_started_at: this.now() } }], 'engine');
     this.turns.set(id, { model: model ?? def.label, phase, startedAt: this.now(), lastOutput: '', abort });
     this.emit({ type: 'session.started', id, session_id: fm.session_id });
@@ -466,6 +474,7 @@ export class LiveEngine implements Engine {
       result = await this.withRunnerSlot(runner, () => agent.runTurn({
         itemId: id, phase, cwd, model: model as string, permissionMode: phase === 'plan' ? 'plan' : 'acceptEdits', prompt, resume: resumeId, images,
         systemAppend: this.store.renderPrompt(metered ? 'worker-system' : `worker-system-${runner}`, item),
+        ...(pick.sdkFallback ? { fallbackModel: pick.sdkFallback } : {}),
         allowedTools: [...BASE_ALLOWED[phase], ...this.store.config.permissions.allow, ...extraAllowed],
         extraDirs: [this.store.dataDir], maxBudgetUsd: budgetLeft,
         tools: this.makeTools(id),
@@ -503,6 +512,17 @@ export class LiveEngine implements Engine {
     this.store.journal.end(opId, id, result.isError ? 'failed' : 'ok', { subtype: result.subtype, cost: result.costUsd, parked: result.parked });
     this.emit({ type: 'session.ended', id, subtype: result.subtype });
     if (result.subtype === 'killed') { this.store.mutateItem(id, [{ activity: { actor: 'app', text: 'turn interrupted (engine stopping); resumable' } }], 'engine'); return result; }
+    if (result.subtype === 'usage_exhausted') {
+      // Remember the outage for every item on this machine, then run the same turn again: with
+      // fallback allowed it resolves to the next model in the chain; without, it blocks.
+      const until = this.recordUnavailable(def, result.usageLimit);
+      if (allowFallback && !this.stopping && fallbackChain(this.store.config, requested).some((m) => m.id !== def.id && !unavailableEntry(this.store.local.model_unavailable, m.id, new Date(Date.now())))) {
+        this.store.mutateItem(id, [{ activity: { actor: 'app', text: `${def.label} is out of usage until ${until}; retrying this ${phase} turn on its fallback` } }], 'engine');
+        return this.runTurnFor(id, phase, prompt, extraAllowed, oneShotCommands, opts);
+      }
+      this.block(id, 'usage_exhausted', `${def.label} is out of usage until ${until}${allowFallback ? ' and has no available fallback' : ' (this item does not allow a fallback model)'}: ${result.usageLimit?.message ?? ''}`);
+      return result;
+    }
     if (result.isError) {
       // A failure the person can act on keeps its own name; the rest are turn errors for the orchestrator to judge.
       const reason = ACTIONABLE_FAILURES.has(result.subtype) ? result.subtype : 'turn_error';
@@ -980,7 +1000,7 @@ export class LiveEngine implements Engine {
     const ids = new Map<number, string>();
     for (const i of dependencyOrder(children)) {
       const c = children[i];
-      const child = this.store.createItem({ title: c.title.trim(), description: c.description.trim(), category: c.category ?? fm.category, implementer: c.implementer, parent: id, depends_on: (c.depends_on ?? []).map((d) => ids.get(d)!) }, 'user');
+      const child = this.store.createItem({ title: c.title.trim(), description: c.description.trim(), category: c.category ?? fm.category, implementer: c.implementer, allow_model_fallback: fm.allow_model_fallback === true, parent: id, depends_on: (c.depends_on ?? []).map((d) => ids.get(d)!) }, 'user');
       ids.set(i, child.id);
     }
     const created = children.map((_c, i) => ids.get(i)!);
@@ -1228,6 +1248,16 @@ export class LiveEngine implements Engine {
       }
     }
     return `Delivered to ${to}: ${copied.length} file${copied.length === 1 ? '' : 's'} attached; ${told}.`;
+  }
+
+  /** Mark a model out of usage on this machine until its reset (or the default window); returns the time, for messages. */
+  recordUnavailable(def: { id: string; label: string }, limit: TurnResult['usageLimit'], manual = false): string {
+    const now = new Date(Date.now());
+    const until = unavailableUntil(limit?.resetsAt, now);
+    this.store.updateLocal({ model_unavailable: markUnavailable(this.store.local.model_unavailable, def.id, { until, reason: limit?.message ?? 'usage limit', manual }, now) });
+    this.store.journal.append({ type: 'model.unavailable', actor: manual ? 'user' : 'engine', data: { model: def.id, until: until.toISOString(), reason: limit?.message ?? '' } });
+    this.note('warn', `${def.label} is out of usage until ${until.toISOString()}`);
+    return until.toISOString();
   }
 
   private block(id: string, reason: string, detail: string, awaiting: 'user' | undefined = 'user'): void {

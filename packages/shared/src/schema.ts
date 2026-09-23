@@ -47,7 +47,7 @@ export type Attachment = z.infer<typeof Attachment>;
  */
 export const AUTHORITATIVE_KEYS = [
   'schema', 'id', 'kind', 'parent', 'title', 'category', 'status', 'rank',
-  'planner', 'implementer', 'auto_approve_plan', 'depends_on', 'attachments',
+  'planner', 'implementer', 'allow_model_fallback', 'auto_approve_plan', 'depends_on', 'attachments',
   'merge_policy', 'base_branch_override',
 ] as const;
 export const OPERATIONAL_KEYS = [
@@ -73,6 +73,8 @@ export const ItemFrontmatter = z.object({
   rank: z.number().int().optional(),
   planner: z.string().min(1).optional(),
   implementer: z.string().min(1).optional(),
+  /** When the planner or implementer is out of usage, run the turn on its model's `fallback` instead of blocking. */
+  allow_model_fallback: z.boolean().optional(),
   auto_approve_plan: z.boolean().optional(),
   depends_on: z.array(id).default([]),
   attachments: z.array(Attachment).default([]),
@@ -202,9 +204,21 @@ export const ModelDef = z.object({
   description: z.string().optional(),
   /** Hold this model's pull requests before merge until a person releases them (art is reviewed by eye). */
   hold_for_review: z.boolean().optional(),
+  /** Another model id on the same runner. An item that allows fallback runs on it while this one is out of usage. */
+  fallback: z.string().min(1).optional(),
   external: z.boolean().default(false),
 });
 export type ModelDef = z.infer<typeof ModelDef>;
+
+/** A model this machine's account cannot use until `until` (a usage limit, or marked by hand). */
+export const ModelUnavailable = z.object({
+  until: z.string(),
+  reason: z.string(),
+  since: z.string().optional(),
+  /** Set from Settings rather than detected from a failed turn. */
+  manual: z.boolean().optional(),
+});
+export type ModelUnavailable = z.infer<typeof ModelUnavailable>;
 
 /** A planner needs plan mode and the `submit_plan` tool: only the Claude runner has them. */
 export function canPlan(m: Pick<ModelDef, 'runner' | 'external'>): boolean { return !m.external && (m.runner ?? 'claude') === 'claude'; }
@@ -226,7 +240,11 @@ export const Config = z.object({
   }).default({ root: '.claude/worktrees', branch_pattern: '{{prefix_lower}}/{{number}}-{{slug}}', dir_pattern: '{{prefix_lower}}-{{number}}-{{slug}}' }),
   hooks: z.object({ after_worktree_create: z.array(z.string()).default([]) }).default({ after_worktree_create: [] }),
   models: z.array(ModelDef).min(1),
-  defaults: z.object({ planner: z.string(), implementer: z.string(), category: z.string() }),
+  defaults: z.object({
+    planner: z.string(), implementer: z.string(), category: z.string(),
+    /** New items (and an epic's children, unless the epic says otherwise) start with fallback allowed. */
+    allow_model_fallback: z.boolean().default(false),
+  }),
   categories: z.array(z.string().min(1)).min(1),
   /** Per-item spend ceiling across all of its turns; a turn starts with what remains. */
   budget_usd_per_item: z.number().positive().default(25),
@@ -249,12 +267,14 @@ export const Config = z.object({
   }).default({ mode: 'github', require_green_base: true, start_timeout_min: 10, timeout_min: 45 }),
   orchestrator: z.object({
     model: z.string().default('claude-fable-5'),
+    /** When the orchestrator's model is out of usage, wake on its model row's `fallback` instead. */
+    allow_model_fallback: z.boolean().default(false),
     may_approve_plans: z.boolean().default(false),
     max_plan_revisions: z.number().int().nonnegative().default(2),
     may_decide_permissions: z.boolean().default(false),
     rotate_after_wakes: z.number().int().positive().default(40),
     rotate_after_days: z.number().positive().default(3),
-  }).default({ model: 'claude-fable-5', may_approve_plans: false, max_plan_revisions: 2, may_decide_permissions: false, rotate_after_wakes: 40, rotate_after_days: 3 }),
+  }).default({ model: 'claude-fable-5', allow_model_fallback: false, may_approve_plans: false, max_plan_revisions: 2, may_decide_permissions: false, rotate_after_wakes: 40, rotate_after_days: 3 }),
   engine: z.object({ mode: z.enum(['live', 'dry-run']).default('dry-run') }).default({ mode: 'dry-run' }),
   epics: z.object({ auto_submit: z.boolean().default(true) }).default({ auto_submit: true }),
   notifications: z.object({ on_merge: z.string().optional() }).default({}),
@@ -280,6 +300,8 @@ export const LocalConfig = z.object({
   allowed_hosts: z.array(z.string().min(1)).optional(),
   /** Optional Console API key: sessions then bill the API under the Commercial Terms instead of a claude.ai login. Local file only (gitignored). */
   anthropic_api_key: z.string().optional(),
+  /** Models this machine's account cannot use right now, by model id: detected usage limits and ones marked in Settings. */
+  model_unavailable: z.record(z.string(), ModelUnavailable).optional(),
   engine: z.object({ paused: z.boolean().default(false), mode: z.enum(['live', 'dry-run']).optional() }).default({ paused: false }),
 }).passthrough();
 export type LocalConfig = z.infer<typeof LocalConfig>;
