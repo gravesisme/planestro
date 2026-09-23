@@ -15,6 +15,52 @@ export const BASE_ALLOWED: Record<'plan' | 'implement' | 'fix', string[]> = {
 export interface Policy { deny(req: PermissionRequest): string | null }
 
 /**
+ * Environment names that change what a command does or which binary runs: a segment that
+ * sets one is never auto-allowed (it parks for a decision), whatever command follows.
+ */
+const DANGEROUS_ENV = /^(PATH|IFS|ENV|BASH_ENV|SHELL|SHELLOPTS|PS4|PROMPT_COMMAND|HOME|NODE_OPTIONS|NODE_PATH|PERL5OPT|PERL5LIB|PYTHONPATH|PYTHONSTARTUP|RUBYOPT|RUBYLIB|LD_\w*|DYLD_\w*|GIT_\w*)$/;
+/** A plain assignment: NAME=value where the value is one word with no expansion, quotes or redirection. */
+const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=([^\s'"`$<>|;&(){}\\]*)\s+/;
+/**
+ * Wrappers that only bound or schedule the command they run, so the command after them is what
+ * a rule should judge: `timeout 120 godot …` is a godot run. Options are the common harmless ones;
+ * anything else leaves the wrapper in place, where it matches no rule and parks.
+ */
+const WRAPPERS: RegExp[] = [
+  /^(?:g?timeout)\s+(?:(?:-k\s+\S+|-s\s+\S+|--preserve-status|--foreground|-v)\s+)*\d+(?:\.\d+)?[smhd]?\s+/,
+  /^nice(?:\s+-n\s+-?\d+|\s+-\d+)?\s+/,
+  /^nohup\s+/,
+  /^time(?:\s+-p)?\s+/,
+  /^env\s+(?=[A-Za-z_][A-Za-z0-9_]*=)/,
+];
+
+/**
+ * One shell segment reduced to the command it runs, for rule matching: leading `NAME=value`
+ * assignments and harmless wrappers (`timeout N`, `nice`, `nohup`, `time`, `env`) are peeled
+ * off, in any order and any number. `unsafe` is set when an assignment names an environment
+ * variable that changes what runs (PATH, LD_*, GIT_*, NODE_OPTIONS, …): such a segment is never
+ * auto-allowed. Both the deny rules and the allow matcher use this, so a prefix can neither hide
+ * a denied command (`GIT_TRACE=1 git push`) nor keep an allowed one from matching
+ * (`CHECK_JOBS=4 ./tools/run_checks.sh`).
+ */
+export function normalizeSegment(segment: string): { command: string; unsafe: boolean } {
+  let rest = segment.trim();
+  let unsafe = false;
+  for (let guard = 0; guard < 32; guard++) {
+    const a = ASSIGNMENT.exec(rest);
+    if (a) {
+      if (DANGEROUS_ENV.test(a[1])) unsafe = true;
+      rest = rest.slice(a[0].length);
+      continue;
+    }
+    const w = WRAPPERS.map((re) => re.exec(rest)).find((m) => m);
+    if (w) { rest = rest.slice(w[0].length); continue; }
+    break;
+  }
+  return { command: rest.trim(), unsafe };
+}
+
+/**
  * Hard denials with an explanation. Everything else that reaches `canUseTool` is parked for
  * the user (invariant 2). Branch names come from config — never literals (invariant 8).
  */
@@ -41,8 +87,11 @@ export function makePolicy(config: Config, baseBranch: string, worktree: string)
       }
       const cmd = String(req.input.command ?? '');
       for (const seg of cmd.split(/\s*(?:&&|\|\||;|\|)\s*/)) {
-        for (const r of rules) if (r.re.test(seg)) return r.why;
-        for (const d of userDeny) if (seg.trim().startsWith(d)) return `denied by planestro policy (${d}).`;
+        // A prefix must not hide a denied command: judge the segment and what it actually runs.
+        for (const form of new Set([seg, normalizeSegment(seg).command])) {
+          for (const r of rules) if (r.re.test(form)) return r.why;
+          for (const d of userDeny) if (form.trim().startsWith(d)) return `denied by planestro policy (${d}).`;
+        }
       }
       return null;
     },
@@ -61,7 +110,13 @@ export function allowedByRules(req: PermissionRequest, rules: string[]): boolean
   const segments = firstLine.split(/\s*(?:&&|\|\||;|\|)\s*/).map((x) => x.replace(/<<-?\s*'?"?\w+'?"?\s*$/, '').trim()).filter(Boolean);
   if (!segments.length) return false;
   const prefixes = rules.filter((r) => r.startsWith('Bash(') && r.endsWith(')')).map((r) => r.slice(5, -1));
-  return segments.every((seg) => prefixes.some((p) => p.endsWith(' *') ? (seg + ' ').startsWith(p.slice(0, -1)) : p.endsWith('*') ? seg.startsWith(p.slice(0, -1)) : seg === p));
+  const matches = (seg: string) => prefixes.some((p) => p.endsWith(' *') ? (seg + ' ').startsWith(p.slice(0, -1)) : p.endsWith('*') ? seg.startsWith(p.slice(0, -1)) : seg === p);
+  return segments.every((seg) => {
+    // A rule written with the prefix still matches as written; otherwise judge what the segment runs.
+    if (matches(seg)) return true;
+    const { command, unsafe } = normalizeSegment(seg);
+    return !unsafe && command !== seg && command.length > 0 && matches(command);
+  });
 }
 
 /** Permission rule that would pre-approve exactly this request on resume. */
