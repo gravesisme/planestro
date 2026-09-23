@@ -79,3 +79,52 @@ describe('deny rules see through prefixes', () => {
     expect(policy.deny(bash('timeout 120 godot --headless --script a.gd'))).toBeNull();
   });
 });
+
+describe('anchored to the worktree', () => {
+  const wt = '/repo/.claude/worktrees/T-1';
+  const config = Config.parse({
+    schema_version: 2, tool_version: '0.1.0', project: { name: 'T', id_prefix: 'T' },
+    code_repo: { path: '..', default_branch: 'trunk' },
+    models: [{ id: 'm', label: 'M', claude_model: 'x' }], defaults: { planner: 'm', implementer: 'm', category: 'C' }, categories: ['C'],
+    permissions: { allow: ['Bash(sed -n *)'], deny: [] },
+  });
+  const policy = makePolicy(config, 'trunk', wt);
+
+  it('judges `git -C <worktree>` as plain git and `cd <worktree>` as a no-op', () => {
+    for (const c of [
+      `git -C ${wt} status --porcelain`,
+      `git -C "${wt}/packages" diff --stat`,
+      `git -C ${wt} add -A && git -C ${wt} commit -F - <<'EOF'`,
+      `cd ${wt} && git add x && git commit -m y`,
+      `cd '${wt}/sub' && CHECK_JOBS=4 ./tools/run_checks.sh x`,
+      `timeout 30 git -C ${wt} log --oneline`,
+    ]) expect(allowedByRules(bash(c), rules, wt), c).toBe(true);
+  });
+
+  it('still parks an anchor anywhere else', () => {
+    for (const c of [
+      'git -C /elsewhere status',
+      `git -C ${wt}/../other status`,
+      `git -C ${wt}-evil status`,
+      'git -C $HOME/x status',
+      'cd /tmp && git status',
+      `cd ${wt}`.replace(wt, '~'),
+      `git -C ${wt} status`,
+    ]) expect(allowedByRules(bash(c), rules, c === `git -C ${wt} status` ? undefined : wt), c).toBe(false);
+  });
+
+  it('still denies what the anchor would dress up', () => {
+    expect(policy.deny(bash(`git -C ${wt} push`))).not.toBeNull();
+    expect(policy.deny(bash(`cd ${wt} && git worktree remove .`))).not.toBeNull();
+    expect(policy.deny(bash(`git -C /x/worktree/T-1 status`))).not.toBeNull();
+    expect(makePolicy(config, 'trunk', '/x/worktree/T-1').deny(bash('git -C /x/worktree/T-1 status'))).toBeNull();
+  });
+
+  it('refuses in-place shell edits and points at the Edit tool', () => {
+    for (const c of ["sed -i '' 's/a/b/' f.ts", 'sed -Ei s/a/b/ f.ts', 'sed --in-place s/a/b/ f', "perl -pi -e 's/a/b/' f", 'perl -i.bak -pe 1 f', 'git add x && sed -i s/a/b/ y']) {
+      expect(policy.deny(bash(c)), c).toMatch(/Edit or Write tool/);
+    }
+    for (const c of ["sed -n '1,20p' f.ts", "perl -MFile::Find -e 1", 'sed -e s/a/b/ f > /dev/null']) expect(policy.deny(bash(c)), c).toBeNull();
+    expect(allowedByRules(bash("sed -n '1,20p' f.ts"), ['Bash(sed -n *)'], wt)).toBe(true);
+  });
+});
