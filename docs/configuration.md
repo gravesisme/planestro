@@ -70,6 +70,16 @@ Pushes, `gh pr`, protected branches, branch and worktree management and force op
 are denied in code (`engine/policy.ts`) whatever these say. Codex workers are governed by
 their sandbox instead.
 
+Rules match each segment of a chained or piped command (`&&`, `||`, `;`, `|`), and every
+segment must match. Before matching, each segment is reduced to the command it actually runs:
+leading plain `NAME=value` assignments and the harmless wrappers `timeout N`/`gtimeout N`,
+`nice`, `nohup`, `time` and `env` are peeled off. So `Bash(./tools/run_checks.sh*)` also
+covers `CHECK_JOBS=4 ./tools/run_checks.sh x | tail -30`. The deny rules see through the same
+prefixes, so `GIT_TRACE=1 git push` is still refused. A segment that sets an environment
+variable which changes what runs (`PATH`, `LD_*`, `DYLD_*`, `GIT_*`, `NODE_OPTIONS`,
+`BASH_ENV`, …), or whose value contains quotes or expansions, is never auto-allowed and parks
+for a decision.
+
 ### CI and merging
 
 | Key | Default | |
