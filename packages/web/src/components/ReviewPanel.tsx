@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, type ItemView, type ReviewImage } from '../api.ts';
 import { act, useStore } from '../store.ts';
+import { prepareUpload } from '../uploadImage.ts';
 
 const src = (id: string, path: string, side: 'before' | 'after', v: string) => `/api/items/${id}/image?path=${encodeURIComponent(path)}&side=${side}&v=${encodeURIComponent(v)}`;
 const kb = (n?: number) => n === undefined ? '' : n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
@@ -18,6 +19,9 @@ export function ReviewPanel({ item, compact = false }: { item: ItemView; compact
   const [zoom, setZoom] = useState<string | null>(null);
   const [note, setNote] = useState('');
   const [pasted, setPasted] = useState<string[]>([]);
+  const maxBytes = useStore((s) => s.state?.config.attachments.managed_max_bytes) ?? 8_000_000;
+  // Paste on desktop, the picker on a phone (which can't paste from Photos); both convert HEIC and shrink to the limit.
+  const attach = (files: File[]) => { for (const f of files) void act(async () => api.uploadAttachment(item.id, await prepareUpload(f, maxBytes))).then((r) => { if (r) setPasted((p) => [...p, r.path.split('/').pop() || f.name || 'screenshot']); }); };
   const awaiting = fm.status === 'IN_REVIEW' && fm.awaiting === 'review';
   const v = fm.updated_at; // a revised picture keeps its path: the version busts the cache
   useEffect(() => { let live = true; api.reviewImages(item.id).then((r) => { if (live) setImages(r); }).catch(() => { if (live) setImages([]); }); return () => { live = false; }; }, [item.id, fm.updated_at, fm.status]);
@@ -54,7 +58,11 @@ export function ReviewPanel({ item, compact = false }: { item: ItemView; compact
       {awaiting && (
         <>
           <textarea style={{ minHeight: 56, marginTop: 8 }} placeholder="What should change? Paste a screenshot to send it along." value={note} onChange={(e) => setNote(e.target.value)}
-            onPaste={(e) => { const f = [...e.clipboardData.files].find((x) => x.type.startsWith('image/')); if (!f) return; e.preventDefault(); e.stopPropagation(); void act(() => api.uploadAttachment(item.id, f)).then((r) => { if (r) setPasted((p) => [...p, f.name || 'screenshot']); }); }} />
+            onPaste={(e) => { const f = [...e.clipboardData.files].find((x) => x.type.startsWith('image/')); if (!f) return; e.preventDefault(); e.stopPropagation(); attach([f]); }} />
+          <label className="small" style={{ display: 'inline-block', margin: '4px 0', cursor: 'pointer' }}>
+            <input type="file" accept="image/*,.heic,.heif" multiple hidden onChange={(e) => { const fs = [...(e.target.files ?? [])]; e.target.value = ''; attach(fs); }} />
+            <span className="tag">attach a photo…</span>
+          </label>
           {pasted.length > 0 && <p className="small muted" style={{ margin: '4px 0' }}>attached for the agent: {pasted.join(', ')}</p>}
           <div className="row">
             <button className="primary" onClick={() => { const n = prompt(`Approve ${item.id} and let it merge? Optional note for the log:`); if (n !== null) void act(() => api.releaseHold(item.id, n || undefined)); }}>Approve &amp; merge</button>

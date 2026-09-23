@@ -12,6 +12,7 @@ import { fallbackHint } from '../components/NewItemDialog.tsx';
 import { BreakdownPanel } from '../components/BreakdownPanel.tsx';
 import { BlockedPanel } from '../components/BlockedPanel.tsx';
 import { AwaitingPanels } from '../components/AwaitingPanels.tsx';
+import { prepareUpload } from '../uploadImage.ts';
 
 function useAutosave(id: string, section: 'Description' | 'Notes' | 'Plan', initial: string) {
   const [text, setText] = useState(initial);
@@ -63,7 +64,11 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
   const orch = state.config.orchestrator;
   const canClose = transitions.some((t) => t.to === 'FINISHED');
   const closeAsDone = () => promptCloseAsDone(item.id);
-  const onPaste = (e: React.ClipboardEvent) => { const f = [...e.clipboardData.files][0]; if (f) { e.preventDefault(); void act(() => api.uploadAttachment(item.id, f)); } };
+  const maxBytes = state.config.attachments.managed_max_bytes;
+  // Phones can't paste from the photo library, so the picker is the mobile path; both go through prepareUpload (HEIC → JPEG, shrink to the size limit).
+  const upload = (files: File[]) => { for (const f of files) void act(async () => api.uploadAttachment(item.id, await prepareUpload(f, maxBytes))); };
+  const onPaste = (e: React.ClipboardEvent) => { const f = [...e.clipboardData.files][0]; if (f) { e.preventDefault(); upload([f]); } };
+  const picker = useRef<HTMLInputElement>(null);
 
   return (
     <div className="item-page" onPaste={onPaste}>
@@ -148,7 +153,11 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
         </div>
         <div className="section"><h2>Attachments</h2>
           <ul className="attachments">{fm.attachments.map((a) => <li key={a.path}>{a.kind === 'managed' && /\.(png|jpe?g|gif|webp)$/i.test(a.path) && <img src={`/${a.path}`} alt="" />}<code>{a.path}</code><span className="tag">{a.kind}</span>{a.kind === 'managed' && <a href={`/${a.path}`} target="_blank" rel="noreferrer">open</a>}<button className="small" onClick={() => act(() => api.removeAttachment(item.id, a.path))}>remove</button></li>)}</ul>
-          <div className="row"><span className="small muted">Paste an image anywhere on this page to attach it (≤ {Math.round(state.config.attachments.managed_max_bytes / 1e6)} MB, committed).</span></div>
+          <div className="row">
+            <button className="small" onClick={() => picker.current?.click()}>Attach photo or file…</button>
+            <input ref={picker} type="file" accept="image/*,.heic,.heif,.pdf,.txt,.md,.json" multiple hidden onChange={(e) => { const fs = [...(e.target.files ?? [])]; e.target.value = ''; upload(fs); }} />
+            <span className="small muted">or paste an image anywhere on this page (≤ {Math.round(maxBytes / 1e6)} MB, committed; photos are converted to JPEG and shrunk to fit).</span>
+          </div>
           <form className="row" onSubmit={(e) => { e.preventDefault(); if (!refPath.trim()) return; void act(() => api.referenceAttachment(item.id, refPath.trim())); setRefPath(''); }}><input className="grow" placeholder="Reference a path (absolute, or relative to the code repo) — never copied" value={refPath} onChange={(e) => setRefPath(e.target.value)} /><button type="submit" disabled={!refPath.trim()}>Add reference</button></form>
         </div>
         <div className="section"><h2>Activity</h2><ul className="activity">{item.activity.map((a, i) => <li key={i}><span className="at">{a.at.slice(0, 19).replace('T', ' ')}</span><span className="muted">{a.actor}</span><span>{a.text}</span></li>)}</ul></div>
