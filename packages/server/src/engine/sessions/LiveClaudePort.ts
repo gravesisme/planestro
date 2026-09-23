@@ -6,7 +6,7 @@ import type { ClaudePort, TurnOptions, TurnResult, CustomTurnOptions } from '../
 
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] });
 const PARTS = z.array(z.object({ name: z.string(), state: z.enum(['accepted', 'pending', 'rejected']), reason: z.string().optional() }));
-const PARK_MSG = 'Permission requires user approval; the request has been recorded by planestro — end this turn now.';
+const PARK_MSG = 'Permission requires a decision; the request has been recorded by planestro. This is NOT a denial: do not retry it, work around it or call report_blocked — end this turn now, and you will be resumed with the decision.';
 /** The SDK's list of usage-limit messages (alpha export) merged with our copy, so a rename cannot switch detection off. */
 const USAGE_PREFIXES: readonly string[] = [...new Set([...(((sdk as Record<string, unknown>).USAGE_LIMIT_ERROR_PREFIXES as readonly string[] | undefined) ?? []), ...KNOWN_USAGE_LIMIT_PREFIXES])];
 
@@ -151,6 +151,24 @@ export function noteApiErrorText(m: any, result: TurnResult): void {
 }
 
 /**
+ * Feed one SDK message to the planestro-tool failure detector. Exported for tests. A planestro
+ * tool's handler always answers with text, so an errored result for one means the call never
+ * reached it (the SDK's in-process transport, docs/notes/sdk-notes.md gotcha 11). The engine
+ * reads these instead of trusting the model to notice and retry.
+ */
+export function noteToolFailures(m: any, calls: Map<string, string>, result: TurnResult): void {
+  if (m?.type === 'assistant') {
+    for (const c of (m.message?.content ?? []) as any[]) if (c?.type === 'tool_use' && String(c.name).startsWith('mcp__planestro__')) calls.set(c.id, c.name.slice('mcp__planestro__'.length));
+  } else if (m?.type === 'user' && Array.isArray(m.message?.content)) {
+    for (const c of m.message.content as any[]) {
+      if (c?.type !== 'tool_result' || !c.is_error || !calls.has(c.tool_use_id)) continue;
+      const body = typeof c.content === 'string' ? c.content : (Array.isArray(c.content) ? c.content.map((x: any) => x?.text ?? '').join(' ') : '');
+      (result.toolFailures ??= []).push({ tool: calls.get(c.tool_use_id)!, error: body.trim().slice(0, 300) });
+    }
+  }
+}
+
+/**
  * Signs, collected while a turn streams, that its model is out of usage: a rejected rate-limit
  * event (with the reset time), an assistant error code, or the CLI's usage-limit message. Every
  * rate-limit event also feeds `rateLimit`, the most pressing reading, for the usage guard.
@@ -202,9 +220,11 @@ export function classifyUsage(result: TurnResult, u: UsageSignals): void {
 async function consume(q: AsyncIterable<unknown>, result: TurnResult, onOutput: (t: string) => void, abortController: AbortController): Promise<void> {
   let sawResult = false;
   const usage: UsageSignals = {};
+  const calls = new Map<string, string>();
   try {
     for await (const m of q as AsyncIterable<any>) {
       noteUsage(m, usage);
+      noteToolFailures(m, calls, result);
       if (m.type === 'system' && m.subtype === 'init') result.sessionId = m.session_id;
       else if (m.type === 'assistant') {
         for (const c of (m.message?.content ?? []) as any[]) {

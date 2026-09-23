@@ -476,6 +476,51 @@ describe('LiveEngine lifecycle (dry-run ports)', () => {
   });
 });
 
+describe('planestro tool calls lost in transport', () => {
+  const ok = { sessionId: 's', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '' };
+  const lost = { tool: 'submit_plan', error: 'Tool permission request failed: AbortError: Stream closed' };
+
+  it('a lost submit_plan gets one resumed retry, and a duplicate hand-in does not wake the orchestrator twice', async () => {
+    const prompts: string[] = [];
+    const flaky = () => ({
+      async runTurn(o: TurnOptions): Promise<TurnResult> {
+        prompts.push(o.prompt);
+        if (prompts.length === 1) return { ...ok, toolFailures: [lost] };
+        await o.tools.submit_plan('# p');
+        expect(await o.tools.submit_plan('# p')).toContain('already recorded');
+        return { ...ok, planSubmitted: '# p' };
+      },
+    });
+    const { store, engine } = await setup({ claude: flaky });
+    const wakes: string[] = [];
+    const wake = (engine as any).orchestrator.wake.bind((engine as any).orchestrator);
+    (engine as any).orchestrator.wake = (ev: { type: string }) => { wakes.push(ev.type); return wake(ev); };
+    const item = store.createItem({ title: 'Lost', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    expect(prompts[1]).toContain('Call submit_plan again');
+    const fm = store.getItem(item.id)!.file.frontmatter;
+    expect(fm.blocked, `${fm.blocked_reason}\n${activityOf(store, item.id)}`).toBeUndefined();
+    expect(fm.op_data?.plan_retry_turns).toBeUndefined();
+    expect(activityOf(store, item.id)).toContain('planestro tool submit_plan failed before reaching planestro');
+    expect(wakes.filter((w) => w === 'plan_review')).toHaveLength(1);
+  });
+
+  it('a second loss blocks no_plan naming the transport, never a budget', async () => {
+    let turns = 0;
+    const dead = () => ({ async runTurn(): Promise<TurnResult> { turns += 1; return { ...ok, toolFailures: [lost] }; } });
+    const { store, engine } = await setup({ claude: dead });
+    const item = store.createItem({ title: 'Dead', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => store.getItem(item.id)!.file.frontmatter.blocked === true);
+    expect(turns).toBe(2);
+    expect(store.getItem(item.id)!.file.frontmatter.blocked_reason).toBe('no_plan');
+    expect(activityOf(store, item.id)).toMatch(/submit_plan call failed in transport again after a retry \(Tool permission request failed: AbortError: Stream closed\)/);
+  });
+});
+
 describe('policy.allowedByRules', () => {
   it('allows chained commands whose every segment matches, strips heredoc bodies, and refuses mixed chains', async () => {
     const { allowedByRules } = await import('../src/engine/policy.ts');
