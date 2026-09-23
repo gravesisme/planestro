@@ -69,8 +69,11 @@ A test (`docs.test.ts`) fails if a key in the schema is missing from this page.
 | `permissions.deny` | `[]` | Extra deny patterns, checked before anything else. |
 
 Pushes, `gh pr`, protected branches, branch and worktree management and force operations
-are denied in code (`engine/policy.ts`) whatever these say. Codex workers are governed by
-their sandbox instead.
+are denied in code (`engine/policy.ts`) whatever these say, and so are in-place shell edits
+(`sed -i`, `perl -i`: the Edit and Write tools never need approval). Rules match what a command
+runs: leading `NAME=value` assignments and wrappers such as `timeout 120` are looked through,
+`git -C <the worktree>` is judged as plain `git`, and `cd` into the worktree is a no-op; `git -C`
+anywhere else matches nothing and parks. Codex workers are governed by their sandbox instead.
 
 Rules match each segment of a chained or piped command (`&&`, `||`, `;`, `|`), and every
 segment must match. Before matching, each segment is reduced to the command it actually runs:
