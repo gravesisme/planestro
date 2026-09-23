@@ -288,6 +288,46 @@ While I finished HH-136 by hand (commit, push, PR #305, transition to IN_REVIEW)
 
 **Fix.** A 'take over' action that aborts the item's live turn, drops queued follow-ups and one-shot resumes, and marks the item human-owned until released. A manual transition to IN_REVIEW should also cancel pending worker turns.
 
+### p29 — No way to bring a worker branch up to date before resuming it
+
+*gap · open*
+
+When a dependency an in-progress item needs merges into the epic branch (HH-129, then HH-136 for HH-118), the item must be rebased before it can use it. planestro only syncs a worker branch at PR time, so a person has to rebase by hand. The orchestrator can't (no git), yet it resumed HH-118 on the old base anyway: the final-pack turn is running without the flag it needs.
+
+**Evidence.** HH-118 02:02:48–02:02:53: final-pack instructions queued and the session started; branch at 6f42b22c without --row-jump-overrides; the orchestrator's question asked the user to rebase. Earlier the same by hand after HH-129 (rebased 883fa0e9).
+
+**Fix.** A 'sync with base' engine operation (rebase a worker branch between turns, only when no turn is live, with conflicts going to the session) usable by the orchestrator. Resuming an item whose dependency just merged should run it first.
+
+### p30 — A transient GitHub timeout blocks an item as engine_error
+
+*bug · open*
+
+HH-123 rebased and pushed fine, then `gh pr view` timed out reaching api.github.com and the item blocked as engine_error until a person unblocked it. Nothing was wrong; an unblock with no message let the merge queue carry on.
+
+**Evidence.** HH-123 PR #306, blocked engine_error ~02:03 (orchestrator: 'transient network timeout'); api.github.com 200 minutes later; unblocked.
+
+**Fix.** Retry gh/network operations with backoff (for example 3 tries over a minute) before blocking; classify a network error as its own reason that the tick retries automatically.
+
+### p31 — The orchestrator called a 3-of-8-rows art item 'the final pack'
+
+*bug · open*
+
+After HH-136 landed, the orchestrator told me (and queued to the worker) that HH-118 only needed its final pack. The item's own deliverables doc said otherwise: only master, idle, stomp_windup and death are accepted; stomp, throw and emerge are rejected (area ratios 0.908/0.921 < 0.940, missing gutter), and recover and vanish are pending (head bob 41.5 px > 28, incomplete hands). The worker then hit the 1.5M Codex token cap. I nearly hand-finished a pack that can't be made without five more generations.
+
+**Evidence.** HH-118 activity 02:02:51–02:09; docs/underworld/superintendent_deliverables.md and prompts.json on hh/118; blocked token_budget at 1,538,904 tokens, $1.43.
+
+**Fix.** Have Codex Art items report a structured per-part status (accepted/pending/rejected, with reasons) in report_blocked/report_done, show it on the item page, and make the orchestrator quote it instead of summarising from memory. Warn before the token cap when the accepted fraction is low (a progress-vs-budget check).
+
+### p32 — A held (skip_merge) item's fix commits are never pushed; ci_result sits at 'pending' forever
+
+*bug · open*
+
+HH-122 was on skip_merge for the designer's review. I sent it the designer's four fixes, and the worker committed 26680a0 at 02:52. planestro logged 'session updated the branch; re-entering the merge pipeline' and set ci_result: pending. But the push and rebase only happen inside the merge op, which the hold skips, so nothing reached PR #309 for over an hour. The PR still showed the old captures, and the item looked like it was waiting on CI. The branch had also fallen behind the feature tip (#306, the develop merge, #300), with the predicted add/add conflict on the four enemy_*.png.import files.
+
+**Evidence.** HH-122 activity 02:52:57–02:53:07; PR #309 head 7177e05 vs local 26680a0 at 03:56. I rebased by hand (took the feature's .import uids), and pushed 41cf8bf3.
+
+**Fix.** When a held item's branch moves, run the sync step (rebase onto base plus push) without the merge, so the PR and CI reflect the fix and the reviewer sees fresh captures. Never set ci_result: pending without a push that will produce a CI run. Surface 'held, local commits not pushed' on the item.
+
 ## Feature proposals (for review)
 
 ### f1 — Feature: a stall detector
@@ -313,3 +353,11 @@ Restarting planestro safely needs 'no turns, no jobs, no setup hooks, no in-flig
 **Evidence.** HH-123 orphaned at 00:57 by a restart that waited only for sessions == 0; HH-119's merge op aborted 'engine_stopping'.
 
 **Proposal.** For your review: POST /api/engine/drain → pause admissions and wait for this.jobs and this.turns to empty, then exit; a --restart wrapper in npm start re-execs.
+
+### f4 — Feature: structured progress for multi-part art items, with a budget forecast
+
+An art item like a boss atlas is really N parts (eight rows here), each accepted, pending or rejected with a gate reason. Today that lives only in the worker's prose and a JSON file on its branch, so the orchestrator summarised HH-118 as 'the final pack' when five of eight rows were still missing (p31), and the token cap was the first signal. If report_done/report_blocked/add_note took an optional parts list [{name, state, reason}], the item page could show a progress strip, the orchestrator could quote it, and the engine could warn when tokens spent / parts accepted projects past the cap.
+
+**Evidence.** HH-118: 4/8 rows accepted at 1.54M tokens; finished at ~2.78M after a raise to 2.5M.
+
+**Proposal.** For your review: a `parts` field on the report tools and items, a progress strip on the item page and board card, and a forecast warning at 80% of the budget.
