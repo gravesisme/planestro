@@ -18,6 +18,8 @@ const EDITABLE_FIELDS = z.object({
   budget_usd: z.number().positive().nullable().optional(), budget_turns: z.number().int().positive().nullable().optional(), budget_tokens: z.number().int().positive().nullable().optional(),
 }).strict();
 
+const CHAT_TYPES = new Set(['orchestrator.user_message', 'orchestrator.reply', 'orchestrator.question', 'orchestrator.done']);
+
 export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBuffer): Hono {
   const api = new Hono();
   const fail = (c: any, e: unknown, status = 400) => c.json({ error: (e as Error).message ?? String(e) }, status);
@@ -306,6 +308,12 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
       e.orchestrator.wake({ type: 'user_message', item, data: { message: text } });
       return c.json({ ok: true });
     } catch (e) { return fail(c, e); }
+  });
+  // The chat: what the user said, what the orchestrator answered or asked, and how each wake about a message ended.
+  api.get('/orchestrator/chat', (c) => {
+    const e = engine as Engine & { orchestrator?: { enabled: boolean } };
+    const entries = store.journal.read().filter((j) => CHAT_TYPES.has(j.type) && (j.type !== 'orchestrator.done' || ((j.data?.events as string[] | undefined) ?? []).includes('user_message'))).slice(-100);
+    return c.json({ enabled: Boolean(e.orchestrator?.enabled), entries });
   });
   api.get('/orchestrator/questions', (c) => c.json(store.journal.read({ type: 'orchestrator.question', limit: 20 })));
   api.get('/engine', (c) => c.json({ mode: engine.mode, paused: engine.paused, ...guardView(store, engine.paused), sessions: engine.sessions(), ...(engine.restartReadiness ? { restart: engine.restartReadiness() } : {}), log: engine.log.slice(-200) }));

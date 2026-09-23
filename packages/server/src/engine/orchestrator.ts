@@ -8,6 +8,17 @@ import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Ports, CustomToolDef, TurnResult } from './ports.ts';
 import type { DecisionInput, RateLimitSnapshot } from '@planestro/shared';
 
+/**
+ * What a user_message wake is for, said in the packet rather than the prompt library: a data dir's
+ * copy of orchestrator-system predates the chat.
+ */
+const CHAT_POLICY = [
+  'The user is talking to you in the planestro chat. They see only what you send with reply_to_user, so always answer with it before done_with_wake.',
+  'In this wake you may act on what they ask: create_item for new backlog work (submit it only if they say to), submit_item, unblock_item or retry_op to get a stopped item moving, message_session, annotate_item, and the ordering tools.',
+  'For a blocked item, read_item first: the Activity log says why it stopped. Explain the cause in plain words; resolve it when the fix is an instruction you can give, and say plainly when the decision is theirs.',
+  'Ask one short question with reply_to_user when the request is ambiguous rather than guessing; their answer arrives as the next wake.',
+].join('\n');
+
 export interface WakeEvent { type: string; item?: string; data?: Record<string, unknown> }
 
 export interface OrchestratorHooks {
@@ -160,7 +171,7 @@ export class Orchestrator {
       permissionMode: 'dontAsk', prompt, resume: state.session_id, maxTurns: 30,
       systemAppend: this.systemIntro(),
       allowedTools: ['Read', 'Grep', 'Glob', 'Bash(git log*)', 'Bash(git diff*)', 'Bash(git show*)', 'Bash(gh pr view*)', 'Bash(gh pr diff*)', 'Bash(gh run view*)'],
-      mcpTools: this.tools((s) => { doneSummary = s; }),
+      mcpTools: this.tools((s) => { doneSummary = s; }, events.some((e) => e.type === 'user_message')),
       onOutput: (t) => this.emit({ type: 'engine.log', level: 'info', message: `[orchestrator] ${t.slice(0, 300)}` }),
     });
     this.hooks.usageSeen?.(result.rateLimit);
@@ -212,6 +223,7 @@ export class Orchestrator {
         if (fm.triage) lines.push(e.type === 'decision_answered' ? this.decisionAnsweredPacket() : this.triagePacket(fm));
       }
     }
+    if (e.type === 'user_message') lines.push(CHAT_POLICY);
     for (const [k, v] of Object.entries(e.data ?? {})) lines.push(`${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`.slice(0, 2000));
     return lines.join('\n');
   }
@@ -295,7 +307,11 @@ export class Orchestrator {
     ].join('\n');
   }
 
-  private tools(onDone: (summary: string) => void): CustomToolDef[] {
+  /**
+   * The wake's tools. `chat` is set when the user is talking to it in this wake: only then may it
+   * create items, because only then has someone asked it to add work.
+   */
+  private tools(onDone: (summary: string) => void, chat = false): CustomToolDef[] {
     const store = this.store;
     const idArg = { id: z.string() };
     return [
@@ -323,6 +339,16 @@ export class Orchestrator {
       { name: 'ask_user_decision', description: 'Escalate a stopped item to the user as ONE plain decision: a one-line question, one sentence of why, 2–4 options (label + description) with exactly one recommended, which is shown first. The user answers by tapping an option or writing their own; you are woken with the answer to carry it out. Only for calls that are genuinely theirs: spend, scope, taste, irreversible actions.', schema: { item: z.string(), question: z.string(), why: z.string(), options: z.array(z.object({ label: z.string(), description: z.string(), recommended: z.boolean().optional(), raise_budget_usd: z.number().positive().optional().describe('Answering with this option raises the item budget by this many dollars above its spend, then it resumes: use it for every spending stop (label it like "+$40 and resume")') })), allow_free_text: z.boolean().optional() }, handler: async (a) => this.hooks.askUserDecision(String(a.item), { question: String(a.question), why: String(a.why), options: a.options as DecisionInput['options'], allow_free_text: a.allow_free_text === undefined ? true : Boolean(a.allow_free_text) }) },
       { name: 'ask_user', description: 'Ask the user something; the answer arrives as a later wake. Returns immediately.', schema: { question: z.string(), item: z.string().optional() }, handler: async (a) => { const entry = store.journal.append({ type: 'orchestrator.question', item: a.item ? String(a.item) : undefined, actor: 'orchestrator', data: { question: String(a.question) } }); if (a.item) store.mutateItem(String(a.item), [{ activity: { actor: 'orchestrator', text: `question for you: ${a.question}` } }], 'orchestrator'); this.emit({ type: 'engine.log', level: 'warn', message: `[orchestrator asks] ${a.question}` }); return `recorded at ${entry.ts}; the user will see it in the console`; } },
       { name: 'resume_after', description: "Park a stopped item until other items merge, then resume its session with `message`: for a worker that needs what another item delivers (a flag, an asset) before it can go on. It stops needing the user; planestro rebases its branch onto the base first. Use it instead of unblocking into a wait.", schema: { ...idArg, items: z.array(z.string()).min(1), message: z.string() }, handler: async (a) => this.hooks.resumeAfter(String(a.id), a.items as string[], String(a.message)) },
+      { name: 'reply_to_user', description: 'Answer the user in the planestro chat. In a user_message wake this is the only thing they read: say what you found and what you did, briefly. Call it once, near the end of the wake.', schema: { text: z.string(), item: z.string().optional() }, handler: async (a) => { store.journal.append({ type: 'orchestrator.reply', item: a.item ? String(a.item) : undefined, actor: 'orchestrator', data: { text: String(a.text) } }); return 'sent to the chat'; } },
+      { name: 'create_item', description: 'CHAT ONLY: create a backlog item the user asked for, as NOT_YET_SUBMITTED unless `submit` is true (then it is queued for planning at once). Write a complete brief: its worker sees only the title and description.', schema: { title: z.string(), description: z.string(), category: z.string().optional().describe('One of the project categories; default if omitted'), depends_on: z.array(z.string()).optional(), submit: z.boolean().optional().describe('Queue it for planning now (only if the user said so)') }, handler: async (a) => {
+        if (!chat) return 'not permitted: only when the user asks you to in the chat (a user_message wake)';
+        try {
+          const it = store.createItem({ title: String(a.title), description: String(a.description), ...(a.category ? { category: String(a.category) } : {}), ...(a.depends_on ? { depends_on: a.depends_on as string[] } : {}) }, 'orchestrator');
+          store.mutateItem(it.id, [{ activity: { actor: 'orchestrator', text: 'created from the chat' } }], 'orchestrator');
+          if (a.submit) { store.transition(it.id, 'QUEUED', 'orchestrator'); this.hooks.poke(); }
+          return `created ${it.id}${a.submit ? ' and queued it for planning' : ' (not submitted; the user or submit_item queues it)'}`;
+        } catch (e) { return `failed: ${(e as Error).message}`; }
+      } },
       { name: 'done_with_wake', description: 'Finish this wake with a one-line summary of what you decided.', schema: { summary: z.string() }, handler: async (a) => { onDone(String(a.summary)); return 'Recorded. End your turn now.'; } },
     ];
   }

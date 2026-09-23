@@ -112,6 +112,16 @@ message workers, reorder the merge queue, hold an item, ask you a question. It n
 state (its session is rotated freely; the files are its memory) and it cannot approve an
 epic's breakdown or release a review hold: those are yours.
 
+### Talking to it
+
+The **Orchestrator** button in the corner of every page opens a chat. A message wakes it with
+your text and the current state, and it answers in the chat (its questions from other wakes
+show up there too). In a wake you started it may also add work for you: `create_item` adds a
+backlog item (queued only if you say so), and it refuses in any wake you did not start, so the
+orchestrator never adds work unasked. It resolves stopped items with the same tools it uses in
+triage (`unblock_item`, `retry_op`, …). The **Ask the orchestrator** button on a blocked item
+opens the chat about that item. While automation is paused it answers when you resume.
+
 ### Letting it approve a plan
 
 For a small item you would wave through anyway, tick **let the orchestrator approve the

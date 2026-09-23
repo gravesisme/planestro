@@ -1,5 +1,9 @@
 import { create } from 'zustand';
+import type { JournalEntry } from '@planestro/shared';
 import { api, type State, type ItemView } from './api.ts';
+
+/** Journal entries the orchestrator chat shows (a wake's `done` only when it answered a message). */
+export const isChatEntry = (j: JournalEntry) => ['orchestrator.user_message', 'orchestrator.reply', 'orchestrator.question'].includes(j.type) || (j.type === 'orchestrator.done' && ((j.data?.events as string[] | undefined) ?? []).includes('user_message'));
 
 interface Store {
   state?: State; error?: string; connected: boolean; events: string[];
@@ -8,6 +12,9 @@ interface Store {
   consoles: Record<string, string[]>;
   seedConsole(id: string, lines: string[]): void;
   refresh(): Promise<void>; connect(): void; item(id: string): ItemView | undefined; flash(msg: string): void;
+  /** The orchestrator chat: its thread (loaded when first opened, then kept live from the journal stream) and what it opens with. */
+  chat: { open: boolean; entries?: JournalEntry[]; enabled?: boolean; item?: string; draft?: string };
+  openChat(opts?: { item?: string; draft?: string }): void; closeChat(): void; loadChat(): Promise<void>;
 }
 
 let refreshTimer: ReturnType<typeof setTimeout> | undefined;
@@ -32,7 +39,10 @@ if (typeof window !== 'undefined') {
 }
 
 export const useStore = create<Store>((set, get) => ({
-  connected: false, events: [], consoles: {}, updateReady: false,
+  connected: false, events: [], consoles: {}, updateReady: false, chat: { open: false },
+  openChat(opts = {}) { set({ chat: { ...get().chat, open: true, item: opts.item, draft: opts.draft } }); void get().loadChat(); },
+  closeChat() { set({ chat: { ...get().chat, open: false } }); },
+  async loadChat() { try { const r = await api.orchestratorChat(); set({ chat: { ...get().chat, entries: r.entries, enabled: r.enabled } }); } catch { /* the panel says it could not load */ } },
   seedConsole(id, lines) { set({ consoles: { ...get().consoles, [id]: lines } }); },
   async refresh() {
     try { set({ state: await api.state(), error: undefined }); } catch (e) { set({ error: (e as Error).message }); }
@@ -50,7 +60,7 @@ export const useStore = create<Store>((set, get) => ({
       if (e.type === 'session.ended') appendConsole(e.id, `── turn ended (${e.subtype ?? 'success'}) ──`);
       if (e.type === 'engine.log' && e.item) appendConsole(e.item, `[engine] ${e.message}`);
       if (e.type === 'engine.log') set({ events: [...get().events.slice(-199), `${e.level}: ${e.message}`] });
-      if (e.type === 'journal.appended') return;
+      if (e.type === 'journal.appended') { const c = get().chat; if (c.entries && isChatEntry(e.entry) && !c.entries.some((x) => x.ts === e.entry.ts && x.type === e.entry.type)) set({ chat: { ...c, entries: [...c.entries.slice(-199), e.entry] } }); return; }
       clearTimeout(refreshTimer);
       refreshTimer = setTimeout(() => void get().refresh(), 120);
     };

@@ -173,6 +173,10 @@ export class DryRunClaudePort implements ClaudePort {
       const id = /^Item: (\S+)/m.exec(packet)?.[1];
       if (id && approve && packet.includes('Plan approval: DELEGATED TO YOU') && String(await approve.handler({ id, notes: 'dry-run: approved without reading' })) === 'approved') approved.push(id);
     }
+    // A chat message gets an answer, so the demo's chat is not a dead end.
+    const said = /^message: (.*)$/m.exec(o.prompt)?.[1];
+    const reply = o.mcpTools.find((t) => t.name === 'reply_to_user');
+    if (said !== undefined && /Event: user_message/.test(o.prompt) && reply) await reply.handler({ text: `(dry-run) I would read the backlog and answer: “${said.slice(0, 200)}”. Switch to live mode for a real reply.` });
     const done = o.mcpTools.find((t) => t.name === 'done_with_wake');
     if (done) await done.handler({ summary: approved.length ? `dry-run: approved ${approved.join(', ')}` : 'dry-run: reviewed the wake, no action needed' });
     return { sessionId: o.resume ?? `dryrun-orch-${this.w.sha().slice(-6)}`, subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: 'wake handled (dry-run)' };

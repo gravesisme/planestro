@@ -74,6 +74,7 @@ export const api = {
   resumeAfter: (id: string, items: string[], message: string) => req<ItemView>('POST', `/api/items/${encodeURIComponent(id)}/resume-after`, { items, message }),
   cancelResumeAfter: (id: string) => req<ItemView>('DELETE', `/api/items/${encodeURIComponent(id)}/resume-after`),
   orchestratorMessage: (text: string, item?: string) => req<{ ok: true }>('POST', '/api/orchestrator/message', { text, item }),
+  orchestratorChat: () => req<{ enabled: boolean; entries: JournalEntry[] }>('GET', '/api/orchestrator/chat'),
   orchestratorQuestions: () => req<JournalEntry[]>('GET', '/api/orchestrator/questions'),
   gitCommit: () => req<{ committed: boolean }>('POST', '/api/git/commit'),
   gitPush: () => req<{ pushed: boolean }>('POST', '/api/git/push'),

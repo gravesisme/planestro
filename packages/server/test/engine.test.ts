@@ -1569,3 +1569,56 @@ describe('hand-off between items', () => {
 const idNumberOf = (id: string) => id.split('-')[1];
 const getSectionText = (s: DataStore, id: string, title: string) => s.getItem(id)!.file.sections.find((x) => x.title === title)!.body;
 
+
+describe('orchestrator chat', () => {
+  it('in a user_message wake it replies, creates items and unblocks; only a chat wake may create items', async () => {
+    const results: Record<string, string> = {};
+    const scripted = (world: FakeWorld) => {
+      const inner = new DryRunClaudePort(world);
+      return {
+        runTurn: (o: TurnOptions) => inner.runTurn(o),
+        async runCustomTurn(o: any): Promise<TurnResult> {
+          const t = (n: string) => o.mcpTools.find((x: any) => x.name === n);
+          if (o.label.includes('user_message')) {
+            expect(o.prompt).toContain('They see only what you send with reply_to_user');
+            results.create = await t('create_item').handler({ title: 'Dark mode', description: 'Add a dark theme toggle' });
+            results.unblock = await t('unblock_item').handler({ id: 'TP-1', message: 'use the project check script instead' });
+            results.notBlocked = await t('unblock_item').handler({ id: 'TP-2', message: 'x' });
+            await t('reply_to_user').handler({ text: 'Created TP-2 and unblocked TP-1.' });
+          } else {
+            results.unasked = await t('create_item').handler({ title: 'Sneaky', description: 'x' });
+          }
+          await t('done_with_wake').handler({ summary: `handled ${o.label}` });
+          return { sessionId: 'orch-1', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '' };
+        },
+      };
+    };
+    const { store, engine } = await setup({ claude: scripted });
+    const blocked = store.createItem({ title: 'Stuck', description: 'x' });
+    store.mutateItem(blocked.id, [{ set: { blocked: true, blocked_reason: 'agent_blocked', awaiting: 'user' } }], 'engine');
+    engine.orchestrator.wake({ type: 'orchestrator_note', data: { note: 'routine' } });
+    await waitFor(() => results.unasked !== undefined);
+    expect(results.unasked).toContain('not permitted');
+    expect(store.listItems()).toHaveLength(1);
+
+    engine.orchestrator.wake({ type: 'user_message', data: { message: 'add dark mode, and fix TP-1' } });
+    await waitFor(() => results.create !== undefined && results.notBlocked !== undefined);
+    expect(results.create).toBe('created TP-2 (not submitted; the user or submit_item queues it)');
+    const created = store.getItem('TP-2')!;
+    expect(created.file.frontmatter.status).toBe('NOT_YET_SUBMITTED');
+    expect(activityOf(store, 'TP-2')).toContain('[orchestrator] created from the chat');
+    expect(results.unblock).toContain('unblocked');
+    expect(store.getItem(blocked.id)!.file.frontmatter.blocked).toBeUndefined();
+    expect(activityOf(store, blocked.id)).toContain('unblocked: use the project check script instead');
+    expect(results.notBlocked).toContain('nothing to unblock');
+    await waitFor(() => store.journal.read({ type: 'orchestrator.reply' }).length === 1);
+    expect(store.journal.read({ type: 'orchestrator.reply' })[0].data).toEqual({ text: 'Created TP-2 and unblocked TP-1.' });
+  });
+
+  it('the dry-run orchestrator answers a chat message', async () => {
+    const { store, engine } = await setup();
+    engine.orchestrator.wake({ type: 'user_message', data: { message: 'what is blocked?' } });
+    await waitFor(() => store.journal.read({ type: 'orchestrator.reply' }).length === 1);
+    expect(String(store.journal.read({ type: 'orchestrator.reply' })[0].data?.text)).toContain('what is blocked?');
+  });
+});

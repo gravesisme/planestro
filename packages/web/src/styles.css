@@ -225,3 +225,28 @@ html { -webkit-text-size-adjust: 100%; }
   .decision-question { font-size: 22px; }
   .decision-free { flex-direction: column; align-items: stretch; } .decision-free button { min-height: 44px; }
 }
+
+/* orchestrator chat: a floating button on every page, and the panel it opens */
+.chat-fab { position: fixed; z-index: 13; right: 20px; bottom: 20px; display: flex; align-items: center; gap: 8px; min-height: 46px; padding: 0 18px 0 14px; border-radius: 999px; background: var(--panel2); border: 1px solid var(--accent); color: var(--text); font-weight: 600; box-shadow: 0 6px 22px #000a; }
+.chat-fab svg { width: 20px; height: 20px; color: var(--accent); } .chat-fab:hover { background: color-mix(in srgb, var(--accent) 14%, var(--panel2)); }
+.chat-fab .badge { position: absolute; top: 4px; right: 6px; width: 10px; height: 10px; border-radius: 50%; background: var(--warn); box-shadow: 0 0 0 2px var(--panel2); }
+.chat-panel { position: fixed; z-index: 25; right: 20px; bottom: 20px; width: min(420px, calc(100vw - 40px)); height: min(620px, calc(100vh - 90px)); display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 16px 48px #000c; overflow: hidden; }
+.chat-head { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--line); } .chat-head .chip-x { font-size: 22px; }
+.chat-thread { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.chat-empty p { margin: 0 0 8px; }
+.chat-msg { max-width: 88%; padding: 8px 11px; border-radius: 12px; background: var(--panel2); border: 1px solid var(--line); align-self: flex-start; }
+.chat-msg.user_message { align-self: flex-end; background: color-mix(in srgb, var(--accent) 16%, var(--panel2)); border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
+.chat-msg.question { border-color: var(--warn); } .chat-msg.done { background: transparent; } .chat-msg.done .chat-text { color: var(--muted); }
+.chat-text { white-space: pre-wrap; overflow-wrap: anywhere; } .chat-label { display: block; color: var(--muted); margin-bottom: 2px; } .chat-msg.question .chat-label { color: var(--warn); }
+.chat-at { display: block; margin-top: 3px; font-size: 11px; color: var(--muted); text-align: right; }
+.chat-suggest { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 8px; }
+.chat-input { display: flex; gap: 8px; align-items: flex-end; padding: 10px 12px; border-top: 1px solid var(--line); } .chat-input textarea { flex: 1; resize: none; min-height: 44px; max-height: 140px; font-family: inherit; }
+@media (min-width: 841px) { main { padding-bottom: 84px; } }
+@media (max-width: 840px) {
+  .chat-fab { right: max(14px, env(safe-area-inset-right)); bottom: calc(var(--tabbar-h) + var(--safe-b) + 14px); width: 50px; height: 50px; padding: 0; justify-content: center; }
+  /* the board's own "+ New item" button sits in that corner: stack above it */
+  body:has(.fab) .chat-fab { bottom: calc(var(--tabbar-h) + var(--safe-b) + 76px); }
+  body:has(main :is(input:not([type=checkbox]):not([type=radio]), textarea):focus) .chat-fab { display: none; }
+  .chat-panel { inset: 0; width: auto; height: auto; border-radius: 0; border: 0; padding-top: var(--safe-t); padding-bottom: var(--safe-b); z-index: 35; }
+  .chat-input textarea { font-size: 16px; }
+}
