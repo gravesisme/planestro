@@ -18,6 +18,7 @@ A test (`docs.test.ts`) fails if the engine can raise a reason that is missing h
 | `runner_unavailable` | The model's runner is not present in this engine. | Check the model's `runner`. |
 | `turn_budget` / `token_budget` | A token-billed runner spent `budget_turns_per_item` / `budget_tokens_per_item` on this item. | Raise the budget, or take the item over by hand. |
 | `auth_required` | The agent CLI is not logged in. | `codex login` (or `claude` login), then unblock. |
+| `usage_exhausted` | The item's model is out of usage (a subscription limit or missing credits) and no fallback could take the turn: the item does not allow a fallback model, its model has no `fallback`, or every model in the chain is out too. The outage is remembered in Settings → Models until the provider's reset. | Wait for the reset and unblock; or tick **allow fallback model** on the item (its model needs a `fallback` in `models:`) and unblock to continue on the fallback now. |
 | `rate_limited` | The agent hit a usage or rate limit. | Wait, then unblock. Lower `concurrency.runner_limits` if it recurs. |
 | `session_lost` | The conversation could not be resumed (its transcript is gone). | Unblock: the stored id was dropped, so the retry starts a fresh conversation with the full prompt. |
 | `spawn_error` | The agent CLI could not be started. | Install it, or set its path in Settings → This machine. |

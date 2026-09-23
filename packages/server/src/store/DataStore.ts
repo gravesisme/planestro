@@ -38,6 +38,8 @@ export interface MutateOptions { commit?: string; body?: string; paths?: string[
 export interface CreateItemInput {
   title: string; category?: string; description?: string; notes?: string; kind?: 'item' | 'epic'; parent?: string;
   planner?: string; implementer?: string; status?: 'NOT_YET_SUBMITTED' | 'ICEBOX'; depends_on?: string[]; extra?: Record<string, unknown>;
+  /** Omitted: the project's `defaults.allow_model_fallback`. */
+  allow_model_fallback?: boolean;
 }
 
 export interface ReleaseFields { version?: string; title?: string | null; status?: ReleaseStatus; date?: string | null; tag?: string | null; items?: string[] }
@@ -224,6 +226,7 @@ export class DataStore {
       category: input.category ?? this.config.defaults.category, status,
       rank: rankForBottom(this.laneItems(lane).map((s) => ({ id: s.id, rank: s.file.frontmatter.rank }))),
       planner: input.planner ?? this.config.defaults.planner, implementer: input.implementer ?? this.config.defaults.implementer,
+      ...((input.allow_model_fallback ?? this.config.defaults.allow_model_fallback) ? { allow_model_fallback: true } : {}),
       depends_on: input.depends_on ?? [], attachments: [], created_at: now, updated_at: now, ...(status === 'ICEBOX' ? { iceboxed_at: now } : {}),
       ...(input.extra ?? {}),
     };

@@ -72,6 +72,20 @@ pins these versions so planestro can warn when the installed CLI drifts.
    turn). Treat planestro tool results as fallible: the engine's no_plan /
    done detection paths are the safety net, and a resumed turn re-running the
    tool is the recovery. Cause not yet isolated (SDK-internal transport).
+12. **A model that is out of usage** (subscription limit, or a model that needs
+   credits the account lacks) is visible three ways, and planestro reads all
+   of them (`noteUsage` / `classifyUsage` in `LiveClaudePort.ts`): a
+   `rate_limit_event` whose `rate_limit_info.status` is `rejected` (with
+   `resetsAt`, epoch seconds), an assistant message whose `error` is
+   `rate_limit` / `billing_error` / `model_not_found`, and the CLI's own
+   usage-limit text, whose prefixes the SDK exports as
+   `USAGE_LIMIT_ERROR_PREFIXES` (marked alpha; planestro merges it with its own
+   copy in `@planestro/shared` so a rename cannot switch detection off). A
+   rejected event alone is not an outage — the turn must also have failed or
+   ended on the usage message. `Options.fallbackModel` covers only *overloaded
+   or unavailable* models inside one turn and re-tries the primary at the start
+   of the next, so it is passed alongside, not relied on: an exhausted
+   subscription is handled by the engine (see configuration.md, Model fallback).
 
 ## Engine decisions confirmed by the spike
 

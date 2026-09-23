@@ -12,6 +12,7 @@ export const BLOCK_HELP: Record<string, { meaning: string; todo: string }> = {
   planner_cannot_plan: { meaning: "The item's planner is a model whose runner cannot plan (Codex).", todo: "Pick a Claude model as the planner." },
   runner_unavailable: { meaning: "The model's runner is not present in this engine.", todo: "Check the model's `runner`." },
   auth_required: { meaning: "The agent CLI is not logged in.", todo: "`codex login` (or `claude` login), then unblock." },
+  usage_exhausted: { meaning: "The item's model is out of usage (a subscription limit or missing credits) and no fallback could take the turn: the item does not allow a fallback model, its model has no `fallback`, or every model in the chain is out too. The outage is remembered in Settings → Models until the provider's reset.", todo: "Wait for the reset and unblock; or tick **allow fallback model** on the item (its model needs a `fallback` in `models:`) and unblock to continue on the fallback now." },
   rate_limited: { meaning: "The agent hit a usage or rate limit.", todo: "Wait, then unblock. Lower `concurrency.runner_limits` if it recurs." },
   session_lost: { meaning: "The conversation could not be resumed (its transcript is gone).", todo: "Unblock: the stored id was dropped, so the retry starts a fresh conversation with the full prompt." },
   spawn_error: { meaning: "The agent CLI could not be started.", todo: "Install it, or set its path in Settings → This machine." },

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
-import { placeholdersIn, renderPrompt } from '@planestro/shared';
+import { placeholdersIn, renderPrompt, fallbackChain, findModel, type Config, type ModelDef } from '@planestro/shared';
 import { api, type PromptView, type State } from '../api.ts';
 import { act, useStore } from '../store.ts';
 
@@ -37,6 +37,7 @@ export function NewItemDialog({ onClose, icebox, from }: { onClose: () => void; 
   const [implementer, setImplementer] = useState(modelOf(start) ?? state?.config.defaults.implementer ?? '');
   const [parent, setParent] = useState('');
   const [delegate, setDelegate] = useState(false);
+  const [allowFallback, setAllowFallback] = useState(state?.config.defaults.allow_model_fallback ?? false);
   const orch = state?.config.orchestrator;
   const [description, setDescription] = useState(start?.body ?? '');
   const [values, setValues] = useState<Record<string, string>>({});
@@ -63,7 +64,7 @@ export function NewItemDialog({ onClose, icebox, from }: { onClose: () => void; 
         e.preventDefault();
         let text: string;
         try { text = render(); } catch (err) { useStore.setState({ error: (err as Error).message }); return; }
-        const r = await act(() => api.createItem({ title, category, description: text, kind, parent: parent || undefined, implementer: kind === 'item' ? implementer || undefined : undefined, auto_approve_plan: kind === 'item' && delegate ? true : undefined, status: icebox ? 'ICEBOX' : undefined }));
+        const r = await act(() => api.createItem({ title, category, description: text, kind, parent: parent || undefined, implementer: kind === 'item' ? implementer || undefined : undefined, auto_approve_plan: kind === 'item' && delegate ? true : undefined, allow_model_fallback: allowFallback, status: icebox ? 'ICEBOX' : undefined }));
         if (r) { onClose(); nav(`/items/${r.id}`); }
       }}>
         <h2 style={{ margin: 0 }}>New {icebox ? 'icebox ' : ''}item</h2>
@@ -76,6 +77,7 @@ export function NewItemDialog({ onClose, icebox, from }: { onClose: () => void; 
           {kind === 'item' && epics.length > 0 && <select value={parent} onChange={(e) => setParent(e.target.value)}><option value="">no parent epic</option>{epics.map((e) => <option key={e.id} value={e.id}>{e.id} {e.frontmatter.title}</option>)}</select>}
         </div>
         {kind === 'item' && orch?.may_approve_plans && <label className="row small" title={`The orchestrator reviews the plan and approves it, sends it back with fixes (up to ${orch.max_plan_revisions} rounds), or leaves it to you`}><input type="checkbox" checked={delegate} onChange={(e) => setDelegate(e.target.checked)} /> let the orchestrator approve the plan</label>}
+        {state && <label className="row small" title="While the planner's or implementer's model is out of usage, turns run on its fallback (models: fallback in planestro.yml) instead of blocking"><input type="checkbox" checked={allowFallback} onChange={(e) => setAllowFallback(e.target.checked)} /> allow fallback model{fallbackHint(state.config, [state.config.defaults.planner, kind === 'item' ? implementer : undefined])}{kind === 'epic' ? ' — its children inherit this' : ''}</label>}
         <textarea placeholder="Description / prompt (markdown)" value={description} onChange={(e) => setDescription(e.target.value)} />
         {asks.map((p) => <label key={p} className="row small"><code>{`{{${p}}}`}</code><input className="grow" required placeholder={`value for ${p}`} value={values[p] ?? ''} onChange={(e) => setValues((v) => ({ ...v, [p]: e.target.value }))} /></label>)}
         <div className="row"><span className="grow" /><button type="button" onClick={onClose}>Cancel</button><button className="primary" type="submit">Create</button></div>
@@ -83,3 +85,10 @@ export function NewItemDialog({ onClose, icebox, from }: { onClose: () => void; 
     </div>
   );
 }
+
+/** " (Fable 5 → Opus 5.5)" for the given models that have a fallback, or a note that none does. */
+export function fallbackHint(cfg: Config, ids: (string | undefined)[]): string {
+  const chains = [...new Set(ids.filter(Boolean))].map((id) => findModel(cfg, id)).filter((m): m is ModelDef => !!m).map((m) => fallbackChain(cfg, m)).filter((c) => c.length > 1);
+  return chains.length ? ` (${chains.map((c) => c.map((m) => m.label).join(' → ')).join('; ')})` : ' (no fallback configured for these models)';
+}
+

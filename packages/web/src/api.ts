@@ -29,7 +29,7 @@ async function req<T>(method: string, url: string, body?: unknown, raw?: BodyIni
 
 export const api = {
   state: () => req<State>('GET', '/api/state'),
-  createItem: (body: { title: string; category?: string; description?: string; kind?: 'item' | 'epic'; parent?: string; implementer?: string; status?: 'NOT_YET_SUBMITTED' | 'ICEBOX'; auto_approve_plan?: boolean }) => req<ItemView>('POST', '/api/items', body),
+  createItem: (body: { title: string; category?: string; description?: string; kind?: 'item' | 'epic'; parent?: string; implementer?: string; status?: 'NOT_YET_SUBMITTED' | 'ICEBOX'; auto_approve_plan?: boolean; allow_model_fallback?: boolean }) => req<ItemView>('POST', '/api/items', body),
   patchItem: (id: string, body: { fields?: Record<string, unknown>; sections?: Record<string, string> }) => req<ItemView>('PATCH', `/api/items/${id}`, body),
   deleteItem: (id: string) => req<{ ok: true }>('DELETE', `/api/items/${id}`),
   move: (id: string, op: 'top' | 'bottom' | 'before' | 'after' | 'icebox' | 'backlog', ref?: string) => req<ItemView>('POST', `/api/items/${id}/move`, { op, ref }),
@@ -59,6 +59,8 @@ export const api = {
   deleteRelease: (version: string) => req<{ ok: true }>('DELETE', `/api/releases/${encodeURIComponent(version)}`),
   putConfig: (body: Record<string, Record<string, unknown>>) => req<{ config: Config }>('PUT', '/api/config', body),
   putLocal: (body: Record<string, string>) => req<{ local: LocalConfig }>('PUT', '/api/config/local', body),
+  markModelUnavailable: (id: string, until: string, reason?: string) => req<{ local: LocalConfig }>('PUT', `/api/models/${encodeURIComponent(id)}/unavailable`, { until, reason }),
+  clearModelUnavailable: (id: string) => req<{ local: LocalConfig }>('DELETE', `/api/models/${encodeURIComponent(id)}/unavailable`),
   categories: (body: Record<string, string>) => req<{ config: Config; affected: number }>('POST', '/api/config/categories', body),
   pause: () => req<{ paused: boolean }>('POST', '/api/engine/pause'),
   resume: () => req<{ paused: boolean }>('POST', '/api/engine/resume'),

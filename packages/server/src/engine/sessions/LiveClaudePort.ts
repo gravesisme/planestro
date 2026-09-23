@@ -1,9 +1,13 @@
+import * as sdk from '@anthropic-ai/claude-agent-sdk';
 import { query, tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
+import { KNOWN_USAGE_LIMIT_PREFIXES, USAGE_ERROR_CODES, isUsageLimitText, resetTime } from '@planestro/shared';
 import type { ClaudePort, TurnOptions, TurnResult, CustomTurnOptions } from '../ports.ts';
 
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] });
 const PARK_MSG = 'Permission requires user approval; the request has been recorded by planestro — end this turn now.';
+/** The SDK's list of usage-limit messages (alpha export) merged with our copy, so a rename cannot switch detection off. */
+const USAGE_PREFIXES: readonly string[] = [...new Set([...(((sdk as Record<string, unknown>).USAGE_LIMIT_ERROR_PREFIXES as readonly string[] | undefined) ?? []), ...KNOWN_USAGE_LIMIT_PREFIXES])];
 
 /**
  * One `query()` per turn (invariant 2): the process lives only while the model is working.
@@ -26,6 +30,7 @@ export class LiveClaudePort implements ClaudePort {
       prompt: o.prompt,
       options: {
         cwd: o.cwd, model: o.model, permissionMode: o.permissionMode, resume: o.resume,
+        ...(o.fallbackModel && o.fallbackModel !== o.model ? { fallbackModel: o.fallbackModel } : {}),
         systemPrompt: { type: 'preset', preset: 'claude_code', append: o.systemAppend },
         mcpServers: { planestro: server }, strictMcpConfig: true, settingSources: ['project'],
         allowedTools: [...o.allowedTools, ...o.mcpTools.map((t) => `mcp__planestro__${t.name}`)],
@@ -70,6 +75,7 @@ export class LiveClaudePort implements ClaudePort {
       prompt: o.prompt,
       options: {
         cwd: o.cwd, model: o.model, permissionMode: o.permissionMode, resume: o.resume,
+        ...(o.fallbackModel && o.fallbackModel !== o.model ? { fallbackModel: o.fallbackModel } : {}),
         systemPrompt: { type: 'preset', preset: 'claude_code', append: o.systemAppend },
         mcpServers: { planestro }, strictMcpConfig: true, settingSources: ['project'],
         allowedTools: [...o.allowedTools, 'mcp__planestro__submit_plan', 'mcp__planestro__submit_breakdown', 'mcp__planestro__add_note', 'mcp__planestro__append_activity', 'mcp__planestro__report_done', 'mcp__planestro__report_blocked', 'mcp__planestro__hand_off', 'mcp__planestro__get_item'],
@@ -122,11 +128,47 @@ function describeToolUse(name: string, input: Record<string, unknown>): string {
   }
 }
 
+/**
+ * Signs, collected while a turn streams, that its model is out of usage: a rejected rate-limit
+ * event (with the reset time), an assistant error code, or the CLI's usage-limit message.
+ */
+export interface UsageSignals { rejected?: boolean; resetsAt?: Date; code?: string; message?: string }
+
+/** Feed one SDK message to the usage detector. Exported for tests. */
+export function noteUsage(m: any, u: UsageSignals): void {
+  if (m?.type === 'rate_limit_event') {
+    const info = m.rate_limit_info ?? {};
+    if (info.status === 'rejected') { u.rejected = true; u.resetsAt = resetTime(info.resetsAt) ?? u.resetsAt; }
+  } else if (m?.type === 'assistant') {
+    if (m.error && USAGE_ERROR_CODES.includes(m.error)) u.code = m.error;
+    for (const c of (m.message?.content ?? []) as any[]) if (c?.type === 'text' && isUsageLimitText(c.text, USAGE_PREFIXES)) u.message = String(c.text).trim().slice(0, 300);
+  } else if (m?.type === 'result') {
+    for (const t of [m.result, ...(Array.isArray(m.errors) ? m.errors : [m.errors])]) if (typeof t === 'string' && isUsageLimitText(t, USAGE_PREFIXES)) u.message = t.trim().slice(0, 300);
+  }
+}
+
+/**
+ * A failed turn whose model ran out of usage becomes `usage_exhausted`, so the engine can move to a
+ * fallback. A rejected rate-limit event alone is not enough (the SDK may have recovered on its own
+ * fallback): the turn must have failed, or ended on the usage message.
+ */
+export function classifyUsage(result: TurnResult, u: UsageSignals): void {
+  const signal = u.message || u.code || u.rejected;
+  if (!signal || result.subtype === 'killed') return;
+  if (!(result.isError || u.message)) return;
+  result.subtype = 'usage_exhausted';
+  result.isError = true;
+  result.usageLimit = { message: u.message ?? (u.code ? `assistant error: ${u.code}` : 'usage limit reached (rate limit rejected)'), ...(u.resetsAt ? { resetsAt: u.resetsAt.toISOString() } : {}) };
+  result.error = result.usageLimit.message;
+}
+
 /** Drain a query into a TurnResult. Completion is "the iterator finished": a torn session's resume emits a zero-turn result first. */
 async function consume(q: AsyncIterable<unknown>, result: TurnResult, onOutput: (t: string) => void, abortController: AbortController): Promise<void> {
   let sawResult = false;
+  const usage: UsageSignals = {};
   try {
     for await (const m of q as AsyncIterable<any>) {
+      noteUsage(m, usage);
       if (m.type === 'system' && m.subtype === 'init') result.sessionId = m.session_id;
       else if (m.type === 'assistant') {
         for (const c of (m.message?.content ?? []) as any[]) {
@@ -148,5 +190,7 @@ async function consume(q: AsyncIterable<unknown>, result: TurnResult, onOutput: 
     if (abortController.signal.aborted || /exited with code 143/.test(msg)) { result.subtype = 'killed'; result.isError = false; }
     else if (sawResult && result.isError) { result.error = result.error ?? msg; }   // the SDK throws after an error result
     else { result.subtype = 'error_during_execution'; result.isError = true; result.error = msg; }
+    if (isUsageLimitText(msg, USAGE_PREFIXES)) usage.message = usage.message ?? msg.trim().slice(0, 300);
   }
+  classifyUsage(result, usage);
 }
