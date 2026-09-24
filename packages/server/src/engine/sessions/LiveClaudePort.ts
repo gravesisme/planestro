@@ -131,6 +131,25 @@ function describeToolUse(name: string, input: Record<string, unknown>): string {
   }
 }
 
+/** A turn's whole answer is an API error the CLI printed instead of failing ("API Error: 400 …"). */
+const API_ERROR_TEXT = /^API Error: \d{3}\b/;
+/** The CLI is too old for the requested model; a newer `claude` (or claude_bin) fixes it, a retry does not. */
+const CLI_TOO_OLD = /does not support this model|or newer is required/i;
+
+/**
+ * A result the SDK calls a success whose only text is an API error is a failure (dogfood p5): the
+ * orchestrator logged "API Error: 400 …" as its summary and moved on, and a worker turn in that state
+ * would have looked finished. Exported for tests.
+ */
+export function noteApiErrorText(m: any, result: TurnResult): void {
+  if (m?.type !== 'result' || m.is_error || typeof m.result !== 'string') return;
+  const text = m.result.trim();
+  if (!API_ERROR_TEXT.test(text)) return;
+  result.isError = true;
+  result.subtype = CLI_TOO_OLD.test(text) ? 'cli_too_old' : 'api_error';
+  result.error = text.slice(0, 400);
+}
+
 /**
  * Signs, collected while a turn streams, that its model is out of usage: a rejected rate-limit
  * event (with the reset time), an assistant error code, or the CLI's usage-limit message. Every
@@ -200,6 +219,7 @@ async function consume(q: AsyncIterable<unknown>, result: TurnResult, onOutput: 
         result.costUsd += Number(m.total_cost_usd ?? 0);
         result.numTurns += Number(m.num_turns ?? 0);
         if (m.is_error && m.errors) result.error = String(m.errors).slice(0, 400);
+        noteApiErrorText(m, result);
       }
     }
   } catch (e) {

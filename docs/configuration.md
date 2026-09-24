@@ -136,7 +136,7 @@ Default: **Release notes** and **Notes**.
 |---|---|
 | `code_repo_path` | Where the code repository is on this machine. |
 | `worktrees_root` | Where worktrees go on this machine. |
-| `claude_bin` | Path to `claude`, if not on `PATH`. |
+| `claude_bin` | Which Claude Code the sessions run. Unset: the installed `claude` on `PATH` when it is newer than the one the Agent SDK bundles (a new model can need a newer CLI), otherwise the bundled one; startup logs which. A path uses that executable; `bundled` forces the SDK's own. |
 | `allowed_hosts` | Extra names this machine is reached by — a Tailscale or DNS name for the phone. The server answers only requests addressed to `localhost`, `127.0.0.1`, the `--host` it is bound to (with `0.0.0.0`: this machine's hostname and interface addresses) and these; anything else, and any request from another website, gets a 403. |
 | `codex_bin` | Path to `codex`, if not on `PATH`. Only used by models with `runner: codex`. |
 | `anthropic_api_key` | Bills Claude sessions to the API under the Commercial Terms instead of a claude.ai login. `ANTHROPIC_API_KEY` in the environment does the same. |

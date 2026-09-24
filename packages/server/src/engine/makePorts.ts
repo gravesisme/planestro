@@ -4,6 +4,7 @@ import { LiveGitPort, LiveGhPort, LiveProcPort } from './live-ports.ts';
 import { FakeWorld, DryRunGitPort, DryRunGhPort, DryRunProcPort, DryRunClaudePort, DryRunCodexPort } from './dryrun-ports.ts';
 import { LiveCodexPort } from './sessions/LiveCodexPort.ts';
 import { LiveClaudePort } from './sessions/LiveClaudePort.ts';
+import { resolveClaudeBin } from './sessions/claudeBin.ts';
 import type { DataStore } from '../store/DataStore.ts';
 
 export function makePorts(mode: 'live' | 'dry-run', log: (m: string) => void, store: DataStore): Ports {
@@ -26,5 +27,7 @@ export function makePorts(mode: 'live' | 'dry-run', log: (m: string) => void, st
     }
     return { mode, git: new DryRunGitPort(world), gh: new DryRunGhPort(world), proc: new DryRunProcPort(world), agents: { claude: new DryRunClaudePort(world), codex: new DryRunCodexPort(world) } };
   }
-  return { mode, git: new LiveGitPort(), gh: new LiveGhPort(), proc: new LiveProcPort(), agents: { claude: new LiveClaudePort(store.local.claude_bin, store.local.anthropic_api_key ?? process.env.ANTHROPIC_API_KEY), codex: new LiveCodexPort(store.local.codex_bin) } };
+  const claude = resolveClaudeBin(store.local.claude_bin);
+  log(`Claude sessions run ${claude.why}`);
+  return { mode, git: new LiveGitPort(), gh: new LiveGhPort(), proc: new LiveProcPort(), agents: { claude: new LiveClaudePort(claude.bin, store.local.anthropic_api_key ?? process.env.ANTHROPIC_API_KEY), codex: new LiveCodexPort(store.local.codex_bin) } };
 }

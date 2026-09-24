@@ -172,8 +172,13 @@ export class Orchestrator {
       this.log('warn', `orchestrator: ${def?.label ?? model} is out of usage until ${until.toISOString()}${another && !retried ? '; retrying the wake on its fallback' : ''}`);
       if (another && !retried) return this.runWake(events, true);
     }
+    // An API error the CLI returned as text is a failed wake, not a summary: retry it once, then say so loudly.
+    if ((result.subtype === 'api_error' || result.subtype === 'cli_too_old') && !doneSummary) {
+      this.log('warn', `orchestrator: the wake failed with ${result.subtype}: ${result.error ?? ''}${result.subtype === 'api_error' && !retried ? '; retrying once' : ''}`);
+      if (result.subtype === 'api_error' && !retried) return this.runWake(events, true);
+    }
     this.writeState({ session_id: result.sessionId ?? state.session_id, started_at: state.started_at ?? isoLocal(), wakes_served: state.wakes_served + 1 });
-    this.store.journal.append({ type: 'orchestrator.done', actor: 'orchestrator', data: { events: events.map((e) => e.type), summary: doneSummary || result.text.slice(-300), cost: result.costUsd, subtype: result.subtype } });
+    this.store.journal.append({ type: 'orchestrator.done', actor: 'orchestrator', data: { events: events.map((e) => e.type), summary: doneSummary || (result.isError ? `(failed: ${result.subtype}) ${result.error ?? ''}` : result.text.slice(-300)), cost: result.costUsd, subtype: result.subtype } });
     this.log('info', `orchestrator: ${doneSummary || result.subtype}`);
   }
 
