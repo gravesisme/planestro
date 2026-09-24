@@ -76,6 +76,7 @@ export const api = {
   orchestratorMessage: (text: string, item?: string) => req<{ ok: true }>('POST', '/api/orchestrator/message', { text, item }),
   orchestratorChat: () => req<{ enabled: boolean; entries: JournalEntry[] }>('GET', '/api/orchestrator/chat'),
   orchestratorQuestions: () => req<JournalEntry[]>('GET', '/api/orchestrator/questions'),
+  orchestratorNotes: () => req<JournalEntry[]>('GET', '/api/orchestrator/notes'),
   gitCommit: () => req<{ committed: boolean }>('POST', '/api/git/commit'),
   gitPush: () => req<{ pushed: boolean }>('POST', '/api/git/push'),
 };

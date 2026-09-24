@@ -35,6 +35,8 @@ export function App() {
   const guard = paused && state?.engine.paused_by === 'usage_guard' ? state.engine.usage_guard : undefined;
   // A turn queued for its runner's slot is not an agent running yet.
   const running = state?.engine.sessions.filter((s) => s.busy).length ?? 0;
+  const notes = useStore((s) => s.notes); const notesSeen = useStore((s) => s.notesSeen);
+  const unreadNotes = notes.filter((n) => n.ts > notesSeen).length;
   return (
     <div className="app">
       {updateReady && <button className="banner warn" style={{ border: 0, borderRadius: 0, textAlign: 'left' }} onClick={() => location.reload()}>planestro was updated — click to reload (held back so nothing you were typing is lost)</button>}
@@ -48,7 +50,7 @@ export function App() {
           <NavLink to="/sessions">Sessions</NavLink>
           <NavLink to="/releases">Releases</NavLink>
           <NavLink to="/prompts">Prompts</NavLink>
-          <NavLink to="/console">Console</NavLink>
+          <NavLink to="/console">Console{unreadNotes > 0 && <span className="badge-n" title="Suggestions about planestro from the orchestrator">{unreadNotes}</span>}</NavLink>
           <NavLink to="/settings">Settings</NavLink>
         </nav>
         <div className="status">
@@ -73,7 +75,7 @@ export function App() {
         {TABS.map((t) => (
           <NavLink key={t.to} to={t.to} className={() => (t.to === '/' ? onBoardTab(pathname) : pathname.startsWith(t.to)) ? 'active' : ''}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={t.icon} /></svg>
-            {t.label}
+            <span>{t.label}{t.to === '/console' && unreadNotes > 0 && <span className="badge-n">{unreadNotes}</span>}</span>
           </NavLink>
         ))}
       </nav>

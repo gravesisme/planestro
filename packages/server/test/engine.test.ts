@@ -1177,6 +1177,33 @@ describe('resume when other items merge (p14)', () => {
   });
 });
 
+describe('the orchestrator\'s notes about planestro (f8)', () => {
+  it('note_planestro lands in a journal list of its own, not on the item', async () => {
+    let reply = '';
+    const scripted = (world: FakeWorld) => {
+      const inner = new DryRunClaudePort(world);
+      return {
+        runTurn: (o: TurnOptions) => inner.runTurn(o),
+        async runCustomTurn(o: any): Promise<TurnResult> {
+          const t = (n: string) => o.mcpTools.find((x: any) => x.name === n);
+          reply = await t('note_planestro').handler({ text: 'The budget card should carry the raise itself.', item: 'TP-1' });
+          await t('done_with_wake').handler({ summary: 'noted' });
+          return { sessionId: 'o', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '' };
+        },
+      };
+    };
+    const { store, engine } = await setup({ claude: scripted });
+    const item = store.createItem({ title: 'Cardy', description: 'x' });
+    engine.orchestrator.wake({ type: 'user_message', item: item.id, data: { message: 'hi' } });
+    await waitFor(() => store.journal.read({ type: 'orchestrator.planestro_note' }).length === 1);
+    expect(reply).toContain('planestro feedback');
+    const note = store.journal.read({ type: 'orchestrator.planestro_note' })[0];
+    expect(note.item).toBe(item.id);
+    expect(note.data?.text).toBe('The budget card should carry the raise itself.');
+    expect(activityOf(store, item.id)).not.toContain('budget card should carry');
+  });
+});
+
 describe('orchestrator', () => {
   it('wakes on plan_review with a context packet, uses tools, and rotates after the configured wakes', async () => {
     const wakes: { label: string; prompt: string; resume?: string }[] = [];

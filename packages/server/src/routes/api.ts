@@ -317,6 +317,8 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   });
   api.get('/orchestrator/questions', (c) => c.json(store.journal.read({ type: 'orchestrator.question', limit: 20 })));
   api.get('/engine', (c) => c.json({ mode: engine.mode, paused: engine.paused, ...guardView(store, engine.paused), sessions: engine.sessions(), ...(engine.restartReadiness ? { restart: engine.restartReadiness() } : {}), log: engine.log.slice(-200) }));
+  // The orchestrator's suggestions about planestro itself (dogfood f8): a list of their own, not buried in Activity.
+  api.get('/orchestrator/notes', (c) => c.json(store.journal.read({ type: 'orchestrator.planestro_note', limit: 100 })));
   api.post('/engine/pause', (c) => { engine.pause(); return c.json({ paused: true }); });
   // Restart preparation (f3): POST drain, then poll GET /engine until restart.idle is true; DELETE cancels it.
   api.post('/engine/drain', (c) => { if (!engine.drain) return c.json({ error: 'this engine has nothing to drain' }, 400); engine.drain(); return c.json(engine.restartReadiness!()); });

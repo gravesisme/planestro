@@ -39,6 +39,7 @@ export function ConsolePage() {
           {questions.length > 3 && <details className="small"><summary className="muted">{questions.length - 3} older</summary>{questions.slice(3).map((q, i) => <Question key={i} q={q} />)}</details>}
         </>}
       </div>
+      <PlanestroNotes />
       <div className="section"><h2>Merge queue ({phone ? 'hold, then drag' : 'drag'} to reorder)</h2>
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onQueueDrag}>
           <SortableContext items={queue.map((i) => i.id)} strategy={verticalListSortingStrategy}>
@@ -88,6 +89,22 @@ function RestartPrep() {
           : 'Lets running turns and steps finish while nothing new starts, then says when a restart loses nothing. Unlike PAUSE, planestro comes back running after the restart.'}</span>
       </div>
       {restart.draining && !restart.idle && <ul className="small muted" style={{ margin: '6px 0 0' }}>{restart.running.map((r) => <li key={r}>{r}</li>)}</ul>}
+    </div>
+  );
+}
+
+
+/** What the orchestrator would change about planestro (f8): a list of its own, with a badge until read. */
+function PlanestroNotes() {
+  const notes = useStore((s) => s.notes); const seen = useStore((s) => s.notesSeen);
+  const items = useStore((s) => s.state?.items ?? []);
+  const unread = notes.filter((n) => n.ts > seen).length;
+  return (
+    <div className="section"><h2>planestro feedback{unread > 0 && <span className="badge-n">{unread}</span>}</h2>
+      <p className="muted small">The orchestrator's suggestions about planestro itself: a tool it lacked, a rule that misfired, a card that could not do what it asked. They are for you, not for the items.</p>
+      {!notes.length && <p className="muted small">None yet.</p>}
+      <ul className="activity">{[...notes].reverse().slice(0, 30).map((n, i) => <li key={`${n.ts}-${i}`} className={n.ts > seen ? 'unread' : ''}><span className="at">{n.ts.slice(5, 16).replace('T', ' ')}</span><span className="muted">{n.item && items.some((x) => x.id === n.item) ? <Link to={`/items/${n.item}`}>{n.item}</Link> : (n.item ?? 'planestro')}</span><span>{String(n.data?.text ?? '')}</span></li>)}</ul>
+      {unread > 0 && <div className="row"><button className="small" onClick={() => useStore.getState().markNotesRead()}>Mark all read</button></div>}
     </div>
   );
 }
