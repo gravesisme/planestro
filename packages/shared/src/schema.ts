@@ -229,6 +229,8 @@ export const ModelDef = z.object({
   mcp: z.array(z.string().min(1)).default([]),
   /** How many calls to those servers one item may make in all: a spend cap that planestro can count itself. Past it the calls are refused and the worker is told. */
   mcp_calls_per_item: z.number().int().positive().optional(),
+  /** planestro commits for this model's sessions when they could not (a sandbox that intermittently refuses git's lock files): work left uncommitted after a done report is committed with the summary, and a block on a git refusal is committed and resumed. Git stays planestro's either way. */
+  engine_commits: z.boolean().optional(),
   external: z.boolean().default(false),
 });
 export type ModelDef = z.infer<typeof ModelDef>;
