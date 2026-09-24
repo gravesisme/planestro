@@ -1,4 +1,4 @@
-import { join, relative, isAbsolute } from 'node:path';
+import { join, relative, isAbsolute, extname } from 'node:path';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, type BreakdownChild, type DecisionInput, type Decision, type ServerEvent, type Status } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
@@ -1589,10 +1589,17 @@ export class LiveEngine implements Engine {
   private async blockOversize(id: string): Promise<boolean> {
     const refs = this.reviewRefs(id);
     if (!refs) return false;
-    const limit = this.store.config.review.max_file_bytes;
-    const big = (await this.ports.git.changedFiles(refs.cwd, refs.base, refs.head).catch(() => [])).filter((f) => (f.bytes ?? 0) > limit);
+    const { max_file_bytes, max_file_bytes_by_ext } = this.store.config.review;
+    const mb = (n: number) => `${Math.round(n / 1e6 * 10) / 10} MB`;
+    // The limit for a file: its extension's (".ogg" or "ogg" in config), else the project-wide one.
+    const limitFor = (path: string): { bytes: number; key: string } => {
+      const ext = extname(path).toLowerCase();
+      const hit = Object.entries(max_file_bytes_by_ext).find(([k]) => (k.startsWith('.') ? k : `.${k}`).toLowerCase() === ext);
+      return hit ? { bytes: hit[1], key: `review.max_file_bytes_by_ext["${hit[0]}"]` } : { bytes: max_file_bytes, key: 'review.max_file_bytes' };
+    };
+    const big = (await this.ports.git.changedFiles(refs.cwd, refs.base, refs.head).catch(() => [])).filter((f) => (f.bytes ?? 0) > limitFor(f.path).bytes);
     if (!big.length) return false;
-    this.block(id, 'asset_too_large', `${big.map((f) => `${f.path} (${Math.round((f.bytes ?? 0) / 1e6 * 10) / 10} MB)`).join(', ')} exceed${big.length === 1 ? 's' : ''} review.max_file_bytes (${Math.round(limit / 1e6 * 10) / 10} MB); shrink it, or raise the limit`);
+    this.block(id, 'asset_too_large', `${big.map((f) => { const l = limitFor(f.path); return `${f.path} (${mb(f.bytes ?? 0)}) exceeds ${l.key} (${mb(l.bytes)})`; }).join('; ')}; shrink it, or raise that limit (a per-extension one in review.max_file_bytes_by_ext for a kind of file that is legitimately big) and unblock`);
     return true;
   }
 
