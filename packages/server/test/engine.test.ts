@@ -7,6 +7,7 @@ import { FakeWorld, DryRunGitPort, DryRunGhPort, DryRunProcPort, DryRunClaudePor
 import type { Ports, TurnOptions, TurnResult } from '../src/engine/ports.ts';
 import type { ServerEvent } from '@planestro/shared';
 import { makeFixture, git, sleep } from './helpers.ts';
+import { apiRoutes } from '../src/routes/api.ts';
 
 let store: DataStore | undefined; let engine: LiveEngine | undefined;
 afterEach(async () => { await engine?.stop(); store?.close(); store = undefined; engine = undefined; });
@@ -1201,6 +1202,57 @@ describe('the orchestrator\'s notes about planestro (f8)', () => {
     expect(note.item).toBe(item.id);
     expect(note.data?.text).toBe('The budget card should carry the raise itself.');
     expect(activityOf(store, item.id)).not.toContain('budget card should carry');
+  });
+});
+
+describe('a pull request attached by hand (p44)', () => {
+  /** An item with a worker branch, a worktree and an open PR the engine did not open. */
+  function handMade(store: DataStore, engine: LiveEngine, world: FakeWorld, status: 'IN_PROGRESS' | 'IN_REVIEW', extra: Record<string, unknown> = {}) {
+    const item = store.createItem({ title: 'By hand', description: 'x' });
+    const branch = 'tp/1-by-hand', rel = '.claude/worktrees/tp-1-by-hand';
+    const cwd = (engine as any).absWorktree(rel);
+    const head = world.sha();
+    world.worktrees.set(cwd, { path: cwd, head, branch }); world.remoteBranches.set(branch, head); world.commits.set(cwd, 1);
+    world.prs.set(350, { number: 350, url: 'u', state: 'OPEN', headRefOid: head, headRefName: branch, baseRefName: 'trunk', polls: 0, failOnce: false });
+    store.mutateItem(item.id, [{ set: { status, branch, worktree: rel, ...extra } }], 'engine');
+    return item.id;
+  }
+  const json = (body: unknown) => ({ method: 'PATCH' as const, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+
+  it('a held item whose CI is green, or whose PR is a draft until release, needs you; pending, or not held, does not', async () => {
+    const { store } = await setup();
+    const item = store.createItem({ title: 'Held', description: 'x' });
+    const needs = (set: Record<string, unknown>) => { store.mutateItem(item.id, [{ set }], 'engine'); return store.derived(store.getItem(item.id)!).needs_you; };
+    expect(needs({ status: 'IN_REVIEW', skip_merge: true, ci_result: 'pending' })).toBe(false);
+    expect(needs({ status: 'IN_REVIEW', skip_merge: true, ci_result: 'green' })).toBe(true);
+    expect(needs({ status: 'IN_REVIEW', skip_merge: false, ci_result: 'green' })).toBe(false);
+    expect(needs({ status: 'IN_REVIEW', skip_merge: true, ci_result: 'pending', op_data: { pr_draft: true } })).toBe(true);   // a held draft: CI waits for the release
+    expect(needs({ status: 'IN_REVIEW', skip_merge: true, ci_result: 'pending', op_data: { pr_draft: false } })).toBe(false); // marked ready: CI is running
+  });
+
+  it('PATCHing a pr onto an item in review marks its CI pending, so the pipeline takes it once it is free to', async () => {
+    const { store, engine, world } = await setup();
+    const id = handMade(store, engine, world, 'IN_REVIEW', { skip_merge: true, ci_result: 'unknown' });   // held: the pipeline leaves it alone
+    await engine.start();
+    const app = apiRoutes(store, engine);
+    const r = await app.request(`/items/${id}`, json({ fields: { pr: 350 } }));
+    expect(r.status).toBe(200);
+    expect((await r.json()).frontmatter.ci_result).toBe('pending');
+    await sleep(300);
+    expect(status(store, id)).toBe('IN_REVIEW');                                 // still held
+    await engine.releaseHold(id);
+    await waitFor(() => status(store, id) === 'FINISHED', 8000);
+  });
+
+  it('moving an item with a pr into review by hand does the same, and says so', async () => {
+    const { store, engine, world } = await setup();
+    const id = handMade(store, engine, world, 'IN_PROGRESS', { pr: 350 });
+    await engine.start();
+    const app = apiRoutes(store, engine);
+    const r = await app.request(`/items/${id}/transition`, { ...json({ to: 'IN_REVIEW' }), method: 'POST' });
+    expect(r.status).toBe(200);
+    expect(activityOf(store, id)).toContain('PR #350 attached by hand: entering the merge pipeline');
+    await waitFor(() => status(store, id) === 'FINISHED', 8000);
   });
 });
 
