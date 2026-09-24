@@ -636,6 +636,30 @@ describe('reconciler (chaos: crash markers left on disk)', () => {
   });
 });
 
+describe('cleanup proves what it deletes (dogfood p39)', () => {
+  it('ignores a stale ci_head_sha, finishes when the hand already cleaned up, and blocks when a real tip is not in the base', async () => {
+    const { store, engine, world } = await setup();
+    const mk = (title: string, n: number, pr: number, head: string | null) => {
+      const branch = `tp/${n}-x`; const wt = `.claude/worktrees/tp-${n}-x`;
+      const id = store.mutateItem(store.createItem({ title }).id, [{ set: { status: 'IN_REVIEW' } }, { set: { pr, branch, worktree: wt, ci_head_sha: 's'.repeat(40) } }], 'engine').id;
+      if (head) world.worktrees.set(join(store.codeRepoPath(), wt), { path: join(store.codeRepoPath(), wt), head, branch });
+      world.prs.set(pr, { number: pr, url: 'u', state: 'MERGED', mergedAt: new Date().toISOString(), headRefOid: head ?? world.sha(), headRefName: branch, baseRefName: 'trunk', mergeCommit: world.sha(), polls: 9, failOnce: false });
+      return id;
+    };
+    world.unreachable.add('s'.repeat(40)); // the sha planestro last pushed, since rewritten outside it
+    const stale = mk('stale sha, real tip merged', 1, 401, world.sha());
+    const gone = mk('worktree and branches removed by hand', 2, 402, null);
+    const lost = mk('worktree holds commits the base lacks', 3, 403, 'u'.repeat(40));
+    world.unreachable.add('u'.repeat(40));
+    await engine.reconcile('manual');
+    await waitFor(() => status(store, stale) === 'FINISHED' && status(store, gone) === 'FINISHED', 8000);
+    await waitFor(() => store.getItem(lost)!.file.frontmatter.blocked === true, 8000);
+    expect(store.getItem(lost)!.file.frontmatter.blocked_reason).toBe('cleanup_unverifiable');
+    expect(activityOf(store, lost)).toContain('worktree HEAD uuuuuuu');
+    expect(world.worktrees.has(join(store.codeRepoPath(), '.claude/worktrees/tp-3-x'))).toBe(true); // nothing deleted
+  });
+});
+
 describe('plan approval delegated to the orchestrator', () => {
   /** An orchestrator whose plan reviews are scripted: each wake about a plan runs the next step. */
   const reviewer = (steps: ((t: (n: string) => { handler(a: Record<string, unknown>): Promise<unknown> }, prompt: string) => Promise<void>)[], prompts: string[] = []) => (world: FakeWorld) => {
