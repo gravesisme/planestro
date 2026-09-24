@@ -32,12 +32,14 @@ export function App() {
   const inReview = state?.items.filter((i) => i.frontmatter.status === 'IN_REVIEW') ?? [];
   const paused = state?.engine.paused ?? false;
   const guard = paused && state?.engine.paused_by === 'usage_guard' ? state.engine.usage_guard : undefined;
+  // A turn queued for its runner's slot is not an agent running yet.
+  const running = state?.engine.sessions.filter((s) => s.busy).length ?? 0;
   return (
     <div className="app">
       {updateReady && <button className="banner warn" style={{ border: 0, borderRadius: 0, textAlign: 'left' }} onClick={() => location.reload()}>planestro was updated — click to reload (held back so nothing you were typing is lost)</button>}
       <header className="topbar">
         <Link className="brand" to="/" title="Board"><img className="logo" src="/favicon.svg" alt="" width={22} height={22} /> <span className="wordmark">planestro</span> <span className="project">{state?.config.project.name ?? '…'}</span>
-          <span className="engine phone-only">{paused ? 'paused' : state?.engine.mode === 'live' ? 'live' : 'dry-run'} · {state?.engine.sessions.length ?? 0} agent{state?.engine.sessions.length === 1 ? '' : 's'} running</span></Link>
+          <span className="engine phone-only">{paused ? 'paused' : state?.engine.mode === 'live' ? 'live' : 'dry-run'} · {running} agent{running === 1 ? '' : 's'} running</span></Link>
         <nav>
           <NavLink to="/" end>Board</NavLink>
           <NavLink to="/icebox">Icebox</NavLink>
@@ -50,7 +52,7 @@ export function App() {
         </nav>
         <div className="status">
           <button className={`needs ${needs.some((i) => i.frontmatter.blocked) ? 'hot' : needs.length ? 'wait' : ''}`} onClick={() => nav('/?needs=1')} title="Items waiting on you (red: one of them is blocked)"><span className="dot" /> <span className="desk-only">NEEDS YOU · </span>{needs.length}</button>
-          <span className="summary">{paused ? '⏸ PAUSED' : `● ${state?.engine.mode === 'live' ? 'LIVE' : 'DRY-RUN'}`} · {state?.engine.sessions.length ?? 0} agents active · {active.length} active items · {inReview.length} PR{inReview.length === 1 ? '' : 's'} in review</span>
+          <span className="summary">{paused ? '⏸ PAUSED' : `● ${state?.engine.mode === 'live' ? 'LIVE' : 'DRY-RUN'}`} · {running} agents active · {active.length} active items · {inReview.length} PR{inReview.length === 1 ? '' : 's'} in review</span>
           {guard && <span className="usage-pill" title={`The usage guard paused automation at ${new Date(guard.tripped_at).toLocaleString()}; running turns finish, nothing new starts.${guard.resume_at ? ' It resumes on its own once the window resets.' : ''}`}>{guardPill(guard)}</span>}
           <button className={`lever ${paused ? 'paused' : ''}`} onClick={() => act(() => (paused ? api.resume() : api.pause()))}>{paused ? 'RESUME' : 'PAUSE'}<span className="desk-only"> AUTOMATION</span></button>
           <span className={`dot ${connected ? 'on' : 'off'}`} title={connected ? 'connected' : 'reconnecting'} />

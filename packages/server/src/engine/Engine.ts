@@ -1,6 +1,7 @@
 import type { ServerEvent, BreakdownChild } from '@planestro/shared';
 
 /** What the UI/API needs from the engine. Phase 2 ships MockEngine; Phase 3 the real one. */
+/** `busy` is false for a turn still queued for its runner's slot (op says so): it has no process yet. */
 export interface SessionView { item: string; session_id?: string; model?: string; op?: string; started_at?: string; busy: boolean; last_output?: string }
 
 /** An image a branch added, changed or removed — what a reviewer looks at. */

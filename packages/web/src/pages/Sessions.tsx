@@ -13,7 +13,7 @@ export function SessionsPage() {
     <div>
       <div className="section"><h2>Live sessions ({state.engine.sessions.length}) · engine {state.engine.mode}{state.engine.paused ? ' · PAUSED' : ''}</h2>
         <table><thead><tr><th>item</th><th>model</th><th>state</th><th>op</th><th>last output</th></tr></thead><tbody>
-          {state.engine.sessions.map((s) => <tr key={s.item}><td><Link to={`/items/${s.item}`}>{s.item}</Link></td><td>{s.model}</td><td>{s.busy ? 'busy' : 'idle'}</td><td>{s.op}</td><td className="small muted">{s.last_output}</td></tr>)}
+          {state.engine.sessions.map((s) => <tr key={s.item}><td><Link to={`/items/${s.item}`}>{s.item}</Link></td><td>{s.model}</td><td>{s.busy ? 'busy' : 'queued'}</td><td>{s.op}</td><td className="small muted">{s.last_output}</td></tr>)}
           {!state.engine.sessions.length && <tr><td colSpan={5} className="muted">No process is running. Parked sessions resume on demand.</td></tr>}
         </tbody></table>
       </div>

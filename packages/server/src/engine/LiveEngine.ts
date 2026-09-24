@@ -50,7 +50,8 @@ export class LiveEngine implements Engine {
   log: ServerEvent[] = [];
   private _paused: boolean;
   private jobs = new Map<string, Promise<void>>();
-  private turns = new Map<string, { model: string; phase: TurnPhase; startedAt: string; lastOutput: string; abort: AbortController }>();
+  /** Turns this engine started. `waiting` names the runner whose slot (concurrency.runner_limits) the turn is still queued for: no process yet. */
+  private turns = new Map<string, { model: string; phase: TurnPhase; startedAt: string; lastOutput: string; abort: AbortController; waiting?: string }>();
   private mergeChain: Promise<void> = Promise.resolve();
   private timer?: NodeJS.Timeout;
   private stopping = false;
@@ -179,7 +180,7 @@ export class LiveEngine implements Engine {
   }
   poke(): void { void this.tick(); }
   sessions(): SessionView[] {
-    return [...this.turns.entries()].map(([item, t]) => ({ item, session_id: this.store.getItem(item)?.file.frontmatter.session_id, model: t.model, op: t.phase, started_at: t.startedAt, busy: true, last_output: t.lastOutput }));
+    return [...this.turns.entries()].map(([item, t]) => ({ item, session_id: this.store.getItem(item)?.file.frontmatter.session_id, model: t.model, op: t.waiting ? `${t.phase}: waiting for a ${t.waiting} slot` : t.phase, started_at: t.startedAt, busy: !t.waiting, last_output: t.lastOutput }));
   }
 
   /** Run one scheduling pass. Idempotent; safe to call often. */
@@ -674,12 +675,14 @@ export class LiveEngine implements Engine {
     const abort = new AbortController();
     const opId = this.store.journal.begin(op, id, { phase, model: model ?? def.label, runner, ...(pick.fellBackFrom ? { fell_back_from: pick.fellBackFrom.id } : {}) });
     this.store.mutateItem(id, [{ set: { op, op_started_at: this.now() } }], 'engine');
-    this.turns.set(id, { model: model ?? def.label, phase, startedAt: this.now(), lastOutput: '', abort });
-    this.emit({ type: 'session.started', id, session_id: fm.session_id });
+    // Registered before the runner slot is won (it owns the item from here), but not a running agent until then.
+    const waiting = this.store.config.concurrency.runner_limits?.[runner] !== undefined ? runner : undefined;
+    this.turns.set(id, { model: model ?? def.label, phase, startedAt: this.now(), lastOutput: '', abort, waiting });
+    const admitted = () => { const t = this.turns.get(id); if (t?.waiting) { t.waiting = undefined; t.startedAt = this.now(); } this.emit({ type: 'session.started', id, session_id: fm.session_id }); };
     const budgetLeft = Math.max(MIN_TURN_USD, usdLeft);
     let result: TurnResult;
     try {
-      result = await this.withRunnerSlot(runner, () => agent.runTurn({
+      result = await this.withRunnerSlot(runner, () => { admitted(); return agent.runTurn({
         itemId: id, phase, cwd, model: model as string, permissionMode: phase === 'plan' ? 'plan' : 'acceptEdits', prompt, resume: resumeId, images,
         systemAppend: this.store.renderPrompt(metered ? 'worker-system' : `worker-system-${runner}`, item),
         ...(pick.sdkFallback ? { fallbackModel: pick.sdkFallback } : {}),
@@ -703,7 +706,7 @@ export class LiveEngine implements Engine {
         },
         onOutput: (text) => { const t = this.turns.get(id); if (t) t.lastOutput = text.slice(-400); this.emit({ type: 'session.output', id, text }); },
         signal: abort.signal,
-      }));
+      }); });
     } finally {
       this.turns.delete(id);
     }
