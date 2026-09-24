@@ -827,6 +827,64 @@ describe('known flaky CI checks (p33)', () => {
   });
 });
 
+describe('session slots and stalls (p25, f1)', () => {
+  /** An IN_PROGRESS worker item with a worktree and nothing driving it. */
+  function idleItem(store: DataStore, engine: LiveEngine, world: FakeWorld, title: string, set: Record<string, unknown> = {}) {
+    const item = store.createItem({ title, description: 'x' });
+    const rel = `.claude/worktrees/${item.id.toLowerCase()}`;
+    const cwd = (engine as any).absWorktree(rel);
+    world.worktrees.set(cwd, { path: cwd, head: world.sha(), branch: `tp/${item.id}` });
+    store.mutateItem(item.id, [{ set: { status: 'IN_PROGRESS', branch: `tp/${item.id}`, worktree: rel, session_id: 's-old', ...set } }], 'engine');
+    return { id: item.id, cwd };
+  }
+
+  it('an epic and an item nothing drives hold no slot: a queued item is still admitted', async () => {
+    const { store, engine, world } = await setup();
+    store.updateConfig((doc) => { doc.setIn(['concurrency', 'max_sessions'], 1); doc.setIn(['concurrency', 'stall_after_min'], 0); }, 'config');
+    const epic = store.createItem({ title: 'Epic', description: 'x', kind: 'epic' });
+    store.mutateItem(epic.id, [{ set: { status: 'IN_PROGRESS', branch: 'feature/epic' } }], 'engine');
+    idleItem(store, engine, world, 'Idle');
+    const queued = store.createItem({ title: 'Next', description: 'x' });
+    store.transition(queued.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, queued.id) === 'PLAN_READY');
+  });
+
+  it('a stalled item with committed work is carried on to its pull request', async () => {
+    const { store, engine, world } = await setup();
+    store.updateConfig((doc) => { doc.setIn(['concurrency', 'stall_after_min'], 0.002); }, 'config');
+    const { id, cwd } = idleItem(store, engine, world, 'Forgotten');
+    world.commits.set(cwd, 2);
+    await engine.start();
+    await waitFor(() => status(store, id) === 'FINISHED', 8000);
+    expect(activityOf(store, id)).toMatch(/stalled: nothing has driven this item for \d+ min; carrying on/);
+  });
+
+  it('an item orphaned between its setup and its first planning turn is planned (HH-123)', async () => {
+    const { store, engine, world } = await setup();
+    store.updateConfig((doc) => { doc.setIn(['concurrency', 'stall_after_min'], 0.002); }, 'config');
+    const item = store.createItem({ title: 'Orphan', description: 'x' });
+    const rel = '.claude/worktrees/tp-orphan', cwd = (engine as any).absWorktree(rel);
+    world.worktrees.set(cwd, { path: cwd, head: world.sha(), branch: 'tp/orphan' });
+    store.mutateItem(item.id, [{ set: { status: 'PLAN_IN_PROGRESS', branch: 'tp/orphan', worktree: rel } }], 'engine');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY', 8000);
+    const activity = activityOf(store, item.id);
+    expect(activity).toContain('stalled: nothing has driven this item');
+    expect(activity).toContain('starting a fresh one with the full plan prompt');
+  });
+
+  it('a second stall within the hour blocks as stalled instead of looping', async () => {
+    const { store, engine, world } = await setup();
+    store.updateConfig((doc) => { doc.setIn(['concurrency', 'stall_after_min'], 0.002); }, 'config');
+    const { id } = idleItem(store, engine, world, 'Again', { op_data: { stall_resumed_at: isoNow() } });
+    await engine.start();
+    await waitFor(() => store.getItem(id)!.file.frontmatter.blocked_reason === 'stalled', 8000);
+  });
+});
+
+const isoNow = () => new Date().toISOString();
+
 describe('orchestrator', () => {
   it('wakes on plan_review with a context packet, uses tools, and rotates after the configured wakes', async () => {
     const wakes: { label: string; prompt: string; resume?: string }[] = [];

@@ -269,7 +269,9 @@ export const Config = z.object({
     max_sessions: z.number().int().positive().default(3), max_local_jobs: z.number().int().positive().default(1),
     /** Simultaneous turns per runner, for runners with their own rate limits (image generation is slow). Unlisted runners are unlimited. */
     runner_limits: z.record(z.string(), z.number().int().positive()).default({ codex: 1 }),
-  }).default({ max_sessions: 3, max_local_jobs: 1, runner_limits: { codex: 1 } }),
+    /** An active item that nothing has driven for this many minutes is stalled: resumed once, then blocked. 0 turns the detector off. */
+    stall_after_min: z.number().min(0).default(10),
+  }).default({ max_sessions: 3, max_local_jobs: 1, runner_limits: { codex: 1 }, stall_after_min: 10 }),
   permissions: z.object({ allow: z.array(z.string()).default([]), deny: z.array(z.string()).default([]) }).default({ allow: [], deny: [] }),
   ci: z.object({
     mode: z.enum(['github', 'github-or-local']).default('github'),
