@@ -17,6 +17,7 @@ and brings you only a plain decision card. See [Needs-you triage](concepts.md#ne
 |---|---|---|
 | `agent_blocked` | The worker reported it cannot proceed and said what it needs (a decision, a missing reference image, a sandbox refusal of something the task requires). | Answer in the unblock message, or fix the item (attach the reference, correct the brief) and unblock. |
 | `cli_too_old` | The Claude Code that runs the sessions is too old for the item's model ("does not support this model; version … or newer is required"). | Update Claude Code, or point `claude_bin` at a newer `claude`, restart planestro, and unblock. |
+| `waited_on_gone` | The item was waiting to resume after other items merged (**resume when merged**), and one of them was deleted. | Unblock with the instruction it was waiting to act on (it is in the block reason), or park it on the item that replaced it. |
 | `turn_error` | A turn failed for a reason that needs judgment: an SDK error, the budget ran out mid-turn, a Codex turn that ended without its closing JSON. The orchestrator is woken for these. | Read the detail. Unblocking resumes the same conversation. |
 | `no_plan` | The planner ended its turn without submitting a plan (or an epic's breakdown). | Unblock with "submit your plan"; if the work is already done, **close as done…**. |
 | `no_commits` | The worker said it was done, but the branch has nothing ahead of its base. | If the work truly needed no change: **close as done…**. Otherwise unblock with what is missing. |

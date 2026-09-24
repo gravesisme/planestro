@@ -92,6 +92,7 @@ export class LiveEngine implements Engine {
       setItemFields: (id, fields) => this.orchestratorSetsFields(id, fields),
       recreateWorktree: (id, message) => this.recreateWorktree(id, message),
       retryOp: (id) => this.retryOp(id),
+      resumeAfter: (id, items, message) => this.resumeAfter(id, items, message, 'orchestrator'),
       askUserDecision: (id, input) => this.askUserDecision(id, input),
       triageEnded: (id) => this.endTriage(id, 'the orchestrator looked at it without resolving it'),
       poke: () => this.poke(),
@@ -226,6 +227,7 @@ export class LiveEngine implements Engine {
       this.driveInReview();
       this.driveHeld();
       await this.driveStalls();
+      this.driveResumeAfter();
     } catch (e) { this.note('error', `tick: ${(e as Error).message}`); }
   }
 
@@ -1957,6 +1959,80 @@ export class LiveEngine implements Engine {
     // No orchestrator to carry it out: a blocked session hears the answer itself; a worker's question stays for you to answer.
     const cur = this.store.requireItem(id).file.frontmatter;
     if (cur.blocked || cur.awaiting === 'user') await this.unblock(id, `The user was asked: ${decision.question}\nTheir answer: ${said}${raisedNote ? `\n${raisedNote}` : ''}`);
+  }
+
+  /**
+   * Park a stopped item on other items (p14): "resume when HH-129 merges, and tell it this". The
+   * block, question or triage it had is answered by the park, so it no longer needs anyone; the tick
+   * resumes it when they have all merged. Items already merged need no wait: it resumes now.
+   */
+  async resumeAfter(id: string, items: string[], message: string, by: 'user' | 'orchestrator' = 'user'): Promise<string> {
+    const item = this.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    if (!this.phaseFor(fm.status) || this.store.derived(item).flavor !== 'worker') return `not possible: ${id} is ${fm.status}; only a worker item planning or in progress can wait to resume`;
+    const busy = this.busyWith(id); if (busy) return `not now: ${busy}`;
+    const ids = [...new Set(items.map((x) => x.trim()).filter(Boolean))];
+    if (!ids.length || !message.trim()) return 'not recorded: name at least one item to wait for, and the message to resume with';
+    const missing = ids.filter((x) => x === id || !this.store.getItem(x));
+    if (missing.length) return `not recorded: ${missing.join(', ')} ${missing.includes(id) ? '(an item cannot wait for itself) ' : ''}is not an item to wait for`;
+    this.store.mutateItem(id, [
+      { unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] },
+      { set: { resume_after: { items: ids, message: message.trim(), since: this.now() } } },
+      { activity: { actor: by, text: `waits for ${ids.join(', ')} to merge, then resumes with: ${message.trim()}` } },
+    ], by, { commit: `${id}: resume after ${ids.join(', ')}` });
+    void this.tick();
+    return `parked: ${id} resumes when ${ids.join(', ')} ${ids.length === 1 ? 'has' : 'have'} merged`;
+  }
+
+  /** Stop waiting without resuming: the item is the user's again, as a plain block. */
+  cancelResumeAfter(id: string): void {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    if (!fm.resume_after) return;
+    this.store.mutateItem(id, [{ unset: ['resume_after'] }, { set: { blocked: true, blocked_reason: 'agent_blocked', awaiting: 'user' } }, { activity: { actor: 'user', text: `stopped waiting for ${fm.resume_after.items.join(', ')}` } }], 'user', { commit: `${id}: stop waiting` });
+  }
+
+  private driveResumeAfter(): void {
+    for (const item of this.store.listItems()) {
+      const fm = item.file.frontmatter;
+      const wait = fm.resume_after;
+      if (!wait || this.jobs.has(item.id) || this.turns.has(item.id)) continue;
+      const gone = wait.items.filter((x) => !this.store.getItem(x));
+      if (gone.length) { this.store.mutateItem(item.id, [{ unset: ['resume_after'] }], 'engine'); this.block(item.id, 'waited_on_gone', `it was waiting for ${gone.join(', ')}, which no longer exist${gone.length === 1 ? 's' : ''}; its message was: ${wait.message}`); continue; }
+      if (!wait.items.every((x) => ['MERGED', 'FINISHED'].includes(this.store.requireItem(x).file.frontmatter.status))) continue;
+      this.store.mutateItem(item.id, [{ unset: ['resume_after'] }, { activity: { actor: 'app', text: `${wait.items.join(', ')} merged; resuming` } }], 'engine', { commit: `${item.id}: resume after ${wait.items.join(', ')}` });
+      this.runJob(item.id, () => this.resumeWaited(item.id, wait.items, wait.message));
+    }
+  }
+
+  /**
+   * What it waited for is in the base now, not yet on its branch: bring a clean branch up to date
+   * first (a worker branch rebases), so the session resumes with what it needs (HH-118 resumed without
+   * the flag it had waited for, p29). A conflict goes to the session as any sync conflict does.
+   */
+  private async resumeWaited(id: string, merged: string[], message: string): Promise<void> {
+    const item = this.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    const phase = this.phaseFor(fm.status);
+    if (!phase) return;
+    const base = this.store.derived(item).base_branch!;
+    const cwd = fm.worktree ? this.absWorktree(fm.worktree) : undefined;
+    let synced = '';
+    if (cwd) {
+      await this.ports.git.fetch(this.repo);
+      const { clean } = await this.ports.git.status(cwd);
+      const { behind } = await this.ports.git.aheadBehind(cwd, `origin/${base}`, 'HEAD');
+      if (behind > 0 && !clean) synced = `Your branch is ${behind} commit${behind === 1 ? '' : 's'} behind origin/${base}, which now has ${merged.join(', ')}; planestro did not rebase it because your worktree has uncommitted changes. Commit them first; ask with report_blocked if you need the rebase.`;
+      else if (behind > 0) {
+        const r = await this.ports.git.rebase(cwd, `origin/${base}`);
+        if (!r.ok) {
+          await this.runTurnFor(id, 'fix', `${this.store.renderPrompt('rebase-conflict', this.store.requireItem(id), { conflict_files: r.conflicts.join('\n'), base_sha: (await this.ports.git.revParse(this.repo, `origin/${base}`)).slice(0, 12) })}\n\nThen continue with what you were waiting to do (${merged.join(', ')} ${merged.length === 1 ? 'has' : 'have'} merged):\n\n${message}`);
+          return;
+        }
+        synced = `Your branch was rebased onto origin/${base} (${r.head.slice(0, 7)}), so it has what ${merged.join(', ')} delivered.`;
+        this.store.mutateItem(id, [{ activity: { actor: 'app', text: `rebased onto origin/${base} before resuming (${r.head.slice(0, 7)})` } }], 'engine');
+      }
+    }
+    await this.runTurnFor(id, phase, `${this.resumeNote(id, `${merged.join(', ')} merging`)}\n\n${merged.join(', ')} ${merged.length === 1 ? 'has' : 'have'} merged.${synced ? ` ${synced}` : ''}\n\n${message}`);
   }
 
   /** User-driven unblock: clears the flag and, if the item is in a session phase, resumes with a message. */

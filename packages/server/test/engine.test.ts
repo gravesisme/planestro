@@ -1044,6 +1044,60 @@ describe('files a worktree must not take with it (p40)', () => {
   });
 });
 
+describe('resume when other items merge (p14)', () => {
+  async function parked(opts: { conflict?: boolean } = {}) {
+    const prompts: { phase: string; prompt: string }[] = [];
+    const claude = (world: FakeWorld) => { const inner = new DryRunClaudePort(world); return { async runTurn(o: TurnOptions): Promise<TurnResult> { prompts.push({ phase: o.phase, prompt: o.prompt }); return inner.runTurn(o); }, runCustomTurn: inner.runCustomTurn.bind(inner) }; };
+    const ctx = await setup({ claude });
+    const { store, engine, world } = ctx;
+    const flag = store.createItem({ title: 'Normalizer flag', description: 'x' });
+    const art = store.createItem({ title: 'Boss atlas', description: 'x' });
+    const rel = '.claude/worktrees/tp-2-boss-atlas', cwd = (engine as any).absWorktree(rel);
+    world.worktrees.set(cwd, { path: cwd, head: world.sha(), branch: 'tp/2-boss-atlas' });
+    store.mutateItem(art.id, [{ set: { status: 'IN_PROGRESS', branch: 'tp/2-boss-atlas', worktree: rel, session_id: 's-art', blocked: true, blocked_reason: 'agent_blocked', awaiting: 'user' } }], 'engine');
+    if (opts.conflict) world.conflictArmed = true;
+    await engine.start();
+    return { ...ctx, flag: flag.id, art: art.id, prompts };
+  }
+
+  it('a parked item stops needing you, and resumes on a rebased branch with the message once the other merges', async () => {
+    const { store, engine, flag, art, prompts } = await parked();
+    expect(await engine.resumeAfter(art, [flag], 'Build the final pack with --row-jump-overrides.')).toContain('parked');
+    const fm = store.getItem(art)!.file.frontmatter;
+    expect(fm.blocked).toBeUndefined();
+    expect(store.derived(store.getItem(art)!).needs_you).toBe(false);
+    await sleep(200);
+    expect(prompts).toHaveLength(0);                                   // nothing resumes while it waits
+    store.mutateItem(flag, [{ set: { status: 'MERGED' } }], 'engine');
+    await waitFor(() => prompts.length === 1);
+    expect(prompts[0].prompt).toContain(`${flag} has merged. Your branch was rebased onto origin/trunk`);
+    expect(prompts[0].prompt).toContain('Build the final pack with --row-jump-overrides.');
+    expect(store.getItem(art)!.file.frontmatter.resume_after).toBeUndefined();
+    expect(activityOf(store, art)).toContain('rebased onto origin/trunk before resuming');
+  });
+
+  it('a rebase conflict on resume goes to a fix turn that also carries the message', async () => {
+    const { store, engine, flag, art, prompts } = await parked({ conflict: true });
+    await engine.resumeAfter(art, [flag], 'Now wire the flag in.');
+    store.mutateItem(flag, [{ set: { status: 'FINISHED' } }], 'engine');
+    await waitFor(() => prompts.length === 1);
+    expect(prompts[0].phase).toBe('fix');
+    expect(prompts[0].prompt).toContain('src/conflicted.ts');
+    expect(prompts[0].prompt).toContain('Now wire the flag in.');
+  });
+
+  it('an item it waits for that is deleted blocks it, with the message kept; nonsense is refused', async () => {
+    const { store, engine, flag, art } = await parked();
+    expect(await engine.resumeAfter(art, [art], 'x')).toContain('cannot wait for itself');
+    expect(await engine.resumeAfter(art, ['TP-404'], 'x')).toContain('not an item');
+    expect(await engine.resumeAfter(flag, [art], 'x')).toContain('not possible');       // not planning or in progress
+    await engine.resumeAfter(art, [flag], 'Use the flag.');
+    store.deleteItem(flag);
+    await waitFor(() => store.getItem(art)!.file.frontmatter.blocked_reason === 'waited_on_gone');
+    expect(activityOf(store, art)).toContain('its message was: Use the flag.');
+  });
+});
+
 describe('orchestrator', () => {
   it('wakes on plan_review with a context packet, uses tools, and rotates after the configured wakes', async () => {
     const wakes: { label: string; prompt: string; resume?: string }[] = [];

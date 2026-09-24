@@ -11,6 +11,7 @@ import { ReviewPanel } from '../components/ReviewPanel.tsx';
 import { fallbackHint } from '../components/NewItemDialog.tsx';
 import { BreakdownPanel } from '../components/BreakdownPanel.tsx';
 import { BlockedPanel } from '../components/BlockedPanel.tsx';
+import { WaitingPanel } from '../components/ResumeAfter.tsx';
 import { AwaitingPanels } from '../components/AwaitingPanels.tsx';
 import { PartsStrip } from '../components/PartsStrip.tsx';
 import { DecisionCard } from '../components/DecisionCard.tsx';
@@ -117,6 +118,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
         )}
 
         <BlockedPanel item={item} />
+        <WaitingPanel item={item} />
         {fm.status === 'PLAN_READY' && fm.kind === 'epic' && <BreakdownPanel item={item} />}
         {fm.status === 'PLAN_READY' && fm.kind !== 'epic' && (
           <div className="approval">

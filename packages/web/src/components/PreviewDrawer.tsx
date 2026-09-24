@@ -7,6 +7,7 @@ import { statusLabel } from './ItemCard.tsx';
 import { QuickActions } from './QuickActions.tsx';
 import { ReviewPanel } from './ReviewPanel.tsx';
 import { BlockedPanel } from './BlockedPanel.tsx';
+import { WaitingPanel } from './ResumeAfter.tsx';
 import { AwaitingPanels } from './AwaitingPanels.tsx';
 import { DecisionCard } from './DecisionCard.tsx';
 import { PartsStrip } from './PartsStrip.tsx';
@@ -54,6 +55,7 @@ export function PreviewDrawer({ id, onClose }: { id: string; onClose: () => void
       <DecisionCard item={item} />
       {fm.parts?.length ? <PartsStrip parts={fm.parts} compact /> : null}
       <BlockedPanel item={item} compact />
+      <WaitingPanel item={item} />
       <AwaitingPanels item={item} />
       {fm.awaiting === 'review' ? <ReviewPanel item={item} compact /> : <QuickActions item={item} />}
       <div className="drawer-desc"><Markdown text={item.sections.Description || '_(no description)_'} /></div>

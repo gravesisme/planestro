@@ -40,6 +40,7 @@ export function ItemCard({ item, sortable = true, onSelect }: { item: ItemView; 
             {fm.parts?.length ? <span className={`tag ${fm.parts.some((p) => p.state === 'rejected') ? 'hot' : fm.parts.every((p) => p.state === 'accepted') ? 'ok' : 'wait'}`} title={fm.parts.map((p) => `${p.name}: ${p.state}`).join(', ')}>parts {fm.parts.filter((p) => p.state === 'accepted').length}/{fm.parts.length}</span> : null}
             {(() => { const cfg = state?.config; if (!cfg || d.lane !== 'board') return null; const usd = (fm.cost_usd ?? 0) / (fm.budget_usd ?? cfg.budget_usd_per_item); const tok = (fm.tokens ?? 0) / (fm.budget_tokens ?? cfg.budget_tokens_per_item); const share = Math.max(usd, tok); return share >= 0.8 ? <span className={`tag ${share >= 1 ? 'hot' : 'wait'}`} title="Of this item's budget; raise it on the item page">budget {Math.round(share * 100)}%</span> : null; })()}
             {!d.deps_satisfied && <span className="tag">waits on {fm.depends_on.join(', ')}</span>}
+            {fm.resume_after && <span className="tag" title={`Resumes when these have merged, with: ${fm.resume_after.message}`}>resumes after {fm.resume_after.items.join(', ')}</span>}
             {lane === 'done' && fm.finished_at && <span>{fm.finished_at.slice(0, 16).replace('T', ' ')}</span>}
           </div>
         </div>

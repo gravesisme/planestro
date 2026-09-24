@@ -53,7 +53,7 @@ export const AUTHORITATIVE_KEYS = [
 export const OPERATIONAL_KEYS = [
   'created_at', 'updated_at', 'queued_at', 'started_at', 'plan_ready_at', 'plan_approved_at',
   'pr_created_at', 'merged_at', 'finished_at', 'iceboxed_at',
-  'branch', 'worktree', 'pr', 'session_id', 'agent_sessions', 'awaiting', 'awaiting_data', 'triage',
+  'branch', 'worktree', 'pr', 'session_id', 'agent_sessions', 'awaiting', 'awaiting_data', 'triage', 'resume_after',
   'op', 'op_started_at', 'op_data', 'plan_revisions', 'ci_head_sha', 'ci_result', 'ci_failed_count',
   'merge_order', 'skip_merge', 'review_hold', 'delivered', 'parts', 'blocked', 'blocked_reason', 'cost_usd', 'turns', 'agent_turns', 'tokens',
   'imported_from', 'dates_estimated',
@@ -110,6 +110,12 @@ export const ItemFrontmatter = z.object({
    * however it ends; `orchestrator.triage_timeout_min` bounds it.
    */
   triage: z.object({ reason: z.string(), started_at: ts }).passthrough().optional(),
+  /**
+   * The item waits for other items to merge, then its session resumes with `message` (dogfood p14):
+   * not blocked, not "needs you". Set by the user or the orchestrator on a stopped item; cleared when
+   * the engine resumes it.
+   */
+  resume_after: z.object({ items: z.array(z.string()).min(1), message: z.string(), since: ts }).passthrough().optional(),
   op: z.enum(OPS).optional(),
   op_started_at: ts.optional(),
   op_data: z.record(z.string(), z.unknown()).optional(),
