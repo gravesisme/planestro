@@ -35,7 +35,7 @@ const activityOf = (s: DataStore, id: string) => s.getItem(id)!.file.sections.fi
 
 describe('mixed runners (dry-run ports)', () => {
   it('Claude plans, Codex implements, the PR is held for review, and releasing the hold merges it', async () => {
-    const { store, engine } = await setup();
+    const { store, engine, world } = await setup();
     const item = store.createItem({ title: 'Frost wand icon', description: 'a 512px icon', implementer: 'codex-art' });
     store.transition(item.id, 'QUEUED', 'user');
     await engine.start();
@@ -47,7 +47,9 @@ describe('mixed runners (dry-run ports)', () => {
     await sleep(300); // long enough for an un-held item to have merged
     let fm = fmOf(store, item.id);
     expect(fm.status).toBe('IN_REVIEW');
-    expect(fm.ci_result).toBe('green');                            // CI ran while it was held: only the merge waits
+    expect(world.prs.get(fm.pr!)!.isDraft).toBe(true);             // held: opened as a draft (f6)
+    expect(world.ciPolledWhileDraft).toBe(0);                      // the review comes first; CI is not waited on
+    expect(fm.ci_result).toBe('pending');
     expect(fm.review_hold).toBe(true);
     expect(store.derived(store.getItem(item.id)!).needs_you).toBe(true);
     expect(fm.session_id).toBe(planSession);                       // the Claude conversation is untouched
@@ -58,6 +60,8 @@ describe('mixed runners (dry-run ports)', () => {
     await expect(engine.releaseHold('TP-999')).rejects.toThrow();
     await engine.releaseHold(item.id, 'looks right at 1x');
     await waitFor(() => fmOf(store, item.id).status === 'FINISHED');
+    expect(world.prs.get(fm.pr!)!.isDraft).toBe(false);            // marked ready after the sync: one CI run, on the merged head
+    expect(activityOf(store, item.id)).toContain('as a draft: it is held, so CI waits until the hold is released');
     fm = fmOf(store, item.id);
     expect(fm.merged_at).toBeDefined();
     expect(fm.review_hold).toBeUndefined();

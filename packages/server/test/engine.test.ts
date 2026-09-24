@@ -545,9 +545,11 @@ describe('held pull requests (skip_merge)', () => {
   const polls: ReturnType<typeof setInterval>[] = [];
   afterEach(() => { for (const p of polls.splice(0)) clearInterval(p); });
   /** An item already IN_REVIEW with an open PR and a hold, its worktree on `head`, the PR branch at `head` too. */
-  async function held(opts: { failOnce?: boolean } = {}) {
+  async function held(opts: { failOnce?: boolean; drafts?: boolean } = {}) {
     const ctx = await setup();
     const { store, engine, world } = ctx;
+    // These describe a project whose CI runs on held PRs; the draft flow (f6) has its own tests.
+    if (!opts.drafts) store.updateConfig((doc) => { doc.setIn(['ci', 'draft_while_held'], false); }, 'config: no drafts');
     const item = store.createItem({ title: 'Held', description: 'x' });
     const branch = 'tp/1-held', rel = '.claude/worktrees/tp-1-held';
     const cwd = (engine as any).absWorktree(rel);
@@ -587,6 +589,23 @@ describe('held pull requests (skip_merge)', () => {
     stopPolling();
     await engine.releaseHold(id);
     await waitFor(() => status(store, id) === 'FINISHED', 8000);
+  });
+
+  it('with draft_while_held, a hold put on an open PR turns it back into a draft, and pushes run no CI (f6)', async () => {
+    const { store, engine, world, id, branch, cwd, stopPolling } = await held({ drafts: true });
+    world.worktrees.get(cwd)!.head = world.sha();
+    await engine.start();
+    await waitFor(() => activityOf(store, id).includes('held: rebased onto trunk'));
+    expect(world.prs.get(200)!.isDraft).toBe(true);
+    expect(activityOf(store, id)).toContain('back to a draft, so CI waits until the hold is released');
+    expect(world.remoteBranches.get(branch)).toBe(world.worktrees.get(cwd)!.head);
+    await sleep(300);
+    stopPolling();
+    expect(store.getItem(id)!.file.frontmatter.ci_result).toBe('pending');   // no run on a draft
+    await engine.releaseHold(id);
+    await waitFor(() => status(store, id) === 'FINISHED', 8000);
+    expect(world.prs.get(200)!.isDraft).toBe(false);
+    expect(activityOf(store, id)).toContain('marked PR #200 ready for review: CI runs on');
   });
 
   it('never pushes over a PR branch that moved on its own', async () => {

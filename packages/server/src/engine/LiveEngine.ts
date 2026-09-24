@@ -307,7 +307,13 @@ export class LiveEngine implements Engine {
   }
 
   private async heldStep(id: string): Promise<void> {
-    const fm = this.store.requireItem(id).file.frontmatter;
+    let fm = this.store.requireItem(id).file.frontmatter;
+    if (this.store.config.ci.draft_while_held && !fm.op_data?.pr_draft) {
+      // A hold put on after the PR opened: back to draft, so pushes during the hold run no CI.
+      await this.ports.gh.setDraft(this.github, fm.pr!, true);
+      this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), pr_draft: true } } }, { activity: { actor: 'app', text: `held: PR #${fm.pr} is back to a draft, so CI waits until the hold is released` } }], 'engine');
+      fm = this.store.requireItem(id).file.frontmatter;
+    }
     const cwd = this.absWorktree(fm.worktree!);
     const [local, remote] = await Promise.all([this.ports.git.revParse(cwd, 'HEAD'), this.ports.git.remoteBranchSha(this.repo, fm.branch!)]);
     if (remote && local !== remote) {
@@ -678,20 +684,23 @@ export class LiveEngine implements Engine {
     const base = this.store.derived(item).base_branch!;
     const implementer = this.store.config.models.find((m) => m.id === fm.implementer);
     const held = Boolean(implementer?.hold_for_review);
+    // A held PR opens as a draft: no CI while it waits for a person, one run once it is released (dogfood f6).
+    const draft = this.store.config.ci.draft_while_held && (held || Boolean(fm.review_hold) || Boolean(fm.skip_merge));
     const opId = this.store.journal.begin('creating_pr', id, { branch: fm.branch, base });
     this.store.mutateItem(id, [{ set: { op: 'pushing', op_started_at: this.now() } }], 'engine');
     await this.ports.git.pushSetUpstream(cwd, fm.branch!);
     this.store.mutateItem(id, [{ set: { op: 'creating_pr', op_started_at: this.now() } }], 'engine');
     const existing = (await this.ports.gh.prList(this.github, { head: fm.branch!, state: 'open' }))[0];
+    if (existing && draft && !existing.isDraft) await this.ports.gh.setDraft(this.github, existing.number, true);
     const pr = existing ? { number: existing.number, url: existing.url } : await this.ports.gh.createPr(this.github, {
-      base, head: fm.branch!, title: `${fm.title} (${id})`,
+      base, head: fm.branch!, title: `${fm.title} (${id})`, draft,
       body: `${summary ?? getSection(item.file, 'Description').slice(0, 1500)}\n\n---\nplanestro item **${id}** · plan:\n\n${getSection(item.file, 'Plan').slice(0, 3000)}\n\n🤖 Opened by planestro`,
     });
     this.store.mutateItem(id, [
       { transition: { to: 'IN_REVIEW', actor: 'engine' } },
-      { set: { pr: pr.number, ci_result: 'pending', ...(held ? { review_hold: true } : {}) } },
+      { set: { pr: pr.number, ci_result: 'pending', ...(held ? { review_hold: true } : {}), ...(draft ? { op_data: { ...(this.store.requireItem(id).file.frontmatter.op_data ?? {}), pr_draft: true } } : {}) } },
       { unset: ['op', 'op_started_at'] },
-      { activity: { actor: 'app', text: `opened PR #${pr.number} → ${base} (${pr.url})` } },
+      { activity: { actor: 'app', text: `opened PR #${pr.number} → ${base} (${pr.url})${draft ? ' as a draft: it is held, so CI waits until the hold is released' : ''}` } },
       ...(held ? [{ activity: { actor: 'app' as const, text: `will wait for your review before merging: ${implementer!.label} is a hold_for_review model` } }] : []),
     ], 'engine', { commit: `${id}: open PR #${pr.number}` });
     this.store.journal.end(opId, id, 'ok', { pr: pr.number });
@@ -791,6 +800,19 @@ export class LiveEngine implements Engine {
         return;
       }
       this.store.mutateItem(id, [{ set: { op: 'awaiting_ci', op_started_at: this.now(), ci_head_sha: headSha, ci_result: 'pending' } }, { activity: { actor: 'app', text: `rebased onto ${base}@${baseSha.slice(0, 7)} and pushed ${headSha.slice(0, 7)}; waiting for CI` } }], 'engine');
+    }
+
+    // 2b. a draft PR: while it is held for review, the review comes first and CI waits; once
+    // released, it is marked ready here, after the sync, so CI runs once, on the head that merges.
+    const drafted = this.store.requireItem(id).file.frontmatter;
+    if (this.store.config.ci.draft_while_held && drafted.op_data?.pr_draft) {
+      if (drafted.review_hold && !drafted.skip_merge) {
+        this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { awaiting: 'review' } }, { activity: { actor: 'app', text: `synced ${headSha.slice(0, 7)}; the PR is a draft, so CI runs once you approve it; waiting for your review before merging` } }], 'engine', { commit: `${id}: awaiting review` });
+        this.store.journal.end(opId, id, 'aborted', { reason: 'awaiting_review' });
+        return;
+      }
+      await this.ports.gh.setDraft(this.github, fm.pr!, false);
+      this.store.mutateItem(id, [{ set: { op_data: { ...(drafted.op_data ?? {}), pr_draft: false } } }, { activity: { actor: 'app', text: `marked PR #${fm.pr} ready for review: CI runs on ${headSha.slice(0, 7)}` } }], 'engine');
     }
 
     // 3. wait for CI. `expected` is the head the push replaced: GitHub keeps reporting it for a

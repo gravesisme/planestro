@@ -26,6 +26,8 @@ export class FakeWorld {
   behind = new Map<string, number>();
   /** How many `gh pr view` polls after a push still report the replaced head — GitHub's real propagation lag. */
   headLagPolls = 0;
+  /** CI polls that found a draft PR (and so no run). */
+  ciPolledWhileDraft = 0;
   staleHeads = new Map<string, { sha: string; polls: number }>();
   constructor(readonly log: (msg: string) => void, readonly baseBranches: Record<string, string> = {}) {}
   sha(): string { return (0x100000 + ++this.seq).toString(16).padStart(40, '0'); }
@@ -77,12 +79,13 @@ export class DryRunGitPort implements GitPort {
 export class DryRunGhPort implements GhPort {
   constructor(private readonly w: FakeWorld) {}
   private say(m: string) { this.w.log(`Would ${m}`); }
-  async createPr(repo: string, a: { base: string; head: string; title: string }) {
+  async createPr(repo: string, a: { base: string; head: string; title: string; draft?: boolean }) {
     const number = this.w.nextPr++;
-    this.say(`gh pr create --base ${a.base} --head ${a.head} --title "${a.title}"`);
-    this.w.prs.set(number, { number, url: `https://github.com/${repo}/pull/${number}`, state: 'OPEN', headRefOid: this.w.remoteBranches.get(a.head) ?? this.w.sha(), headRefName: a.head, baseRefName: a.base, polls: 0, failOnce: this.w.ciMode === 'red-once' });
+    this.say(`gh pr create --base ${a.base} --head ${a.head} --title "${a.title}"${a.draft ? ' --draft' : ''}`);
+    this.w.prs.set(number, { number, url: `https://github.com/${repo}/pull/${number}`, state: 'OPEN', isDraft: Boolean(a.draft), headRefOid: this.w.remoteBranches.get(a.head) ?? this.w.sha(), headRefName: a.head, baseRefName: a.base, polls: 0, failOnce: this.w.ciMode === 'red-once' });
     return { number, url: `https://github.com/${repo}/pull/${number}` };
   }
+  async setDraft(_repo: string, number: number, draft: boolean) { this.say(`gh pr ready ${number}${draft ? ' --undo' : ''}`); const p = this.w.prs.get(number); if (p) p.isDraft = draft; }
   async prView(_repo: string, number: number) {
     const p = this.w.prs.get(number); if (!p) throw new Error(`no PR ${number}`);
     const stale = this.w.staleHeads.get(p.headRefName);
@@ -93,6 +96,7 @@ export class DryRunGhPort implements GhPort {
   async ciForSha(_repo: string, branch: string, sha: string): Promise<CiStatus> {
     const p = [...this.w.prs.values()].find((x) => x.headRefName === branch);
     if (!p) return { state: 'none', sha };
+    if (p.isDraft) { this.w.ciPolledWhileDraft += 1; return { state: 'none', sha }; } // CI skips drafts (dogfood f6)
     p.polls += 1;
     if (p.polls < 2) return { state: 'pending', runId: 1, sha, url: 'https://example/run/1' };
     if (p.failOnce) { p.failOnce = false; p.polls = 0; return { state: 'failure', runId: 2, sha, url: 'https://example/run/2' }; }

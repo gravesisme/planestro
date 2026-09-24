@@ -46,10 +46,12 @@ export interface GitPort {
 
 export type CiState = 'none' | 'pending' | 'success' | 'failure' | 'cancelled';
 export interface CiStatus { state: CiState; runId?: number; url?: string; sha?: string; startedAt?: string }
-export interface PrInfo { number: number; url: string; state: 'OPEN' | 'MERGED' | 'CLOSED'; mergedAt?: string; headRefOid: string; headRefName: string; baseRefName: string; mergeCommit?: string; title?: string }
+export interface PrInfo { number: number; url: string; state: 'OPEN' | 'MERGED' | 'CLOSED'; mergedAt?: string; headRefOid: string; headRefName: string; baseRefName: string; mergeCommit?: string; title?: string; isDraft?: boolean }
 
 export interface GhPort {
-  createPr(repo: string, args: { base: string; head: string; title: string; body: string }): Promise<{ number: number; url: string }>;
+  createPr(repo: string, args: { base: string; head: string; title: string; body: string; draft?: boolean }): Promise<{ number: number; url: string }>;
+  /** Mark a PR as a draft (true) or ready for review (false); ready_for_review is what starts CI on a draft. */
+  setDraft(repo: string, number: number, draft: boolean): Promise<void>;
   prView(repo: string, number: number): Promise<PrInfo>;
   prList(repo: string, filter: { head?: string; base?: string; state?: 'open' | 'merged' | 'closed' | 'all' }): Promise<PrInfo[]>;
   /** Status of the named workflow for a PR's head sha (other checks such as Vercel are ignored). */
