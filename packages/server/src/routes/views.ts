@@ -37,7 +37,7 @@ export function guardView(store: DataStore, paused: boolean) {
   return paused ? { paused_by: e.paused_by, ...(e.paused_by === 'usage_guard' && e.usage_guard ? { usage_guard: e.usage_guard } : {}) } : {};
 }
 
-export function stateView(store: DataStore, engine: { mode: string; paused: boolean; sessions(): unknown[] }, git: unknown) {
+export function stateView(store: DataStore, engine: { mode: string; paused: boolean; sessions(): unknown[]; restartReadiness?(): { draining: boolean; idle: boolean; running: string[] } }, git: unknown) {
   return {
     schema: store.schema,
     readOnly: store.readOnly,
@@ -49,7 +49,7 @@ export function stateView(store: DataStore, engine: { mode: string; paused: bool
     prompts: store.listPrompts().map(promptView),
     releases: store.listReleases().map((r) => releaseView(store, r)),
     invalid: store.invalid,
-    engine: { mode: engine.mode, paused: engine.paused, ...guardView(store, engine.paused), sessions: engine.sessions() },
+    engine: { mode: engine.mode, paused: engine.paused, ...guardView(store, engine.paused), sessions: engine.sessions(), ...(engine.restartReadiness ? { restart: engine.restartReadiness() } : {}) },
     git,
     statuses: ['NOT_YET_SUBMITTED', 'QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW', 'MERGED', 'FINISHED', 'ICEBOX'] satisfies Status[],
   };

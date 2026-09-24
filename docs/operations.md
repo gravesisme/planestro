@@ -39,6 +39,18 @@ current safe operation; nothing is admitted, no merge job starts, the orchestrat
 wake. Use it before doing anything by hand in the code repository that planestro is also
 working in.
 
+## Restarting safely
+
+A restart in the middle of a turn, a setup hook or a merge leaves work to be recovered (the
+reconciler does, but a setup that was cut short can orphan an item). To restart for a new
+build or config: **Console → Prepare to restart** (or `curl -X POST :4300/api/engine/drain`).
+Nothing new starts, and what is running finishes — turns, engine steps, operations in flight,
+an orchestrator wake — including the follow-ups they start. The header shows **DRAINING · N
+left**, then **SAFE TO RESTART** (`GET /api/engine` → `restart.idle: true`). Unlike PAUSE it
+is not persisted: planestro comes back running. Items waiting in triage stay there and are
+picked up after the restart. **Cancel restart preparation** (or `DELETE /api/engine/drain`)
+carries on without one.
+
 ## Dry-run
 
 `engine.mode: dry-run` runs the real lifecycle against in-memory fakes and logs every

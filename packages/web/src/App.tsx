@@ -52,7 +52,10 @@ export function App() {
         </nav>
         <div className="status">
           <button className={`needs ${needs.some((i) => i.frontmatter.blocked) ? 'hot' : needs.length ? 'wait' : ''}`} onClick={() => nav('/?needs=1')} title="Items waiting on you (red: one of them is blocked)"><span className="dot" /> <span className="desk-only">NEEDS YOU · </span>{needs.length}</button>
-          <span className="summary">{paused ? '⏸ PAUSED' : `● ${state?.engine.mode === 'live' ? 'LIVE' : 'DRY-RUN'}`} · {running} agents active · {active.length} active items · {inReview.length} PR{inReview.length === 1 ? '' : 's'} in review</span>
+          {state?.engine.restart?.draining
+            // Getting ready to restart takes the summary's place: it is the one thing that matters until the restart.
+            ? <button className={`needs ${state.engine.restart.idle ? 'safe' : 'wait'}`} onClick={() => nav('/console')} title={state.engine.restart.idle ? 'Nothing is running: restarting planestro loses nothing' : `Still running: ${state.engine.restart.running.join(', ')}`}>{state.engine.restart.idle ? <>↻ <span className="desk-only">SAFE TO RESTART</span><span className="phone-only">OK</span></> : <>↻ <span className="desk-only">DRAINING · </span>{state.engine.restart.running.length}</>}</button>
+            : <span className="summary">{paused ? '⏸ PAUSED' : `● ${state?.engine.mode === 'live' ? 'LIVE' : 'DRY-RUN'}`} · {running} agents active · {active.length} active items · {inReview.length} PR{inReview.length === 1 ? '' : 's'} in review</span>}
           {guard && <span className="usage-pill" title={`The usage guard paused automation at ${new Date(guard.tripped_at).toLocaleString()}; running turns finish, nothing new starts.${guard.resume_at ? ' It resumes on its own once the window resets.' : ''}`}>{guardPill(guard)}</span>}
           <button className={`lever ${paused ? 'paused' : ''}`} onClick={() => act(() => (paused ? api.resume() : api.pause()))}>{paused ? 'RESUME' : 'PAUSE'}<span className="desk-only"> AUTOMATION</span></button>
           <span className={`dot ${connected ? 'on' : 'off'}`} title={connected ? 'connected' : 'reconnecting'} />

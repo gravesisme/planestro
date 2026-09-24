@@ -60,6 +60,8 @@ interface OrchState { session_id?: string; started_at?: string; wakes_served: nu
 export class Orchestrator {
   private queue: WakeEvent[] = [];
   private running = false;
+  /** A wake is being served now. */
+  get busy(): boolean { return this.running; }
   private stopped = false;
   /** Items whose events are in the wake running now (the queue holds the ones still to come). */
   private inFlight = new Set<string>();

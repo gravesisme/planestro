@@ -14,7 +14,7 @@ textarea { width: 100%; min-height: 120px; resize: vertical; font-family: ui-mon
 /* two tones for "needs you": amber is a decision waiting on you (a plan, a question, a review), red is a block */
 /* (cards carry .needs too, so the header count is always button.needs) */
 button.needs { border-color: var(--line); display: inline-flex; align-items: center; gap: 7px; } button.needs .dot { background: currentColor; } button.needs:not(.hot):not(.wait) .dot { opacity: .5; }
-button.needs.wait { border-color: var(--warn); color: var(--warn); font-weight: 700; } button.needs.hot { border-color: var(--hot); color: var(--hot); font-weight: 700; }
+button.needs.wait { border-color: var(--warn); color: var(--warn); font-weight: 700; } button.needs.safe { border-color: var(--ok); color: var(--ok); font-weight: 700; } button.needs.hot { border-color: var(--hot); color: var(--hot); font-weight: 700; }
 .lever { background: #3a1d1d; border-color: var(--hot); color: #ffb3b3; font-weight: 700; letter-spacing: .3px; } .lever.paused { background: #1f3a24; border-color: var(--ok); color: #b9f5c4; }
 .usage-pill { border: 1px solid var(--warn); color: var(--warn); border-radius: 999px; padding: 2px 10px; font-size: 12px; font-weight: 700; white-space: nowrap; }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); } .dot.on { background: var(--ok); } .dot.off { background: var(--hot); }

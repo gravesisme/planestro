@@ -15,7 +15,7 @@ export interface SessionView { item: string; session_id?: string; model?: string
 export interface State {
   schema: string; readOnly: boolean; dataDir: string; codeRepo: string; config: Config; local: LocalConfig;
   items: ItemView[]; prompts: PromptView[]; releases?: ReleaseView[]; invalid: { path: string; error: string }[];
-  engine: { mode: string; paused: boolean; paused_by?: 'user' | 'usage_guard'; usage_guard?: UsageGuardState; sessions: SessionView[] };
+  engine: { mode: string; paused: boolean; paused_by?: 'user' | 'usage_guard'; usage_guard?: UsageGuardState; sessions: SessionView[]; restart?: { draining: boolean; idle: boolean; running: string[] } };
   git: { dirty: string[]; branch: string; head?: string; ahead?: number };
   statuses: Status[];
 }
@@ -64,6 +64,8 @@ export const api = {
   clearModelUnavailable: (id: string) => req<{ local: LocalConfig }>('DELETE', `/api/models/${encodeURIComponent(id)}/unavailable`),
   categories: (body: Record<string, string>) => req<{ config: Config; affected: number }>('POST', '/api/config/categories', body),
   pause: () => req<{ paused: boolean }>('POST', '/api/engine/pause'),
+  drain: () => req<{ draining: boolean; idle: boolean; running: string[] }>('POST', '/api/engine/drain'),
+  undrain: () => req<{ draining: boolean; idle: boolean; running: string[] }>('DELETE', '/api/engine/drain'),
   resume: () => req<{ paused: boolean }>('POST', '/api/engine/resume'),
   journal: (q: { item?: string; limit?: number }) => req<JournalEntry[]>('GET', `/api/journal?${new URLSearchParams(Object.entries(q).filter(([, v]) => v !== undefined).map(([k, v]) => [k, String(v)]))}`),
   reload: () => req<{ ok: true }>('POST', '/api/reload'),
