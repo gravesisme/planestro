@@ -96,6 +96,7 @@ for a decision.
 | `review.max_file_bytes` | `10000000` | One changed file over this blocks the item as `asset_too_large` before a pull request exists. |
 | `review.nudge_after_min` | `240` | A review nobody has looked at for this long wakes the orchestrator, once. |
 | `notifications.on_merge` | none | A command run after each merge (`say "PR merged"`). |
+| `notifications.on_usage_pause` | none | A command run when the [usage guard](#usage-guard) pauses automation (`say "planestro paused for usage"`). |
 
 ### Orchestrator, engine, storage
 
@@ -140,7 +141,40 @@ Default: **Release notes** and **Notes**.
 | `anthropic_api_key` | Bills Claude sessions to the API under the Commercial Terms instead of a claude.ai login. `ANTHROPIC_API_KEY` in the environment does the same. |
 | `model_unavailable` | Models this machine's account cannot use right now, by model id: `{ until, reason, since, manual }`. Written when a turn fails on a usage limit and by **mark unavailable** in Settings; cleared there or when `until` passes. Per machine because usage belongs to the account logged in here. |
 | `engine.paused` | The PAUSE AUTOMATION lever, persisted. |
+| `engine.paused_by` | `user` (the lever) or `usage_guard`. Only a `usage_guard` pause is ever resumed automatically. |
+| `engine.usage_guard.window` | While the [usage guard](#usage-guard) holds automation paused: the rate-limit window that tripped it (`five_hour`, `seven_day`, …)… |
+| `engine.usage_guard.status` | …its status (`allowed`, `allowed_warning`, `rejected`)… |
+| `engine.usage_guard.utilization` | …how full it was (0–1, when reported)… |
+| `engine.usage_guard.resets_at` | …when it resets… |
+| `engine.usage_guard.tripped_at` | …when the guard paused… |
+| `engine.usage_guard.resume_at` | …and when it resumes (`resets_at` + 60 s, with `usage_guard.auto_resume`). A restart re-arms the resume from here, or resumes at once if the time has passed. |
+| `engine.usage_guard_last.window` | The window crossing the guard last tripped on (`window`, `resets_at`, `tripped_at`): it trips once per crossing, so resuming by hand inside a window that is still over the threshold is respected until that window resets. |
+| `engine.usage_guard_last.resets_at` | See `engine.usage_guard_last.window`. |
+| `engine.usage_guard_last.tripped_at` | See `engine.usage_guard_last.window`. |
 | `engine.mode` | This machine's override of `engine.mode`. |
+
+## Usage guard
+
+A Claude subscription meters usage in rolling windows (five hours, seven days, per-model weekly
+windows). Every Claude turn — worker turns and orchestrator wakes alike — streams the account's
+current reading for its window, and planestro stops itself *before* the limit rather than at it.
+
+| Key | Default | |
+|---|---|---|
+| `usage_guard.enabled` | `true` | Watch the readings at all. |
+| `usage_guard.threshold` | `0.85` | Pause when any window's utilization reaches this fraction. |
+| `usage_guard.on_warning` | `true` | Also pause on an `allowed_warning` reading, whatever the utilization. |
+| `usage_guard.auto_resume` | `true` | Resume a guard-made pause 60 s after the window resets. |
+
+A `rejected` reading (the window is spent) always trips it. Tripping is the ordinary PAUSE
+AUTOMATION lever: turns already running finish, nothing new starts. planestro records the reading
+in `planestro.local.yml` (`engine.usage_guard`), journals `usage.guard_tripped`, logs a warning
+(`USAGE GUARD: 5-hour window at 87% — automation paused until 6:20 pm`), runs
+`notifications.on_usage_pause` if set, and the header shows **PAUSED — usage 87% of 5-hour window ·
+resumes 6:20 pm** beside the RESUME button. It trips once per window crossing and never takes over a
+pause you made yourself. **RESUME** by hand cancels the automatic resume and keeps going for the rest
+of that window; a pause you pulled by hand is never resumed automatically. API-key billing reports
+no subscription windows, so the guard stays idle there.
 
 ## Model fallback
 

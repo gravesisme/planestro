@@ -1,4 +1,4 @@
-import type { Runner } from '@planestro/shared';
+import type { Runner, RateLimitSnapshot } from '@planestro/shared';
 /**
  * Everything that touches the world goes through a port. `Live*` ports act; `DryRun*`
  * ports log `Would …` and keep an in-memory fake world so the pipeline still advances.
@@ -136,6 +136,8 @@ export interface TurnResult {
   parked?: 'question' | 'permission';
   /** Set with subtype `usage_exhausted`: the model is out of usage (the provider's message, and its reset time when it gave one). */
   usageLimit?: { message: string; resetsAt?: string };
+  /** The most pressing rate-limit reading the turn saw (Claude subscriptions report one per turn): what the usage guard reads. */
+  rateLimit?: RateLimitSnapshot;
 }
 export interface CustomToolDef {
   name: string;

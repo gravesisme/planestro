@@ -100,6 +100,13 @@ orchestrator:
   rotate_after_days: 3
 engine:
   mode: dry-run
+# Pause automation before a Claude subscription usage window runs out; resume after it resets.
+usage_guard:
+  enabled: true
+  threshold: 0.85
+  on_warning: true
+  auto_resume: true
+# Commands to run on events, e.g. on_merge: say "PR merged", on_usage_pause: say "paused for usage".
 notifications: {}
 git:
   auto_commit: true

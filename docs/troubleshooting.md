@@ -64,6 +64,10 @@ and brings you only a plain decision card. See [Needs-you triage](concepts.md#ne
 
 - **Nothing starts.** Automation paused? `max_sessions` full? Dependencies not merged
   (`waits on …` on the card)? A parent epic not opened?
+- **Automation paused by the usage guard** (header: *PAUSED — usage 87% of 5-hour window ·
+  resumes 6:20 pm*). A Claude subscription window reached `usage_guard.threshold` (or warned).
+  It resumes on its own a minute after the reset; **RESUME** now if you would rather spend the
+  rest of the window, or tune `usage_guard` ([Usage guard](configuration.md#usage-guard)).
 - **A child of an epic never starts.** It waits until every `depends_on` item has
   **merged into the epic branch** — a review hold on an art child is usually what it is
   waiting for.

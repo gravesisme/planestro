@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router';
 import { useStore, act } from './store.ts';
 import { api } from './api.ts';
+import { usageWindowLabel, usagePercent, localClock, type UsageGuardState } from '@planestro/shared';
 
 /** The phone's tab bar. Board, Icebox and Done are one tab: the board page switches between them itself. */
 const TABS: { to: string; label: string; icon: string }[] = [
@@ -12,6 +13,12 @@ const TABS: { to: string; label: string; icon: string }[] = [
   { to: '/console', label: 'Console', icon: 'M5 7l5 5-5 5M13 17h6' },
   { to: '/settings', label: 'Settings', icon: 'M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4' },
 ];
+/** "PAUSED — usage 87% of 5-hour window · resumes 6:20 pm": why the usage guard stopped automation, and until when. */
+function guardPill(g: UsageGuardState): string {
+  const pct = usagePercent(g.utilization);
+  const what = pct ? `usage ${pct} of ${usageWindowLabel(g.window)} window` : `${usageWindowLabel(g.window)} window ${g.status === 'rejected' ? 'exhausted' : 'near its limit'}`;
+  return `PAUSED — ${what} · ${g.resume_at ? `resumes ${localClock(g.resume_at)}` : 'resume by hand'}`;
+}
 const onBoardTab = (path: string) => path === '/' || /^\/(icebox|done|items)(\/|$)/.test(path);
 
 export function App() {
@@ -24,6 +31,7 @@ export function App() {
   const active = state?.items.filter((i) => ['PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW', 'MERGED'].includes(i.frontmatter.status)) ?? [];
   const inReview = state?.items.filter((i) => i.frontmatter.status === 'IN_REVIEW') ?? [];
   const paused = state?.engine.paused ?? false;
+  const guard = paused && state?.engine.paused_by === 'usage_guard' ? state.engine.usage_guard : undefined;
   return (
     <div className="app">
       {updateReady && <button className="banner warn" style={{ border: 0, borderRadius: 0, textAlign: 'left' }} onClick={() => location.reload()}>planestro was updated — click to reload (held back so nothing you were typing is lost)</button>}
@@ -43,6 +51,7 @@ export function App() {
         <div className="status">
           <button className={`needs ${needs.some((i) => i.frontmatter.blocked) ? 'hot' : needs.length ? 'wait' : ''}`} onClick={() => nav('/?needs=1')} title="Items waiting on you (red: one of them is blocked)"><span className="dot" /> <span className="desk-only">NEEDS YOU · </span>{needs.length}</button>
           <span className="summary">{paused ? '⏸ PAUSED' : `● ${state?.engine.mode === 'live' ? 'LIVE' : 'DRY-RUN'}`} · {state?.engine.sessions.length ?? 0} agents active · {active.length} active items · {inReview.length} PR{inReview.length === 1 ? '' : 's'} in review</span>
+          {guard && <span className="usage-pill" title={`The usage guard paused automation at ${new Date(guard.tripped_at).toLocaleString()}; running turns finish, nothing new starts.${guard.resume_at ? ' It resumes on its own once the window resets.' : ''}`}>{guardPill(guard)}</span>}
           <button className={`lever ${paused ? 'paused' : ''}`} onClick={() => act(() => (paused ? api.resume() : api.pause()))}>{paused ? 'RESUME' : 'PAUSE'}<span className="desk-only"> AUTOMATION</span></button>
           <span className={`dot ${connected ? 'on' : 'off'}`} title={connected ? 'connected' : 'reconnecting'} />
         </div>

@@ -15,7 +15,7 @@ export type ServerEvent =
   | { type: 'session.started'; id: string; session_id?: string }
   | { type: 'session.output'; id: string; text: string }
   | { type: 'session.ended'; id: string; subtype?: string }
-  | { type: 'engine.paused'; paused: boolean };
+  | { type: 'engine.paused'; paused: boolean; by?: 'user' | 'usage_guard' };
 
 export interface JournalEntry {
   ts: string;

@@ -298,7 +298,17 @@ export const Config = z.object({
   }).default({ model: 'claude-fable-5', allow_model_fallback: false, may_approve_plans: false, max_plan_revisions: 2, may_decide_permissions: false, triage: true, triage_timeout_min: 10, rotate_after_wakes: 40, rotate_after_days: 3 }),
   engine: z.object({ mode: z.enum(['live', 'dry-run']).default('dry-run') }).default({ mode: 'dry-run' }),
   epics: z.object({ auto_submit: z.boolean().default(true) }).default({ auto_submit: true }),
-  notifications: z.object({ on_merge: z.string().optional() }).default({}),
+  /** Pause automation before a subscription usage window runs out (see docs/configuration.md, Usage guard). */
+  usage_guard: z.object({
+    enabled: z.boolean().default(true),
+    /** Utilization (0..1) of any rate-limit window at which automation pauses. */
+    threshold: z.number().gt(0).max(1).default(0.85),
+    /** An `allowed_warning` reading trips it too, whatever the utilization. */
+    on_warning: z.boolean().default(true),
+    /** Resume a guard-made pause a minute after the window resets. */
+    auto_resume: z.boolean().default(true),
+  }).default({ enabled: true, threshold: 0.85, on_warning: true, auto_resume: true }),
+  notifications: z.object({ on_merge: z.string().optional(), on_usage_pause: z.string().optional() }).default({}),
   git: z.object({
     auto_commit: z.boolean().default(true),
     auto_push: z.boolean().default(true),
@@ -310,6 +320,18 @@ export const Config = z.object({
   releases: z.object({ sections: z.array(ReleaseSectionDef).min(1).default(DEFAULT_RELEASE_SECTIONS) }).default({ sections: DEFAULT_RELEASE_SECTIONS }),
 });
 export type Config = z.infer<typeof Config>;
+
+/** What the usage guard recorded when it paused automation. */
+export const UsageGuardState = z.object({
+  window: z.string(),
+  status: z.enum(['allowed', 'allowed_warning', 'rejected']),
+  utilization: z.number().optional(),
+  resets_at: z.string().optional(),
+  tripped_at: z.string(),
+  /** When automation resumes on its own (`resets_at` + 60 s), with `usage_guard.auto_resume`. */
+  resume_at: z.string().optional(),
+});
+export type UsageGuardState = z.infer<typeof UsageGuardState>;
 
 /** Machine-local overrides (gitignored planestro.local.yml). */
 export const LocalConfig = z.object({
@@ -323,6 +345,14 @@ export const LocalConfig = z.object({
   anthropic_api_key: z.string().optional(),
   /** Models this machine's account cannot use right now, by model id: detected usage limits and ones marked in Settings. */
   model_unavailable: z.record(z.string(), ModelUnavailable).optional(),
-  engine: z.object({ paused: z.boolean().default(false), mode: z.enum(['live', 'dry-run']).optional() }).default({ paused: false }),
+  engine: z.object({
+    paused: z.boolean().default(false), mode: z.enum(['live', 'dry-run']).optional(),
+    /** Who pulled the lever: only a `usage_guard` pause is ever resumed automatically. */
+    paused_by: z.enum(['user', 'usage_guard']).optional(),
+    /** Set while the usage guard holds automation paused. */
+    usage_guard: UsageGuardState.optional(),
+    /** The window crossing the guard last tripped on, so it trips once per crossing (a manual resume inside it is respected). */
+    usage_guard_last: z.object({ window: z.string(), resets_at: z.string().optional(), tripped_at: z.string() }).optional(),
+  }).default({ paused: false }),
 }).passthrough();
 export type LocalConfig = z.infer<typeof LocalConfig>;

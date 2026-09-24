@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { noteUsage, classifyUsage, type UsageSignals } from '../src/engine/sessions/LiveClaudePort.ts';
+import { noteUsage, classifyUsage, rateLimitSnapshot, type UsageSignals } from '../src/engine/sessions/LiveClaudePort.ts';
 import type { TurnResult } from '../src/engine/ports.ts';
 
 const result = (over: Partial<TurnResult> = {}): TurnResult => ({ subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', ...over });
@@ -42,5 +42,35 @@ describe('Claude usage exhaustion', () => {
     const r = result({ subtype: 'killed' });
     classifyUsage(r, feed([{ type: 'result', result: "You've hit your limit" }]));
     expect(r.subtype).toBe('killed');
+  });
+});
+
+describe('rate-limit readings for the usage guard', () => {
+  it('every rate_limit_event feeds a snapshot; the most pressing one wins', () => {
+    const reset = 1790000000;
+    const u = feed([
+      { type: 'rate_limit_event', rate_limit_info: { status: 'allowed', rateLimitType: 'five_hour', utilization: 0.4, resetsAt: reset } },
+      { type: 'rate_limit_event', rate_limit_info: { status: 'allowed', rateLimitType: 'seven_day', utilization: 0.9, resetsAt: reset + 100 } },
+      { type: 'rate_limit_event', rate_limit_info: { status: 'allowed', rateLimitType: 'five_hour', utilization: 0.6, resetsAt: reset } },
+    ]);
+    expect(u.rateLimit).toEqual({ status: 'allowed', window: 'seven_day', utilization: 0.9, resetsAt: new Date((reset + 100) * 1000).toISOString() });
+    expect(u.rejected).toBeUndefined();
+  });
+
+  it('a warning outranks a fuller allowed window, and a rejection outranks both', () => {
+    const u = feed([
+      { type: 'rate_limit_event', rate_limit_info: { status: 'allowed', rateLimitType: 'five_hour', utilization: 0.8 } },
+      { type: 'rate_limit_event', rate_limit_info: { status: 'allowed_warning', rateLimitType: 'seven_day_opus', utilization: 0.3 } },
+    ]);
+    expect(u.rateLimit).toMatchObject({ status: 'allowed_warning', window: 'seven_day_opus' });
+    noteUsage({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected' } }, u);
+    expect(u.rateLimit).toEqual({ status: 'rejected', window: 'unknown' });
+    expect(u.rejected).toBe(true);
+  });
+
+  it('a reading without a known status is ignored', () => {
+    expect(rateLimitSnapshot({})).toBeUndefined();
+    expect(rateLimitSnapshot({ status: 'bogus', utilization: 0.9 })).toBeUndefined();
+    expect(feed([{ type: 'rate_limit_event' }]).rateLimit).toBeUndefined();
   });
 });

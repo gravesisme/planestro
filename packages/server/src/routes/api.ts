@@ -7,7 +7,7 @@ import { allowedTransitions, parsePromptFile, RenderError, STATUSES, PROMPT_KIND
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Engine } from '../engine/Engine.ts';
 import type { ConsoleBuffer } from '../store/ConsoleBuffer.ts';
-import { itemView, promptView, releaseView, stateView } from './views.ts';
+import { itemView, promptView, releaseView, stateView, guardView } from './views.ts';
 
 const EDITABLE_FIELDS = z.object({
   title: z.string().min(1).optional(), category: z.string().min(1).optional(), planner: z.string().optional(), implementer: z.string().optional(),
@@ -230,7 +230,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
         concurrency: z.object({ max_sessions: z.number().int().positive(), max_local_jobs: z.number().int().positive() }).partial().optional(),
         ci: z.object({ mode: z.enum(['github', 'github-or-local']), require_green_base: z.boolean(), local_check_command: z.string() }).partial().optional(),
         engine: z.object({ mode: z.enum(['live', 'dry-run']) }).partial().optional(),
-        notifications: z.object({ on_merge: z.string() }).partial().optional(),
+        notifications: z.object({ on_merge: z.string(), on_usage_pause: z.string() }).partial().optional(),
         budget_usd_per_item: z.number().positive().optional(), budget_turns_per_item: z.number().int().positive().optional(), budget_tokens_per_item: z.number().int().positive().optional(),
         orchestrator: z.object({ model: z.string().min(1), allow_model_fallback: z.boolean(), may_approve_plans: z.boolean(), max_plan_revisions: z.number().int().nonnegative(), may_decide_permissions: z.boolean(), triage: z.boolean(), triage_timeout_min: z.number().positive() }).partial().optional(),
       }).parse(await c.req.json());
@@ -297,7 +297,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
     } catch (e) { return fail(c, e); }
   });
   api.get('/orchestrator/questions', (c) => c.json(store.journal.read({ type: 'orchestrator.question', limit: 20 })));
-  api.get('/engine', (c) => c.json({ mode: engine.mode, paused: engine.paused, sessions: engine.sessions(), log: engine.log.slice(-200) }));
+  api.get('/engine', (c) => c.json({ mode: engine.mode, paused: engine.paused, ...guardView(store, engine.paused), sessions: engine.sessions(), log: engine.log.slice(-200) }));
   api.post('/engine/pause', (c) => { engine.pause(); return c.json({ paused: true }); });
   api.post('/engine/resume', (c) => { engine.resume(); return c.json({ paused: false }); });
   api.get('/journal', (c) => c.json(store.journal.read({ item: c.req.query('item') ?? undefined, since: c.req.query('since') ?? undefined, type: c.req.query('type') ?? undefined, limit: Number(c.req.query('limit') ?? 200) })));
