@@ -61,6 +61,9 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
   const epics = state.items.filter((i) => i.frontmatter.kind === 'epic' && i.id !== item.id);
   const others = state.items.filter((i) => i.id !== item.id && i.derived.lane !== 'done');
   const field = (fields: Record<string, unknown>) => act(() => api.patchItem(item.id, { fields }));
+  const budget = { usd: fm.budget_usd ?? state.config.budget_usd_per_item, turns: fm.budget_turns ?? state.config.budget_turns_per_item, tokens: fm.budget_tokens ?? state.config.budget_tokens_per_item };
+  /** A number typed into a budget box: empty clears the item's own cap (back to the project default). */
+  const setBudget = (key: 'budget_usd' | 'budget_turns' | 'budget_tokens', raw: string) => { const n = Number(raw); const cur = fm[key]; if (raw.trim() === '' ? cur !== undefined : n > 0 && n !== cur) void field({ [key]: raw.trim() === '' ? null : n }); };
   const implementerDef = state.config.models.find((m) => m.id === fm.implementer);
   const orch = state.config.orchestrator;
   const canClose = transitions.some((t) => t.to === 'FINISHED');
@@ -175,7 +178,14 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           <dt>PR</dt><dd>{fm.pr ? <a href={`https://github.com/${state.config.code_repo.github}/pull/${fm.pr}`} target="_blank" rel="noreferrer">#{fm.pr}</a> : '—'}</dd>
           <dt>session</dt><dd>{fm.session_id ?? '—'}{Object.entries(fm.agent_sessions ?? {}).map(([r, sid]) => <div key={r}>{r}: {sid}</div>)}</dd>
           <dt>CI</dt><dd>{fm.ci_result ?? '—'}{fm.ci_failed_count ? ` (${fm.ci_failed_count} red)` : ''}</dd>
-          <dt>cost</dt><dd>{fm.cost_usd !== undefined ? `$${fm.cost_usd.toFixed(2)} · ${fm.turns ?? 0} turns` : '—'}{fm.agent_turns ? <div>{fm.agent_turns} of {state.config.budget_turns_per_item} {implementerDef?.runner} turns · {(fm.tokens ?? 0).toLocaleString()} tokens</div> : null}</dd>
+          <dt>cost</dt><dd>
+            <div>{fm.cost_usd !== undefined ? `$${fm.cost_usd.toFixed(2)} · ${fm.turns ?? 0} turns` : '$0.00'}{(fm.cost_usd ?? 0) / budget.usd >= 0.8 && <> <span className={`tag ${(fm.cost_usd ?? 0) >= budget.usd ? 'hot' : 'wait'}`}>{Math.round((fm.cost_usd ?? 0) / budget.usd * 100)}% spent</span></>}</div>
+            <div className="row" style={{ gap: 6, marginTop: 4, flexWrap: 'wrap' }}><span className="muted small">budget</span><label title={fm.budget_usd !== undefined ? 'This item\'s own dollar budget; clear it for the project default' : `The project default ($${state.config.budget_usd_per_item}); type a number to give this item its own`}>$<input type="number" min={1} key={`bu${fm.budget_usd}`} defaultValue={fm.budget_usd ?? ''} placeholder={String(state.config.budget_usd_per_item)} onBlur={(e) => setBudget('budget_usd', e.target.value)} style={{ width: 70 }} /></label>{fm.budget_usd !== undefined && <span className="tag">this item</span>}</div>
+            {implementerDef && implementerDef.runner && implementerDef.runner !== 'claude' && <>
+              <div style={{ marginTop: 6 }}>{fm.agent_turns ?? 0} {implementerDef.runner} turns · {(fm.tokens ?? 0).toLocaleString()} tokens{(fm.tokens ?? 0) / budget.tokens >= 0.8 && <> <span className={`tag ${(fm.tokens ?? 0) >= budget.tokens ? 'hot' : 'wait'}`}>{Math.round((fm.tokens ?? 0) / budget.tokens * 100)}% used</span></>}</div>
+              <div className="row" style={{ gap: 6, marginTop: 4, flexWrap: 'wrap' }}><span className="muted small">budget</span><label><input type="number" min={1} key={`bt${fm.budget_turns}`} defaultValue={fm.budget_turns ?? ''} placeholder={String(state.config.budget_turns_per_item)} onBlur={(e) => setBudget('budget_turns', e.target.value)} style={{ width: 60 }} /> turns</label><label><input type="number" min={1000} step={1000} key={`bk${fm.budget_tokens}`} defaultValue={fm.budget_tokens ?? ''} placeholder={String(state.config.budget_tokens_per_item)} onBlur={(e) => setBudget('budget_tokens', e.target.value)} style={{ width: 100 }} /> tokens</label></div>
+            </>}
+          </dd>
           {(() => { const rs = (state.releases ?? []).filter((r) => r.frontmatter.items.includes(item.id)); return rs.length ? <><dt>release</dt><dd>{rs.map((r) => <div key={r.version}><Link to={`/releases/${encodeURIComponent(r.version)}`}>{r.version}</Link> <span className="muted small">{r.frontmatter.status}</span></div>)}</dd></> : null; })()}
           <dt>rank</dt><dd>{fm.rank ?? '—'}</dd>
           {(['created_at', 'updated_at', 'queued_at', 'started_at', 'plan_ready_at', 'plan_approved_at', 'pr_created_at', 'merged_at', 'finished_at', 'iceboxed_at'] as const).map((k) => fm[k] ? <Fragment key={k}><dt>{k.replace('_at', '')}</dt><dd>{fm[k]!.slice(0, 19).replace('T', ' ')}</dd></Fragment> : null)}

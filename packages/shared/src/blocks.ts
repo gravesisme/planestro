@@ -31,9 +31,9 @@ export const BLOCK_HELP: Record<string, { meaning: string; todo: string }> = {
   cleanup_unverifiable: { meaning: "After the merge, the branch tip could not be proven reachable from the base. **Nothing was deleted.**", todo: "Check the merge; remove the worktree and branch by hand if it is right." },
   cleanup_dirty: { meaning: "The worktree has uncommitted changes after the merge.", todo: "Discard or rescue them, then remove the worktree by hand." },
   engine_error: { meaning: "An unexpected error inside a lifecycle step; the message is the exception.", todo: "If a retry makes sense, unblock; if it repeats, it is a bug — the Activity log and journal have what is needed to report it." },
-  turn_budget: { meaning: "A token-billed runner spent `budget_turns_per_item` on this item.", todo: "Raise the budget, or take the item over by hand." },
-  over_budget: { meaning: "The item has spent (almost) all of `budget_usd_per_item`: less than a dollar is left, too little for a Claude turn to finish anything, so none was started.", todo: "Raise `budget_usd_per_item` if the item is worth it and unblock (it carries on from where it stopped), or take the item over by hand." },
-  token_budget: { meaning: "A token-billed runner spent `budget_tokens_per_item` on this item.", todo: "Raise the budget, or take the item over by hand." },
+  turn_budget: { meaning: "A token-billed runner spent its turn budget (`budget_turns` on the item, else `budget_turns_per_item`).", todo: "Raise it in the cost row on this page and unblock, or take the item over by hand." },
+  over_budget: { meaning: "The item has spent (almost) all of its dollar budget (`budget_usd` on the item, else `budget_usd_per_item`): less than a dollar is left, too little for a Claude turn to finish anything, so none was started.", todo: "If the work is worth it, raise the budget in the cost row on this page (or tap the card's \"+$N and resume\" option) and unblock; it carries on from where it stopped. Otherwise take the item over by hand." },
+  token_budget: { meaning: "A token-billed runner spent its token budget (`budget_tokens` on the item, else `budget_tokens_per_item`).", todo: "Raise it in the cost row on this page and unblock, or take the item over by hand." },
   orchestrator: { meaning: "The orchestrator stopped this item for you; its reason is in the log.", todo: "Decide what it asked; unblock, with a message if the session needs direction." },
 };
 

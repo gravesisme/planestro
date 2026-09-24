@@ -20,6 +20,8 @@ const JUDGMENT_BLOCKS = ['turn_error', 'no_plan', 'no_commits', 'dirty_tree', 's
 const ACTIVE_FOR_SLOTS: Status[] = ['PLAN_IN_PROGRESS', 'IN_PROGRESS'];
 /** Turn failures with their own block reason, because the fix is the user's (log in, wait, start over) and not a judgment call. */
 const ACTIONABLE_FAILURES = new Set(['auth_required', 'rate_limited', 'session_lost', 'spawn_error']);
+/** Spend past this share of a budget is said out loud once (Activity and the log), before the hard stop. */
+const BUDGET_WARN_AT = 0.8;
 /** Below this many dollars left on an item's budget a Claude turn cannot do real work: it is not started. */
 const MIN_TURN_USD = 1;
 /** How many stops of one item, in one status, the orchestrator triages before the rest go straight to the user (a fix that keeps failing is a conversation for a person). */
@@ -524,12 +526,13 @@ export class LiveEngine implements Engine {
     if (runner === 'claude' && !model) throw new Error(`model ${def.id} has no claude_model`);
     // Runners that report tokens instead of dollars are budgeted in worker turns.
     const metered = runner === 'claude';
-    if (!metered && (fm.agent_turns ?? 0) >= this.store.config.budget_turns_per_item) { this.block(id, 'turn_budget', `${def.label} has used ${fm.agent_turns} of ${this.store.config.budget_turns_per_item} turns on this item (budget_turns_per_item); raise it or take the item over by hand`); return undefined; }
-    if (!metered && (fm.tokens ?? 0) >= this.store.config.budget_tokens_per_item) { this.block(id, 'token_budget', `${def.label} has used ${(fm.tokens ?? 0).toLocaleString()} of ${this.store.config.budget_tokens_per_item.toLocaleString()} tokens on this item (budget_tokens_per_item); raise it or take the item over by hand`); return undefined; }
+    const budget = this.budgetOf(fm);
+    if (!metered && (fm.agent_turns ?? 0) >= budget.turns) { this.block(id, 'turn_budget', `${def.label} has used ${fm.agent_turns} of ${budget.turns} turns on this item (${budget.turnsKey}); raise it on the item and unblock, or take the item over by hand`); return undefined; }
+    if (!metered && (fm.tokens ?? 0) >= budget.tokens) { this.block(id, 'token_budget', `${def.label} has used ${(fm.tokens ?? 0).toLocaleString()} of ${budget.tokens.toLocaleString()} tokens on this item (${budget.tokensKey}); raise it on the item and unblock, or take the item over by hand`); return undefined; }
     // A turn with less than MIN_TURN_USD left ends at error_max_budget_usd before it can finish
     // anything (HH-125's $0.50 conflict fix, HH-122's CI fix): say what the item needs instead.
-    const usdLeft = this.store.config.budget_usd_per_item - (fm.cost_usd ?? 0);
-    if (metered && usdLeft < MIN_TURN_USD) { this.block(id, 'over_budget', `this item has spent $${(fm.cost_usd ?? 0).toFixed(2)} of its $${this.store.config.budget_usd_per_item} budget (budget_usd_per_item), too little for a ${phase} turn; raise the budget and unblock, or take the item over by hand`); return undefined; }
+    const usdLeft = budget.usd - (fm.cost_usd ?? 0);
+    if (metered && usdLeft < MIN_TURN_USD) { this.block(id, 'over_budget', `this item has spent $${(fm.cost_usd ?? 0).toFixed(2)} of its $${budget.usd} budget (${budget.usdKey}), too little for a ${phase} turn; raise the budget on the item and unblock, or take the item over by hand`); return undefined; }
     const resumeId = metered ? fm.session_id : fm.agent_sessions?.[runner];
     // "Continue where you left off" presumes a conversation to continue. When there is none — the
     // opening turn died before the agent heard the task, or the thread was lost — a fresh conversation
@@ -592,6 +595,7 @@ export class LiveEngine implements Engine {
       // start. Cleared, the item sat in its phase with nothing to resume it, holding a session slot.
       ...(after.op === op && !(result.subtype === 'killed' && this.stopping) ? [{ unset: ['op', 'op_started_at'] } as ItemOp] : []),
     ], 'engine');
+    this.warnOnBudget(id, after, this.store.requireItem(id).file.frontmatter);
     this.store.journal.end(opId, id, result.isError ? 'failed' : 'ok', { subtype: result.subtype, cost: result.costUsd, parked: result.parked });
     this.emit({ type: 'session.ended', id, subtype: result.subtype });
     if (result.subtype === 'killed') { this.store.mutateItem(id, [{ activity: { actor: 'app', text: 'turn interrupted (engine stopping); resumable' } }], 'engine'); return result; }
@@ -1632,6 +1636,33 @@ export class LiveEngine implements Engine {
     return 'retrying: the session is resumed';
   }
 
+  /** An item's caps: its own budget_usd / budget_turns / budget_tokens when set, else the project's. Each names the setting for messages. */
+  private budgetOf(fm: { budget_usd?: number; budget_turns?: number; budget_tokens?: number }): { usd: number; usdKey: string; turns: number; turnsKey: string; tokens: number; tokensKey: string } {
+    const c = this.store.config;
+    return {
+      usd: fm.budget_usd ?? c.budget_usd_per_item, usdKey: fm.budget_usd !== undefined ? 'budget_usd on this item' : 'budget_usd_per_item',
+      turns: fm.budget_turns ?? c.budget_turns_per_item, turnsKey: fm.budget_turns !== undefined ? 'budget_turns on this item' : 'budget_turns_per_item',
+      tokens: fm.budget_tokens ?? c.budget_tokens_per_item, tokensKey: fm.budget_tokens !== undefined ? 'budget_tokens on this item' : 'budget_tokens_per_item',
+    };
+  }
+
+  /**
+   * Say once, when a turn carries an item past BUDGET_WARN_AT of a cap, that the stop is near (dogfood
+   * p16, p24: HH-120 stopped one step from done, HH-118 crossed its token cap with a pack half drawn).
+   * A raised cap starts the warning over.
+   */
+  private warnOnBudget(id: string, before: { cost_usd?: number; tokens?: number; agent_turns?: number }, after: { cost_usd?: number; tokens?: number; agent_turns?: number; budget_usd?: number; budget_turns?: number; budget_tokens?: number }): void {
+    const b = this.budgetOf(after);
+    const crossed = (was: number, now: number, cap: number) => was / cap < BUDGET_WARN_AT && now / cap >= BUDGET_WARN_AT;
+    const lines: string[] = [];
+    if (crossed(before.cost_usd ?? 0, after.cost_usd ?? 0, b.usd)) lines.push(`$${(after.cost_usd ?? 0).toFixed(2)} of its $${b.usd} budget (${b.usdKey}) is spent`);
+    if (crossed(before.tokens ?? 0, after.tokens ?? 0, b.tokens)) lines.push(`${(after.tokens ?? 0).toLocaleString()} of its ${b.tokens.toLocaleString()} tokens (${b.tokensKey}) are used`);
+    if (crossed(before.agent_turns ?? 0, after.agent_turns ?? 0, b.turns)) lines.push(`${after.agent_turns} of its ${b.turns} turns (${b.turnsKey}) are used`);
+    if (!lines.length) return;
+    this.store.mutateItem(id, [{ activity: { actor: 'app', text: `budget warning: ${lines.join('; ')}. Raise it on the item page if the work is worth it, before it stops.` } }], 'engine');
+    this.note('warn', `${id}: ${lines.join('; ')}`);
+  }
+
   /** The orchestrator's escalation: one plain decision, parked on an item that is already stopped. */
   private askUserDecision(id: string, input: DecisionInput): string {
     const item = this.store.getItem(id);
@@ -1667,16 +1698,21 @@ export class LiveEngine implements Engine {
     const said = [choice, text].filter(Boolean).join(' — ');
     const { decision: _answered, ...rest } = fm.awaiting_data ?? {};
     const carry = this.triageAvailable();
+    // The option carries the change it names (p43): answering IS raising the budget, not a promise to go raise it elsewhere.
+    const raise = decision.options.find((o) => o.label === choice)?.raise_budget_usd;
+    const raisedTo = raise ? Math.round((Math.max(this.budgetOf(fm).usd, fm.cost_usd ?? 0) + raise) * 100) / 100 : undefined;
     this.store.mutateItem(id, [
       Object.keys(rest).length ? { set: { awaiting_data: rest } } : { unset: ['awaiting_data'] },
       ...(carry ? [{ set: { triage: { reason: 'decision', started_at: this.now() } } } as ItemOp] : []),
-      { activity: { actor: 'user', text: `decided: ${decision.question} → ${said}` } },
+      ...(raisedTo !== undefined ? [{ set: { budget_usd: raisedTo } } as ItemOp] : []),
+      { activity: { actor: 'user', text: `decided: ${decision.question} → ${said}${raisedTo !== undefined ? ` (budget raised to $${raisedTo})` : ''}` } },
     ], 'user', { commit: `${id}: decision answered` });
-    this.store.journal.append({ type: 'orchestrator.decision_answered', item: id, actor: 'user', data: { question: decision.question, choice: choice ?? null, text: text ?? null } });
-    if (carry) { this.wakeOrchestrator('decision_answered', id, { question: decision.question, answer: said, options: decision.options.map((o) => `${o.label}: ${o.description}`).join(' | ') }); return; }
+    this.store.journal.append({ type: 'orchestrator.decision_answered', item: id, actor: 'user', data: { question: decision.question, choice: choice ?? null, text: text ?? null, ...(raisedTo !== undefined ? { budget_raised_to: raisedTo } : {}) } });
+    const raisedNote = raisedTo !== undefined ? `The item's budget is already raised to $${raisedTo} (budget_usd); nothing else needs changing. ` : '';
+    if (carry) { this.wakeOrchestrator('decision_answered', id, { question: decision.question, answer: said, options: decision.options.map((o) => `${o.label}: ${o.description}`).join(' | '), ...(raisedTo !== undefined ? { budget: `${raisedNote}Resume it with unblock_item.` } : {}) }); return; }
     // No orchestrator to carry it out: a blocked session hears the answer itself; a worker's question stays for you to answer.
     const cur = this.store.requireItem(id).file.frontmatter;
-    if (cur.blocked || cur.awaiting === 'user') await this.unblock(id, `The user was asked: ${decision.question}\nTheir answer: ${said}`);
+    if (cur.blocked || cur.awaiting === 'user') await this.unblock(id, `The user was asked: ${decision.question}\nTheir answer: ${said}${raisedNote ? `\n${raisedNote}` : ''}`);
   }
 
   /** User-driven unblock: clears the flag and, if the item is in a session phase, resumes with a message. */

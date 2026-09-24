@@ -48,6 +48,14 @@ export function SettingsPage() {
         <div className="row"><label className="grow">on merge, run <input className="grow" defaultValue={cfg.notifications.on_merge ?? ''} placeholder='say "PR merged"' onBlur={(e) => e.target.value !== (cfg.notifications.on_merge ?? '') && set('notifications', 'on_merge', e.target.value)} /></label></div>
         <p className="muted small">Base branch: <b>{cfg.code_repo.default_branch}</b> · release: {cfg.code_repo.release_branch ?? '—'} · GitHub: {cfg.code_repo.github ?? '—'} (edit in planestro.yml)</p>
       </div>
+      <div className="section"><h2>Budgets per item</h2>
+        <div className="row">
+          <label>dollars (Claude) $<input type="number" min={1} key={cfg.budget_usd_per_item} defaultValue={cfg.budget_usd_per_item} onBlur={(e) => Number(e.target.value) > 0 && Number(e.target.value) !== cfg.budget_usd_per_item && act(() => api.putConfig({ budget_usd_per_item: Number(e.target.value) }))} style={{ width: 90 }} /></label>
+          <label>turns (token runners) <input type="number" min={1} key={cfg.budget_turns_per_item} defaultValue={cfg.budget_turns_per_item} onBlur={(e) => Number(e.target.value) > 0 && Number(e.target.value) !== cfg.budget_turns_per_item && act(() => api.putConfig({ budget_turns_per_item: Number(e.target.value) }))} style={{ width: 70 }} /></label>
+          <label>tokens <input type="number" min={1000} step={1000} key={cfg.budget_tokens_per_item} defaultValue={cfg.budget_tokens_per_item} onBlur={(e) => Number(e.target.value) > 0 && Number(e.target.value) !== cfg.budget_tokens_per_item && act(() => api.putConfig({ budget_tokens_per_item: Number(e.target.value) }))} style={{ width: 120 }} /></label>
+        </div>
+        <p className="muted small">The defaults for every item. An item can carry its own budget on its page, which replaces these for it; a card the orchestrator sends for a spending stop raises it in one tap. At 80% of a budget the item's Activity log warns; at the cap it stops.</p>
+      </div>
       <div className="section"><h2>Orchestrator</h2>
         <div className="row"><label className="grow">model <select value={findModel(cfg, cfg.orchestrator.model)?.id ?? cfg.orchestrator.model} onChange={(e) => set('orchestrator', 'model', e.target.value)}>
             {!findModel(cfg, cfg.orchestrator.model) && <option value={cfg.orchestrator.model}>{cfg.orchestrator.model}</option>}

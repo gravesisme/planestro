@@ -47,7 +47,7 @@ export type Attachment = z.infer<typeof Attachment>;
  */
 export const AUTHORITATIVE_KEYS = [
   'schema', 'id', 'kind', 'parent', 'title', 'category', 'status', 'rank',
-  'planner', 'implementer', 'allow_model_fallback', 'auto_approve_plan', 'depends_on', 'attachments',
+  'planner', 'implementer', 'allow_model_fallback', 'auto_approve_plan', 'budget_usd', 'budget_turns', 'budget_tokens', 'depends_on', 'attachments',
   'merge_policy', 'base_branch_override',
 ] as const;
 export const OPERATIONAL_KEYS = [
@@ -76,6 +76,10 @@ export const ItemFrontmatter = z.object({
   /** When the planner or implementer is out of usage, run the turn on its model's `fallback` instead of blocking. */
   allow_model_fallback: z.boolean().optional(),
   auto_approve_plan: z.boolean().optional(),
+  /** This item's own caps, replacing budget_usd_per_item / budget_turns_per_item / budget_tokens_per_item: a big Opus item, or an eight-row art atlas, outgrows the project default (dogfood p16, p24). */
+  budget_usd: z.number().positive().optional(),
+  budget_turns: z.number().int().positive().optional(),
+  budget_tokens: z.number().int().positive().optional(),
   depends_on: z.array(id).default([]),
   attachments: z.array(Attachment).default([]),
   merge_policy: z.enum(MERGE_POLICIES).optional(),

@@ -637,6 +637,34 @@ describe('budget and unblock (p36, p12)', () => {
     expect(activityOf(store, item.id)).toContain('spent $4.50 of its $5 budget');
   });
 
+  it("an item's own budget_usd replaces the project cap, both ways, and the block names which applied (p16)", async () => {
+    let turns = 0;
+    const { store, engine } = await setup({ claude: () => ({ async runTurn(o: TurnOptions): Promise<TurnResult> { turns += 1; await o.tools.submit_plan('# p'); return { ...ok, planSubmitted: '# p' }; } }) });
+    setBudget(store, 5);
+    const roomy = store.createItem({ title: 'Big', description: 'x' });
+    store.mutateItem(roomy.id, [{ set: { cost_usd: 30, budget_usd: 150 } }], 'engine');   // over the project cap, under its own
+    const tight = store.createItem({ title: 'Small', description: 'x' });
+    store.mutateItem(tight.id, [{ set: { cost_usd: 4.5, budget_usd: 5 } }], 'user');
+    store.transition(roomy.id, 'QUEUED', 'user'); store.transition(tight.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, roomy.id) === 'PLAN_READY');
+    await waitFor(() => store.getItem(tight.id)!.file.frontmatter.blocked_reason === 'over_budget');
+    expect(turns).toBe(1);
+    expect(activityOf(store, tight.id)).toContain('of its $5 budget (budget_usd on this item)');
+  });
+
+  it('crossing 80% of a budget is said once in the Activity log, before the stop (p24)', async () => {
+    const claude = () => ({ async runTurn(o: TurnOptions): Promise<TurnResult> { await o.tools.submit_plan('# p'); return { ...ok, costUsd: 8.5, planSubmitted: '# p' }; } });
+    const { store, engine } = await setup({ claude });
+    setBudget(store, 10);
+    const item = store.createItem({ title: 'Pricey', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY' && (store.getItem(item.id)!.file.frontmatter.cost_usd ?? 0) > 8);
+    expect(activityOf(store, item.id)).toContain('budget warning: $8.50 of its $10 budget (budget_usd_per_item) is spent');
+    expect(store.getItem(item.id)!.file.frontmatter.blocked).toBeUndefined();
+  });
+
   it('a turn that ran out of budget after reporting done still goes on to its pull request', async () => {
     const claude = (world: FakeWorld) => ({
       async runTurn(o: TurnOptions): Promise<TurnResult> {

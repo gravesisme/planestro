@@ -52,9 +52,9 @@ A test (`docs.test.ts`) fails if a key in the schema is missing from this page.
 
 | Key | Default | |
 |---|---|---|
-| `budget_usd_per_item` | `25` | Dollar ceiling across all of an item's Claude turns; each turn starts with what remains. |
-| `budget_turns_per_item` | `20` | Worker turns per item for runners that report tokens instead of dollars (Codex). Blocks as `turn_budget`. |
-| `budget_tokens_per_item` | `600000` | Uncached tokens per item for those runners. Blocks as `token_budget`. |
+| `budget_usd_per_item` | `25` | Dollar ceiling across all of an item's Claude turns; each turn starts with what remains. An item's own `budget_usd` (item page, or a decision card's "+$N and resume" option) replaces it for that item. At 80% of any budget the Activity log warns once. |
+| `budget_turns_per_item` | `20` | Worker turns per item for runners that report tokens instead of dollars (Codex). Blocks as `turn_budget`. An item's own `budget_turns` replaces it. |
+| `budget_tokens_per_item` | `600000` | Uncached tokens per item for those runners. Blocks as `token_budget`. An item's own `budget_tokens` replaces it. All three are also in Settings → Budgets. |
 | `concurrency.max_sessions` | `3` | Items admitted to planning/implementing at once. |
 | `concurrency.max_local_jobs` | `1` | Setup hooks and local check commands running at once. |
 | `concurrency.runner_limits` | `{ codex: 1 }` | Simultaneous turns per runner. Unlisted runners are not limited here. |
