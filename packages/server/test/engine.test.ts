@@ -1335,6 +1335,55 @@ describe('plan approval delegated to the orchestrator', () => {
     expect(prompts[1]).toContain('- risky: the migration has no rollback step');
   });
 
+  /** A reviewer that also records what the planner is told. */
+  const amending = (steps: ((t: (n: string) => { handler(a: Record<string, unknown>): Promise<unknown> }) => Promise<void>)[], reviewPrompts: string[], planPrompts: string[]) => (world: FakeWorld) => {
+    const inner = new DryRunClaudePort(world);
+    return {
+      async runTurn(o: TurnOptions): Promise<TurnResult> { if (o.phase === 'plan') planPrompts.push(o.prompt); return inner.runTurn(o); },
+      async runCustomTurn(o: any): Promise<TurnResult> {
+        if (o.label.includes('plan_review')) { reviewPrompts.push(o.prompt); await steps.shift()?.((n) => o.mcpTools.find((x: any) => x.name === n)); }
+        return { sessionId: 'orch-1', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '' };
+      },
+    };
+  };
+
+  it('amend_plan sends a stipulation to the planner, outside the fix rounds; the user then approves a complete plan (f7)', async () => {
+    const reviewPrompts: string[] = []; const planPrompts: string[] = []; const replies: string[] = [];
+    const { store, engine, id } = await delegated(amending([
+      async (t) => { replies.push(String(await t('amend_plan').handler({ id: 'TP-1', amendments: 'Add a 30-day retention step before the purge.' }))); },
+      async () => { /* the revision: nothing to add */ },
+    ], reviewPrompts, planPrompts), { optIn: false });
+    await engine.start();
+    await waitFor(() => reviewPrompts.length === 2 && fmOf(store, id).awaiting === 'plan_approval', 8000);
+    expect(replies[0]).toBe('sent back to be amended; you will review the revised plan (its approval stays with the user)');
+    expect(reviewPrompts[0]).toContain("Plan approval: the user's");
+    expect(reviewPrompts[0]).toContain('amend_plan sends it to the planner');
+    expect(planPrompts[1]).toContain('approves your plan with these amendments');
+    expect(planPrompts[1]).toContain('Add a 30-day retention step before the purge.');
+    expect(reviewPrompts[1]).toContain('Amended: you sent this plan back to be amended with: Add a 30-day retention step');
+    let fm = fmOf(store, id);
+    expect(fm.plan_revisions).toBeUndefined();                                   // not a fix round
+    expect(fm.op_data?.plan_amended).toBe('Add a 30-day retention step before the purge.');
+    expect(activityOf(store, id)).toContain('plan sent back to be amended: Add a 30-day retention step');
+    await engine.approvePlan(id);
+    await waitFor(() => status(store, id) === 'FINISHED', 8000);
+    fm = fmOf(store, id);
+    expect(fm.op_data?.plan_amended).toBeUndefined();
+  });
+
+  it('a delegated review can amend, then approve the revision itself', async () => {
+    const reviewPrompts: string[] = []; const planPrompts: string[] = [];
+    const { store, engine, id } = await delegated(amending([
+      async (t) => { await t('amend_plan').handler({ id: 'TP-1', amendments: 'Name the flag `--dry-run`.' }); },
+      async (t) => { expect(await t('approve_plan').handler({ id: 'TP-1' })).toBe('approved'); },
+    ], reviewPrompts, planPrompts));
+    await engine.start();
+    await waitFor(() => status(store, id) === 'FINISHED', 8000);
+    expect(planPrompts[1]).toContain('Name the flag `--dry-run`.');
+    expect(fmOf(store, id).plan_revisions).toBeUndefined();
+    expect(activityOf(store, id)).toContain('approved the plan on your behalf');
+  });
+
   it('approves a sound plan, and the item never needs you on the way to its pull request', async () => {
     const prompts: string[] = []; const needed: boolean[] = [];
     const { store, engine, id } = await delegated(reviewer([async (t) => { needed.push(store.derived(store.getItem(id)!).needs_you); expect(fmOf(store, id).awaiting).toBe('orchestrator'); expect(await t('approve_plan').handler({ id, notes: 'watch the flag name' })).toBe('approved'); }], prompts));
