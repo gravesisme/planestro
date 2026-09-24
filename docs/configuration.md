@@ -89,6 +89,7 @@ for a decision.
 | `ci.start_timeout_min` | `10` | How long a run may fail to appear before CI counts as blocked. |
 | `ci.timeout_min` | `45` | How long a run may take. |
 | `ci.local_check_command` | none | The fallback check, run in the item's worktree. |
+| `ci.draft_while_held` | `true` | A held item's pull request (a review hold or `skip_merge`) is opened as a **draft** and marked ready only after the hold is released and the branch is synced, so CI runs once, on the branch that merges. Pair it with CI that skips drafts (`if: ${{ !github.event.pull_request.draft }}` and `types: [opened, synchronize, reopened, ready_for_review]`). Re-applying a hold turns the PR back into a draft. |
 | `epics.auto_submit` | `true` | Open an epic's pull request when its last child merges. |
 | `review.image_scale` | `1` | Review thumbnails can also be shown at this integer scale, nearest-neighbour. |
 | `review.max_file_bytes` | `10000000` | One changed file over this blocks the item as `asset_too_large` before a pull request exists. |

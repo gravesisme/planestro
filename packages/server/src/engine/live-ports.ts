@@ -104,15 +104,16 @@ export class LiveGitPort implements GitPort {
   async log(cwd: string, range: string, n: number) { return (await git(cwd, ['log', '--oneline', `-n${n}`, range], true)).stdout.trim(); }
 }
 
-const PR_FIELDS = 'number,url,state,mergedAt,headRefOid,headRefName,baseRefName,mergeCommit,title';
-function toPr(p: any): PrInfo { return { number: p.number, url: p.url, state: p.state, mergedAt: p.mergedAt ?? undefined, headRefOid: p.headRefOid, headRefName: p.headRefName, baseRefName: p.baseRefName, mergeCommit: p.mergeCommit?.oid, title: p.title }; }
+const PR_FIELDS = 'number,url,state,mergedAt,headRefOid,headRefName,baseRefName,mergeCommit,title,isDraft';
+function toPr(p: any): PrInfo { return { number: p.number, url: p.url, state: p.state, mergedAt: p.mergedAt ?? undefined, headRefOid: p.headRefOid, headRefName: p.headRefName, baseRefName: p.baseRefName, mergeCommit: p.mergeCommit?.oid, title: p.title, isDraft: Boolean(p.isDraft) }; }
 
 export class LiveGhPort implements GhPort {
-  async createPr(repo: string, a: { base: string; head: string; title: string; body: string }) {
-    const url = (await gh(['pr', 'create', '--repo', repo, '--base', a.base, '--head', a.head, '--title', a.title, '--body', a.body])).trim().split('\n').pop()!;
+  async createPr(repo: string, a: { base: string; head: string; title: string; body: string; draft?: boolean }) {
+    const url = (await gh(['pr', 'create', '--repo', repo, '--base', a.base, '--head', a.head, '--title', a.title, '--body', a.body, ...(a.draft ? ['--draft'] : [])])).trim().split('\n').pop()!;
     const number = Number(url.split('/').pop());
     return { number, url };
   }
+  async setDraft(repo: string, number: number, draft: boolean) { await gh(['pr', 'ready', String(number), '--repo', repo, ...(draft ? ['--undo'] : [])]); }
   async prView(repo: string, number: number) { return toPr(JSON.parse(await gh(['pr', 'view', String(number), '--repo', repo, '--json', PR_FIELDS]))); }
   async prList(repo: string, f: { head?: string; base?: string; state?: 'open' | 'merged' | 'closed' | 'all' }) {
     const args = ['pr', 'list', '--repo', repo, '--json', PR_FIELDS, '--limit', '50', '--state', f.state ?? 'all'];

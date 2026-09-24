@@ -128,7 +128,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
         {fm.status === 'IN_REVIEW' && fm.skip_merge && (
           <div className="approval">
             <h2 style={{ margin: '0 0 8px' }}>Held out of the merge queue</h2>
-            <p className="small">CI for the pushed head: <b>{fm.ci_result ?? 'pending'}</b>{fm.ci_head_sha ? ` (${fm.ci_head_sha.slice(0, 7)})` : ''}. While it is held, its session's commits are still pushed and a red run still goes to the session to fix; it just does not merge. Releasing it sends it back through sync and CI before it merges.</p>
+            {fm.op_data?.pr_draft ? <p className="small">The pull request is a <b>draft</b> while it is held: its session's commits are pushed, but CI waits. Releasing the hold syncs the branch, marks the PR ready, and CI runs once, on the head that merges.</p> : <p className="small">CI for the pushed head: <b>{fm.ci_result ?? 'pending'}</b>{fm.ci_head_sha ? ` (${fm.ci_head_sha.slice(0, 7)})` : ''}. While it is held, its session's commits are still pushed and a red run still goes to the session to fix; it just does not merge. Releasing it sends it back through sync and CI before it merges.</p>}
             <div className="row"><button className="primary" onClick={() => { const n = prompt(`Let ${item.id} merge? Optional note for the log:`); if (n !== null) void act(() => api.releaseHold(item.id, n || undefined)); }}>Release hold</button></div>
           </div>
         )}

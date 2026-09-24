@@ -270,8 +270,10 @@ export const Config = z.object({
     require_green_base: z.boolean().default(true),
     start_timeout_min: z.number().positive().default(10),
     timeout_min: z.number().positive().default(45),
+    /** Open a held item's PR as a draft, and mark it ready (which starts CI, when the project's CI skips drafts) only once the hold is released. */
+    draft_while_held: z.boolean().default(true),
     local_check_command: z.string().optional(),
-  }).default({ mode: 'github', require_green_base: true, start_timeout_min: 10, timeout_min: 45 }),
+  }).default({ mode: 'github', require_green_base: true, start_timeout_min: 10, timeout_min: 45, draft_while_held: true }),
   orchestrator: z.object({
     model: z.string().default('claude-fable-5'),
     /** When the orchestrator's model is out of usage, wake on its model row's `fallback` instead. */
