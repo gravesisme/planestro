@@ -297,8 +297,11 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
     } catch (e) { return fail(c, e); }
   });
   api.get('/orchestrator/questions', (c) => c.json(store.journal.read({ type: 'orchestrator.question', limit: 20 })));
-  api.get('/engine', (c) => c.json({ mode: engine.mode, paused: engine.paused, ...guardView(store, engine.paused), sessions: engine.sessions(), log: engine.log.slice(-200) }));
+  api.get('/engine', (c) => c.json({ mode: engine.mode, paused: engine.paused, ...guardView(store, engine.paused), sessions: engine.sessions(), ...(engine.restartReadiness ? { restart: engine.restartReadiness() } : {}), log: engine.log.slice(-200) }));
   api.post('/engine/pause', (c) => { engine.pause(); return c.json({ paused: true }); });
+  // Restart preparation (f3): POST drain, then poll GET /engine until restart.idle is true; DELETE cancels it.
+  api.post('/engine/drain', (c) => { if (!engine.drain) return c.json({ error: 'this engine has nothing to drain' }, 400); engine.drain(); return c.json(engine.restartReadiness!()); });
+  api.delete('/engine/drain', (c) => { engine.undrain?.(); return c.json(engine.restartReadiness?.() ?? { draining: false, idle: true, running: [] }); });
   api.post('/engine/resume', (c) => { engine.resume(); return c.json({ paused: false }); });
   api.get('/journal', (c) => c.json(store.journal.read({ item: c.req.query('item') ?? undefined, since: c.req.query('since') ?? undefined, type: c.req.query('type') ?? undefined, limit: Number(c.req.query('limit') ?? 200) })));
   api.get('/git', async (c) => c.json(await store.git.status()));

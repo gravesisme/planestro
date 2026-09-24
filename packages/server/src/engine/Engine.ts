@@ -32,5 +32,9 @@ export interface Engine {
   /** Finish an item without a pull request: the work landed some other way. User-only. */
   closeAsDone(id: string, reason?: string): Promise<void>;
   sessions(): SessionView[];
+  /** Getting ready for a restart: nothing new starts until undrain (or the restart). Engines without automation leave these out. */
+  drain?(): void;
+  undrain?(): void;
+  restartReadiness?(): { draining: boolean; idle: boolean; running: string[] };
   log: ServerEvent[];
 }

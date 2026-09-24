@@ -49,6 +49,7 @@ export function ConsolePage() {
         {!queue.length && <p className="muted small">Nothing in review.</p>}
       </div>
       <div className="section"><h2>Maintenance</h2>
+        <RestartPrep />
         <div className="row"><button onClick={async () => { const r = await act(() => api.reconcile()); if (r) setReconcileOut(r.corrections); }}>Reconcile now</button><span className="muted small">Cross-checks items against git, worktrees, GitHub and CI.</span></div>
         {reconcileOut && <pre className="events">{reconcileOut.length ? reconcileOut.join('\n') : 'everything matches'}</pre>}
       </div>
@@ -72,3 +73,23 @@ function QueueRow({ n, id, title, base, ci, skip }: { n: number; id: string; tit
 function Question({ q }: { q: JournalEntry }) {
   return <p>🟠 <b>{String((q.data as any)?.question)}</b> {q.item && <Link to={`/items/${q.item}`}>{q.item}</Link>} <span className="muted small">{q.ts.slice(0, 16).replace('T', ' ')}</span></p>;
 }
+
+/** Getting ready to restart planestro: nothing new starts, what runs finishes, and this says when nothing is left. */
+function RestartPrep() {
+  const restart = useStore((s) => s.state?.engine.restart);
+  if (!restart) return null;
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div className="row">
+        {restart.draining
+          ? <button onClick={() => act(() => api.undrain())}>Cancel restart preparation</button>
+          : <button onClick={() => act(() => api.drain())}>Prepare to restart</button>}
+        <span className="muted small">{restart.draining
+          ? (restart.idle ? <b style={{ color: 'var(--ok)' }}>Nothing is running: restart now and nothing is lost. planestro comes back running.</b> : `Waiting for ${restart.running.length} to finish; nothing new starts.`)
+          : 'Lets running turns and steps finish while nothing new starts, then says when a restart loses nothing. Unlike PAUSE, planestro comes back running after the restart.'}</span>
+      </div>
+      {restart.draining && !restart.idle && <ul className="small muted" style={{ margin: '6px 0 0' }}>{restart.running.map((r) => <li key={r}>{r}</li>)}</ul>}
+    </div>
+  );
+}
+

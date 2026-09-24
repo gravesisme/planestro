@@ -96,7 +96,7 @@ export class LiveEngine implements Engine {
       triageEnded: (id) => this.endTriage(id, 'the orchestrator looked at it without resolving it'),
       poke: () => this.poke(),
       usageSeen: (r) => this.usageSeen(r),
-    }, emit, (l, m) => this.note(l, m), () => this._paused);
+    }, emit, (l, m) => this.note(l, m), () => this._paused || this.draining);
   }
 
   /** Fire-and-forget judgment wake (invariant 4: never for anything a state machine can know). */
@@ -181,6 +181,25 @@ export class LiveEngine implements Engine {
     this.store.journal.append({ type: 'usage.guard_resumed', actor: 'engine', data: { window: g.window, resets_at: g.resets_at } });
     this.resume(`automation resumed: the ${usageWindowLabel(g.window)} usage window has reset`);
   }
+  /**
+   * Getting ready for a restart (f3). Like PAUSE AUTOMATION, nothing new starts (no admissions, no
+   * merge steps, no orchestrator wakes) and what runs finishes, but it is not persisted: planestro
+   * comes back from the restart running. Items in triage keep waiting (the wake after the restart
+   * picks them up). restartReadiness says when nothing is left running.
+   */
+  private draining = false;
+  drain(): void { this.draining = true; this.emit({ type: 'engine.paused', paused: this._paused }); this.note('warn', 'preparing to restart: running steps finish, nothing new starts'); }
+  undrain(): void { this.draining = false; this.emit({ type: 'engine.paused', paused: this._paused }); this.note('info', 'restart preparation cancelled; carrying on'); this.orchestrator.kick(); void this.tick(); }
+  /** What still runs (turns, engine steps, ops in flight, an orchestrator wake): empty means a restart loses nothing. */
+  restartReadiness(): { draining: boolean; idle: boolean; running: string[] } {
+    const running = [
+      ...[...this.turns.entries()].map(([id, t]) => `${id}: ${t.phase} turn`),
+      ...[...this.jobs.keys()].filter((id) => !this.turns.has(id)).map((id) => `${id}: engine step`),
+      ...this.store.listItems().filter((i) => i.file.frontmatter.op && !this.jobs.has(i.id) && !this.turns.has(i.id)).map((i) => `${i.id}: ${i.file.frontmatter.op}`),
+      ...(this.orchestrator.busy ? ['orchestrator: a wake'] : []),
+    ];
+    return { draining: this.draining, idle: running.length === 0, running };
+  }
   poke(): void { void this.tick(); }
   sessions(): SessionView[] {
     return [...this.turns.entries()].map(([item, t]) => ({ item, session_id: this.store.getItem(item)?.file.frontmatter.session_id, model: t.model, op: t.waiting ? `${t.phase}: waiting for a ${t.waiting} slot` : t.phase, started_at: t.startedAt, busy: !t.waiting, last_output: t.lastOutput }));
@@ -190,6 +209,7 @@ export class LiveEngine implements Engine {
   async tick(): Promise<void> {
     if (this.stopping) return;
     // Before the pause check: while automation is paused the orchestrator is not woken, so nothing may sit in triage.
+    if (this.draining) return;
     try { this.driveTriage(); } catch (e) { this.note('error', `triage: ${(e as Error).message}`); }
     // A backstop for the guard's timer (a machine that slept through it): resume once the reset has passed.
     const due = this.guardResumeDue();
@@ -876,7 +896,7 @@ export class LiveEngine implements Engine {
    * push only, then leave, so the PR shows the work and CI runs; driveHeld reads the verdict.
    */
   private async mergeStep(id: string, { hold = false }: { hold?: boolean } = {}): Promise<void> {
-    if (this._paused || this.stopping) return;
+    if (this._paused || this.draining || this.stopping) return;
     let item = this.store.requireItem(id);
     let fm = item.file.frontmatter;
     if (fm.status !== 'IN_REVIEW' || fm.blocked || fm.awaiting) return;

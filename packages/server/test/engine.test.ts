@@ -927,6 +927,35 @@ describe('the host note (p21)', () => {
   });
 });
 
+describe('preparing to restart (f3)', () => {
+  it('lets the running turn finish, starts nothing new, says when it is safe, and is not persisted', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const slow = (world: FakeWorld) => { const inner = new DryRunClaudePort(world); return { async runTurn(o: TurnOptions): Promise<TurnResult> { await gate; return inner.runTurn(o); }, runCustomTurn: inner.runCustomTurn.bind(inner) }; };
+    const { store, engine } = await setup({ claude: slow });
+    const a = store.createItem({ title: 'Running', description: 'x' });
+    store.transition(a.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => engine.sessions().length === 1);
+    engine.drain();
+    const b = store.createItem({ title: 'Waiting', description: 'x' });
+    store.transition(b.id, 'QUEUED', 'user');
+    let r = engine.restartReadiness();
+    expect(r).toMatchObject({ draining: true, idle: false });
+    expect(r.running).toContain(`${a.id}: plan turn`);
+    release();
+    await waitFor(() => engine.restartReadiness().idle);
+    expect(status(store, a.id)).toBe('PLAN_READY');                    // the running turn finished
+    await sleep(200);
+    expect(status(store, b.id)).toBe('QUEUED');                        // nothing new started
+    expect(store.local.engine.paused).toBe(false);                     // a restart comes back running
+    engine.undrain();
+    await waitFor(() => status(store, b.id) === 'PLAN_READY');
+    r = engine.restartReadiness();
+    expect(r.draining).toBe(false);
+  });
+});
+
 describe('orchestrator', () => {
   it('wakes on plan_review with a context packet, uses tools, and rotates after the configured wakes', async () => {
     const wakes: { label: string; prompt: string; resume?: string }[] = [];
