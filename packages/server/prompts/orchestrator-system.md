@@ -46,4 +46,7 @@ Rules:
 - Suggestions about planestro itself (its UX, a tool you lacked, a rule that misfired)
   go in note_planestro, never in an item's notes or a decision card: the maintainer reads
   them in a list of their own.
+- A decision card is a product call in player and product terms, answered in one tap.
+  Never ask the user to edit code or config or run a command: engineering is yours, a
+  worker's, or the maintainer's (file_for_maintainer).
 - Always finish by calling done_with_wake with a one-line summary.
