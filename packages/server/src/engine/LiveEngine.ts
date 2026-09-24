@@ -1,6 +1,6 @@
 import { join, relative, isAbsolute } from 'node:path';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
-import { validateParts, partsSummary, type Part, serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, type BreakdownChild, type DecisionInput, type Decision, type ServerEvent, type Status } from '@planestro/shared';
+import { validateParts, partsSummary, type Part, serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, type BreakdownChild, type DecisionInput, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import type { Ports, TurnPhase, TurnResult, TurnTools, PermissionRequest } from './ports.ts';
@@ -11,7 +11,8 @@ import type { ReviewImage } from './Engine.ts';
 
 const IMAGE_FILE = /\.(png|jpe?g|webp|gif|svg)$/i;
 
-export interface EngineOptions { sleep?: (ms: number) => Promise<void>; tickMs?: number; now?: () => string; ciWorkflow?: string }
+/** `schedule` runs `fn` after `ms` and returns a cancel (tests capture it instead of waiting). */
+export interface EngineOptions { sleep?: (ms: number) => Promise<void>; tickMs?: number; now?: () => string; ciWorkflow?: string; schedule?: (fn: () => void, ms: number) => () => void }
 
 const RESUMABLE_TURN_OPS = new Set(['planning_turn', 'implement_turn']);
 /** How many of one item's permission requests the orchestrator may refuse before they go to the user instead. */
@@ -38,6 +39,11 @@ const ORCHESTRATOR_FIELDS = ['parent', 'depends_on', 'base_branch_override', 'sk
 const HEAD_PROPAGATION_GRACE_MS = 90_000;
 /** How often a held (skip_merge) pull request's branch and CI are looked at: one `ls-remote` and one run listing per item. */
 const HELD_POLL_MS = 60_000;
+/** A guard-made pause resumes this long after its window's reset, so the first turn lands in the fresh window. */
+const USAGE_RESUME_GRACE_MS = 60_000;
+/** Two readings of one window whose resets differ by less than this are the same crossing. */
+const SAME_CROSSING_MS = 5 * 60_000;
+const MAX_TIMER_MS = 2 ** 31 - 1;
 
 export class LiveEngine implements Engine {
   readonly mode: 'live' | 'dry-run';
@@ -49,6 +55,8 @@ export class LiveEngine implements Engine {
   private timer?: NodeJS.Timeout;
   private stopping = false;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly schedule: (fn: () => void, ms: number) => () => void;
+  private cancelGuardResume?: () => void;
   private readonly now: () => string;
   private readonly ciWorkflow: string;
   private localJobs = 0;
@@ -61,6 +69,7 @@ export class LiveEngine implements Engine {
     this.mode = ports.mode;
     this._paused = store.local.engine.paused;
     this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+    this.schedule = opts.schedule ?? ((fn, ms) => { const t = setTimeout(fn, ms); t.unref?.(); return () => clearTimeout(t); });
     this.now = opts.now ?? isoLocal;
     this.ciWorkflow = opts.ciWorkflow ?? 'CI';
     this.orchestrator = new Orchestrator(store, ports, {
@@ -82,6 +91,7 @@ export class LiveEngine implements Engine {
       askUserDecision: (id, input) => this.askUserDecision(id, input),
       triageEnded: (id) => this.endTriage(id, 'the orchestrator looked at it without resolving it'),
       poke: () => this.poke(),
+      usageSeen: (r) => this.usageSeen(r),
     }, emit, (l, m) => this.note(l, m), () => this._paused);
   }
 
@@ -101,6 +111,7 @@ export class LiveEngine implements Engine {
     this.note('info', `engine ${this.mode} starting${this._paused ? ' (paused)' : ''}`);
     await this.reconcile('startup').catch((e) => this.note('error', `reconcile: ${(e as Error).message}`));
     await this.resumeInterrupted();
+    this.armGuardResume();
     this.timer = setInterval(() => void this.tick(), this.opts.tickMs ?? 10_000);
     this.timer.unref?.();
     this.reconcileTimer = setInterval(() => void this.reconcile('periodic').catch(() => undefined), 5 * 60_000);
@@ -110,13 +121,62 @@ export class LiveEngine implements Engine {
   async stop(): Promise<void> {
     this.stopping = true;
     this.orchestrator.stop();
+    this.cancelGuardResume?.(); this.cancelGuardResume = undefined;
     if (this.timer) clearInterval(this.timer);
     if (this.reconcileTimer) clearInterval(this.reconcileTimer);
     for (const t of this.turns.values()) t.abort.abort();
     await Promise.allSettled([...this.jobs.values()]);
   }
-  pause(): void { this._paused = true; this.store.updateLocal({ engine: { ...this.store.local.engine, paused: true } }); this.emit({ type: 'engine.paused', paused: true }); this.note('warn', 'AUTOMATION PAUSED — running steps finish, nothing new starts'); }
-  resume(): void { this._paused = false; this.store.updateLocal({ engine: { ...this.store.local.engine, paused: false } }); this.emit({ type: 'engine.paused', paused: false }); this.note('info', 'automation resumed'); this.orchestrator.kick(); void this.tick(); }
+  /** The lever by hand. A manual pause is the user's: the usage guard never resumes it. */
+  pause(): void { this.setPaused(true, 'user'); this.note('warn', 'AUTOMATION PAUSED — running steps finish, nothing new starts'); }
+  /** By hand this also dismisses a usage-guard pause (and its timer) for the rest of that window crossing. */
+  resume(message = 'automation resumed'): void { this.setPaused(false); this.note('info', message); this.orchestrator.kick(); void this.tick(); }
+  private setPaused(paused: boolean, by?: 'user' | 'usage_guard', guard?: UsageGuardState): void {
+    this.cancelGuardResume?.(); this.cancelGuardResume = undefined;
+    this._paused = paused;
+    this.store.updateLocal({ engine: { ...this.store.local.engine, paused, paused_by: paused ? by : undefined, usage_guard: guard, ...(guard ? { usage_guard_last: { window: guard.window, ...(guard.resets_at ? { resets_at: guard.resets_at } : {}), tripped_at: guard.tripped_at } } : {}) } });
+    this.emit({ type: 'engine.paused', paused, ...(paused && by ? { by } : {}) });
+  }
+
+  // ---- usage guard: pause before a subscription window runs out, resume once it resets ----
+  /** Read after every Claude turn and orchestrator wake. Trips once per window crossing, and never over a pause already in place. */
+  private usageSeen(r: RateLimitSnapshot | undefined): void {
+    const cfg = this.store.config.usage_guard;
+    if (!r || this.stopping || this._paused || !usageGuardTrips(cfg, r)) return;
+    const last = this.store.local.engine.usage_guard_last;
+    if (last && last.window === r.window && (r.resetsAt && last.resets_at ? Math.abs(Date.parse(r.resetsAt) - Date.parse(last.resets_at)) < SAME_CROSSING_MS : !r.resetsAt && !last.resets_at && Date.now() - Date.parse(last.tripped_at) < 3_600_000)) return;
+    const resumeAt = cfg.auto_resume && r.resetsAt ? new Date(Date.parse(r.resetsAt) + USAGE_RESUME_GRACE_MS).toISOString() : undefined;
+    const guard: UsageGuardState = { window: r.window, status: r.status, ...(r.utilization !== undefined ? { utilization: r.utilization } : {}), ...(r.resetsAt ? { resets_at: r.resetsAt } : {}), tripped_at: new Date(Date.now()).toISOString(), ...(resumeAt ? { resume_at: resumeAt } : {}) };
+    this.setPaused(true, 'usage_guard', guard);
+    this.store.journal.append({ type: 'usage.guard_tripped', actor: 'engine', data: { ...guard, threshold: cfg.threshold } });
+    this.note('warn', `USAGE GUARD: ${usageWindowLabel(r.window)} window ${usagePercent(r.utilization) ? `at ${usagePercent(r.utilization)}` : r.status === 'rejected' ? 'is exhausted' : 'sent a usage warning'} — automation paused ${resumeAt ? `until ${localClock(resumeAt)}` : r.resetsAt ? `(the window resets at ${localClock(r.resetsAt)}; resume by hand)` : 'until you resume it'}; running turns finish, nothing new starts`);
+    const notify = this.store.config.notifications.on_usage_pause;
+    if (notify) void this.ports.proc.run(notify, { cwd: this.repo, timeoutMs: 30_000 }).catch(() => undefined);
+    this.armGuardResume();
+  }
+
+  /** (Re)arm the guard's resume from local config — at trip and at startup; one already due resumes now. */
+  private armGuardResume(): void {
+    this.cancelGuardResume?.(); this.cancelGuardResume = undefined;
+    const due = this.guardResumeDue();
+    if (due === undefined || this.stopping) return;
+    const ms = due - Date.now();
+    if (ms <= 0) { this.guardResume(); return; }
+    this.cancelGuardResume = this.schedule(() => { this.cancelGuardResume = undefined; if (ms > MAX_TIMER_MS) this.armGuardResume(); else this.guardResume(); }, Math.min(ms, MAX_TIMER_MS));
+  }
+  /** When a guard-made pause is due to resume (epoch ms), or undefined when nothing will resume it. */
+  private guardResumeDue(): number | undefined {
+    const e = this.store.local.engine;
+    if (!this._paused || e.paused_by !== 'usage_guard' || !e.usage_guard?.resume_at || !this.store.config.usage_guard.auto_resume) return undefined;
+    const t = Date.parse(e.usage_guard.resume_at);
+    return Number.isFinite(t) ? t : undefined;
+  }
+  private guardResume(): void {
+    if (this.stopping || this.guardResumeDue() === undefined) return;
+    const g = this.store.local.engine.usage_guard!;
+    this.store.journal.append({ type: 'usage.guard_resumed', actor: 'engine', data: { window: g.window, resets_at: g.resets_at } });
+    this.resume(`automation resumed: the ${usageWindowLabel(g.window)} usage window has reset`);
+  }
   poke(): void { void this.tick(); }
   sessions(): SessionView[] {
     return [...this.turns.entries()].map(([item, t]) => ({ item, session_id: this.store.getItem(item)?.file.frontmatter.session_id, model: t.model, op: t.phase, started_at: t.startedAt, busy: true, last_output: t.lastOutput }));
@@ -127,6 +187,9 @@ export class LiveEngine implements Engine {
     if (this.stopping) return;
     // Before the pause check: while automation is paused the orchestrator is not woken, so nothing may sit in triage.
     try { this.driveTriage(); } catch (e) { this.note('error', `triage: ${(e as Error).message}`); }
+    // A backstop for the guard's timer (a machine that slept through it): resume once the reset has passed.
+    const due = this.guardResumeDue();
+    if (due !== undefined && due <= Date.now()) { this.guardResume(); return; }
     if (this._paused) return;
     try {
       this.admit();
@@ -597,6 +660,7 @@ export class LiveEngine implements Engine {
     ], 'engine');
     this.warnOnBudget(id, after, this.store.requireItem(id).file.frontmatter);
     this.store.journal.end(opId, id, result.isError ? 'failed' : 'ok', { subtype: result.subtype, cost: result.costUsd, parked: result.parked });
+    this.usageSeen(result.rateLimit);
     this.emit({ type: 'session.ended', id, subtype: result.subtype });
     if (result.subtype === 'killed') { this.store.mutateItem(id, [{ activity: { actor: 'app', text: 'turn interrupted (engine stopping); resumable' } }], 'engine'); return result; }
     if (result.subtype === 'usage_exhausted') {

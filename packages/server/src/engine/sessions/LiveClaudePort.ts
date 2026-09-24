@@ -1,7 +1,7 @@
 import * as sdk from '@anthropic-ai/claude-agent-sdk';
 import { query, tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import { KNOWN_USAGE_LIMIT_PREFIXES, USAGE_ERROR_CODES, isUsageLimitText, resetTime } from '@planestro/shared';
+import { KNOWN_USAGE_LIMIT_PREFIXES, USAGE_ERROR_CODES, isUsageLimitText, resetTime, worseRateLimit, type RateLimitSnapshot } from '@planestro/shared';
 import type { ClaudePort, TurnOptions, TurnResult, CustomTurnOptions } from '../ports.ts';
 
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] });
@@ -133,15 +133,29 @@ function describeToolUse(name: string, input: Record<string, unknown>): string {
 
 /**
  * Signs, collected while a turn streams, that its model is out of usage: a rejected rate-limit
- * event (with the reset time), an assistant error code, or the CLI's usage-limit message.
+ * event (with the reset time), an assistant error code, or the CLI's usage-limit message. Every
+ * rate-limit event also feeds `rateLimit`, the most pressing reading, for the usage guard.
  */
-export interface UsageSignals { rejected?: boolean; resetsAt?: Date; code?: string; message?: string }
+export interface UsageSignals { rejected?: boolean; resetsAt?: Date; code?: string; message?: string; rateLimit?: RateLimitSnapshot }
+
+const RATE_LIMIT_STATUSES = new Set(['allowed', 'allowed_warning', 'rejected']);
+/** One `rate_limit_info` as a snapshot, or undefined when it carries no status. Exported for tests. */
+export function rateLimitSnapshot(info: any): RateLimitSnapshot | undefined {
+  if (!RATE_LIMIT_STATUSES.has(info?.status)) return undefined;
+  // The SDK does not document the unit: a reading above 1 is taken as a percentage, so 87 and 0.87 both mean 87%.
+  const raw = typeof info.utilization === 'number' && Number.isFinite(info.utilization) ? info.utilization : undefined;
+  const utilization = raw === undefined ? undefined : raw > 1 ? raw / 100 : raw;
+  const resets = resetTime(info.resetsAt);
+  return { status: info.status, window: typeof info.rateLimitType === 'string' ? info.rateLimitType : 'unknown', ...(utilization !== undefined ? { utilization } : {}), ...(resets ? { resetsAt: resets.toISOString() } : {}) };
+}
 
 /** Feed one SDK message to the usage detector. Exported for tests. */
 export function noteUsage(m: any, u: UsageSignals): void {
   if (m?.type === 'rate_limit_event') {
     const info = m.rate_limit_info ?? {};
     if (info.status === 'rejected') { u.rejected = true; u.resetsAt = resetTime(info.resetsAt) ?? u.resetsAt; }
+    const snap = rateLimitSnapshot(info);
+    if (snap) u.rateLimit = worseRateLimit(u.rateLimit, snap);
   } else if (m?.type === 'assistant') {
     if (m.error && USAGE_ERROR_CODES.includes(m.error)) u.code = m.error;
     for (const c of (m.message?.content ?? []) as any[]) if (c?.type === 'text' && isUsageLimitText(c.text, USAGE_PREFIXES)) u.message = String(c.text).trim().slice(0, 300);
@@ -195,5 +209,6 @@ async function consume(q: AsyncIterable<unknown>, result: TurnResult, onOutput: 
     else { result.subtype = 'error_during_execution'; result.isError = true; result.error = msg; }
     if (isUsageLimitText(msg, USAGE_PREFIXES)) usage.message = usage.message ?? msg.trim().slice(0, 300);
   }
+  if (usage.rateLimit) result.rateLimit = usage.rateLimit;
   classifyUsage(result, usage);
 }

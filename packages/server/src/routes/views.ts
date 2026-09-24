@@ -31,6 +31,12 @@ export function releaseView(store: DataStore, r: StoredRelease) {
 }
 export type ReleaseView = ReturnType<typeof releaseView>;
 
+/** Who paused automation and, for a usage-guard pause, the window reading that did it. */
+export function guardView(store: DataStore, paused: boolean) {
+  const e = store.local.engine;
+  return paused ? { paused_by: e.paused_by, ...(e.paused_by === 'usage_guard' && e.usage_guard ? { usage_guard: e.usage_guard } : {}) } : {};
+}
+
 export function stateView(store: DataStore, engine: { mode: string; paused: boolean; sessions(): unknown[] }, git: unknown) {
   return {
     schema: store.schema,
@@ -43,7 +49,7 @@ export function stateView(store: DataStore, engine: { mode: string; paused: bool
     prompts: store.listPrompts().map(promptView),
     releases: store.listReleases().map((r) => releaseView(store, r)),
     invalid: store.invalid,
-    engine: { mode: engine.mode, paused: engine.paused, sessions: engine.sessions() },
+    engine: { mode: engine.mode, paused: engine.paused, ...guardView(store, engine.paused), sessions: engine.sessions() },
     git,
     statuses: ['NOT_YET_SUBMITTED', 'QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW', 'MERGED', 'FINISHED', 'ICEBOX'] satisfies Status[],
   };

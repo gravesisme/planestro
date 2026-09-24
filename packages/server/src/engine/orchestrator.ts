@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { getSection, partsSummary, serializeItemFile, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent } from '@planestro/shared';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Ports, CustomToolDef, TurnResult } from './ports.ts';
-import type { DecisionInput } from '@planestro/shared';
+import type { DecisionInput, RateLimitSnapshot } from '@planestro/shared';
 
 export interface WakeEvent { type: string; item?: string; data?: Record<string, unknown> }
 
@@ -44,6 +44,8 @@ export interface OrchestratorHooks {
   /** A wake that carried this item's triage is over; if it is still in triage, it goes to the user. */
   triageEnded(id: string): void;
   poke(): void;
+  /** Every wake's rate-limit reading, for the usage guard (a wake spends the same subscription as a worker turn). */
+  usageSeen?(rateLimit: RateLimitSnapshot | undefined): void;
 }
 
 interface OrchState { session_id?: string; started_at?: string; wakes_served: number }
@@ -156,6 +158,7 @@ export class Orchestrator {
       mcpTools: this.tools((s) => { doneSummary = s; }),
       onOutput: (t) => this.emit({ type: 'engine.log', level: 'info', message: `[orchestrator] ${t.slice(0, 300)}` }),
     });
+    this.hooks.usageSeen?.(result.rateLimit);
     if (result.subtype === 'usage_exhausted') {
       const def = findModel(this.store.config, model);
       const now = new Date(Date.now());

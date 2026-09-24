@@ -1,4 +1,4 @@
-import type { ItemFrontmatter, PromptFrontmatter, ReleaseFrontmatter, ReleaseStatus, Config, LocalConfig, Status, JournalEntry } from '@planestro/shared';
+import type { ItemFrontmatter, PromptFrontmatter, ReleaseFrontmatter, ReleaseStatus, Config, LocalConfig, Status, JournalEntry, UsageGuardState } from '@planestro/shared';
 import type { BreakdownChild } from '@planestro/shared';
 
 export interface ItemView {
@@ -15,7 +15,7 @@ export interface SessionView { item: string; session_id?: string; model?: string
 export interface State {
   schema: string; readOnly: boolean; dataDir: string; codeRepo: string; config: Config; local: LocalConfig;
   items: ItemView[]; prompts: PromptView[]; releases?: ReleaseView[]; invalid: { path: string; error: string }[];
-  engine: { mode: string; paused: boolean; sessions: SessionView[] };
+  engine: { mode: string; paused: boolean; paused_by?: 'user' | 'usage_guard'; usage_guard?: UsageGuardState; sessions: SessionView[] };
   git: { dirty: string[]; branch: string; head?: string; ahead?: number };
   statuses: Status[];
 }

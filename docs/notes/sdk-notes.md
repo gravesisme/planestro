@@ -86,6 +86,17 @@ pins these versions so planestro can warn when the installed CLI drifts.
    or unavailable* models inside one turn and re-tries the primary at the start
    of the next, so it is passed alongside, not relied on: an exhausted
    subscription is handled by the engine (see configuration.md, Model fallback).
+13. **`rate_limit_event` carries the subscription's reading on every turn**, not
+   only on rejection: `rate_limit_info` has `status` (`allowed` /
+   `allowed_warning` / `rejected`), `rateLimitType` (the window: `five_hour`,
+   `seven_day`, `seven_day_opus`, `seven_day_sonnet`,
+   `seven_day_overage_included`, `overage`), `utilization` (0–1) and
+   `resetsAt` (epoch seconds), all optional but `status` (`SDKRateLimitInfo`
+   in the SDK's `sdk.d.ts`). `noteUsage` keeps the most pressing reading per
+   turn (`TurnResult.rateLimit`, worker turns and orchestrator wakes alike)
+   and the engine's usage guard pauses automation on it before the limit is
+   reached (configuration.md, Usage guard). API-key sessions report no
+   subscription windows.
 
 ## Engine decisions confirmed by the spike
 
