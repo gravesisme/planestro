@@ -26,6 +26,7 @@ A test (`docs.test.ts`) fails if a key in the schema is missing from this page.
 |---|---|---|
 | `worktrees.root` | `.claude/worktrees` | Where item worktrees go, relative to the code repository. Overridden per machine by `worktrees_root`. |
 | `worktrees.branch_pattern` | `{{prefix_lower}}/{{number}}-{{slug}}` | Worker branch name. |
+| `worktrees.keep_on_remove` | `[]` | Paths inside a worktree (relative, e.g. `tmp`) whose files are moved to `<worktrees root>/.displaced/<item>-<time>/` before the worktree is removed, whether git tracks, ignores or does not know them: a worker's raw sources or scratch output. The Activity log says where they went. |
 | `worktrees.dir_pattern` | `{{prefix_lower}}-{{number}}-{{slug}}` | Worktree directory name. |
 | `hooks.after_worktree_create` | `[]` | Commands run in a new worktree before planning (install dependencies, import assets). A non-zero exit blocks the item as `hook_failed`. Not re-run when an item that went to the icebox is queued again and reuses its worktree. |
 

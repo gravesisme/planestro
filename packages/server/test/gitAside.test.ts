@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { LiveGitPort } from '../src/engine/live-ports.ts';
@@ -23,5 +23,16 @@ describe('setting regenerated files aside (p17)', () => {
     expect(readFileSync(join(dest, 'assets/a.import'), 'utf8')).toBe('regenerated\n');
     writeFileSync(join(repo, 'keep.txt'), 'changed\n');
     expect((await port.dirtyDetail(repo)).tracked).toEqual(['keep.txt']);
+  });
+
+  it('filesUnder lists every file under the named paths, ignored or not, and never follows a symlink or leaves the tree', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'planestro-under-'));
+    git(repo, 'init', '-q', '-b', 'trunk');
+    mkdirSync(join(repo, 'tmp/src'), { recursive: true }); mkdirSync(join(repo, 'assets'));
+    writeFileSync(join(repo, '.gitignore'), 'tmp/\n'); writeFileSync(join(repo, 'tmp/src/raw.png'), 'r'); writeFileSync(join(repo, 'tmp/note.txt'), 'n'); writeFileSync(join(repo, 'assets/a.png'), 'a');
+    symlinkSync('/', join(repo, 'tmp/escape'));
+    const port = new LiveGitPort();
+    expect((await port.filesUnder(repo, ['tmp', './assets/'])).sort()).toEqual(['assets/a.png', 'tmp/note.txt', 'tmp/src/raw.png']);
+    expect(await port.filesUnder(repo, ['../', 'missing'])).toEqual([]);
   });
 });

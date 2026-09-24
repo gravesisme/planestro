@@ -25,6 +25,8 @@ export class FakeWorld {
   /** Untracked files by worktree, and the paths the base branch tracks (for regenerated files that collide with it). */
   untracked = new Map<string, string[]>();
   baseFiles = new Set<string>();
+  /** Files git ignores, by worktree: invisible to status, gone with the worktree unless set aside (p40). */
+  ignored = new Map<string, string[]>();
   nextPr = 100;
   seq = 0;
   ciMode: 'green' | 'red-once' | 'conflict-once' = (process.env.PLANESTRO_DRYRUN_CI as any) ?? 'green';
@@ -57,7 +59,8 @@ export class DryRunGitPort implements GitPort {
   async status(cwd: string) { const u = this.w.untracked.get(cwd) ?? []; const dirty = [...(this.w.dirty.has(cwd) ? ['src/fake.ts'] : []), ...u]; return { clean: dirty.length === 0, dirty }; }
   async dirtyDetail(cwd: string) { return { tracked: this.w.dirty.has(cwd) ? ['src/fake.ts'] : [], untracked: [...(this.w.untracked.get(cwd) ?? [])] }; }
   async trackedAt(_cwd: string, _ref: string, paths: string[]) { return paths.filter((p) => this.w.baseFiles.has(p)); }
-  async moveAside(cwd: string, paths: string[], dest: string) { this.say(`move ${paths.join(', ')} from ${cwd} to ${dest}`); this.w.untracked.set(cwd, (this.w.untracked.get(cwd) ?? []).filter((p) => !paths.includes(p))); }
+  async moveAside(cwd: string, paths: string[], dest: string) { this.say(`move ${paths.join(', ')} from ${cwd} to ${dest}`); this.w.untracked.set(cwd, (this.w.untracked.get(cwd) ?? []).filter((p) => !paths.includes(p))); this.w.ignored.set(cwd, (this.w.ignored.get(cwd) ?? []).filter((p) => !paths.includes(p))); }
+  async filesUnder(cwd: string, paths: string[]) { const under = (f: string) => paths.some((p) => f === p || f.startsWith(`${p.replace(/\/+$/, '')}/`)); return [...(this.w.untracked.get(cwd) ?? []), ...(this.w.ignored.get(cwd) ?? [])].filter(under); }
   async aheadBehind(cwd: string) { return { ahead: this.w.commits.get(cwd) ?? 0, behind: this.w.behind.get(cwd) ?? 1 }; }
   async rebase(cwd: string, onto: string): Promise<RebaseResult> {
     if (this.w.conflictArmed) { this.w.conflictArmed = false; this.say(`git rebase ${onto} in ${cwd} → CONFLICT (simulated)`); return { ok: false, conflicts: ['src/conflicted.ts'], head: this.w.worktrees.get(cwd)?.head ?? '' }; }
