@@ -142,6 +142,16 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
     } catch (e) { return fail(c, e); }
   });
   api.post('/items/:id/unblock', async (c) => { try { const { message } = z.object({ message: z.string().optional() }).parse(await c.req.json().catch(() => ({}))); const e = engine as Engine & { unblock?: (id: string, m?: string) => Promise<void> }; if (e.unblock) await e.unblock(c.req.param('id'), message); else store.mutateItem(c.req.param('id'), [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data'] }], 'user', { commit: `${c.req.param('id')}: unblock` }); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
+  // The answer to an orchestrator's decision card: an option's label, your own words, or both.
+  api.post('/items/:id/decision', async (c) => {
+    try {
+      const body = z.object({ choice: z.string().optional(), text: z.string().optional() }).parse(await c.req.json().catch(() => ({})));
+      const e = engine as Engine & { answerDecision?: (id: string, a: { choice?: string; text?: string }) => Promise<void> };
+      if (!e.answerDecision) throw new Error('decisions need the live engine');
+      await e.answerDecision(c.req.param('id'), body);
+      return c.json(itemView(store, store.requireItem(c.req.param('id'))));
+    } catch (e) { return fail(c, e); }
+  });
   api.post('/items/:id/respond', async (c) => { try { await engine.respond(c.req.param('id'), await c.req.json()); return c.json({ ok: true }); } catch (e) { return fail(c, e); } });
 
   api.post('/items/:id/attachments', async (c) => {
@@ -220,7 +230,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
         ci: z.object({ mode: z.enum(['github', 'github-or-local']), require_green_base: z.boolean(), local_check_command: z.string() }).partial().optional(),
         engine: z.object({ mode: z.enum(['live', 'dry-run']) }).partial().optional(),
         notifications: z.object({ on_merge: z.string() }).partial().optional(),
-        orchestrator: z.object({ model: z.string().min(1), allow_model_fallback: z.boolean(), may_approve_plans: z.boolean(), max_plan_revisions: z.number().int().nonnegative(), may_decide_permissions: z.boolean() }).partial().optional(),
+        orchestrator: z.object({ model: z.string().min(1), allow_model_fallback: z.boolean(), may_approve_plans: z.boolean(), max_plan_revisions: z.number().int().nonnegative(), may_decide_permissions: z.boolean(), triage: z.boolean(), triage_timeout_min: z.number().positive() }).partial().optional(),
       }).parse(await c.req.json());
       if (body.orchestrator?.model) {
         const m = findModel(store.config, body.orchestrator.model);

@@ -73,7 +73,7 @@ export function applyTransition(fm: ItemFrontmatter, to: Status, actor: Actor, f
   const next: ItemFrontmatter = { ...fm, status: to };
   if (t.sets) (next as any)[t.sets] = now;
   // Leaving a running state parks whatever was pending; the engine re-derives it.
-  if (to === 'ICEBOX' || to === 'NOT_YET_SUBMITTED' || to === 'FINISHED') { delete next.awaiting; delete next.awaiting_data; delete next.op; delete next.op_started_at; delete next.op_data; }
+  if (to === 'ICEBOX' || to === 'NOT_YET_SUBMITTED' || to === 'FINISHED') { delete next.awaiting; delete next.awaiting_data; delete next.triage; delete next.op; delete next.op_started_at; delete next.op_data; }
   if (to === 'PLAN_READY') { next.awaiting = flavor === 'epic' ? 'breakdown_approval' : 'plan_approval'; }
   if (to === 'IN_PROGRESS' && fm.status === 'PLAN_READY') { delete next.awaiting; delete next.awaiting_data; }
   if (to === 'PLAN_IN_PROGRESS' && fm.status === 'PLAN_READY') { delete next.awaiting; delete next.awaiting_data; }
@@ -91,7 +91,9 @@ export function laneOf(status: Status): Lane {
 }
 
 export const NEEDS_YOU_AWAITING = new Set(['plan_approval', 'breakdown_approval', 'permission', 'question', 'review', 'user']);
-export function needsYou(fm: Pick<ItemFrontmatter, 'blocked' | 'awaiting'>): boolean {
+/** A stop the orchestrator is still triaging is not yours yet: it resolves it, or comes back with one decision. */
+export function needsYou(fm: Pick<ItemFrontmatter, 'blocked' | 'awaiting' | 'triage'>): boolean {
+  if (fm.triage) return false;
   return Boolean(fm.blocked) || (fm.awaiting !== undefined && NEEDS_YOU_AWAITING.has(fm.awaiting));
 }
 

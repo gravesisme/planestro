@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { confirmMove } from './QuickActions.tsx';
+import { decisionOf } from '@planestro/shared';
 
 export function statusLabel(s: string): string { return s.replace(/_/g, ' '); }
 
@@ -22,7 +23,7 @@ export function ItemCard({ item, sortable = true, onSelect }: { item: ItemView; 
   return (
     <ContextMenu.Root>
       <ContextMenu.Trigger asChild>
-        <div ref={setNodeRef} style={style} {...attributes} {...listeners} className={`card ${d.needs_you ? 'needs' : ''} ${fm.blocked ? 'blocked' : ''} ${isDragging ? 'dragging' : ''}`} onClick={() => onSelect?.(item.id)} onDoubleClick={() => nav(`/items/${item.id}`)}>
+        <div ref={setNodeRef} style={style} {...attributes} {...listeners} className={`card ${d.needs_you ? 'needs' : ''} ${fm.blocked && !fm.triage ? 'blocked' : ''} ${isDragging ? 'dragging' : ''}`} onClick={() => onSelect?.(item.id)} onDoubleClick={() => nav(`/items/${item.id}`)}>
           <div><span className="id">{item.id}</span><span className="title">{fm.title}</span></div>
           {fm.awaiting === 'review' && <div className="checker card-thumb"><img src={`/api/items/${item.id}/thumb?v=${encodeURIComponent(fm.updated_at)}`} alt="" onError={(e) => { (e.currentTarget.parentElement as HTMLElement).hidden = true; }} /></div>}
           <div className="meta">
@@ -31,8 +32,9 @@ export function ItemCard({ item, sortable = true, onSelect }: { item: ItemView; 
             {fm.parent && <span className="tag">↳ {fm.parent}</span>}
             {d.external ? <span className="tag">{modelLabel(fm.implementer)} (external)</span> : <span className="tag">{modelLabel(fm.planner)} → {modelLabel(fm.implementer)}</span>}
             {fm.pr && <span className="tag ok">PR #{fm.pr}</span>}
-            {fm.blocked && <span className="tag hot">BLOCKED{fm.blocked_reason ? `: ${fm.blocked_reason}` : ''}</span>}
-            {fm.awaiting && <span className={`tag ${d.needs_you ? 'wait' : ''}`}>awaiting {fm.awaiting.replace(/_/g, ' ')}</span>}
+            {fm.triage && <span className="tag triage" title={`It stopped (${fm.triage.reason}); the orchestrator fixes it or asks you one question`}>orchestrator triaging</span>}
+            {fm.blocked && !fm.triage && !decisionOf(fm) && <span className="tag hot">BLOCKED{fm.blocked_reason ? `: ${fm.blocked_reason}` : ''}</span>}
+            {decisionOf(fm) ? <span className="tag hot">decision needed</span> : fm.awaiting && !(fm.triage && fm.awaiting === 'user') && <span className={`tag ${d.needs_you ? 'wait' : ''}`}>awaiting {fm.awaiting.replace(/_/g, ' ')}</span>}
             {fm.op && <span className="tag">{fm.op.replace(/_/g, ' ')}</span>}
             {!d.deps_satisfied && <span className="tag">waits on {fm.depends_on.join(', ')}</span>}
             {lane === 'done' && fm.finished_at && <span>{fm.finished_at.slice(0, 16).replace('T', ' ')}</span>}

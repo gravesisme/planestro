@@ -1,6 +1,6 @@
 import { join, relative, isAbsolute } from 'node:path';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
-import { serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, type BreakdownChild, type ServerEvent, type Status } from '@planestro/shared';
+import { serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, type BreakdownChild, type DecisionInput, type Decision, type ServerEvent, type Status } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import type { Ports, TurnPhase, TurnResult, TurnTools, PermissionRequest } from './ports.ts';
@@ -20,6 +20,10 @@ const JUDGMENT_BLOCKS = ['turn_error', 'no_plan', 'no_commits', 'dirty_tree', 's
 const ACTIVE_FOR_SLOTS: Status[] = ['PLAN_IN_PROGRESS', 'IN_PROGRESS'];
 /** Turn failures with their own block reason, because the fix is the user's (log in, wait, start over) and not a judgment call. */
 const ACTIONABLE_FAILURES = new Set(['auth_required', 'rate_limited', 'session_lost', 'spawn_error']);
+/** How many stops of one item, in one status, the orchestrator triages before the rest go straight to the user (a fix that keeps failing is a conversation for a person). */
+const MAX_TRIAGE_ROUNDS = 4;
+/** What `set_item_fields` may touch: the item's own wiring, never its lifecycle, sessions or history. */
+const ORCHESTRATOR_FIELDS = ['parent', 'depends_on', 'base_branch_override', 'skip_merge', 'implementer', 'allow_model_fallback'] as const;
 
 /**
  * The Phase 3 lifecycle: one worker item at a time through
@@ -64,6 +68,13 @@ export class LiveEngine implements Engine {
       decidePermission: (id, decision, reason) => this.orchestratorDecidesPermission(id, decision, reason),
       permissionReviewEnded: (id) => this.handPermissionToUser(id, 'the orchestrator looked at it without deciding'),
       handOff: (from, to, paths, note) => this.handOff(from, to, paths, note, 'orchestrator'),
+      unblock: (id, message) => this.orchestratorUnblocks(id, message),
+      answerQuestion: (id, answers) => this.orchestratorAnswers(id, answers),
+      setItemFields: (id, fields) => this.orchestratorSetsFields(id, fields),
+      recreateWorktree: (id, message) => this.recreateWorktree(id, message),
+      retryOp: (id) => this.retryOp(id),
+      askUserDecision: (id, input) => this.askUserDecision(id, input),
+      triageEnded: (id) => this.endTriage(id, 'the orchestrator looked at it without resolving it'),
       poke: () => this.poke(),
     }, emit, (l, m) => this.note(l, m), () => this._paused);
   }
@@ -107,7 +118,10 @@ export class LiveEngine implements Engine {
 
   /** Run one scheduling pass. Idempotent; safe to call often. */
   async tick(): Promise<void> {
-    if (this._paused || this.stopping) return;
+    if (this.stopping) return;
+    // Before the pause check: while automation is paused the orchestrator is not woken, so nothing may sit in triage.
+    try { this.driveTriage(); } catch (e) { this.note('error', `triage: ${(e as Error).message}`); }
+    if (this._paused) return;
     try {
       this.admit();
       this.nudgeStaleReviews();
@@ -165,7 +179,7 @@ export class LiveEngine implements Engine {
       if (fm.status !== 'IN_PROGRESS' || !fm.blocked || fm.blocked_reason !== 'agent_blocked' || (fm.awaiting && fm.awaiting !== 'user')) continue;
       const done = fm.op_data?.done_summary as string | undefined;
       if (!done || !fm.worktree || this.store.derived(item).flavor !== 'worker' || this.jobs.has(item.id) || this.turns.has(item.id)) continue;
-      this.store.mutateItem(item.id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data'] }, { activity: { actor: 'app', text: 'cleared a stale agent_blocked flag (the session reported done after it); checking the work' } }], 'engine', { commit: `${item.id}: clear stale block` });
+      this.store.mutateItem(item.id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, { activity: { actor: 'app', text: 'cleared a stale agent_blocked flag (the session reported done after it); checking the work' } }], 'engine', { commit: `${item.id}: clear stale block` });
       this.runJob(item.id, () => this.afterWorkTurn(item.id, 'implement', { subtype: 'success', isError: false, costUsd: 0, numTurns: 0, text: '', done }));
     }
   }
@@ -270,6 +284,8 @@ export class LiveEngine implements Engine {
   }
 
   private followUps = new Map<string, () => Promise<unknown>>();
+  /** Triage wakes held until the item's step (the turn that stopped) has finished: the orchestrator must find it idle to act on it. */
+  private pendingWakes = new Map<string, { type: string; data?: Record<string, unknown> }>();
 
   private runJob(id: string, fn: () => Promise<unknown>): void {
     if (this.jobs.has(id)) return;
@@ -277,6 +293,7 @@ export class LiveEngine implements Engine {
       this.jobs.delete(id);
       const next = this.followUps.get(id);
       if (next) { this.followUps.delete(id); this.runJob(id, next); }
+      else { const wake = this.pendingWakes.get(id); if (wake) { this.pendingWakes.delete(id); this.wakeOrchestrator(wake.type, id, wake.data); } }
     });
     this.jobs.set(id, p);
   }
@@ -309,12 +326,8 @@ export class LiveEngine implements Engine {
     if (kept && kept.branch !== branch) { this.store.journal.end(opId, id, 'failed', { reason: 'worktree_taken' }); this.block(id, 'worktree_taken', `${worktreeRel} already exists on ${kept.branch ?? 'a detached HEAD'}, not ${branch}; remove it by hand or move it aside`); return; }
     if (kept) this.store.mutateItem(id, [{ activity: { actor: 'app', text: `reusing the worktree this item already has (${worktreeRel}); setup hooks not re-run` } }], 'engine');
     else await this.ports.git.worktreeAdd(this.repo, dir, branch, `origin/${base}`);
-    this.store.mutateItem(id, [{ set: { op: 'importing', op_started_at: this.now() } }], 'engine');
-    for (const hook of kept ? [] : this.store.config.hooks.after_worktree_create) {
-      const r = await this.withLocalJobSlot(() => this.ports.proc.run(hook, { cwd: dir, timeoutMs: 20 * 60_000 }));
-      if (r.code !== 0) { this.store.journal.end(opId, id, 'failed', { hook, code: r.code }); this.block(id, 'hook_failed', `${hook} exited ${r.code}: ${r.stderr.slice(-400)}`); return; }
-      this.store.mutateItem(id, [{ activity: { actor: 'app', text: `hook ok: ${hook}` } }], 'engine');
-    }
+    if (kept) this.store.mutateItem(id, [{ set: { op: 'importing', op_started_at: this.now() } }], 'engine');
+    else if (!(await this.runSetupHooks(id, dir, opId))) return;
     this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }], 'engine');
     this.store.journal.end(opId, id, 'ok');
     await this.runTurnFor(id, 'plan', this.withDelivered(id, 'plan-item', this.store.renderPrompt('plan-item', this.store.requireItem(id))), [], [], { opener: true });
@@ -362,7 +375,7 @@ export class LiveEngine implements Engine {
     // A message that resumes a blocked session is the answer to the block (unblock-with-message
     // by another door). Leaving the flag set made afterTurn skip the finished turn, so a worker
     // that then reported done sat IN_PROGRESS as "blocked" forever and no PR was ever opened.
-    this.store.mutateItem(id, [{ unset: ['awaiting', 'awaiting_data', ...(fm.blocked ? ['blocked', 'blocked_reason'] : [])] }, { activity: { actor: 'user', text: `message: ${text}` } }], 'user');
+    this.store.mutateItem(id, [{ unset: ['awaiting', 'awaiting_data', 'triage', ...(fm.blocked ? ['blocked', 'blocked_reason'] : [])] }, { activity: { actor: 'user', text: `message: ${text}` } }], 'user');
     this.runJob(id, () => this.runTurnFor(id, phase, `${this.resumeNote(id, 'a message from the user')}\n\nMessage from the user:\n\n${text}`));
   }
 
@@ -375,7 +388,7 @@ export class LiveEngine implements Engine {
       if (fm.awaiting !== 'question') throw new Error(`${id} is not awaiting a question`);
       const answers = payload.answers as Record<string, string>;
       const text = Object.entries(answers).map(([q, a]) => `- Q: ${q}\n  A: ${a}`).join('\n');
-      this.store.mutateItem(id, [{ unset: ['awaiting', 'awaiting_data'] }, { activity: { actor: 'user', text: `answered: ${Object.values(answers).join(' / ')}` } }], 'user', { commit: `${id}: answer questions` });
+      this.store.mutateItem(id, [{ unset: ['awaiting', 'awaiting_data', 'triage'] }, { activity: { actor: by, text: `answered: ${Object.values(answers).join(' / ')}` } }], by, { commit: `${id}: answer questions${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
       this.queueFollowUp(id, () => this.runTurnFor(id, phase, `${this.resumeNote(id, 'your questions')}\n\nAnswers to your questions:\n\n${text}\n\nContinue.`));
       return;
     }
@@ -489,7 +502,9 @@ export class LiveEngine implements Engine {
           return { action: 'park' };
         },
         onQuestion: async (questions) => {
-          this.store.mutateItem(id, [{ set: { awaiting: 'question', awaiting_data: { questions, requested_at: this.now() } } }, { activity: { actor: 'app', text: `parked: agent asked ${questions.length} question(s)` } }], 'engine', { commit: `${id}: awaiting answers` });
+          const triage = this.triageOps(this.store.requireItem(id).file.frontmatter, 'question');
+          this.store.mutateItem(id, [{ set: { awaiting: 'question', awaiting_data: { questions, requested_at: this.now() } } }, { activity: { actor: 'app', text: `parked: agent asked ${questions.length} question(s)` } }, ...triage.ops], 'engine', { commit: `${id}: awaiting answers` });
+          if (triage.on) this.wakeWhenIdle(id, 'worker_question');
         },
         onOutput: (text) => { const t = this.turns.get(id); if (t) t.lastOutput = text.slice(-400); this.emit({ type: 'session.output', id, text }); },
         signal: abort.signal,
@@ -545,7 +560,7 @@ export class LiveEngine implements Engine {
     // Same for an agent_blocked flag the worker outlived: it was resumed, did not block again this
     // turn and reported done. Whatever door resumed it, the block is answered.
     if (fm.blocked && fm.blocked_reason === 'agent_blocked' && result.done && !result.blocked) {
-      this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data'] }, { activity: { actor: 'app', text: 'cleared a stale agent_blocked flag (the resumed session reported done)' } }], 'engine');
+      this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, { activity: { actor: 'app', text: 'cleared a stale agent_blocked flag (the resumed session reported done)' } }], 'engine');
       fm = this.store.requireItem(id).file.frontmatter;
     }
     if (fm.awaiting || fm.blocked) return;                       // parked or agent-blocked: nothing to drive
@@ -1154,7 +1169,7 @@ export class LiveEngine implements Engine {
         const problem = validateBreakdown(children, s.config.models, s.config.categories);
         if (problem) { s.mutateItem(id, [{ activity: { actor: 'app', text: `breakdown rejected back to the planner: ${problem}` } }], 'engine'); return `Rejected: ${problem}. Fix that and call submit_breakdown again.`; }
         const ops: ItemOp[] = [{ section: 'Plan', body: plan }];
-        if (cur.blocked && cur.blocked_reason === 'no_plan') ops.push({ unset: ['blocked', 'blocked_reason'] });
+        if (cur.blocked && cur.blocked_reason === 'no_plan') ops.push({ unset: ['blocked', 'blocked_reason', 'triage'] });
         if (cur.status === 'PLAN_IN_PROGRESS') ops.push({ transition: { to: 'PLAN_READY', actor: 'engine' } });
         ops.push({ set: { awaiting_data: { children, requested_at: this.now() } } });
         s.mutateItem(id, ops, 'engine', { commit: `${id}: submit breakdown` });
@@ -1168,7 +1183,7 @@ export class LiveEngine implements Engine {
         // The planner went on without the permission it had asked for: that request is moot, and must not be mistaken for the plan's own wait.
         if (cur.awaiting === 'permission' || cur.awaiting_data?.kind === 'permission') ops.push({ unset: ['awaiting', 'awaiting_data'] });
         // A late submit cures a no_plan block (e.g. after an MCP transport failure ate the first attempt).
-        if (cur.blocked && cur.blocked_reason === 'no_plan') ops.push({ unset: ['blocked', 'blocked_reason'] });
+        if (cur.blocked && cur.blocked_reason === 'no_plan') ops.push({ unset: ['blocked', 'blocked_reason', 'triage'] });
         const delegated = cur.status === 'PLAN_IN_PROGRESS' && this.planDelegated(cur);
         if (cur.status === 'PLAN_IN_PROGRESS') ops.push({ transition: { to: 'PLAN_READY', actor: 'engine' } });
         // A new plan is a new decision: whoever had it last time, it starts with the orchestrator again if delegated.
@@ -1263,22 +1278,287 @@ export class LiveEngine implements Engine {
   private block(id: string, reason: string, detail: string, awaiting: 'user' | undefined = 'user'): void {
     try {
       const cur = this.store.requireItem(id).file.frontmatter;
+      // A stop for a person goes to the orchestrator first (triage); it resolves it or asks one plain question.
+      const triage = this.triageOps(cur, reason);
       this.store.mutateItem(id, [
         { set: { blocked: true, blocked_reason: reason, ...(awaiting ? { awaiting } : {}) } },
         ...(cur.op ? [{ unset: ['op', 'op_started_at'] } as ItemOp] : []),
         { activity: { actor: 'app', text: `BLOCKED (${reason}): ${detail.replace(/\s+/g, ' ').slice(0, 500)}` } },
+        ...triage.ops,
       ], 'engine', { commit: `${id}: blocked (${reason})` });
-      this.note('warn', `${id} blocked: ${reason} — ${detail.slice(0, 200)}`);
-      if ((JUDGMENT_BLOCKS as readonly string[]).includes(reason)) this.wakeOrchestrator(`blocked_${reason}`, id, { detail: detail.slice(0, 2000) });
+      this.note('warn', `${id} blocked: ${reason} — ${detail.slice(0, 200)}${triage.on ? ' (the orchestrator is triaging it)' : ''}`);
+      if (triage.on) this.wakeWhenIdle(id, `blocked_${reason}`, { detail: detail.slice(0, 2000) });
+      else if ((JUDGMENT_BLOCKS as readonly string[]).includes(reason)) this.wakeOrchestrator(`blocked_${reason}`, id, { detail: detail.slice(0, 2000) });
     } catch (e) { this.note('error', `could not record block on ${id}: ${(e as Error).message}`); }
   }
 
-  /** User-driven unblock: clears the flag and, if the item is in a session phase, resumes with a message. */
-  async unblock(id: string, message?: string): Promise<void> {
+  // ---- needs-you triage: the orchestrator looks at a stop before the user does ----
+  /** On in config, an orchestrator to ask, and automation running (a paused orchestrator is never woken). */
+  private triageAvailable(): boolean { return this.store.config.orchestrator.triage && this.orchestrator.enabled && !this._paused && !this.stopping; }
+
+  /** A stop usually happens inside the turn that is still ending: wake once it has, so every tool finds the item idle. */
+  private wakeWhenIdle(id: string, type: string, data?: Record<string, unknown>): void {
+    if (this.jobs.has(id) || this.turns.has(id)) this.pendingWakes.set(id, { type, data });
+    else this.wakeOrchestrator(type, id, data);
+  }
+
+  /** The ops that put a stop into triage, or none (with a note why) when it goes straight to the user. */
+  private triageOps(fm: { status: Status; op_data?: Record<string, unknown> }, reason: string): { on: boolean; ops: ItemOp[] } {
+    if (!this.triageAvailable()) return { on: false, ops: [] };
+    const rounds = fm.op_data?.triage_status === fm.status ? Number(fm.op_data?.triage_rounds ?? 0) : 0;
+    if (rounds >= MAX_TRIAGE_ROUNDS) return { on: false, ops: [{ activity: { actor: 'app', text: `not triaged: the orchestrator has already looked at ${rounds} stops of this item in ${fm.status}; it needs you` } }] };
+    return { on: true, ops: [
+      { set: { triage: { reason, started_at: this.now() }, op_data: { ...(fm.op_data ?? {}), triage_status: fm.status, triage_rounds: rounds + 1 } } },
+      { activity: { actor: 'app', text: `the orchestrator is triaging this (${reason}) before it comes to you` } },
+    ] };
+  }
+
+  /**
+   * Nothing waits in triage on memory (invariant 2/3): a restart drops the wake queue, the switch can
+   * be turned off, automation can be paused, and a wake can hang. Each of those ends in today's
+   * behaviour — the item needs you — or, for a dropped wake, a new one.
+   */
+  private driveTriage(): void {
+    const timeoutMs = this.store.config.orchestrator.triage_timeout_min * 60_000;
+    for (const item of this.store.listItems()) {
+      const fm = item.file.frontmatter;
+      if (!fm.triage) continue;
+      // A step is running: the stop's own turn still ending (its wake follows), or a repair, which ends by unblocking or by blocking again.
+      if (this.jobs.has(item.id) || this.turns.has(item.id) || this.pendingWakes.has(item.id)) continue;
+      if (!this.triageAvailable()) this.endTriage(item.id, this._paused ? 'automation is paused' : 'the orchestrator is not available');
+      else if (Date.now() - Date.parse(fm.triage.started_at) > timeoutMs) this.endTriage(item.id, `triage took longer than ${this.store.config.orchestrator.triage_timeout_min} min (orchestrator.triage_timeout_min)`);
+      else if (!this.orchestrator.reviewing(item.id)) this.wakeOrchestrator(fm.triage.reason === 'decision' ? 'decision_answered' : fm.triage.reason === 'question' ? 'worker_question' : `blocked_${fm.triage.reason}`, item.id, { note: 'woken again: the earlier wake was lost (a restart)' });
+    }
+  }
+
+  /** Triage is over without a resolution: the item is the user's, exactly as it stopped. */
+  private endTriage(id: string, why: string): void {
+    const fm = this.store.getItem(id)?.file.frontmatter;
+    if (!fm?.triage || this.jobs.has(id)) return;
+    this.store.mutateItem(id, [{ unset: ['triage'] }, { activity: { actor: 'app', text: `needs you: ${why}` } }], 'engine', { commit: `${id}: triage ended` });
+    this.note('info', `${id}: needs you — ${why}`);
+  }
+
+  private busyWith(id: string): string | undefined { return this.jobs.has(id) || this.turns.has(id) ? `${id} has a step running; let it finish first` : undefined; }
+
+  private async orchestratorUnblocks(id: string, message?: string): Promise<string> {
     const fm = this.store.requireItem(id).file.frontmatter;
-    this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data'] }, { activity: { actor: 'user', text: `unblocked${message ? `: ${message}` : ''}` } }], 'user', { commit: `${id}: unblock` });
+    if (!fm.blocked && fm.awaiting !== 'user') return `nothing to unblock: ${id} is not blocked${fm.awaiting ? ` (it is awaiting ${fm.awaiting}; answer that instead)` : ''}`;
+    const busy = this.busyWith(id); if (busy) return `not now: ${busy}`;
+    await this.unblock(id, message?.trim() || undefined, 'orchestrator');
+    return message?.trim() && this.phaseFor(fm.status) ? 'unblocked; the session resumes with your message' : 'unblocked; the pipeline retries from where it stopped';
+  }
+
+  private async orchestratorAnswers(id: string, answers: Record<string, string>): Promise<string> {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    if (fm.awaiting !== 'question') return `nothing to answer: ${id} is not waiting on a question`;
+    if (!Object.keys(answers ?? {}).length) return 'give at least one answer';
+    await this.respond(id, { kind: 'question', answers }, 'orchestrator');
+    return 'answered; the session resumes with your answers';
+  }
+
+  private orchestratorSetsFields(id: string, fields: Record<string, unknown>): string {
+    const item = this.store.requireItem(id);
+    const refused = Object.keys(fields ?? {}).filter((k) => !(ORCHESTRATOR_FIELDS as readonly string[]).includes(k));
+    if (refused.length) return `not permitted: ${refused.join(', ')}. You may set only ${ORCHESTRATOR_FIELDS.join(', ')}; nothing was changed.`;
+    if (!Object.keys(fields ?? {}).length) return 'no fields given';
+    const set: Record<string, unknown> = {}; const unset: string[] = [];
+    for (const [k, v] of Object.entries(fields)) {
+      if (v === null) { if (k === 'depends_on') set.depends_on = []; else unset.push(k); continue; }
+      if (k === 'parent') {
+        const p = this.store.getItem(String(v));
+        if (!p || p.file.frontmatter.kind !== 'epic') return `not changed: ${String(v)} is not an epic`;
+        if (item.file.frontmatter.kind === 'epic') return `not changed: ${id} is an epic; epics do not nest`;
+        set.parent = p.id;
+      } else if (k === 'depends_on') {
+        if (!Array.isArray(v) || v.some((d) => typeof d !== 'string')) return 'not changed: depends_on is a list of item ids';
+        const missing = (v as string[]).filter((d) => d === id || !this.store.getItem(d));
+        if (missing.length) return `not changed: ${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} not another item`;
+        set.depends_on = v;
+      } else if (k === 'implementer') {
+        if (!this.store.config.models.some((m) => m.id === v)) return `not changed: ${String(v)} is not a model id (${this.store.config.models.map((m) => m.id).join(', ')})`;
+        set.implementer = v;
+      } else if (k === 'base_branch_override') {
+        if (typeof v !== 'string' || !v.trim()) return 'not changed: base_branch_override is a branch name, or null';
+        set.base_branch_override = v.trim();
+      } else {
+        if (typeof v !== 'boolean') return `not changed: ${k} is true, false or null`;
+        set[k] = v;
+      }
+    }
+    const said = [...Object.entries(set).map(([k, v]) => `${k} = ${Array.isArray(v) ? `[${v.join(', ')}]` : String(v)}`), ...unset.map((k) => `${k} cleared`)].join(', ');
+    this.store.mutateItem(id, [...(Object.keys(set).length ? [{ set } as ItemOp] : []), ...(unset.length ? [{ unset } as ItemOp] : []), { activity: { actor: 'orchestrator', text: `set ${said}` } }], 'orchestrator', { commit: `${id}: fields (orchestrator)` });
+    const d = this.store.derived(this.store.requireItem(id));
+    this.poke();
+    return `set ${said}. Base branch is now ${d.base_branch ?? `unresolved (${d.base_branch_error})`}${item.file.frontmatter.worktree && ('parent' in fields || 'base_branch_override' in fields) ? '; the existing worktree was not moved (recreate_worktree does that)' : ''}.`;
+  }
+
+  /** The base a worktree was cut from, as its creation was journalled (the item's base may have changed since). */
+  private journalledBase(id: string): string | undefined {
+    const begin = this.store.journal.read({ item: id, type: 'op.begin' }).reverse().find((e) => e.data?.op === 'creating_worktree' && typeof e.data?.base === 'string');
+    return begin?.data?.base as string | undefined;
+  }
+
+  /**
+   * Replace a worktree that holds no work with a fresh one from the item's current base (invariant 7:
+   * positive evidence first — a clean tree, and every commit on the branch, local and pushed, already
+   * on the old or the new base). The removal and setup run as the item's job; it ends by unblocking.
+   */
+  async recreateWorktree(id: string, message?: string): Promise<string> {
+    const item = this.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    const d = this.store.derived(item);
+    if (d.flavor !== 'worker') return `not possible: ${id} is not a worker item with a session worktree`;
+    if (!['PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS'].includes(fm.status)) return `not possible: ${id} is ${fm.status}; only an item still planning or implementing gets a new worktree`;
+    if (fm.pr) return `not possible: ${id} already has pull request #${fm.pr}`;
+    if (!fm.worktree || !fm.branch) return `not possible: ${id} has no worktree recorded`;
+    const busy = this.busyWith(id); if (busy) return `not now: ${busy}`;
+    const base = d.base_branch;
+    if (!base) return `not possible: ${d.base_branch_error ?? 'the base branch cannot be resolved'}`;
+    const dir = this.absWorktree(fm.worktree);
+    const branch = fm.branch;
+    const bases = [...new Set([base, this.journalledBase(id)].filter((b): b is string => Boolean(b)))];
+    let entry: { path: string } | undefined;
+    try {
+      await this.ports.git.fetch(this.repo);
+      entry = (await this.ports.git.worktreeList(this.repo)).find((w) => w.path === dir && !w.prunable);
+      if (entry) {
+        const { clean, dirty } = await this.ports.git.status(dir);
+        if (!clean) return `refused: ${fm.worktree} has uncommitted changes (${dirty.slice(0, 5).join(', ')}); nothing was touched`;
+        let empty = false;
+        for (const b of bases) if ((await this.ports.git.aheadBehind(dir, `origin/${b}`, 'HEAD')).ahead === 0) { empty = true; break; }
+        if (!empty) return `refused: ${branch} has commits that are not on origin/${bases.join(' or origin/')}; recreating would lose work, so nothing was touched`;
+      } else if (await this.ports.git.localBranchExists(this.repo, branch)) {
+        const tip = await this.ports.git.revParse(this.repo, `refs/heads/${branch}`);
+        if (!(await this.anyAncestor(tip, bases))) return `refused: the local branch ${branch} has commits that are not on origin/${bases.join(' or origin/')}; nothing was touched`;
+      }
+      const remote = await this.ports.git.remoteBranchSha(this.repo, branch);
+      if (remote && !(await this.anyAncestor(remote, bases))) return `refused: the pushed branch ${branch} has commits that are not on origin/${bases.join(' or origin/')}; nothing was touched`;
+    } catch (e) { return `refused: could not verify the worktree holds no work (${(e as Error).message.slice(0, 200)}); nothing was touched`; }
+    const note = message?.trim() || `planestro recreated your worktree (${fm.worktree}, branch ${branch}) from origin/${base}. It holds none of your earlier edits (there were none to keep). Continue your ${fm.status === 'IN_PROGRESS' ? 'implementation of the approved plan' : 'planning'} from there.`;
+    const hadWorktree = Boolean(entry);
+    this.runJob(id, async () => {
+      const opId = this.store.journal.begin('creating_worktree', id, { branch, dir, base, recreate: true });
+      this.store.mutateItem(id, [{ set: { op: 'creating_worktree', op_started_at: this.now() } }, { activity: { actor: 'orchestrator', text: `recreating ${fm.worktree} on ${branch} from origin/${base}${hadWorktree ? '' : ' (the old one was gone)'}` } }], 'engine', { commit: `${id}: recreate worktree` });
+      if (hadWorktree) await this.ports.git.worktreeRemove(this.repo, dir, false);
+      await this.ports.git.worktreePrune(this.repo);
+      await this.ports.git.deleteLocalBranch(this.repo, branch);
+      if (await this.ports.git.remoteBranchSha(this.repo, branch)) await this.ports.git.deleteRemoteBranch(this.repo, branch);
+      await this.ports.git.worktreeAdd(this.repo, dir, branch, `origin/${base}`);
+      if (!(await this.runSetupHooks(id, dir, opId))) return;
+      this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }], 'engine');
+      this.store.journal.end(opId, id, 'ok');
+      const cur = this.store.requireItem(id).file.frontmatter;
+      if (cur.blocked || cur.awaiting === 'user') await this.unblock(id, cur.status === 'PLAN_READY' ? undefined : note, 'orchestrator');
+    });
+    return `recreating ${fm.worktree} from origin/${base}: setup hooks run, then the item is unblocked${fm.status === 'PLAN_READY' ? ' (its plan still waits for approval)' : ' and its session resumed with ' + (message?.trim() ? 'your message' : 'a note that the worktree is new')}.`;
+  }
+
+  private async anyAncestor(sha: string, bases: string[]): Promise<boolean> {
+    for (const b of bases) if (await this.ports.git.isAncestor(this.repo, sha, `origin/${b}`)) return true;
+    return false;
+  }
+
+  /** `after_worktree_create`, one hook at a time within the local-job limit; a failure blocks the item. */
+  private async runSetupHooks(id: string, dir: string, opId: string): Promise<boolean> {
+    this.store.mutateItem(id, [{ set: { op: 'importing', op_started_at: this.now() } }], 'engine');
+    for (const hook of this.store.config.hooks.after_worktree_create) {
+      const r = await this.withLocalJobSlot(() => this.ports.proc.run(hook, { cwd: dir, timeoutMs: 20 * 60_000 }));
+      if (r.code !== 0) { this.store.journal.end(opId, id, 'failed', { hook, code: r.code }); this.block(id, 'hook_failed', `${hook} exited ${r.code}: ${r.stderr.slice(-400)}`); return false; }
+      this.store.mutateItem(id, [{ activity: { actor: 'app', text: `hook ok: ${hook}` } }], 'engine');
+    }
+    return true;
+  }
+
+  /** Re-run what a transient failure stopped, by the same doors the pipeline itself uses. */
+  async retryOp(id: string): Promise<string> {
+    const item = this.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    if (!fm.blocked) return `nothing to retry: ${id} is not blocked`;
+    if (fm.awaiting && fm.awaiting !== 'user') return `not now: ${id} is awaiting ${fm.awaiting}; answer that instead`;
+    const busy = this.busyWith(id); if (busy) return `not now: ${busy}`;
+    const reason = fm.blocked_reason ?? 'blocked';
+    const clear = (text: string, extra: ItemOp[] = []): void => { this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, ...extra, { activity: { actor: 'orchestrator', text } }], 'orchestrator', { commit: `${id}: retry (orchestrator)` }); };
+    const resume = `The last step stopped on a transient failure (${reason}), which has been retried. Nothing of yours was lost: check your worktree and continue where you left off.`;
+    if (fm.status === 'IN_REVIEW') { clear(`retrying the merge pipeline after ${reason}`, [{ set: { ci_result: 'pending' } }]); this.poke(); return 'retrying: it re-enters the merge pipeline'; }
+    if (fm.status === 'MERGED') { clear(`retrying cleanup after ${reason}`); this.runJob(id, () => this.cleanup(id)); return 'retrying the cleanup (it still needs positive evidence before deleting anything)'; }
+    if (this.store.derived(item).flavor !== 'worker' || !fm.worktree) return `not possible: nothing in ${fm.status} to retry for ${id}; use unblock_item`;
+    const dir = this.absWorktree(fm.worktree);
+    const exists = (await this.ports.git.worktreeList(this.repo).catch(() => [])).some((w) => w.path === dir && !w.prunable);
+    if (fm.status === 'PLAN_IN_PROGRESS' && !exists && !fm.session_id) {
+      clear(`retrying setup after ${reason} (the worktree was never made)`, [{ transition: { to: 'QUEUED', actor: 'engine' } }]);
+      this.poke();
+      return 'retrying: back in the queue, so setup runs again from the start';
+    }
+    if (!exists) return `not possible: the worktree ${fm.worktree} is missing; use recreate_worktree`;
+    if (fm.status === 'IN_PROGRESS') {
+      const { clean } = await this.ports.git.status(dir);
+      const base = this.store.derived(item).base_branch;
+      const ahead = clean && base ? (await this.ports.git.aheadBehind(dir, `origin/${base}`, 'HEAD')).ahead : 0;
+      if (ahead > 0) {
+        clear(`retrying after ${reason}: the work is committed, opening the pull request again`);
+        this.runJob(id, () => this.afterWorkTurn(id, 'implement', { subtype: 'success', isError: false, costUsd: 0, numTurns: 0, text: '', done: String(fm.op_data?.done_summary ?? '') || undefined }));
+        return 'retrying: the committed work goes to a pull request';
+      }
+    }
+    if (!this.phaseFor(fm.status)) return `not possible: nothing in ${fm.status} to retry for ${id}`;
+    await this.unblock(id, resume, 'orchestrator');
+    return 'retrying: the session is resumed';
+  }
+
+  /** The orchestrator's escalation: one plain decision, parked on an item that is already stopped. */
+  private askUserDecision(id: string, input: DecisionInput): string {
+    const item = this.store.getItem(id);
+    if (!item) return `no item ${id}`;
+    const fm = item.file.frontmatter;
+    if (!fm.blocked && fm.awaiting !== 'question' && fm.awaiting !== 'user') return `not possible: ${id} is not stopped (not blocked, no question). A decision card belongs on an item that waits; use ask_user for anything else.`;
+    const v = validateDecision(input);
+    if (!v.ok) return `not recorded: ${v.error}. Fix that and call ask_user_decision again.`;
+    const decision: Decision = { ...v.value, requested_at: this.now(), reason: fm.blocked ? fm.blocked_reason : fm.awaiting === 'question' ? 'question' : fm.awaiting };
+    this.store.mutateItem(id, [
+      { set: { awaiting: fm.awaiting ?? 'user', awaiting_data: { ...(fm.awaiting_data ?? {}), decision } } },
+      { unset: ['triage'] },
+      { activity: { actor: 'orchestrator', text: `decision needed: ${decision.question} (recommended: ${decision.options[0].label})` } },
+    ], 'orchestrator', { commit: `${id}: decision for the user` });
+    this.store.journal.append({ type: 'orchestrator.decision_requested', item: id, actor: 'orchestrator', data: { question: decision.question, why: decision.why, options: decision.options.map((o) => o.label) } });
+    this.note('warn', `${id}: needs your decision — ${decision.question}`);
+    return 'recorded: the user sees the card; you will be woken with the answer. End this wake with done_with_wake.';
+  }
+
+  /**
+   * The user answered a decision card. The answer is the orchestrator's to carry out, so the item
+   * goes back into triage and the orchestrator is woken with the question and the answer; without
+   * an orchestrator, a blocked session is resumed with them directly.
+   */
+  async answerDecision(id: string, answer: { choice?: string; text?: string }): Promise<void> {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    const decision = decisionOf(fm);
+    if (!decision) throw new Error(`${id} has no decision waiting for you`);
+    const choice = answer.choice?.trim(); const text = answer.text?.trim();
+    if (!choice && !text) throw new Error('pick an option or write your answer');
+    if (choice && !decision.options.some((o) => o.label === choice)) throw new Error(`"${choice}" is not one of the options`);
+    if (!choice && !decision.allow_free_text) throw new Error('pick one of the options');
+    const said = [choice, text].filter(Boolean).join(' — ');
+    const { decision: _answered, ...rest } = fm.awaiting_data ?? {};
+    const carry = this.triageAvailable();
+    this.store.mutateItem(id, [
+      Object.keys(rest).length ? { set: { awaiting_data: rest } } : { unset: ['awaiting_data'] },
+      ...(carry ? [{ set: { triage: { reason: 'decision', started_at: this.now() } } } as ItemOp] : []),
+      { activity: { actor: 'user', text: `decided: ${decision.question} → ${said}` } },
+    ], 'user', { commit: `${id}: decision answered` });
+    this.store.journal.append({ type: 'orchestrator.decision_answered', item: id, actor: 'user', data: { question: decision.question, choice: choice ?? null, text: text ?? null } });
+    if (carry) { this.wakeOrchestrator('decision_answered', id, { question: decision.question, answer: said, options: decision.options.map((o) => `${o.label}: ${o.description}`).join(' | ') }); return; }
+    // No orchestrator to carry it out: a blocked session hears the answer itself; a worker's question stays for you to answer.
+    const cur = this.store.requireItem(id).file.frontmatter;
+    if (cur.blocked || cur.awaiting === 'user') await this.unblock(id, `The user was asked: ${decision.question}\nTheir answer: ${said}`);
+  }
+
+  /** User-driven unblock: clears the flag and, if the item is in a session phase, resumes with a message. */
+  async unblock(id: string, message?: string, by: 'user' | 'orchestrator' = 'user'): Promise<void> {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, { activity: { actor: by, text: `unblocked${message ? `: ${message}` : ''}` } }], by, { commit: `${id}: unblock${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
     const phase = this.phaseFor(fm.status);
-    if (message && phase) this.runJob(id, () => this.runTurnFor(id, phase, `${this.resumeNote(id, 'a decision from the user')}\n\n${message}`));
+    if (message && phase) this.queueFollowUp(id, () => this.runTurnFor(id, phase, `${this.resumeNote(id, by === 'orchestrator' ? 'the orchestrator' : 'a decision from the user')}\n\n${message}`));
     else void this.tick();
   }
 

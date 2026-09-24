@@ -5,6 +5,10 @@ in its Activity log saying exactly what happened. Fix the cause, then **unblock�
 message, the session resumes with your decision; without one, the engine re-evaluates.
 A test (`docs.test.ts`) fails if the engine can raise a reason that is missing here.
 
+With `orchestrator.triage` on, a new block first shows as **orchestrator triaging**: the
+orchestrator fixes what it can (retries, worktree recreation, answers already in the brief)
+and brings you only a plain decision card. See [Needs-you triage](concepts.md#needs-you-triage).
+
 ## The agent
 
 | Reason | Meaning | Do |
@@ -49,6 +53,11 @@ A test (`docs.test.ts`) fails if the engine can raise a reason that is missing h
 | `engine_error` | An unexpected error inside a lifecycle step; the message is the exception. | If a retry makes sense, unblock; if it repeats, it is a bug — the Activity log and journal have what is needed to report it. |
 
 ## Not blocked, but stuck?
+
+- **"Orchestrator triaging" for a long time.** It ends by itself after
+  `orchestrator.triage_timeout_min` (10); pausing automation, or unblocking / answering the
+  item yourself, ends it at once. If the orchestrator keeps failing to wake, look at the
+  Console for `orchestrator wake failed` — or turn `orchestrator.triage` off.
 
 - **Nothing starts.** Automation paused? `max_sessions` full? Dependencies not merged
   (`waits on …` on the card)? A parent epic not opened?

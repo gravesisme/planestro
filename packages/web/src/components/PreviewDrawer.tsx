@@ -8,6 +8,8 @@ import { QuickActions } from './QuickActions.tsx';
 import { ReviewPanel } from './ReviewPanel.tsx';
 import { BlockedPanel } from './BlockedPanel.tsx';
 import { AwaitingPanels } from './AwaitingPanels.tsx';
+import { DecisionCard } from './DecisionCard.tsx';
+import { decisionOf } from '@planestro/shared';
 
 const LIVE_STATUSES = ['PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW', 'MERGED'];
 
@@ -38,7 +40,8 @@ export function PreviewDrawer({ id, onClose }: { id: string; onClose: () => void
       <div className="controls" style={{ margin: '8px 0' }}>
         <span className="pill">{statusLabel(fm.status)}</span>
         {fm.blocked && <span className="pill blocked">BLOCKED · {fm.blocked_reason}</span>}
-        {fm.awaiting && <span className={`pill ${d.needs_you ? 'await' : ''}`}>awaiting {fm.awaiting.replace(/_/g, ' ')}</span>}
+        {fm.awaiting && <span className={`pill ${d.needs_you ? 'await' : ''}`}>{decisionOf(fm) ? 'your decision' : `awaiting ${fm.awaiting.replace(/_/g, ' ')}`}</span>}
+        {fm.triage && <span className="pill triage">orchestrator triaging</span>}
         {fm.op && <span className="pill">{fm.op.replace(/_/g, ' ')}</span>}
         {session && <span className="pill">session {session.busy ? 'running' : 'idle'}</span>}
       </div>
@@ -47,6 +50,7 @@ export function PreviewDrawer({ id, onClose }: { id: string; onClose: () => void
         {fm.branch ? <> · <code>{fm.branch}</code></> : null}
         {fm.pr ? <> · <a href={`https://github.com/${state!.config.code_repo.github}/pull/${fm.pr}`} target="_blank" rel="noreferrer">PR #{fm.pr}</a>{fm.ci_result ? ` (CI ${fm.ci_result})` : ''}</> : null}
       </p>
+      <DecisionCard item={item} />
       <BlockedPanel item={item} compact />
       <AwaitingPanels item={item} />
       {fm.awaiting === 'review' ? <ReviewPanel item={item} compact /> : <QuickActions item={item} />}

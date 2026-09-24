@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { getSection, serializeItemFile, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent } from '@planestro/shared';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Ports, CustomToolDef, TurnResult } from './ports.ts';
+import type { DecisionInput } from '@planestro/shared';
 
 export interface WakeEvent { type: string; item?: string; data?: Record<string, unknown> }
 
@@ -27,6 +28,21 @@ export interface OrchestratorHooks {
   permissionReviewEnded(id: string): void;
   /** Copy files from one item's worktree to another item that waits on it (see LiveEngine.handOff). */
   handOff(from: string, to: string, paths: string[], note: string): Promise<string>;
+  // ---- triage: resolve a stopped item, or turn it into one plain decision for the user ----
+  /** Clear a block (or an `awaiting: user`) and, with a message, resume the session with it. */
+  unblock(id: string, message?: string): Promise<string>;
+  /** Answer a worker's parked questions, as the user would. */
+  answerQuestion(id: string, answers: Record<string, string>): Promise<string>;
+  /** Set a whitelisted handful of an item's own fields (parent, dependencies, base override, …). */
+  setItemFields(id: string, fields: Record<string, unknown>): string;
+  /** Replace a worktree that holds no work with a fresh one from the item's current base, then unblock. */
+  recreateWorktree(id: string, message?: string): Promise<string>;
+  /** Re-run the step a transient failure stopped (a GitHub 5xx, a network hiccup). */
+  retryOp(id: string): Promise<string>;
+  /** Park a structured decision card on a stopped item for the user. */
+  askUserDecision(id: string, input: DecisionInput): string;
+  /** A wake that carried this item's triage is over; if it is still in triage, it goes to the user. */
+  triageEnded(id: string): void;
   poke(): void;
 }
 
@@ -91,6 +107,8 @@ export class Orchestrator {
           // (Unless a revised plan already queued its own review: that one is still to come.)
           for (const e of batch) if (e.type === 'plan_review' && e.item && !this.queue.some((q) => q.type === 'plan_review' && q.item === e.item)) this.hooks.planReviewEnded(e.item);
           for (const e of batch) if (e.type === 'permission_request' && e.item && !this.queue.some((q) => q.type === 'permission_request' && q.item === e.item)) this.hooks.permissionReviewEnded(e.item);
+          // Triage never outlives the wake that carried it: resolved, escalated, or it goes to the user as it is.
+          for (const id of new Set(batch.flatMap((e) => (e.item ? [e.item] : [])))) if (!this.queue.some((q) => q.item === id)) this.hooks.triageEnded(id);
         }
       }
     } finally { this.running = false; }
@@ -175,6 +193,7 @@ export class Orchestrator {
         const activity = getSection(item.file, 'Activity').split('\n').slice(-8).join('\n'); if (activity) lines.push(`Recent activity:\n${activity}`);
         if (e.type === 'plan_review') lines.push(this.planPolicy(fm.id, fm.plan_revisions ?? 0));
         if (e.type === 'permission_request') lines.push(this.permissionPacket(fm));
+        if (fm.triage) lines.push(e.type === 'decision_answered' ? this.decisionAnsweredPacket() : this.triagePacket(fm));
       }
     }
     for (const [k, v] of Object.entries(e.data ?? {})) lines.push(`${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`.slice(0, 2000));
@@ -219,6 +238,34 @@ export class Orchestrator {
     ].filter(Boolean).join('\n');
   }
 
+  /**
+   * The triage rule, said in the packet rather than only in the prompt library (a data dir's copy of
+   * orchestrator-system can predate it): what stopped, what is within the orchestrator's authority,
+   * and what a decision card must look like.
+   */
+  private triagePacket(fm: { id: string; blocked?: boolean; blocked_reason?: string; awaiting?: string; awaiting_data?: Record<string, unknown>; status: string }): string {
+    const what = fm.blocked ? `it is BLOCKED (${fm.blocked_reason})` : fm.awaiting === 'question' ? 'its worker asked a question and is parked' : `it is waiting (${fm.awaiting})`;
+    const questions = fm.awaiting === 'question' ? `\nThe worker's questions:\n${JSON.stringify(fm.awaiting_data?.questions ?? [], null, 2).slice(0, 3000)}` : '';
+    return [
+      `Triage: DELEGATED TO YOU. ${fm.id} stopped — ${what} — and would land on the user's NEEDS YOU list. Look first: resolve it yourself if it is within your authority, and bring the user only a genuine decision. Read the item (read_item) and its recent activity before you act.${questions}`,
+      'Resolve (preferred) with one of:',
+      '- unblock_item — the fix is an instruction to the session: resubmit a plan it already wrote (an MCP "Stream closed" ate submit_plan), carry on after a hiccup, use what the brief already says. Pass the message it should act on.',
+      '- answer_question — the worker asked something the brief, plan, notes or project rules already answer.',
+      '- retry_op — a transient failure: a GitHub 5xx, an SSH or network hiccup, a timeout. Not for anything that failed the same way twice.',
+      '- set_item_fields — a wrong parent/base/dependency/implementer/fallback setting (e.g. an epic child created without its parent, so it was cut from the wrong base). Then recreate_worktree if the worktree was cut from the wrong base.',
+      '- recreate_worktree — a missing worktree (worktree_missing after a fetch race) or one cut from the wrong base. It refuses if the worktree or branch holds any work, re-runs setup, then unblocks with your message.',
+      'Escalate only a decision that is genuinely the user\'s — spending (budget caps, usage limits), scope, taste, or anything irreversible — with ask_user_decision: ONE plain one-line question, one sentence of why, 2–4 options with exactly one marked recommended (always recommend), each a thing you can carry out with your tools or that the user does themselves (say which). No jargon, no log excerpts: the card is read on a phone.',
+      'Record what you did with annotate_item. If you do none of these in this wake, the item goes to the user exactly as it is.',
+    ].join('\n');
+  }
+
+  private decisionAnsweredPacket(): string {
+    return [
+      'Decision answered: the user answered the decision card you left on this item (question and answer below). Carry it out now with your tools — unblock_item with a message, answer_question, set_item_fields, recreate_worktree, retry_op — and note what you did with annotate_item.',
+      'If the answer asks for something no tool can do, say exactly what the user must do in one more ask_user_decision, or leave it: when this wake ends without action the item goes back to the user.',
+    ].join('\n');
+  }
+
   private tools(onDone: (summary: string) => void): CustomToolDef[] {
     const store = this.store;
     const idArg = { id: z.string() };
@@ -233,12 +280,18 @@ export class Orchestrator {
       { name: 'message_session', description: "Send guidance to an item's worker session (queued for its next turn).", schema: { ...idArg, text: z.string() }, handler: async (a) => { await this.hooks.message(String(a.id), String(a.text)); return 'queued for the session'; } },
       { name: 'annotate_item', description: "Append an orchestrator note to an item's activity log.", schema: { ...idArg, text: z.string() }, handler: async (a) => { store.mutateItem(String(a.id), [{ activity: { actor: 'orchestrator', text: String(a.text) } }], 'orchestrator'); return 'noted'; } },
       { name: 'submit_item', description: 'Queue a NOT_YET_SUBMITTED worker item for planning.', schema: idArg, handler: async (a) => { store.transition(String(a.id), 'QUEUED', 'orchestrator'); this.hooks.poke(); return 'queued'; } },
-      { name: 'mark_blocked', description: 'Block an item for the user with a reason.', schema: { ...idArg, reason: z.string() }, handler: async (a) => { store.mutateItem(String(a.id), [{ set: { blocked: true, blocked_reason: 'orchestrator', awaiting: 'user' } }, { activity: { actor: 'orchestrator', text: `blocked for the user: ${a.reason}` } }], 'orchestrator', { commit: `${a.id}: blocked (orchestrator)` }); return 'blocked'; } },
+      { name: 'mark_blocked', description: 'Block an item for the user with a reason.', schema: { ...idArg, reason: z.string() }, handler: async (a) => { store.mutateItem(String(a.id), [{ set: { blocked: true, blocked_reason: 'orchestrator', awaiting: 'user' } }, { unset: ['triage'] }, { activity: { actor: 'orchestrator', text: `blocked for the user: ${a.reason}` } }], 'orchestrator', { commit: `${a.id}: blocked (orchestrator)` }); return 'blocked'; } },
       { name: 'approve_plan', description: 'Approve a PLAN_READY item (only allowed when the item opted into auto-approval and config permits).', schema: { ...idArg, notes: z.string().optional() }, handler: async (a) => { if (!this.hooks.planDelegated(String(a.id))) return 'not permitted: the user approves this plan (add review notes with annotate_item instead)'; await this.hooks.approvePlan(String(a.id), a.notes ? String(a.notes) : undefined); return 'approved'; } },
       { name: 'request_plan_changes', description: 'Send a PLAN_READY item back to planning with specific fixes. Limited to a few rounds per item; past the limit the plan goes to the user instead.', schema: { ...idArg, message: z.string() }, handler: async (a) => this.hooks.requestPlanChanges(String(a.id), String(a.message)) },
       { name: 'hand_plan_to_user', description: 'Leave the approval of a plan that was delegated to you to the user, with the reason (a decision that is theirs, real risk, a large rework, low confidence).', schema: { ...idArg, reason: z.string() }, handler: async (a) => { this.hooks.handPlanToUser(String(a.id), String(a.reason)); return 'handed to the user'; } },
       { name: 'decide_permission', description: "Decide a worker's parked permission request that was delegated to you: allow (once), deny (with what to do instead), or ask_user (leave it to the user).", schema: { ...idArg, decision: z.enum(['allow', 'deny', 'ask_user']), reason: z.string() }, handler: async (a) => this.hooks.decidePermission(String(a.id), a.decision as 'allow' | 'deny' | 'ask_user', String(a.reason)) },
       { name: 'hand_off_files', description: "Give files from one item's worktree to another item that waits on it (depends_on, or the same epic): they become the receiver's attachments and its session is told. For when a worker's output is needed elsewhere before its branch merges. Paths are relative to the giver's worktree.", schema: { from: z.string(), to: z.string(), paths: z.array(z.string()).min(1), note: z.string() }, handler: async (a) => this.hooks.handOff(String(a.from), String(a.to), a.paths as string[], String(a.note)) },
+      { name: 'unblock_item', description: "Resolve a stopped item: clear its block and, with a message, resume its session with that message (what to do next). Without a message the pipeline simply retries from where it stopped.", schema: { ...idArg, message: z.string().optional() }, handler: async (a) => this.hooks.unblock(String(a.id), a.message ? String(a.message) : undefined) },
+      { name: 'answer_question', description: "Answer a worker's parked questions (awaiting question), as the user would. `answers` maps each question's text to its answer.", schema: { ...idArg, answers: z.record(z.string(), z.string()) }, handler: async (a) => this.hooks.answerQuestion(String(a.id), a.answers as Record<string, string>) },
+      { name: 'set_item_fields', description: 'Set some of an item\'s own fields: parent (an epic id, or null), depends_on (item ids), base_branch_override (or null), skip_merge, implementer (a model id), allow_model_fallback. Anything else is refused. A new parent or base does not move an existing worktree: follow with recreate_worktree.', schema: { ...idArg, fields: z.record(z.string(), z.unknown()) }, handler: async (a) => this.hooks.setItemFields(String(a.id), a.fields as Record<string, unknown>) },
+      { name: 'recreate_worktree', description: "Remove an item's worktree and branch and create them again from the item's current base, running the setup hooks, then unblock it (with `message` for the session, or a default one). Refused if the worktree has uncommitted changes or the branch has commits that are not on a base: nothing with work in it is ever removed. For worktree_missing and wrong-base mistakes before any work.", schema: { ...idArg, message: z.string().optional() }, handler: async (a) => this.hooks.recreateWorktree(String(a.id), a.message ? String(a.message) : undefined) },
+      { name: 'retry_op', description: 'Retry the step a transient failure stopped (engine_error from a GitHub 5xx or a network hiccup, a CI timeout, a failed turn): an item in review re-enters the merge pipeline, a merged one re-runs cleanup, one with finished work re-opens its pull request, a session is resumed.', schema: idArg, handler: async (a) => this.hooks.retryOp(String(a.id)) },
+      { name: 'ask_user_decision', description: 'Escalate a stopped item to the user as ONE plain decision: a one-line question, one sentence of why, 2–4 options (label + description) with exactly one recommended, which is shown first. The user answers by tapping an option or writing their own; you are woken with the answer to carry it out. Only for calls that are genuinely theirs: spend, scope, taste, irreversible actions.', schema: { item: z.string(), question: z.string(), why: z.string(), options: z.array(z.object({ label: z.string(), description: z.string(), recommended: z.boolean().optional() })), allow_free_text: z.boolean().optional() }, handler: async (a) => this.hooks.askUserDecision(String(a.item), { question: String(a.question), why: String(a.why), options: a.options as DecisionInput['options'], allow_free_text: a.allow_free_text === undefined ? true : Boolean(a.allow_free_text) }) },
       { name: 'ask_user', description: 'Ask the user something; the answer arrives as a later wake. Returns immediately.', schema: { question: z.string(), item: z.string().optional() }, handler: async (a) => { const entry = store.journal.append({ type: 'orchestrator.question', item: a.item ? String(a.item) : undefined, actor: 'orchestrator', data: { question: String(a.question) } }); if (a.item) store.mutateItem(String(a.item), [{ activity: { actor: 'orchestrator', text: `question for you: ${a.question}` } }], 'orchestrator'); this.emit({ type: 'engine.log', level: 'warn', message: `[orchestrator asks] ${a.question}` }); return `recorded at ${entry.ts}; the user will see it in the console`; } },
       { name: 'done_with_wake', description: 'Finish this wake with a one-line summary of what you decided.', schema: { summary: z.string() }, handler: async (a) => { onDone(String(a.summary)); return 'Recorded. End your turn now.'; } },
     ];

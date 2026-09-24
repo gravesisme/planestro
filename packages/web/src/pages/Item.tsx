@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
-import { canPlan, type Status } from '@planestro/shared';
+import { canPlan, decisionOf, type Status } from '@planestro/shared';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { Markdown } from '../components/Markdown.tsx';
@@ -12,6 +12,7 @@ import { fallbackHint } from '../components/NewItemDialog.tsx';
 import { BreakdownPanel } from '../components/BreakdownPanel.tsx';
 import { BlockedPanel } from '../components/BlockedPanel.tsx';
 import { AwaitingPanels } from '../components/AwaitingPanels.tsx';
+import { DecisionCard } from '../components/DecisionCard.tsx';
 import { prepareUpload } from '../uploadImage.ts';
 
 function useAutosave(id: string, section: 'Description' | 'Notes' | 'Plan', initial: string) {
@@ -75,10 +76,12 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
       <div>
         <Link className="back phone-only" to={d.lane === 'icebox' ? '/icebox' : d.lane === 'done' ? '/done' : '/'}>‹ {d.lane === 'icebox' ? 'Icebox' : d.lane === 'done' ? 'Done' : 'Board'}</Link>
         <h1><span className="title-id">{item.id}</span><textarea ref={titleBox} rows={1} aria-label="Title" value={title} onChange={(e) => setTitle(e.target.value.replace(/\n/g, ' '))} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } }} onBlur={() => title.trim() && title !== fm.title && field({ title: title.trim() })} /></h1>
+        <DecisionCard item={item} />
         <div className="controls">
           <span className="pill">{statusLabel(fm.status)}</span>
           {fm.blocked && <span className="pill blocked">BLOCKED{fm.blocked_reason ? ` · ${fm.blocked_reason}` : ''}</span>}
-          {fm.awaiting && <span className={`pill ${d.needs_you ? 'await' : ''}`}>awaiting {fm.awaiting.replace(/_/g, ' ')}</span>}
+          {fm.awaiting && <span className={`pill ${d.needs_you ? 'await' : ''}`}>{decisionOf(fm) ? 'your decision' : `awaiting ${fm.awaiting.replace(/_/g, ' ')}`}</span>}
+          {fm.triage && <span className="pill triage">orchestrator triaging</span>}
           {fm.op && <span className="pill">{fm.op.replace(/_/g, ' ')}</span>}
           {transitions.filter((t) => !(t.to === 'IN_PROGRESS' && fm.status === 'PLAN_READY') && !(t.to === 'PLAN_IN_PROGRESS' && fm.status === 'PLAN_READY')).map((t) => (
             t.to === 'FINISHED'
