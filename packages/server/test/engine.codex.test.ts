@@ -272,3 +272,25 @@ describe('mixed runners (dry-run ports)', () => {
     expect(fmOf(store, item.id).blocked_reason).toBe('runner_unavailable');
   });
 });
+
+describe('a turn queued for its runner slot (p9)', () => {
+  it('shows as queued, not as a running agent, until the slot frees', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const codex = (world: FakeWorld) => { const inner = new DryRunCodexPort(world); return { async runTurn(o: any): Promise<TurnResult> { await gate; return inner.runTurn(o); } }; };
+    const { store, engine } = await setup({ codex });
+    const a = store.createItem({ title: 'Icon A', description: 'a 512px icon', implementer: 'codex-art' });
+    const b = store.createItem({ title: 'Icon B', description: 'a 512px icon', implementer: 'codex-art' });
+    for (const it of [a, b]) store.transition(it.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => fmOf(store, a.id).status === 'PLAN_READY' && fmOf(store, b.id).status === 'PLAN_READY');
+    await engine.approvePlan(a.id); await engine.approvePlan(b.id);
+    await waitFor(() => engine.sessions().length === 2);
+    const views = engine.sessions();
+    expect(views.filter((v) => v.busy)).toHaveLength(1);
+    expect(views.find((v) => !v.busy)!.op).toBe('implement: waiting for a codex slot');
+    release();
+    await waitFor(() => fmOf(store, a.id).awaiting === 'review' && fmOf(store, b.id).awaiting === 'review', 10000); // both ran, one after the other
+  });
+});
+
