@@ -1070,6 +1070,21 @@ describe('plan approval delegated to the orchestrator', () => {
   }
   const fmOf = (s: DataStore, id: string) => s.getItem(id)!.file.frontmatter;
 
+  it('a plan it already reviewed for you is decided from that review when approval is delegated later (p8)', async () => {
+    const prompts: string[] = [];
+    const { store, engine, id } = await delegated(reviewer([
+      async (t) => { await t('annotate_item').handler({ id, text: 'risky: the migration has no rollback step' }); },
+      async (t) => { expect(await t('approve_plan').handler({ id, notes: 'add the rollback step' })).toBe('approved'); },
+    ], prompts), { optIn: false });
+    await engine.start();
+    await waitFor(() => prompts.length === 1 && activityOf(store, id).includes('[orchestrator] risky: the migration has no rollback step'));
+    expect(prompts[0]).toContain("Plan approval: the user's");
+    store.mutateItem(id, [{ set: { auto_approve_plan: true } }], 'user');
+    await waitFor(() => status(store, id) === 'FINISHED', 8000);
+    expect(prompts[1]).toContain('You already reviewed this version of the plan');
+    expect(prompts[1]).toContain('- risky: the migration has no rollback step');
+  });
+
   it('approves a sound plan, and the item never needs you on the way to its pull request', async () => {
     const prompts: string[] = []; const needed: boolean[] = [];
     const { store, engine, id } = await delegated(reviewer([async (t) => { needed.push(store.derived(store.getItem(id)!).needs_you); expect(fmOf(store, id).awaiting).toBe('orchestrator'); expect(await t('approve_plan').handler({ id, notes: 'watch the flag name' })).toBe('approved'); }], prompts));
