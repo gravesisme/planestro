@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
-import { getSection, partsSummary, serializeItemFile, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent } from '@planestro/shared';
+import { getSection, partsSummary, serializeItemFile, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent, parseActivity } from '@planestro/shared';
 import { hostNote } from './hostNote.ts';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Ports, CustomToolDef, TurnResult } from './ports.ts';
@@ -203,7 +203,7 @@ export class Orchestrator {
         const plan = getSection(item.file, 'Plan'); if (plan) lines.push(`Approved/submitted plan:\n${plan.slice(0, 2000)}`);
         const activity = getSection(item.file, 'Activity').split('\n').slice(-8).join('\n'); if (activity) lines.push(`Recent activity:\n${activity}`);
         if (fm.parts?.length) lines.push(`Parts, as the worker itself reports them (${partsSummary(fm.parts)}). Quote this; never summarise the state of the work from memory or prose:\n${fm.parts.map((p) => `- ${p.name}: ${p.state}${p.reason ? ` — ${p.reason}` : ''}`).join('\n')}`);
-        if (e.type === 'plan_review') lines.push(this.planPolicy(fm.id, fm.plan_revisions ?? 0));
+        if (e.type === 'plan_review') lines.push(this.planPolicy(fm.id, fm.plan_revisions ?? 0, this.priorReview(item.file, fm.plan_ready_at)));
         if (e.type === 'permission_request') lines.push(this.permissionPacket(fm));
         if (fm.triage) lines.push(e.type === 'decision_answered' ? this.decisionAnsweredPacket() : this.triagePacket(fm));
       }
@@ -216,12 +216,23 @@ export class Orchestrator {
    * Who approves this plan, said in the packet rather than the prompt library: a data dir's copy
    * of orchestrator-system predates the rule, and the limit is the engine's to state, not the model's to remember.
    */
-  private planPolicy(id: string, used: number): string {
+  /**
+   * What the orchestrator already wrote about this version of the plan (its notes since the plan was
+   * handed in). When approval is delegated after an advisory review, the decision wake gets that
+   * review back instead of reviewing the plan from scratch (HH-114, HH-115: reviewed twice, dogfood p8).
+   */
+  private priorReview(file: Parameters<typeof parseActivity>[0], since?: string): string[] {
+    if (!since) return [];
+    return parseActivity(file).filter((a) => a.actor === 'orchestrator' && a.at >= since).map((a) => a.text);
+  }
+
+  private planPolicy(id: string, used: number, prior: string[] = []): string {
     if (!this.hooks.planDelegated(id)) return 'Plan approval: the user\'s. Review it and record what is risky, missing or out of scope with annotate_item; approve_plan is not permitted for this item.';
     const max = this.store.config.orchestrator.max_plan_revisions;
     const left = Math.max(0, max - used);
     return [
       'Plan approval: DELEGATED TO YOU. The user trusts your judgment on this item; decide it in this wake, with exactly one of:',
+      ...(prior.length ? [`You already reviewed this version of the plan, before its approval was delegated to you. Your notes then:\n${prior.map((t) => `- ${t.slice(0, 600)}`).join('\n')}\nDecide from that review; re-read the plan only for what it leaves open, and do not annotate it again.`] : []),
       '- approve_plan — the plan is sound and matches the request. Implementation starts at once. Put anything the implementer should watch in `notes`.',
       left > 0
         ? `- request_plan_changes — small, specific fixes would make it approvable. Say exactly what to change; the planner revises and you review the result. ${used} of ${max} fix rounds used, so ${left} left.`
