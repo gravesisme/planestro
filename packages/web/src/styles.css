@@ -71,6 +71,7 @@ main { padding: 16px; flex: 1; }
 .drawer .activity li { display: block; padding: 5px 0; } .drawer .activity .at, .drawer .activity .muted { margin-right: 8px; } .drawer-foot { margin-top: 12px; }
 .drawer-h { margin: 12px 0 6px; font-size: 12px; letter-spacing: .6px; color: var(--muted); text-transform: uppercase; }
 .drawer-desc { max-height: 260px; overflow: auto; background: var(--panel2); border: 1px solid var(--line); border-radius: var(--radius); padding: 4px 12px; }
+.drawer-desc-folded { padding: 8px 12px; cursor: pointer; overflow-wrap: anywhere; } .drawer-desc-folded:hover { border-color: var(--accent); }
 .drawer-console { max-height: 200px; }
 .drawer a button { cursor: pointer; }
 

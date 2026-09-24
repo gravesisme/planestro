@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { useStore } from '../store.ts';
 import { Markdown } from './Markdown.tsx';
@@ -27,6 +27,15 @@ export function PreviewDrawer({ id, onClose }: { id: string; onClose: () => void
   const d = item.derived;
   const session = state?.engine.sessions.find((s) => s.item === id);
   const showConsole = session || fm.session_id || LIVE_STATUSES.includes(fm.status);
+  // At a decision, a review or a block, what you need is the latest activity and the card, not the
+  // brief you wrote weeks ago (dogfood f9): the description folds to one line and activity comes first.
+  const deciding = Boolean(decisionOf(fm)) || fm.awaiting === 'review' || (fm.blocked && !fm.triage);
+  const [descOpen, setDescOpen] = useState(false);
+  const firstLine = (item.sections.Description || '').split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('#')) ?? '(no description)';
+  const description = deciding && !descOpen
+    ? <div className="drawer-desc drawer-desc-folded" onClick={() => setDescOpen(true)} role="button" title="Show the whole description"><span className="small muted">Description · </span>{firstLine.length > 140 ? `${firstLine.slice(0, 140)}…` : firstLine} <span className="small" style={{ color: 'var(--accent)' }}>more</span></div>
+    : <div className="drawer-desc"><Markdown text={item.sections.Description || '_(no description)_'} /></div>;
+  const activity = <><h3 className="drawer-h">Latest activity</h3><ul className="activity">{item.activity.slice(-4).map((a, i) => <li key={i}><span className="at">{a.at.slice(5, 16).replace('T', ' ')}</span><span className="muted">{a.actor}</span><span>{a.text}</span></li>)}</ul></>;
   return (
     <>
     <div className="drawer-backdrop" onClick={onClose} />
@@ -54,11 +63,11 @@ export function PreviewDrawer({ id, onClose }: { id: string; onClose: () => void
       <BlockedPanel item={item} compact />
       <AwaitingPanels item={item} />
       {fm.awaiting === 'review' ? <ReviewPanel item={item} compact /> : <QuickActions item={item} />}
-      <div className="drawer-desc"><Markdown text={item.sections.Description || '_(no description)_'} /></div>
+      {deciding && activity}
+      {description}
       {fm.status === 'PLAN_READY' && item.sections.Plan && (<><h3 className="drawer-h">Plan awaiting your approval</h3><div className="drawer-desc"><Markdown text={item.sections.Plan} /></div></>)}
       {showConsole && (<><h3 className="drawer-h">Console</h3><ItemConsole id={id} tail={14} className="drawer-console" /></>)}
-      <h3 className="drawer-h">Latest activity</h3>
-      <ul className="activity">{item.activity.slice(-4).map((a, i) => <li key={i}><span className="at">{a.at.slice(5, 16).replace('T', ' ')}</span><span className="muted">{a.actor}</span><span>{a.text}</span></li>)}</ul>
+      {!deciding && activity}
       <div className="row drawer-foot">
         <Link className="grow" to={`/items/${id}`} onClick={onClose}><button className="primary" style={{ width: '100%' }}>Open full details →</button></Link>
       </div>
