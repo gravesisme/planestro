@@ -80,7 +80,8 @@ export class LiveClaudePort implements ClaudePort {
         cwd: o.cwd, model: o.model, permissionMode: o.permissionMode, resume: o.resume,
         ...(o.fallbackModel && o.fallbackModel !== o.model ? { fallbackModel: o.fallbackModel } : {}),
         systemPrompt: { type: 'preset', preset: 'claude_code', append: o.systemAppend },
-        mcpServers: { planestro }, strictMcpConfig: true, settingSources: ['project'],
+        // The model's own servers ride along; their tools are not allow-listed, so every call reaches canUseTool and the engine's count.
+        mcpServers: { planestro, ...(o.mcpServers ?? {}) } as any, strictMcpConfig: true, settingSources: ['project'],
         allowedTools: [...o.allowedTools, 'mcp__planestro__submit_plan', 'mcp__planestro__submit_breakdown', 'mcp__planestro__add_note', 'mcp__planestro__append_activity', 'mcp__planestro__report_done', 'mcp__planestro__report_progress', 'mcp__planestro__report_blocked', 'mcp__planestro__hand_off', 'mcp__planestro__get_item'],
         additionalDirectories: o.extraDirs, maxBudgetUsd: o.maxBudgetUsd, abortController,
         ...(this.claudeBin ? { pathToClaudeCodeExecutable: this.claudeBin } : {}),

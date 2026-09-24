@@ -225,6 +225,10 @@ export const ModelDef = z.object({
   hold_for_review: z.boolean().optional(),
   /** Another model id on the same runner. An item that allows fallback runs on it while this one is out of usage. */
   fallback: z.string().min(1).optional(),
+  /** MCP servers this model's Claude sessions get (names from `mcp_servers` in planestro.local.yml): a sound service, a 3D service. What makes a worker an audio or model worker, with `hold_for_review` for the audition. */
+  mcp: z.array(z.string().min(1)).default([]),
+  /** How many calls to those servers one item may make in all: a spend cap that planestro can count itself. Past it the calls are refused and the worker is told. */
+  mcp_calls_per_item: z.number().int().positive().optional(),
   external: z.boolean().default(false),
 });
 export type ModelDef = z.infer<typeof ModelDef>;
@@ -360,6 +364,11 @@ export const LocalConfig = z.object({
   allowed_hosts: z.array(z.string().min(1)).optional(),
   /** Optional Console API key: sessions then bill the API under the Commercial Terms instead of a claude.ai login. Local file only (gitignored). */
   anthropic_api_key: z.string().optional(),
+  /** MCP servers a model row may name in `mcp`, with their keys: this file is machine-local and gitignored. A stdio server (`command`, `args`, `env`) or an HTTP one (`url`, `headers`). */
+  mcp_servers: z.record(z.string(), z.object({
+    command: z.string().optional(), args: z.array(z.string()).default([]), env: z.record(z.string(), z.string()).default({}),
+    url: z.string().optional(), headers: z.record(z.string(), z.string()).default({}),
+  })).default({}),
   /** Models this machine's account cannot use right now, by model id: detected usage limits and ones marked in Settings. */
   model_unavailable: z.record(z.string(), ModelUnavailable).optional(),
   engine: z.object({

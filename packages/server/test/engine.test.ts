@@ -1299,6 +1299,25 @@ describe('finish from here (f2)', () => {
   });
 });
 
+describe('an audition: sounds and models are reviewed like images (f5)', () => {
+  it('review files carry their kind, the file route serves audio as audio, and the thumbnail skips sounds', async () => {
+    const { store, engine, world } = await setup();
+    const item = store.createItem({ title: 'Door sounds', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    const fm = store.getItem(item.id)!.file.frontmatter;
+    world.files.set(fm.branch!, new Map([['sfx/door_a.mp3', Buffer.from('ID3fake')], ['sfx/door_b.wav', Buffer.from('RIFFfake')], ['models/crate.glb', Buffer.from('glTFfake')], ['notes.txt', Buffer.from('n')]]));
+    const files = await engine.reviewImages(item.id);
+    expect(files.map((f) => [f.path, f.kind])).toEqual([['sfx/door_a.mp3', 'audio'], ['sfx/door_b.wav', 'audio'], ['models/crate.glb', 'model']]);
+    const app = apiRoutes(store, engine);
+    const r = await app.request(`/items/${item.id}/image?path=sfx%2Fdoor_a.mp3&side=after`);
+    expect(r.status).toBe(200);
+    expect(r.headers.get('content-type')).toBe('audio/mpeg');
+    expect((await app.request(`/items/${item.id}/thumb`)).status).toBe(404);   // no image among them
+  });
+});
+
 describe('orchestrator', () => {
   it('wakes on plan_review with a context packet, uses tools, and rotates after the configured wakes', async () => {
     const wakes: { label: string; prompt: string; resume?: string }[] = [];

@@ -5,7 +5,7 @@ import type { ServerEvent, BreakdownChild } from '@planestro/shared';
 export interface SessionView { item: string; session_id?: string; model?: string; op?: string; started_at?: string; busy: boolean; last_output?: string }
 
 /** An image a branch added, changed or removed — what a reviewer looks at. */
-export interface ReviewImage { path: string; change: 'added' | 'modified' | 'deleted'; bytes?: number; width?: number; height?: number }
+export interface ReviewImage { path: string; change: 'added' | 'modified' | 'deleted'; bytes?: number; width?: number; height?: number; /** What it is reviewed as; images when absent (older engines). */ kind?: 'image' | 'audio' | 'model' }
 
 export interface Engine {
   readonly mode: 'live' | 'dry-run';

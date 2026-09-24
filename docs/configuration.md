@@ -40,6 +40,8 @@ A test (`docs.test.ts`) fails if a key in the schema is missing from this page.
 | `models.claude_model` | — | The Claude model id; required for a `claude` runner. |
 | `models.codex_model` | Codex's own default | Passed to `codex exec -m`. |
 | `models.description` | none | One line on what the model is for. The epic planner routes children by it. |
+| `models.mcp` | `[]` | MCP servers this model's sessions get, by the names in `mcp_servers` (planestro.local.yml). This is what makes a worker an audio or a 3D worker: a Claude session with the service's tools, usually with `hold_for_review` so what it made is auditioned before it merges. |
+| `models.mcp_calls_per_item` | none | How many calls to those servers one item may make in all: a spend cap planestro counts itself (`op_data.mcp_calls`). Past it the calls are refused and the worker is told to finish or report what it still needs. |
 | `models.hold_for_review` | `false` | Park this model's pull requests on `awaiting: review` after CI until you approve them. |
 | `models.fallback` | none | Another model id on the same runner. An item that allows fallback (**allow fallback model**, `allow_model_fallback: true`) runs on it while this model is out of usage, and the Claude SDK also uses it when this model is overloaded. Chains are followed (`a → b → c`). See [Model fallback](#model-fallback). |
 | `models.external` | `false` | Not run by planestro; its items are watched. |
@@ -143,6 +145,7 @@ Default: **Release notes** and **Notes**.
 | `code_repo_path` | Where the code repository is on this machine. |
 | `worktrees_root` | Where worktrees go on this machine. |
 | `claude_bin` | Which Claude Code the sessions run. Unset: the installed `claude` on `PATH` when it is newer than the one the Agent SDK bundles (a new model can need a newer CLI), otherwise the bundled one; startup logs which. A path uses that executable; `bundled` forces the SDK's own. |
+| `mcp_servers` | MCP servers a model row may name in `mcp`, with their keys, e.g. `elevenlabs: { command: uvx, args: [elevenlabs-mcp], env: { ELEVENLABS_API_KEY: … } }` or `meshy: { command: npx, args: [-y, "@meshy-ai/meshy-mcp-server"], env: { MESHY_API_KEY: … } }`. Machine-local and gitignored, like the API key. |
 | `allowed_hosts` | Extra names this machine is reached by — a Tailscale or DNS name for the phone. The server answers only requests addressed to `localhost`, `127.0.0.1`, the `--host` it is bound to (with `0.0.0.0`: this machine's hostname and interface addresses) and these; anything else, and any request from another website, gets a 403. |
 | `codex_bin` | Path to `codex`, if not on `PATH`. Only used by models with `runner: codex`. |
 | `anthropic_api_key` | Bills Claude sessions to the API under the Commercial Terms instead of a claude.ai login. `ANTHROPIC_API_KEY` in the environment does the same. |
