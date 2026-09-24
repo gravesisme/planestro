@@ -95,6 +95,7 @@ for a decision.
 | `epics.auto_submit` | `true` | Open an epic's pull request when its last child merges. |
 | `review.image_scale` | `1` | Review thumbnails can also be shown at this integer scale, nearest-neighbour. |
 | `review.max_file_bytes` | `10000000` | One changed file over this blocks the item as `asset_too_large` before a pull request exists. |
+| `review.max_file_bytes_by_ext` | `{}` | Limits by extension that replace `max_file_bytes` for those files, for kinds of file that are legitimately big (`{ ".ogg": 20000000 }` for a game's music). |
 | `review.nudge_after_min` | `240` | A review nobody has looked at for this long wakes the orchestrator, once. |
 | `notifications.on_merge` | none | A command run after each merge (`say "PR merged"`). |
 | `notifications.on_usage_pause` | none | A command run when the [usage guard](#usage-guard) pauses automation (`say "planestro paused for usage"`). |

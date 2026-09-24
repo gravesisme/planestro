@@ -166,6 +166,26 @@ describe('mixed runners (dry-run ports)', () => {
     expect(fmOf(store, item.id).pr).toBeUndefined();
   });
 
+  it('a per-extension limit replaces max_file_bytes for its files, both ways, and the block names the limit that applied (p22)', async () => {
+    const run = async (review: string) => {
+      const ctx = await setup({ config: (y) => `${y}\nreview:\n${review}` });
+      const item = ctx.store.createItem({ title: 'Splash', description: 'x', implementer: 'codex-free' });
+      ctx.store.transition(item.id, 'QUEUED', 'user');
+      await ctx.engine.start();
+      await waitFor(() => fmOf(ctx.store, item.id).status === 'PLAN_READY');
+      await ctx.engine.approvePlan(item.id);
+      await waitFor(() => fmOf(ctx.store, item.id).blocked === true || fmOf(ctx.store, item.id).status === 'FINISHED');
+      const out = { fm: fmOf(ctx.store, item.id), activity: activityOf(ctx.store, item.id) };
+      await ctx.engine.stop(); ctx.store.close();
+      return out;
+    };
+    const roomy = await run('  max_file_bytes: 100\n  max_file_bytes_by_ext:\n    .png: 10000000\n');
+    expect(roomy.fm.status).toBe('FINISHED');                 // PNGs have their own, larger limit
+    const tight = await run('  max_file_bytes: 10000000\n  max_file_bytes_by_ext:\n    png: 100\n');
+    expect(tight.fm.blocked_reason).toBe('asset_too_large');
+    expect(tight.activity).toContain('exceeds review.max_file_bytes_by_ext["png"]');
+  });
+
   it('epic: the planner proposes children, a bad list goes back to the planner, the user edits and approves, the children exist as routed', async () => {
     let attempts = 0;
     const planner = (world: FakeWorld) => ({

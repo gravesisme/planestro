@@ -316,8 +316,13 @@ export const Config = z.object({
     auto_push: z.boolean().default(true),
     checkpoint_interval_min: z.number().positive().default(60),
   }).default({ auto_commit: true, auto_push: true, checkpoint_interval_min: 60 }),
-  /** Reviewing what a hold_for_review model made: thumbnails are also shown at `image_scale`× (a pixel-art project sets its display scale), and one changed file over `max_file_bytes` blocks the item before a PR is opened. */
-  review: z.object({ image_scale: z.number().int().min(1).max(16).default(1), max_file_bytes: z.number().int().positive().default(10_000_000), nudge_after_min: z.number().int().positive().default(240) }).default({ image_scale: 1, max_file_bytes: 10_000_000, nudge_after_min: 240 }),
+  /** Reviewing what a hold_for_review model made: thumbnails are also shown at `image_scale`× (a pixel-art project sets its display scale), and one changed file over its limit (`max_file_bytes`, or `max_file_bytes_by_ext` for its extension) blocks the item before a PR is opened. */
+  review: z.object({
+    image_scale: z.number().int().min(1).max(16).default(1), max_file_bytes: z.number().int().positive().default(10_000_000),
+    /** Per-extension limits that replace max_file_bytes for those files (`.ogg: 20000000`): a project's music is legitimately bigger than its sprites. */
+    max_file_bytes_by_ext: z.record(z.string(), z.number().int().positive()).default({}),
+    nudge_after_min: z.number().int().positive().default(240),
+  }).default({ image_scale: 1, max_file_bytes: 10_000_000, max_file_bytes_by_ext: {}, nudge_after_min: 240 }),
   attachments: z.object({ managed_max_bytes: z.number().int().positive().default(2_000_000) }).default({ managed_max_bytes: 2_000_000 }),
   releases: z.object({ sections: z.array(ReleaseSectionDef).min(1).default(DEFAULT_RELEASE_SECTIONS) }).default({ sections: DEFAULT_RELEASE_SECTIONS }),
 });
