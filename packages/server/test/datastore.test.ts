@@ -231,3 +231,25 @@ describe('DataStore', () => {
     expect(existsSync(join(dataDir, m.path))).toBe(false);
   });
 });
+
+describe('a base that was a merged epic\'s branch (p45)', () => {
+  it('follows to that epic\'s own base, as far as it goes', async () => {
+    const { dataDir } = makeFixture();
+    const store = await DataStore.open(dataDir);
+    try {
+      const outer = store.createItem({ title: 'Crystal Cavern', description: 'x', kind: 'epic' });
+      store.mutateItem(outer.id, [{ set: { status: 'IN_PROGRESS', branch: 'feature/crystal-cavern' } }], 'engine');
+      const inner = store.createItem({ title: 'Animate the enemies', description: 'x', kind: 'epic' });
+      store.mutateItem(inner.id, [{ set: { base_branch_override: 'feature/crystal-cavern', branch: 'feature/animate' } }], 'user');
+      const child = store.createItem({ title: 'Walk cycle', description: 'x', parent: inner.id });
+      const base = (id: string) => store.derived(store.getItem(id)!).base_branch;
+      expect(base(inner.id)).toBe('feature/crystal-cavern');            // the outer epic is still open: its branch is the base
+      store.mutateItem(outer.id, [{ set: { status: 'MERGED' } }], 'engine');
+      expect(base(inner.id)).toBe('trunk');                             // merged and deleted: its own base
+      expect(base(child.id)).toBe('feature/animate');                   // the inner epic is open: unchanged
+      store.mutateItem(inner.id, [{ set: { status: 'FINISHED' } }], 'engine');
+      expect(base(child.id)).toBe('trunk');                             // followed through both
+    } finally { store.close(); }
+  });
+});
+
