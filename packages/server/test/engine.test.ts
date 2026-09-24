@@ -620,6 +620,77 @@ describe('held pull requests (skip_merge)', () => {
   });
 });
 
+describe('budget and unblock (p36, p12)', () => {
+  const ok = { sessionId: 's', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '' };
+  const setBudget = (store: DataStore, usd: number) => store.updateConfig((doc) => { doc.setIn(['budget_usd_per_item'], usd); }, 'config: budget');
+
+  it('does not start a turn with under a dollar left: it blocks over_budget, naming the cap', async () => {
+    let turns = 0;
+    const { store, engine } = await setup({ claude: () => ({ async runTurn(): Promise<TurnResult> { turns += 1; return ok; } }) });
+    setBudget(store, 5);
+    const item = store.createItem({ title: 'Spent', description: 'x' });
+    store.mutateItem(item.id, [{ set: { cost_usd: 4.5 } }], 'engine');
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => store.getItem(item.id)!.file.frontmatter.blocked_reason === 'over_budget');
+    expect(turns).toBe(0);
+    expect(activityOf(store, item.id)).toContain('spent $4.50 of its $5 budget');
+  });
+
+  it('a turn that ran out of budget after reporting done still goes on to its pull request', async () => {
+    const claude = (world: FakeWorld) => ({
+      async runTurn(o: TurnOptions): Promise<TurnResult> {
+        if (o.phase === 'plan') { await o.tools.submit_plan('# p'); return { ...ok, planSubmitted: '# p' }; }
+        world.commits.set(o.cwd, 1); world.worktrees.get(o.cwd)!.head = world.sha();
+        await o.tools.report_done('did it');
+        return { ...ok, subtype: 'error_max_budget_usd', isError: true, costUsd: 2, done: 'did it' };
+      },
+    });
+    const { store, engine } = await setup({ claude });
+    const item = store.createItem({ title: 'Last dollar', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
+    expect(activityOf(store, item.id)).toContain('turn ended in error_max_budget_usd after reporting done; checking the work anyway');
+    expect(activityOf(store, item.id)).not.toContain('BLOCKED');
+  });
+
+  it('a messageless unblock of committed work opens the pull request instead of idling (p12)', async () => {
+    const { store, engine, world } = await setup();
+    const item = store.createItem({ title: 'Done by hand', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    const fm0 = store.getItem(item.id)!.file.frontmatter;
+    const cwd = (engine as any).absWorktree(fm0.worktree!);
+    store.mutateItem(item.id, [{ set: { status: 'IN_PROGRESS', blocked: true, blocked_reason: 'agent_blocked', awaiting: 'user' } }, { unset: ['awaiting_data'] }], 'engine');
+    world.commits.set(cwd, 1);
+    await engine.unblock(item.id);
+    await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
+    expect(activityOf(store, item.id)).toContain('the work is committed, opening the pull request again');
+  });
+
+  it('a messageless unblock of a stalled conflict hand-off re-enters the merge pipeline (p36)', async () => {
+    const { store, engine, world } = await setup();
+    const item = store.createItem({ title: 'Stranded', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    const fm0 = store.getItem(item.id)!.file.frontmatter;
+    const cwd = (engine as any).absWorktree(fm0.worktree!);
+    const branch = fm0.branch!;
+    world.remoteBranches.set(branch, world.worktrees.get(cwd)!.head!);
+    world.prs.set(300, { number: 300, url: 'u', state: 'OPEN', headRefOid: world.worktrees.get(cwd)!.head!, headRefName: branch, baseRefName: 'trunk', polls: 0, failOnce: false });
+    store.mutateItem(item.id, [{ set: { status: 'IN_REVIEW', pr: 300, ci_result: 'unknown', blocked: true, blocked_reason: 'turn_error', op_data: { needs_session_rebase: true } } }, { unset: ['awaiting', 'awaiting_data'] }], 'engine');
+    await sleep(200);
+    expect(status(store, item.id)).toBe('IN_REVIEW'); // stranded: nothing drives it
+    await engine.unblock(item.id);
+    await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
+  });
+});
+
 describe('orchestrator', () => {
   it('wakes on plan_review with a context packet, uses tools, and rotates after the configured wakes', async () => {
     const wakes: { label: string; prompt: string; resume?: string }[] = [];
