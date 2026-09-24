@@ -2,7 +2,9 @@
 
 A blocked item keeps its status and gains `blocked: true`, a `blocked_reason`, and a line
 in its Activity log saying exactly what happened. Fix the cause, then **unblock…** — with a
-message, the session resumes with your decision; without one, the engine re-evaluates.
+message, the session resumes with your decision; without one, it carries on from where it
+stopped: committed work goes to a pull request, an item in review re-enters the merge
+pipeline, a setup that never ran is requeued, and otherwise the session is resumed.
 A test (`docs.test.ts`) fails if the engine can raise a reason that is missing here.
 
 With `orchestrator.triage` on, a new block first shows as **orchestrator triaging**: the
@@ -20,6 +22,7 @@ and brings you only a plain decision card. See [Needs-you triage](concepts.md#ne
 | `dirty_tree` | Uncommitted changes remain after two reminders to commit. | Look in the worktree; commit or discard, then unblock. |
 | `planner_cannot_plan` | The item's planner is a model whose runner cannot plan (Codex). | Pick a Claude model as the planner. |
 | `runner_unavailable` | The model's runner is not present in this engine. | Check the model's `runner`. |
+| `over_budget` | The item has spent (almost) all of `budget_usd_per_item`; less than a dollar is left, so no Claude turn was started. | Raise the budget and unblock (it carries on from where it stopped), or take the item over by hand. |
 | `turn_budget` / `token_budget` | A token-billed runner spent `budget_turns_per_item` / `budget_tokens_per_item` on this item. | Raise the budget, or take the item over by hand. |
 | `auth_required` | The agent CLI is not logged in. | `codex login` (or `claude` login), then unblock. |
 | `usage_exhausted` | The item's model is out of usage (a subscription limit or missing credits) and no fallback could take the turn: the item does not allow a fallback model, its model has no `fallback`, or every model in the chain is out too. The outage is remembered in Settings → Models until the provider's reset. | Wait for the reset and unblock; or tick **allow fallback model** on the item (its model needs a `fallback` in `models:`) and unblock to continue on the fallback now. |

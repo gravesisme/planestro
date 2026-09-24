@@ -20,6 +20,8 @@ const JUDGMENT_BLOCKS = ['turn_error', 'no_plan', 'no_commits', 'dirty_tree', 's
 const ACTIVE_FOR_SLOTS: Status[] = ['PLAN_IN_PROGRESS', 'IN_PROGRESS'];
 /** Turn failures with their own block reason, because the fix is the user's (log in, wait, start over) and not a judgment call. */
 const ACTIONABLE_FAILURES = new Set(['auth_required', 'rate_limited', 'session_lost', 'spawn_error']);
+/** Below this many dollars left on an item's budget a Claude turn cannot do real work: it is not started. */
+const MIN_TURN_USD = 1;
 /** How many stops of one item, in one status, the orchestrator triages before the rest go straight to the user (a fix that keeps failing is a conversation for a person). */
 const MAX_TRIAGE_ROUNDS = 4;
 /** What `set_item_fields` may touch: the item's own wiring, never its lifecycle, sessions or history. */
@@ -524,6 +526,10 @@ export class LiveEngine implements Engine {
     const metered = runner === 'claude';
     if (!metered && (fm.agent_turns ?? 0) >= this.store.config.budget_turns_per_item) { this.block(id, 'turn_budget', `${def.label} has used ${fm.agent_turns} of ${this.store.config.budget_turns_per_item} turns on this item (budget_turns_per_item); raise it or take the item over by hand`); return undefined; }
     if (!metered && (fm.tokens ?? 0) >= this.store.config.budget_tokens_per_item) { this.block(id, 'token_budget', `${def.label} has used ${(fm.tokens ?? 0).toLocaleString()} of ${this.store.config.budget_tokens_per_item.toLocaleString()} tokens on this item (budget_tokens_per_item); raise it or take the item over by hand`); return undefined; }
+    // A turn with less than MIN_TURN_USD left ends at error_max_budget_usd before it can finish
+    // anything (HH-125's $0.50 conflict fix, HH-122's CI fix): say what the item needs instead.
+    const usdLeft = this.store.config.budget_usd_per_item - (fm.cost_usd ?? 0);
+    if (metered && usdLeft < MIN_TURN_USD) { this.block(id, 'over_budget', `this item has spent $${(fm.cost_usd ?? 0).toFixed(2)} of its $${this.store.config.budget_usd_per_item} budget (budget_usd_per_item), too little for a ${phase} turn; raise the budget and unblock, or take the item over by hand`); return undefined; }
     const resumeId = metered ? fm.session_id : fm.agent_sessions?.[runner];
     // "Continue where you left off" presumes a conversation to continue. When there is none — the
     // opening turn died before the agent heard the task, or the thread was lost — a fresh conversation
@@ -536,12 +542,14 @@ export class LiveEngine implements Engine {
     const images = fm.attachments.map((a) => this.store.attachmentAbsPath(a)).filter((p) => /\.(png|jpe?g|webp|gif)$/i.test(p));
     const policy = makePolicy(this.store.config, d.base_branch!, cwd);
     const op = phase === 'plan' ? 'planning_turn' : 'implement_turn';
+    // Where the branch stood, so a turn that fails after committing is still checked (below).
+    const headBefore = phase === 'plan' ? undefined : await this.ports.git.revParse(cwd, 'HEAD').catch(() => undefined);
     const abort = new AbortController();
     const opId = this.store.journal.begin(op, id, { phase, model: model ?? def.label, runner, ...(pick.fellBackFrom ? { fell_back_from: pick.fellBackFrom.id } : {}) });
     this.store.mutateItem(id, [{ set: { op, op_started_at: this.now() } }], 'engine');
     this.turns.set(id, { model: model ?? def.label, phase, startedAt: this.now(), lastOutput: '', abort });
     this.emit({ type: 'session.started', id, session_id: fm.session_id });
-    const budgetLeft = Math.max(0.5, this.store.config.budget_usd_per_item - (fm.cost_usd ?? 0));
+    const budgetLeft = Math.max(MIN_TURN_USD, usdLeft);
     let result: TurnResult;
     try {
       result = await this.withRunnerSlot(runner, () => agent.runTurn({
@@ -597,6 +605,18 @@ export class LiveEngine implements Engine {
       }
       this.block(id, 'usage_exhausted', `${def.label} is out of usage until ${until}${allowFallback ? ' and has no available fallback' : ' (this item does not allow a fallback model)'}: ${result.usageLimit?.message ?? ''}`);
       return result;
+    }
+    if (result.isError && phase !== 'plan' && result.subtype !== 'session_lost' && !result.blocked) {
+      // The turn failed (often its budget ran out) after the work was done: it reported done, or it
+      // moved the branch. The deterministic check decides from git what happens next, as for a turn
+      // that ended cleanly; blocking on the error left finished work stranded (HH-125).
+      const headAfter = headBefore === undefined ? undefined : await this.ports.git.revParse(cwd, 'HEAD').catch(() => undefined);
+      const moved = headAfter !== undefined && headAfter !== headBefore;
+      if (result.done || moved) {
+        this.store.mutateItem(id, [{ activity: { actor: 'app', text: `turn ended in ${result.subtype} after ${result.done ? 'reporting done' : `moving the branch to ${headAfter!.slice(0, 7)}`}; checking the work anyway` } }], 'engine');
+        await this.afterTurn(id, phase, result);
+        return result;
+      }
     }
     if (result.isError) {
       // A failure the person can act on keeps its own name; the rest are turn errors for the orchestrator to judge.
@@ -1574,16 +1594,19 @@ export class LiveEngine implements Engine {
   }
 
   /** Re-run what a transient failure stopped, by the same doors the pipeline itself uses. */
-  async retryOp(id: string): Promise<string> {
+  async retryOp(id: string, by: 'user' | 'orchestrator' = 'orchestrator'): Promise<string> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
     if (!fm.blocked) return `nothing to retry: ${id} is not blocked`;
     if (fm.awaiting && fm.awaiting !== 'user') return `not now: ${id} is awaiting ${fm.awaiting}; answer that instead`;
     const busy = this.busyWith(id); if (busy) return `not now: ${busy}`;
     const reason = fm.blocked_reason ?? 'blocked';
-    const clear = (text: string, extra: ItemOp[] = []): void => { this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, ...extra, { activity: { actor: 'orchestrator', text } }], 'orchestrator', { commit: `${id}: retry (orchestrator)` }); };
-    const resume = `The last step stopped on a transient failure (${reason}), which has been retried. Nothing of yours was lost: check your worktree and continue where you left off.`;
-    if (fm.status === 'IN_REVIEW') { clear(`retrying the merge pipeline after ${reason}`, [{ set: { ci_result: 'pending' } }]); this.poke(); return 'retrying: it re-enters the merge pipeline'; }
+    const clear = (text: string, extra: ItemOp[] = []): void => { this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, ...extra, { activity: { actor: by, text } }], by, { commit: `${id}: retry${by === 'orchestrator' ? ' (orchestrator)' : ''}` }); };
+    const resume = by === 'orchestrator'
+      ? `The last step stopped on a transient failure (${reason}), which has been retried. Nothing of yours was lost: check your worktree and continue where you left off.`
+      : `The user unblocked this item (it had stopped: ${reason}). Nothing of yours was lost: check your worktree and continue where you left off.`;
+    // A conflict once handed to a session that never finished it is the pipeline's again: it re-syncs, and a conflict comes back to a session.
+    if (fm.status === 'IN_REVIEW') { clear(`retrying the merge pipeline after ${reason}`, [{ set: { ci_result: 'pending', op_data: { ...(fm.op_data ?? {}), needs_session_rebase: false } } }]); this.poke(); return 'retrying: it re-enters the merge pipeline'; }
     if (fm.status === 'MERGED') { clear(`retrying cleanup after ${reason}`); this.runJob(id, () => this.cleanup(id)); return 'retrying the cleanup (it still needs positive evidence before deleting anything)'; }
     if (this.store.derived(item).flavor !== 'worker' || !fm.worktree) return `not possible: nothing in ${fm.status} to retry for ${id}; use unblock_item`;
     const dir = this.absWorktree(fm.worktree);
@@ -1605,7 +1628,7 @@ export class LiveEngine implements Engine {
       }
     }
     if (!this.phaseFor(fm.status)) return `not possible: nothing in ${fm.status} to retry for ${id}`;
-    await this.unblock(id, resume, 'orchestrator');
+    await this.unblock(id, resume, by);
     return 'retrying: the session is resumed';
   }
 
@@ -1659,6 +1682,14 @@ export class LiveEngine implements Engine {
   /** User-driven unblock: clears the flag and, if the item is in a session phase, resumes with a message. */
   async unblock(id: string, message?: string, by: 'user' | 'orchestrator' = 'user'): Promise<void> {
     const fm = this.store.requireItem(id).file.frontmatter;
+    // Without a message there is nothing to tell a session, so "unblock" means "carry on from where
+    // it stopped": the same step retry_op takes (open the PR for committed work, re-enter the merge
+    // pipeline, requeue a setup that never ran, resume the session). Clearing the flag alone left
+    // items idle with nothing driving them (HH-115, HH-125).
+    if (!message && fm.blocked && !this.busyWith(id)) {
+      const r = await this.retryOp(id, by);
+      if (!/^(not possible|nothing to retry|not now)/.test(r)) return;
+    }
     this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, { activity: { actor: by, text: `unblocked${message ? `: ${message}` : ''}` } }], by, { commit: `${id}: unblock${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
     const phase = this.phaseFor(fm.status);
     if (message && phase) this.queueFollowUp(id, () => this.runTurnFor(id, phase, `${this.resumeNote(id, by === 'orchestrator' ? 'the orchestrator' : 'a decision from the user')}\n\n${message}`));
