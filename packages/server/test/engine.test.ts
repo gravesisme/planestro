@@ -719,6 +719,63 @@ describe('budget and unblock (p36, p12)', () => {
   });
 });
 
+describe('structured parts (f4)', () => {
+  const ok: TurnResult = { sessionId: 's', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '' };
+  const eight = [
+    { name: 'master', state: 'accepted' }, { name: 'idle', state: 'accepted' }, { name: 'stomp_windup', state: 'accepted' }, { name: 'death', state: 'accepted' },
+    { name: 'stomp', state: 'rejected', reason: 'area ratio 0.908 < 0.940' }, { name: 'throw', state: 'rejected', reason: 'missing gutter' }, { name: 'emerge', state: 'rejected', reason: 'area ratio 0.921' },
+    { name: 'recover', state: 'pending', reason: 'head bob 41.5 px > 28' },
+  ];
+
+  it('report_progress stores the parts, summarises them in Activity, and the orchestrator packet quotes them', async () => {
+    let packet = ''; const replies: string[] = [];
+    const claude = (world: FakeWorld) => {
+      const inner = new DryRunClaudePort(world);
+      return {
+        async runTurn(o: TurnOptions): Promise<TurnResult> {
+          if (o.phase === 'plan') { await o.tools.submit_plan('# p'); return { ...ok, planSubmitted: '# p' }; }
+          replies.push(await o.tools.report_progress([{ name: 'x', state: 'rejected' }]));
+          replies.push(await o.tools.report_progress(eight));
+          await o.tools.report_blocked('five rows still need generations');
+          return { ...ok, blocked: 'five rows still need generations' };
+        },
+        async runCustomTurn(o: any): Promise<TurnResult> { if (o.label.startsWith('blocked_')) packet = o.prompt; await o.mcpTools.find((t: any) => t.name === 'done_with_wake').handler({ summary: 'looked' }); return { ...ok, sessionId: 'o' }; },
+      };
+    };
+    const { store, engine } = await setup({ claude });
+    const item = store.createItem({ title: 'Atlas', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => packet !== '', 8000);
+    expect(replies[0]).toContain('rejected without a reason');
+    expect(replies[1]).toBe('Recorded.');
+    const fm = store.getItem(item.id)!.file.frontmatter;
+    expect(fm.parts).toHaveLength(8);
+    expect(activityOf(store, item.id)).toContain('progress: 4/8 accepted · 3 rejected (stomp: area ratio 0.908 < 0.940; throw: missing gutter; emerge: area ratio 0.921) · 1 pending (recover)');
+    expect(packet).toContain('Parts, as the worker itself reports them (4/8 accepted');
+    expect(packet).toContain('- stomp: rejected — area ratio 0.908 < 0.940');
+  });
+
+  it('when the parts accepted so far project past the budget, the Activity log says so once (the forecast)', async () => {
+    const claude = () => ({ async runTurn(o: TurnOptions): Promise<TurnResult> {
+      if (o.phase === 'plan') { await o.tools.submit_plan('# p'); return { ...ok, planSubmitted: '# p' }; }
+      await o.tools.report_progress([eight[0], eight[1], eight[4], eight[5], eight[7]]); await o.tools.report_blocked('more to draw');
+      return { ...ok, costUsd: 12, blocked: 'more to draw' };
+    } });
+    const { store, engine } = await setup({ claude });
+    store.updateConfig((doc) => { doc.setIn(['budget_usd_per_item'], 20); }, 'config');
+    const item = store.createItem({ title: 'Atlas', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => store.getItem(item.id)!.file.frontmatter.blocked === true, 8000);
+    expect(activityOf(store, item.id)).toContain('at this rate the remaining parts will not fit: 2 of 5 accepted so far for $12.00, all 5 project to ~$30 against $20');
+  });
+});
+
 describe('orchestrator', () => {
   it('wakes on plan_review with a context packet, uses tools, and rotates after the configured wakes', async () => {
     const wakes: { label: string; prompt: string; resume?: string }[] = [];

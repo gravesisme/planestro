@@ -12,6 +12,7 @@ import { fallbackHint } from '../components/NewItemDialog.tsx';
 import { BreakdownPanel } from '../components/BreakdownPanel.tsx';
 import { BlockedPanel } from '../components/BlockedPanel.tsx';
 import { AwaitingPanels } from '../components/AwaitingPanels.tsx';
+import { PartsStrip } from '../components/PartsStrip.tsx';
 import { DecisionCard } from '../components/DecisionCard.tsx';
 import { prepareUpload } from '../uploadImage.ts';
 
@@ -126,6 +127,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
             <div className="row"><button className="primary" onClick={() => act(() => api.approvePlan(item.id, approval || undefined))}>Approve &amp; implement</button>{canClose && <button title={CLOSE_HINT} onClick={closeAsDone}>Already done — close…</button>}<span className="grow" /><input className="grow" placeholder="What should change?" value={reject} onChange={(e) => setReject(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && reject.trim()) { e.preventDefault(); void act(() => api.rejectPlan(item.id, reject)); } }} /><button className="danger" disabled={!reject.trim()} onClick={() => act(() => api.rejectPlan(item.id, reject))}>Request changes</button></div>
           </div>
         )}
+        {fm.parts?.length ? <PartsStrip parts={fm.parts} /> : null}
         <AwaitingPanels item={item} />
         <ReviewPanel item={item} />
         {fm.status === 'IN_REVIEW' && fm.skip_merge && (

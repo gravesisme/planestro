@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
-import { getSection, serializeItemFile, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent } from '@planestro/shared';
+import { getSection, partsSummary, serializeItemFile, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent } from '@planestro/shared';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Ports, CustomToolDef, TurnResult } from './ports.ts';
 import type { DecisionInput } from '@planestro/shared';
@@ -191,6 +191,7 @@ export class Orchestrator {
         const desc = getSection(item.file, 'Description'); if (desc) lines.push(`Description:\n${desc.slice(0, 1200)}`);
         const plan = getSection(item.file, 'Plan'); if (plan) lines.push(`Approved/submitted plan:\n${plan.slice(0, 2000)}`);
         const activity = getSection(item.file, 'Activity').split('\n').slice(-8).join('\n'); if (activity) lines.push(`Recent activity:\n${activity}`);
+        if (fm.parts?.length) lines.push(`Parts, as the worker itself reports them (${partsSummary(fm.parts)}). Quote this; never summarise the state of the work from memory or prose:\n${fm.parts.map((p) => `- ${p.name}: ${p.state}${p.reason ? ` — ${p.reason}` : ''}`).join('\n')}`);
         if (e.type === 'plan_review') lines.push(this.planPolicy(fm.id, fm.plan_revisions ?? 0));
         if (e.type === 'permission_request') lines.push(this.permissionPacket(fm));
         if (fm.triage) lines.push(e.type === 'decision_answered' ? this.decisionAnsweredPacket() : this.triagePacket(fm));

@@ -20,6 +20,7 @@ export const FINAL_SCHEMA = {
     outcome: { type: 'string', enum: ['done', 'blocked', 'question'] },
     summary: { type: 'string' },
     question: { type: ['string', 'null'] },
+    parts: { type: ['array', 'null'], items: { type: 'object', properties: { name: { type: 'string' }, state: { type: 'string', enum: ['accepted', 'pending', 'rejected'] }, reason: { type: ['string', 'null'] } }, required: ['name', 'state', 'reason'], additionalProperties: false } },
     hand_off: {
       type: ['object', 'null'],
       properties: { to: { type: 'string' }, paths: { type: 'array', items: { type: 'string' } }, note: { type: 'string' } },
@@ -27,11 +28,11 @@ export const FINAL_SCHEMA = {
       additionalProperties: false,
     },
   },
-  required: ['outcome', 'summary', 'question', 'hand_off'],
+  required: ['outcome', 'summary', 'question', 'parts', 'hand_off'],
   additionalProperties: false,
 } as const;
 
-export interface CodexFinal { outcome: 'done' | 'blocked' | 'question'; summary: string; question: string | null; hand_off?: { to: string; paths: string[]; note: string } | null }
+export interface CodexFinal { outcome: 'done' | 'blocked' | 'question'; summary: string; question: string | null; hand_off?: { to: string; paths: string[]; note: string } | null; parts?: unknown[] | null }
 
 /** A lenient read of the final message: the schema is enforced by Codex, but a crash can leave anything. */
 export function parseFinal(text: string | undefined): CodexFinal | undefined {
@@ -41,7 +42,7 @@ export function parseFinal(text: string | undefined): CodexFinal | undefined {
     if (v && (v.outcome === 'done' || v.outcome === 'blocked' || v.outcome === 'question') && typeof v.summary === 'string') {
       const h = v.hand_off;
       const hand_off = h && typeof h === 'object' && typeof h.to === 'string' && Array.isArray(h.paths) && h.paths.every((p) => typeof p === 'string') ? { to: h.to, paths: h.paths, note: typeof h.note === 'string' ? h.note : '' } : null;
-      return { outcome: v.outcome, summary: v.summary, question: typeof v.question === 'string' ? v.question : null, hand_off };
+      return { outcome: v.outcome, summary: v.summary, question: typeof v.question === 'string' ? v.question : null, hand_off, ...(Array.isArray(v.parts) && v.parts.length ? { parts: v.parts } : {}) };
     }
   } catch { /* not JSON */ }
   return undefined;
@@ -85,7 +86,7 @@ export class LiveCodexPort implements AgentPort<AgentTurnOptions> {
       ? ['exec', 'resume', o.resume, ...shared]
       : ['exec', '-s', 'workspace-write', '-C', o.cwd, ...shared];
     // There is no system-prompt flag: the worker rules ride at the top of the prompt, every turn.
-    const prompt = `${o.systemAppend.trim()}\n\n---\n\n${o.prompt.trim()}\n\nEnd your turn with ONLY the JSON object described above: {"outcome": "done" | "blocked" | "question", "summary": "...", "question": "..." or null, "hand_off": null or {"to": "<item id that waits on this one>", "paths": ["<files in your worktree, relative>"], "note": "<what they are and how to use them>"}}. Use hand_off only when another backlog item needs files you made before your branch merges.`;
+    const prompt = `${o.systemAppend.trim()}\n\n---\n\n${o.prompt.trim()}\n\nEnd your turn with ONLY the JSON object described above: {"outcome": "done" | "blocked" | "question", "summary": "...", "parts": [...] or null, "question": "..." or null, "hand_off": null or {"to": "<item id that waits on this one>", "paths": ["<files in your worktree, relative>"], "note": "<what they are and how to use them>"}}. Use hand_off only when another backlog item needs files you made before your branch merges.`;
 
     let killed = false;
     this.lastError = undefined;
@@ -125,8 +126,9 @@ export class LiveCodexPort implements AgentPort<AgentTurnOptions> {
       const answer = await o.tools.hand_off(final.hand_off.to, final.hand_off.paths, final.hand_off.note ?? '');
       o.onOutput(`hand_off → ${final.hand_off.to}: ${answer}`);
     }
-    if (final.outcome === 'done') { await o.tools.report_done(final.summary); result.done = final.summary; }
-    else if (final.outcome === 'blocked') { await o.tools.report_blocked(final.summary); result.blocked = final.summary; }
+    if (final.outcome === 'done') { await o.tools.report_done(final.summary, final.parts ?? undefined); result.done = final.summary; }
+    else if (final.outcome === 'blocked') { await o.tools.report_blocked(final.summary, final.parts ?? undefined); result.blocked = final.summary; }
+    else if (final.parts) await o.tools.report_progress(final.parts);
     else { await o.onQuestion([{ question: final.question ?? final.summary, header: 'Codex asks', options: [] }]); result.parked = 'question'; }
     return result;
   }

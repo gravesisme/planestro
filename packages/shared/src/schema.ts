@@ -55,7 +55,7 @@ export const OPERATIONAL_KEYS = [
   'pr_created_at', 'merged_at', 'finished_at', 'iceboxed_at',
   'branch', 'worktree', 'pr', 'session_id', 'agent_sessions', 'awaiting', 'awaiting_data', 'triage',
   'op', 'op_started_at', 'op_data', 'plan_revisions', 'ci_head_sha', 'ci_result', 'ci_failed_count',
-  'merge_order', 'skip_merge', 'review_hold', 'delivered', 'blocked', 'blocked_reason', 'cost_usd', 'turns', 'agent_turns', 'tokens',
+  'merge_order', 'skip_merge', 'review_hold', 'delivered', 'parts', 'blocked', 'blocked_reason', 'cost_usd', 'turns', 'agent_turns', 'tokens',
   'imported_from', 'dates_estimated',
 ] as const;
 export const DERIVED_KEYS = ['base_branch', 'lane', 'external', 'children', 'deps_satisfied', 'needs_you'] as const;
@@ -115,6 +115,8 @@ export const ItemFrontmatter = z.object({
   op_data: z.record(z.string(), z.unknown()).optional(),
   /** How many times the orchestrator has sent this item's plan back for fixes; capped by `orchestrator.max_plan_revisions`. */
   plan_revisions: z.number().int().nonnegative().optional(),
+  /** The worker's own structured progress on multi-part work (f4): each part accepted, pending or rejected with a reason. */
+  parts: z.array(z.object({ name: z.string(), state: z.enum(['accepted', 'pending', 'rejected']), reason: z.string().optional() })).optional(),
   ci_head_sha: z.string().optional(),
   ci_result: z.enum(CI_RESULTS).optional(),
   ci_failed_count: z.number().int().nonnegative().optional(),

@@ -21,6 +21,7 @@ Communicating with planestro
   - `submit_plan` — hand in your plan (planning turns only).
   - `add_note` — record something worth keeping with the item.
   - `append_activity` — log a short progress line.
+  - `report_progress` — multi-part work (an atlas of rows, a set of icons, a pack of sounds): the state of every part, `accepted` | `pending` | `rejected`, each rejection with the gate it failed. Report it whenever a part's state changes; it replaces your last report, and the user and the orchestrator read it instead of your prose. `report_done` and `report_blocked` take the same `parts`.
   - `report_done` — the requested work is complete and committed on your worker branch.
   - `report_blocked` — you cannot proceed without a human decision; say exactly what you need.
   - `hand_off` — give files you made to another item that waits on this one (it names your item in its `depends_on`, or you share an epic), when it needs them before your branch merges. planestro copies them into that item's attachments and tells its session.
