@@ -142,7 +142,9 @@ const RATE_LIMIT_STATUSES = new Set(['allowed', 'allowed_warning', 'rejected']);
 /** One `rate_limit_info` as a snapshot, or undefined when it carries no status. Exported for tests. */
 export function rateLimitSnapshot(info: any): RateLimitSnapshot | undefined {
   if (!RATE_LIMIT_STATUSES.has(info?.status)) return undefined;
-  const utilization = typeof info.utilization === 'number' && Number.isFinite(info.utilization) ? info.utilization : undefined;
+  // The SDK does not document the unit: a reading above 1 is taken as a percentage, so 87 and 0.87 both mean 87%.
+  const raw = typeof info.utilization === 'number' && Number.isFinite(info.utilization) ? info.utilization : undefined;
+  const utilization = raw === undefined ? undefined : raw > 1 ? raw / 100 : raw;
   const resets = resetTime(info.resetsAt);
   return { status: info.status, window: typeof info.rateLimitType === 'string' ? info.rateLimitType : 'unknown', ...(utilization !== undefined ? { utilization } : {}), ...(resets ? { resetsAt: resets.toISOString() } : {}) };
 }

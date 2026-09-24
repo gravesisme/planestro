@@ -73,4 +73,9 @@ describe('rate-limit readings for the usage guard', () => {
     expect(rateLimitSnapshot({ status: 'bogus', utilization: 0.9 })).toBeUndefined();
     expect(feed([{ type: 'rate_limit_event' }]).rateLimit).toBeUndefined();
   });
+  it('reads a utilization above 1 as a percentage', () => {
+    const u: UsageSignals = {};
+    noteUsage({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', rateLimitType: 'five_hour', utilization: 87 } }, u);
+    expect(u.rateLimit?.utilization).toBeCloseTo(0.87);
+  });
 });
