@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, renameSync, copyFileSync, unlinkSync } from 'node:fs';
+import { join, dirname } from 'node:path';
 import type { GitPort, GhPort, ProcPort, WorktreeEntry, RebaseResult, CiStatus, PrInfo, ChangedFile } from './ports.ts';
 
 const execFileP = promisify(execFile);
@@ -94,6 +95,23 @@ export class LiveGitPort implements GitPort {
     return entries;
   }
   async status(cwd: string) { const dirty = (await git(cwd, ['status', '--porcelain'])).stdout.split('\n').filter(Boolean).map((l) => l.slice(3)); return { clean: dirty.length === 0, dirty }; }
+  async dirtyDetail(cwd: string) {
+    const tracked = (await git(cwd, ['status', '--porcelain', '--untracked-files=no'])).stdout.split('\n').filter(Boolean).map((l) => l.slice(3));
+    const untracked = (await git(cwd, ['ls-files', '--others', '--exclude-standard'])).stdout.split('\n').filter(Boolean);
+    return { tracked, untracked };
+  }
+  async trackedAt(cwd: string, ref: string, paths: string[]) {
+    const out: string[] = [];
+    for (let i = 0; i < paths.length; i += 200) out.push(...(await git(cwd, ['ls-tree', '-r', '--name-only', ref, '--', ...paths.slice(i, i + 200)])).stdout.split('\n').filter(Boolean));
+    return out;
+  }
+  async moveAside(cwd: string, paths: string[], dest: string) {
+    for (const p of paths) {
+      const to = join(dest, p);
+      mkdirSync(dirname(to), { recursive: true });
+      try { renameSync(join(cwd, p), to); } catch { copyFileSync(join(cwd, p), to); unlinkSync(join(cwd, p)); } // another volume
+    }
+  }
   async aheadBehind(cwd: string, base: string, head: string) {
     const [behind, ahead] = (await git(cwd, ['rev-list', '--left-right', '--count', `${base}...${head}`])).stdout.trim().split(/\s+/).map(Number);
     return { ahead, behind };

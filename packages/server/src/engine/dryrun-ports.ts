@@ -22,6 +22,9 @@ export class FakeWorld {
   rerunLagPolls = 0;
   /** A re-run of failed jobs fails again (a real failure, not a flake). */
   rerunFailsAgain = false;
+  /** Untracked files by worktree, and the paths the base branch tracks (for regenerated files that collide with it). */
+  untracked = new Map<string, string[]>();
+  baseFiles = new Set<string>();
   nextPr = 100;
   seq = 0;
   ciMode: 'green' | 'red-once' | 'conflict-once' = (process.env.PLANESTRO_DRYRUN_CI as any) ?? 'green';
@@ -51,7 +54,10 @@ export class DryRunGitPort implements GitPort {
   async worktreeRemove(_repo: string, path: string, force: boolean) { this.say(`git worktree remove${force ? ' --force' : ''} ${path}`); this.w.worktrees.delete(path); }
   async worktreePrune() { this.say('git worktree prune'); }
   async worktreeList() { return [...this.w.worktrees.values()]; }
-  async status(cwd: string) { return { clean: !this.w.dirty.has(cwd), dirty: this.w.dirty.has(cwd) ? ['src/fake.ts'] : [] }; }
+  async status(cwd: string) { const u = this.w.untracked.get(cwd) ?? []; const dirty = [...(this.w.dirty.has(cwd) ? ['src/fake.ts'] : []), ...u]; return { clean: dirty.length === 0, dirty }; }
+  async dirtyDetail(cwd: string) { return { tracked: this.w.dirty.has(cwd) ? ['src/fake.ts'] : [], untracked: [...(this.w.untracked.get(cwd) ?? [])] }; }
+  async trackedAt(_cwd: string, _ref: string, paths: string[]) { return paths.filter((p) => this.w.baseFiles.has(p)); }
+  async moveAside(cwd: string, paths: string[], dest: string) { this.say(`move ${paths.join(', ')} from ${cwd} to ${dest}`); this.w.untracked.set(cwd, (this.w.untracked.get(cwd) ?? []).filter((p) => !paths.includes(p))); }
   async aheadBehind(cwd: string) { return { ahead: this.w.commits.get(cwd) ?? 0, behind: this.w.behind.get(cwd) ?? 1 }; }
   async rebase(cwd: string, onto: string): Promise<RebaseResult> {
     if (this.w.conflictArmed) { this.w.conflictArmed = false; this.say(`git rebase ${onto} in ${cwd} → CONFLICT (simulated)`); return { ok: false, conflicts: ['src/conflicted.ts'], head: this.w.worktrees.get(cwd)?.head ?? '' }; }

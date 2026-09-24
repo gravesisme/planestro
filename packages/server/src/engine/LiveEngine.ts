@@ -932,7 +932,7 @@ export class LiveEngine implements Engine {
     this.store.mutateItem(id, [{ set: { op: integration ? 'syncing_base' : 'rebasing', op_started_at: this.now(), op_data: { ...(fm.op_data ?? {}), base_sha: null } } }], 'engine');
     await this.ports.git.fetch(this.repo);
     const { clean } = await this.ports.git.status(cwd);
-    if (!clean) { this.store.journal.end(opId, id, 'aborted', { reason: 'dirty' }); this.block(id, 'dirty_tree', 'the worktree has uncommitted changes; it cannot be synced'); return; }
+    if (!clean && !(await this.displaceRegenerated(id, cwd, base))) { this.store.journal.end(opId, id, 'aborted', { reason: 'dirty' }); this.block(id, 'dirty_tree', 'the worktree has uncommitted changes; it cannot be synced'); return; }
     const baseSha = await this.ports.git.revParse(this.repo, `origin/${base}`);
     const expected = await this.ports.git.remoteBranchSha(this.repo, fm.branch!);
     const localHead = await this.ports.git.revParse(cwd, 'HEAD');
@@ -1067,6 +1067,26 @@ export class LiveEngine implements Engine {
       { activity: { actor: 'app', text: `CI red for ${headSha.slice(0, 7)} on a known flaky check (${known}, ci.flaky_checks); re-running the failed jobs once before handing it to the session` } },
     ], 'engine', { commit: `${id}: re-run flaky CI` });
     return attempt;
+  }
+
+  /**
+   * The one dirty tree the sync may clear by itself (dogfood p17): every change is an untracked file
+   * that the base now tracks under the same path. Those are artefacts regenerated in this worktree
+   * (a Godot import run leaves .import sidecars) that collide with the copies another item just
+   * merged. They are moved aside to a folder outside the worktree, never deleted (invariant 7), and
+   * the Activity log names them and where they went. Anything else leaves the tree as it is.
+   */
+  private async displaceRegenerated(id: string, cwd: string, base: string): Promise<boolean> {
+    const { tracked, untracked } = await this.ports.git.dirtyDetail(cwd);
+    if (tracked.length || !untracked.length) return false;
+    await this.ports.git.fetch(this.repo);
+    const colliding = await this.ports.git.trackedAt(cwd, `origin/${base}`, untracked);
+    if (colliding.length !== untracked.length) return false;
+    const dest = join(this.store.worktreesRoot(), '.displaced', `${id.toLowerCase()}-${this.now().replace(/[:+]/g, '-')}`);
+    await this.ports.git.moveAside(cwd, colliding, dest);
+    if (!(await this.ports.git.status(cwd)).clean) return false;
+    this.store.mutateItem(id, [{ activity: { actor: 'app', text: `moved ${colliding.length} untracked file${colliding.length === 1 ? '' : 's'} that ${base} now tracks out of the way (regenerated copies; nothing deleted) to ${dest}: ${colliding.slice(0, 12).join(', ')}${colliding.length > 12 ? ', …' : ''}` } }], 'engine', { commit: `${id}: set regenerated files aside` });
+    return true;
   }
 
   private async onCiRed(id: string, opId: string, headSha: string, logText: string | undefined, source: 'github' | 'local', canFix = true): Promise<void> {

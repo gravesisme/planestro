@@ -20,6 +20,12 @@ export interface GitPort {
   worktreePrune(repo: string): Promise<void>;
   worktreeList(repo: string): Promise<WorktreeEntry[]>;
   status(cwd: string): Promise<{ clean: boolean; dirty: string[] }>;
+  /** A dirty tree split: changes to tracked files, and untracked files one by one (not collapsed to their directory). */
+  dirtyDetail(cwd: string): Promise<{ tracked: string[]; untracked: string[] }>;
+  /** Which of `paths` exist as files at `ref`. */
+  trackedAt(cwd: string, ref: string, paths: string[]): Promise<string[]>;
+  /** Move files (relative to cwd) into `dest`, keeping their relative paths: set aside, never deleted. */
+  moveAside(cwd: string, paths: string[], dest: string): Promise<void>;
   aheadBehind(cwd: string, base: string, head: string): Promise<{ ahead: number; behind: number }>;
   /** Rebase `cwd`'s HEAD onto `onto`; on conflict the rebase is aborted and the files listed. */
   rebase(cwd: string, onto: string): Promise<RebaseResult>;
