@@ -854,9 +854,19 @@ export class LiveEngine implements Engine {
     // invariant 7: positive evidence before anything is deleted
     await this.ports.git.fetch(this.repo);
     const view = await this.ports.gh.prView(this.github, fm.pr!);
-    const tip = fm.ci_head_sha ?? await this.ports.git.revParse(cwd, 'HEAD');
-    const reachable = await this.ports.git.isAncestor(this.repo, tip, `origin/${base}`);
-    if (view.state !== 'MERGED' || !reachable) { this.store.journal.end(opId, id, 'aborted', { reason: 'unverifiable' }); this.block(id, 'cleanup_unverifiable', `cannot prove ${tip.slice(0, 7)} is reachable from origin/${base} (PR ${view.state}); nothing was deleted`); return; }
+    // The proof covers exactly what is about to be deleted — the worktree's HEAD and the
+    // local and remote branch tips, whichever still exist — never a remembered sha: a branch
+    // pushed or merged outside planestro leaves ci_head_sha stale (dogfood p39). When all
+    // three are already gone (removed by hand), a merged PR leaves nothing to prove.
+    const tips: Array<[string, string]> = [];
+    const worktrees = await this.ports.git.worktreeList(this.repo).catch(() => []);
+    if (worktrees.some((w) => w.path === cwd)) tips.push(['worktree HEAD', await this.ports.git.revParse(cwd, 'HEAD')]);
+    if (fm.branch && await this.ports.git.localBranchExists(this.repo, fm.branch)) tips.push([fm.branch, await this.ports.git.revParse(this.repo, `refs/heads/${fm.branch}`)]);
+    const remoteTip = fm.branch ? await this.ports.git.remoteBranchSha(this.repo, fm.branch) : null;
+    if (remoteTip) tips.push([`origin/${fm.branch}`, remoteTip]);
+    const stranded: string[] = [];
+    for (const [what, sha] of tips) if (!await this.ports.git.isAncestor(this.repo, sha, `origin/${base}`)) stranded.push(`${what} ${sha.slice(0, 7)}`);
+    if (view.state !== 'MERGED' || stranded.length) { this.store.journal.end(opId, id, 'aborted', { reason: 'unverifiable', stranded }); this.block(id, 'cleanup_unverifiable', view.state !== 'MERGED' ? `PR #${fm.pr} is ${view.state}; nothing was deleted` : `cannot prove ${stranded.join(', ')} reachable from origin/${base}; nothing was deleted`); return; }
     const { clean } = await this.ports.git.status(cwd).catch(() => ({ clean: true }));
     if (!clean) { this.store.journal.end(opId, id, 'aborted', { reason: 'dirty' }); this.block(id, 'cleanup_dirty', 'the worktree has uncommitted changes after the merge; remove it by hand or discard them'); return; }
     await this.ports.git.worktreeRemove(this.repo, cwd, false);

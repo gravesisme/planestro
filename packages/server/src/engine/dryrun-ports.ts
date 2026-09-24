@@ -15,6 +15,8 @@ export class FakeWorld {
   /** Files a fake agent "committed", by branch — so a dry run has real images to review. */
   files = new Map<string, Map<string, Buffer>>();
   dirty = new Set<string>();
+  /** Shas the fake base does not contain (isAncestor answers false for them). */
+  unreachable = new Set<string>();
   prs = new Map<number, PrInfo & { polls: number; failOnce: boolean }>();
   nextPr = 100;
   seq = 0;
@@ -68,7 +70,7 @@ export class DryRunGitPort implements GitPort {
   async deleteRemoteBranch(_repo: string, branch: string) { this.say(`git push origin --delete ${branch}`); this.w.remoteBranches.delete(branch); }
   async localBranchExists(_repo: string, branch: string) { return this.w.localBranches.has(branch); }
   async deleteLocalBranch(_repo: string, branch: string) { this.say(`git branch -D ${branch}`); this.w.localBranches.delete(branch); }
-  async isAncestor() { return true; }
+  async isAncestor(_repo: string, ancestor: string) { return !this.w.unreachable.has(ancestor); }
   async log() { return 'abc1234 (dry-run) fake commit'; }
 }
 
