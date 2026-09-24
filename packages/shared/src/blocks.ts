@@ -9,7 +9,7 @@ export const BLOCK_HELP: Record<string, { meaning: string; todo: string }> = {
   turn_error: { meaning: "A turn failed for a reason that needs judgment: an SDK error, the budget ran out mid-turn, a Codex turn that ended without its closing JSON. The orchestrator is woken for these.", todo: "Read the detail. Unblocking resumes the same conversation." },
   no_plan: { meaning: "The planner ended its turn without submitting a plan (or an epic's breakdown).", todo: "Unblock with \"submit your plan\"; if the work is already done, **close as done…**." },
   no_commits: { meaning: "The worker said it was done, but the branch has nothing ahead of its base.", todo: "If the work truly needed no change: **close as done…**. Otherwise unblock with what is missing." },
-  dirty_tree: { meaning: "Uncommitted changes remain after two reminders to commit.", todo: "Look in the worktree; commit or discard, then unblock." },
+  dirty_tree: { meaning: "Uncommitted changes remain after two reminders to commit, or the merge pipeline found the tree dirty. (Untracked files the base now tracks under the same path, such as regenerated sidecars, are moved aside to `.displaced/` instead of blocking.)", todo: "Look in the worktree; commit or discard, then unblock." },
   planner_cannot_plan: { meaning: "The item's planner is a model whose runner cannot plan (Codex).", todo: "Pick a Claude model as the planner." },
   runner_unavailable: { meaning: "The model's runner is not present in this engine.", todo: "Check the model's `runner`." },
   auth_required: { meaning: "The agent CLI is not logged in.", todo: "`codex login` (or `claude` login), then unblock." },

@@ -956,6 +956,49 @@ describe('preparing to restart (f3)', () => {
   });
 });
 
+describe('regenerated files that collide with the base (p17)', () => {
+  /** An item IN_REVIEW with an open PR, its worktree carrying `untracked` files, ready for the merge pipeline. */
+  async function inReview(untracked: string[], opts: { trackedChange?: boolean } = {}) {
+    const ctx = await setup();
+    const { store, engine, world } = ctx;
+    const item = store.createItem({ title: 'Sidecars', description: 'x' });
+    const branch = 'tp/1-sidecars', rel = '.claude/worktrees/tp-1-sidecars';
+    const cwd = (engine as any).absWorktree(rel);
+    const head = world.sha();
+    world.worktrees.set(cwd, { path: cwd, head, branch }); world.remoteBranches.set(branch, head);
+    world.prs.set(200, { number: 200, url: 'u', state: 'OPEN', headRefOid: head, headRefName: branch, baseRefName: 'trunk', polls: 0, failOnce: false });
+    world.untracked.set(cwd, untracked);
+    if (opts.trackedChange) world.dirty.add(cwd);
+    store.mutateItem(item.id, [{ set: { status: 'IN_REVIEW', branch, worktree: rel, pr: 200, ci_result: 'pending' } }], 'engine');
+    return { ...ctx, id: item.id, cwd };
+  }
+
+  it('untracked files the base now tracks are moved aside, not deleted, and the sync goes on', async () => {
+    const { store, engine, world, id, cwd } = await inReview(['assets/enemy_a.png.import', 'assets/enemy_b.png.import']);
+    world.baseFiles.add('assets/enemy_a.png.import'); world.baseFiles.add('assets/enemy_b.png.import');
+    await engine.start();
+    await waitFor(() => status(store, id) === 'FINISHED', 8000);
+    expect(world.untracked.get(cwd)).toEqual([]);
+    expect(activityOf(store, id)).toMatch(/moved 2 untracked files that trunk now tracks out of the way \(regenerated copies; nothing deleted\) to \S+\.displaced\/tp-1-/);
+  });
+
+  it('an untracked file the base does not track is the worker\'s: the item blocks as before', async () => {
+    const { store, engine, world, id, cwd } = await inReview(['assets/enemy_a.png.import', 'notes/mine.txt']);
+    world.baseFiles.add('assets/enemy_a.png.import');
+    await engine.start();
+    await waitFor(() => store.getItem(id)!.file.frontmatter.blocked_reason === 'dirty_tree');
+    expect(world.untracked.get(cwd)).toHaveLength(2);
+  });
+
+  it('a change to a tracked file blocks even when the untracked ones collide', async () => {
+    const { store, engine, world, id, cwd } = await inReview(['assets/enemy_a.png.import'], { trackedChange: true });
+    world.baseFiles.add('assets/enemy_a.png.import');
+    await engine.start();
+    await waitFor(() => store.getItem(id)!.file.frontmatter.blocked_reason === 'dirty_tree');
+    expect(world.untracked.get(cwd)).toHaveLength(1);
+  });
+});
+
 describe('orchestrator', () => {
   it('wakes on plan_review with a context packet, uses tools, and rotates after the configured wakes', async () => {
     const wakes: { label: string; prompt: string; resume?: string }[] = [];
