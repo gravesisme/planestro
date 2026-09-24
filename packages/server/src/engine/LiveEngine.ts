@@ -201,6 +201,7 @@ export class LiveEngine implements Engine {
       await this.driveExternal();
       this.driveInReview();
       this.driveHeld();
+      await this.driveStalls();
     } catch (e) { this.note('error', `tick: ${(e as Error).message}`); }
   }
 
@@ -215,9 +216,21 @@ export class LiveEngine implements Engine {
     }
   }
 
+  /**
+   * An item holds a session slot while something is driving it: a live turn, an engine step, or an
+   * op in flight. An item that only sits in an active status does not (HH-109 idled five days after
+   * a messageless unblock and held a slot throughout), and an epic never does: its children do the work.
+   */
+  private holdsSlot(i: StoredItem): boolean {
+    const fm = i.file.frontmatter;
+    if (this.turns.has(i.id)) return true;
+    if (fm.kind === 'epic' || !ACTIVE_FOR_SLOTS.includes(fm.status)) return false;
+    return this.jobs.has(i.id) || Boolean(fm.op);
+  }
+
   private admit(): void {
     const items = this.store.listItems();
-    const active = items.filter((i) => (ACTIVE_FOR_SLOTS.includes(i.file.frontmatter.status) && !i.file.frontmatter.awaiting && !i.file.frontmatter.blocked) || this.turns.has(i.id)).length;
+    const active = items.filter((i) => this.holdsSlot(i)).length;
     let free = this.store.config.concurrency.max_sessions - active;
     for (const item of items) {
       if (free <= 0) break;
@@ -236,6 +249,54 @@ export class LiveEngine implements Engine {
       free -= 1;
       this.runJob(item.id, () => this.startItem(item.id));
     }
+  }
+
+  /**
+   * Stall detection (f1). An item planning or in progress with no live turn, no engine step, no op,
+   * not waiting on anyone and not blocked has nothing driving it. Past `stall_after_min` it is carried
+   * on once: committed work goes to its pull request, otherwise the session is resumed (an item that
+   * never had a conversation, like HH-123 orphaned between its setup and its first turn, gets the full prompt).
+   * A second stall within the hour is not retried again: it blocks as `stalled` for triage.
+   */
+  private idleSince = new Map<string, number>();
+  private async driveStalls(): Promise<void> {
+    const after = this.store.config.concurrency.stall_after_min * 60_000;
+    if (!after) return;
+    const now = Date.now();
+    const seen = new Set<string>();
+    for (const item of this.store.listItems()) {
+      const fm = item.file.frontmatter;
+      if (!ACTIVE_FOR_SLOTS.includes(fm.status) || fm.kind === 'epic' || this.store.derived(item).flavor !== 'worker') continue;
+      if (this.turns.has(item.id) || this.jobs.has(item.id) || this.followUps.has(item.id) || fm.op || fm.awaiting || fm.blocked || fm.triage) continue;
+      seen.add(item.id);
+      const since = this.idleSince.get(item.id) ?? now;
+      this.idleSince.set(item.id, since);
+      if (now - since < after) continue;
+      this.idleSince.delete(item.id);
+      const idleMin = Math.round((now - since) / 60_000);
+      const last = Date.parse(String(fm.op_data?.stall_resumed_at ?? ''));
+      if (Number.isFinite(last) && now - last < 60 * 60_000) { this.block(item.id, 'stalled', `nothing has driven this item for ${idleMin} min, again within an hour of being carried on; look at its worktree and Activity`); continue; }
+      this.store.mutateItem(item.id, [{ set: { op_data: { ...(fm.op_data ?? {}), stall_resumed_at: this.now() } } }, { activity: { actor: 'app', text: `stalled: nothing has driven this item for ${idleMin} min; carrying on from where it stopped` } }], 'engine', { commit: `${item.id}: stalled, carried on` });
+      this.runJob(item.id, () => this.carryOnStalled(item.id));
+    }
+    for (const id of this.idleSince.keys()) if (!seen.has(id)) this.idleSince.delete(id);
+  }
+
+  private async carryOnStalled(id: string): Promise<void> {
+    const item = this.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    const dir = fm.worktree ? this.absWorktree(fm.worktree) : undefined;
+    const exists = dir ? (await this.ports.git.worktreeList(this.repo)).some((w) => w.path === dir && !w.prunable) : false;
+    // A missing worktree is triage's to judge (recreate_worktree, or retry_op's requeue), not a stall's.
+    if (!exists) { this.block(id, 'worktree_missing', `stalled with its worktree ${fm.worktree ?? '(none)'} missing; nothing recreated`); return; }
+    if (fm.status === 'IN_PROGRESS') {
+      const { clean } = await this.ports.git.status(dir!);
+      const base = this.store.derived(item).base_branch;
+      const ahead = clean && base ? (await this.ports.git.aheadBehind(dir!, `origin/${base}`, 'HEAD')).ahead : 0;
+      if (ahead > 0) { await this.afterWorkTurn(id, 'implement', { subtype: 'success', isError: false, costUsd: 0, numTurns: 0, text: '', done: String(fm.op_data?.done_summary ?? '') || undefined }); return; }
+    }
+    const phase = this.phaseFor(fm.status)!;
+    await this.runTurnFor(id, phase, `${this.resumeNote(id, 'planestro (it found this item idle)')}\n\nNothing was driving this item: your last turn ended without finishing the step. Check your worktree and continue where you left off.`);
   }
 
   /**
