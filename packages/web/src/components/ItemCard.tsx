@@ -37,6 +37,7 @@ export function ItemCard({ item, sortable = true, onSelect }: { item: ItemView; 
             {fm.blocked && !fm.triage && !decisionOf(fm) && <span className="tag hot">BLOCKED{fm.blocked_reason ? `: ${fm.blocked_reason}` : ''}</span>}
             {decisionOf(fm) ? <span className="tag hot">decision needed</span> : fm.awaiting && !(fm.triage && fm.awaiting === 'user') && <span className={`tag ${d.needs_you ? 'wait' : ''}`}>awaiting {fm.awaiting.replace(/_/g, ' ')}</span>}
             {fm.op && <span className="tag">{fm.op.replace(/_/g, ' ')}</span>}
+            {(() => { const cfg = state?.config; if (!cfg || d.lane !== 'board') return null; const usd = (fm.cost_usd ?? 0) / (fm.budget_usd ?? cfg.budget_usd_per_item); const tok = (fm.tokens ?? 0) / (fm.budget_tokens ?? cfg.budget_tokens_per_item); const share = Math.max(usd, tok); return share >= 0.8 ? <span className={`tag ${share >= 1 ? 'hot' : 'wait'}`} title="Of this item's budget; raise it on the item page">budget {Math.round(share * 100)}%</span> : null; })()}
             {!d.deps_satisfied && <span className="tag">waits on {fm.depends_on.join(', ')}</span>}
             {lane === 'done' && fm.finished_at && <span>{fm.finished_at.slice(0, 16).replace('T', ' ')}</span>}
           </div>

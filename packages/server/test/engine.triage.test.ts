@@ -166,6 +166,35 @@ describe('needs-you triage', () => {
     expect(a.prompts[1]).toContain('transient failure (turn_error)');
   });
 
+  it("a card's '+$N and resume' option raises the item's budget when tapped, and the wake says so (p43)", async () => {
+    const replies: string[] = [];
+    const a = agents({ firstTurn: blocksOnce, orchestrate: async (w) => {
+      if (w.label.startsWith('blocked_')) {
+        const t = w.tools('ask_user_decision');
+        replies.push(await t.handler({ item: 'TP-1', question: 'Give it more budget?', why: 'It is one step from done.', options: [{ label: '+$40 and resume', description: 'Raise the cap and carry on', recommended: true, raise_budget_usd: 40 }, { label: 'Stop here', description: 'Leave it blocked' }] }));
+        replies.push(await t.handler({ item: 'TP-1', question: 'Bad raise?', why: 'x', options: [{ label: 'A', description: '', recommended: true, raise_budget_usd: -5 }, { label: 'B', description: '' }] }));
+      }
+      if (w.label === 'decision_answered') {
+        expect(w.prompt).toContain('budget: The item\'s budget is already raised to $');
+        expect(w.prompt).toContain('Resume it with unblock_item');
+        await w.tools('unblock_item').handler({ id: 'TP-1', message: 'Carry on.' });
+      }
+    } });
+    const { store: s, engine: e, id } = await setup(a.claude);
+    await e.start();
+    await waitFor(() => Boolean((fmOf(s, id).awaiting_data as any)?.decision));
+    expect(replies[0]).toContain('recorded');
+    expect(replies[1]).toContain('raise_budget_usd must be a number of dollars');
+    const before = fmOf(s, id);
+    expect(before.budget_usd).toBeUndefined();
+    await e.answerDecision(id, { choice: '+$40 and resume' });
+    const after = fmOf(s, id);
+    expect(after.budget_usd).toBe(s.config.budget_usd_per_item + 40);
+    expect(activityOf(s, id)).toContain(`(budget raised to $${s.config.budget_usd_per_item + 40})`);
+    await waitFor(() => !fmOf(s, id).blocked);
+    expect(s.journal.read({ type: 'orchestrator.decision_answered' })[0].data?.budget_raised_to).toBe(s.config.budget_usd_per_item + 40);
+  });
+
   it('ask_user_decision stores one structured decision, recommended first; your answer wakes the orchestrator to carry it out', async () => {
     const replies: string[] = [];
     const a = agents({ firstTurn: blocksOnce, orchestrate: async (w) => {

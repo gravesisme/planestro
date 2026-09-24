@@ -15,6 +15,7 @@ const EDITABLE_FIELDS = z.object({
   merge_policy: z.enum(['app', 'watch']).nullable().optional(), base_branch_override: z.string().nullable().optional(),
   branch: z.string().nullable().optional(), pr: z.number().int().positive().nullable().optional(),
   skip_merge: z.boolean().nullable().optional(),
+  budget_usd: z.number().positive().nullable().optional(), budget_turns: z.number().int().positive().nullable().optional(), budget_tokens: z.number().int().positive().nullable().optional(),
 }).strict();
 
 export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBuffer): Hono {
@@ -230,6 +231,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
         ci: z.object({ mode: z.enum(['github', 'github-or-local']), require_green_base: z.boolean(), local_check_command: z.string() }).partial().optional(),
         engine: z.object({ mode: z.enum(['live', 'dry-run']) }).partial().optional(),
         notifications: z.object({ on_merge: z.string() }).partial().optional(),
+        budget_usd_per_item: z.number().positive().optional(), budget_turns_per_item: z.number().int().positive().optional(), budget_tokens_per_item: z.number().int().positive().optional(),
         orchestrator: z.object({ model: z.string().min(1), allow_model_fallback: z.boolean(), may_approve_plans: z.boolean(), max_plan_revisions: z.number().int().nonnegative(), may_decide_permissions: z.boolean(), triage: z.boolean(), triage_timeout_min: z.number().positive() }).partial().optional(),
       }).parse(await c.req.json());
       if (body.orchestrator?.model) {
@@ -237,7 +239,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
         if (!m || !canPlan(m)) throw new Error(`orchestrator.model: ${body.orchestrator.model} is not a Claude model in models:`);
         body.orchestrator.model = m.id;
       }
-      const cfg = store.updateConfig((doc) => { for (const [section, values] of Object.entries(body)) for (const [k, v] of Object.entries(values ?? {})) if (v !== undefined) doc.setIn([section, k], v); }, 'config: update settings');
+      const cfg = store.updateConfig((doc) => { for (const [section, values] of Object.entries(body)) { if (typeof values !== 'object' || values === null) { doc.setIn([section], values); continue; } for (const [k, v] of Object.entries(values)) if (v !== undefined) doc.setIn([section, k], v); } }, 'config: update settings');
       return c.json({ config: cfg });
     } catch (e) { return fail(c, e); }
   });
