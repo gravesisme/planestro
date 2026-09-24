@@ -17,7 +17,7 @@ const TABS: { to: string; label: string; icon: string }[] = [
 function guardPill(g: UsageGuardState): string {
   const pct = usagePercent(g.utilization);
   const what = pct ? `usage ${pct} of ${usageWindowLabel(g.window)} window` : `${usageWindowLabel(g.window)} window ${g.status === 'rejected' ? 'exhausted' : 'near its limit'}`;
-  return `PAUSED — ${what} · ${g.resume_at ? `resumes ${localClock(g.resume_at)}` : 'resume by hand'}`;
+  return `PAUSED — ${what} · ${g.resume_at ? `resumes ${localClock(g.resume_at)}` : g.resets_at ? `resets ${localClock(g.resets_at)} · resume by hand` : 'resume by hand'}`;
 }
 const onBoardTab = (path: string) => path === '/' || /^\/(icebox|done|items)(\/|$)/.test(path);
 

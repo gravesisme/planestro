@@ -164,14 +164,14 @@ current reading for its window, and planestro stops itself *before* the limit ra
 | `usage_guard.enabled` | `true` | Watch the readings at all. |
 | `usage_guard.threshold` | `0.85` | Pause when any window's utilization reaches this fraction. |
 | `usage_guard.on_warning` | `true` | Also pause on an `allowed_warning` reading, whatever the utilization. |
-| `usage_guard.auto_resume` | `true` | Resume a guard-made pause 60 s after the window resets. |
+| `usage_guard.auto_resume` | `false` | Resume a guard-made pause 60 s after the window resets. Off by default: resuming on its own restarts spending while nobody is watching, so a guard pause waits for you unless you opt in. |
 
 A `rejected` reading (the window is spent) always trips it. Tripping is the ordinary PAUSE
 AUTOMATION lever: turns already running finish, nothing new starts. planestro records the reading
 in `planestro.local.yml` (`engine.usage_guard`), journals `usage.guard_tripped`, logs a warning
 (`USAGE GUARD: 5-hour window at 87% — automation paused until 6:20 pm`), runs
 `notifications.on_usage_pause` if set, and the header shows **PAUSED — usage 87% of 5-hour window ·
-resumes 6:20 pm** beside the RESUME button. It trips once per window crossing and never takes over a
+resets 6:20 pm · resume by hand** beside the RESUME button (with `auto_resume`, *resumes 6:20 pm*). It trips once per window crossing and never takes over a
 pause you made yourself. **RESUME** by hand cancels the automatic resume and keeps going for the rest
 of that window; a pause you pulled by hand is never resumed automatically. API-key billing reports
 no subscription windows, so the guard stays idle there.

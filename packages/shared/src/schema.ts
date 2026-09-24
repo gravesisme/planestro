@@ -306,8 +306,8 @@ export const Config = z.object({
     /** An `allowed_warning` reading trips it too, whatever the utilization. */
     on_warning: z.boolean().default(true),
     /** Resume a guard-made pause a minute after the window resets. */
-    auto_resume: z.boolean().default(true),
-  }).default({ enabled: true, threshold: 0.85, on_warning: true, auto_resume: true }),
+    auto_resume: z.boolean().default(false),
+  }).default({ enabled: true, threshold: 0.85, on_warning: true, auto_resume: false }),
   notifications: z.object({ on_merge: z.string().optional(), on_usage_pause: z.string().optional() }).default({}),
   git: z.object({
     auto_commit: z.boolean().default(true),

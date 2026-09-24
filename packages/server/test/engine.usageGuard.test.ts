@@ -27,11 +27,13 @@ function readingClaude(reading: { current?: RateLimitSnapshot }) {
 
 interface Timer { fn: () => void; ms: number; cancelled: boolean }
 
-async function setup(opts: { reading?: { current?: RateLimitSnapshot }; edit?: (yml: string) => string; dataDir?: string } = {}) {
+async function setup(opts: { reading?: { current?: RateLimitSnapshot }; edit?: (yml: string) => string; dataDir?: string; defaults?: boolean } = {}) {
   const dataDir = opts.dataDir ?? makeFixture().dataDir;
   if (!opts.dataDir) {
     const cfg = join(dataDir, 'planestro.yml');
-    writeFileSync(cfg, (opts.edit ?? ((y) => y))(readFileSync(cfg, 'utf8').replace(/^code_repo:\n/m, 'code_repo:\n  github: acme/repo\n')));
+    // auto_resume is opt-in (off by default); these tests opt in unless they are about the default.
+    const base = readFileSync(cfg, 'utf8').replace(/^code_repo:\n/m, 'code_repo:\n  github: acme/repo\n');
+    writeFileSync(cfg, (opts.edit ?? ((y) => y))(opts.defaults ? base : base.replace('auto_resume: false', 'auto_resume: true')));
   }
   delete process.env.PLANESTRO_DRYRUN_CI;
   store = await DataStore.open(dataDir);
@@ -191,5 +193,15 @@ describe('usage guard in the engine', () => {
     expect(third.engine.paused).toBe(false);
     expect(third.store.local.engine.paused_by).toBeUndefined();
     expect(third.store.journal.read({ type: 'usage.guard_resumed' })).toHaveLength(1);
+  });
+  it('by default a guard pause waits for you: auto_resume is off, so no resume is armed', async () => {
+    const { store, engine, timers } = await setup({ defaults: true, reading: { current: snap({ utilization: 0.9 }) } });
+    expect(store.config.usage_guard.auto_resume).toBe(false);
+    const a = store.createItem({ title: 'default guard', description: 'x' });
+    store.transition(a.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => engine.paused);
+    expect(store.local.engine.paused_by).toBe('usage_guard');
+    expect(timers.filter((t) => !t.cancelled)).toHaveLength(0);
   });
 });
