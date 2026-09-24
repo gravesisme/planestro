@@ -87,6 +87,11 @@ An epic's children can be written by hand, or proposed by the planner: see
   while it waits for you: a review-held item comes to you as soon as it is synced, and releasing
   the hold syncs the branch, marks the PR ready and runs CI once, on the head that merges.
   Putting a hold on an open PR turns it back into a draft.
+- **Resume when merged** (`resume_after`) — a stopped item that is only waiting for other items
+  (a flag, an asset) is parked on them with the message to resume with. It stops needing you;
+  once they have all merged, planestro rebases its branch onto the base (a conflict goes to the
+  session, as in any sync) and resumes the session with the message. The orchestrator can do
+  the same from triage (`resume_after`). **Stop waiting** makes it a plain block again.
 - **PAUSE AUTOMATION** — the global lever: running steps finish, nothing new starts,
   across restarts.
 

@@ -142,6 +142,17 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
       return c.json(itemView(store, store.requireItem(id)));
     } catch (e) { return fail(c, e); }
   });
+  api.post('/items/:id/resume-after', async (c) => {
+    try {
+      const { items, message } = z.object({ items: z.array(z.string()).min(1), message: z.string().min(1) }).parse(await c.req.json());
+      const e = engine as Engine & { resumeAfter?: (id: string, items: string[], message: string) => Promise<string> };
+      if (!e.resumeAfter) throw new Error('this engine cannot resume items');
+      const r = await e.resumeAfter(c.req.param('id'), items, message);
+      if (!r.startsWith('parked')) throw new Error(r);
+      return c.json(itemView(store, store.requireItem(c.req.param('id'))));
+    } catch (e) { return fail(c, e); }
+  });
+  api.delete('/items/:id/resume-after', (c) => { try { (engine as Engine & { cancelResumeAfter?: (id: string) => void }).cancelResumeAfter?.(c.req.param('id')); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
   api.post('/items/:id/unblock', async (c) => { try { const { message } = z.object({ message: z.string().optional() }).parse(await c.req.json().catch(() => ({}))); const e = engine as Engine & { unblock?: (id: string, m?: string) => Promise<void> }; if (e.unblock) await e.unblock(c.req.param('id'), message); else store.mutateItem(c.req.param('id'), [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data'] }], 'user', { commit: `${c.req.param('id')}: unblock` }); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
   // The answer to an orchestrator's decision card: an option's label, your own words, or both.
   api.post('/items/:id/decision', async (c) => {
