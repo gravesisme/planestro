@@ -142,6 +142,8 @@ export interface TurnResult {
   done?: string;
   blocked?: string;
   parked?: 'question' | 'permission';
+  /** planestro tool calls that came back as errors without reaching their handler (a transport failure). */
+  toolFailures?: { tool: string; error: string }[];
   /** Set with subtype `usage_exhausted`: the model is out of usage (the provider's message, and its reset time when it gave one). */
   usageLimit?: { message: string; resetsAt?: string };
   /** The most pressing rate-limit reading the turn saw (Claude subscriptions report one per turn): what the usage guard reads. */

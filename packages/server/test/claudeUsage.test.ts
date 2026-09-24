@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { noteUsage, classifyUsage, rateLimitSnapshot, type UsageSignals } from '../src/engine/sessions/LiveClaudePort.ts';
+import { noteUsage, classifyUsage, rateLimitSnapshot, type UsageSignals, noteToolFailures } from '../src/engine/sessions/LiveClaudePort.ts';
 import type { TurnResult } from '../src/engine/ports.ts';
 
 const result = (over: Partial<TurnResult> = {}): TurnResult => ({ subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', ...over });
@@ -77,5 +77,21 @@ describe('rate-limit readings for the usage guard', () => {
     const u: UsageSignals = {};
     noteUsage({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', rateLimitType: 'five_hour', utilization: 87 } }, u);
     expect(u.rateLimit?.utilization).toBeCloseTo(0.87);
+  });
+});
+
+describe('planestro tool failures', () => {
+  it('records an errored result for a planestro tool, and nothing for other tools or successes', () => {
+    const r = result();
+    const calls = new Map<string, string>();
+    for (const m of [
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'a', name: 'mcp__planestro__submit_plan', input: {} }, { type: 'tool_use', id: 'b', name: 'Bash', input: {} }, { type: 'tool_use', id: 'c', name: 'mcp__planestro__add_note', input: {} }] } },
+      { type: 'user', message: { content: [
+        { type: 'tool_result', tool_use_id: 'a', is_error: true, content: [{ type: 'text', text: 'Tool permission request failed: AbortError: Stream closed' }] },
+        { type: 'tool_result', tool_use_id: 'b', is_error: true, content: 'exit 1' },
+        { type: 'tool_result', tool_use_id: 'c', content: 'Note recorded.' },
+      ] } },
+    ]) noteToolFailures(m, calls, r);
+    expect(r.toolFailures).toEqual([{ tool: 'submit_plan', error: 'Tool permission request failed: AbortError: Stream closed' }]);
   });
 });

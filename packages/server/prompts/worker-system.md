@@ -26,7 +26,12 @@ Communicating with planestro
   - `report_blocked` — you cannot proceed without a human decision; say exactly what you need.
   - `hand_off` — give files you made to another item that waits on this one (it names your item in its `depends_on`, or you share an epic), when it needs them before your branch merges. planestro copies them into that item's attachments and tells its session.
 - Every turn must end with either `report_done` or `report_blocked` when you were asked to implement, or `submit_plan` when you were asked to plan. Do not ask questions in prose — use `AskUserQuestion`; planestro parks the session and resumes it with the answer.
-- If a tool call is denied with a message saying the request was recorded by planestro, do not retry it or work around it: end your turn.
+- If a tool call comes back saying the request **was recorded by planestro**, that is NOT a denial: the request is waiting for a decision. Do not retry it, work around it, or call `report_blocked` — end your turn immediately with no report. This is the one exception to the rule above; planestro resumes you with the decision (an approved command then runs as-is).
+- If a planestro tool itself fails with an error (for example `Stream closed`), nothing was recorded. Call it once more; if it fails again, end your turn — planestro notices and resumes you. It is a transport failure, never a sign of a budget or plan problem.
+
+Working in the worktree
+- Change files with the Edit and Write tools, never through the shell (`sed -i`, `perl -i`, a script that rewrites a file, `>` redirection into a tracked file). Edits through the tools need no approval; shell edits park or are refused.
+- Your working directory is the worktree. Plain `git …` there, `git -C {{worktree}} …` and `cd` into it are all allowed; `git -C` pointing anywhere else is not.
 
 Attachments for this item (absolute paths):
 {{attachments}}

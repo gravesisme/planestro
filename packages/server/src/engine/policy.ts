@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import type { Config } from '@planestro/shared';
 import type { PermissionRequest } from './ports.ts';
 
@@ -60,6 +61,27 @@ export function normalizeSegment(segment: string): { command: string; unsafe: bo
   return { command: rest.trim(), unsafe };
 }
 
+/** Whether a literal path (quoted or bare, never expanded) names the worktree or a directory inside it. */
+function insideWorktree(raw: string, worktree: string): boolean {
+  const p = raw.replace(/^'([^']*)'$|^"([^"$`\\]*)"$/, '$1$2');
+  if (!p || /[\s'"`$~\\*?]/.test(p)) return false;
+  const abs = resolve(worktree, p);
+  return abs === worktree || abs.startsWith(worktree + '/');
+}
+
+const GIT_C = /^git\s+-C\s+('[^']*'|"[^"]*"|\S+)\s+/;
+const CD = /^cd\s+('[^']*'|"[^"]*"|\S+)$/;
+
+/**
+ * `git -C <worktree> status` is `git status`: a worker anchoring git to its own worktree runs
+ * exactly what the rules already judge, so the anchor is peeled off. `-C` naming any other
+ * directory is left in place, where it matches no rule and parks.
+ */
+export function unanchor(segment: string, worktree: string): string {
+  const m = GIT_C.exec(segment);
+  return m && insideWorktree(m[1], worktree) ? `git ${segment.slice(m[0].length)}` : segment;
+}
+
 /**
  * Hard denials with an explanation. Everything else that reaches `canUseTool` is parked for
  * the user (invariant 2). Branch names come from config — never literals (invariant 8).
@@ -76,6 +98,9 @@ export function makePolicy(config: Config, baseBranch: string, worktree: string)
     { re: /^\s*git\b[^|;&]*?\bworktree\b/, why: 'worktree management belongs to planestro.' },
     { re: /--force\b(?!-with-lease)/, why: 'force operations are not allowed for a worker.' },
     { re: /^\s*rm\s+-r[f]?\s+(\/|~)/, why: 'destructive path outside the worktree.' },
+    // In-place shell edits always needed a human; the Edit/Write tools never do.
+    { re: /^\s*sed\b[^|;&]*?\s(-[nErsuz]*i|--in-place)/, why: 'edit files with the Edit or Write tool, not through the shell.' },
+    { re: /^\s*perl\b[^|;&]*?\s-[pln0-9]*i/, why: 'edit files with the Edit or Write tool, not through the shell.' },
   ];
   const userDeny = config.permissions.deny.map((d) => d.trim()).filter(Boolean);
   return {
@@ -88,7 +113,9 @@ export function makePolicy(config: Config, baseBranch: string, worktree: string)
       const cmd = String(req.input.command ?? '');
       for (const seg of cmd.split(/\s*(?:&&|\|\||;|\|)\s*/)) {
         // A prefix must not hide a denied command: judge the segment and what it actually runs.
-        for (const form of new Set([seg, normalizeSegment(seg).command])) {
+        // The worktree anchor is peeled first, so its path cannot trip a rule (a directory named `worktree`).
+        const own = unanchor(seg.trim(), worktree);
+        for (const form of new Set([own, unanchor(normalizeSegment(own).command, worktree)])) {
           for (const r of rules) if (r.re.test(form)) return r.why;
           for (const d of userDeny) if (form.trim().startsWith(d)) return `denied by planestro policy (${d}).`;
         }
@@ -102,19 +129,26 @@ export function makePolicy(config: Config, baseBranch: string, worktree: string)
  * Deterministic allow for chained Bash commands: the SDK's own allowlist matcher refuses a
  * `a && b <<'EOF' ...` chain even when every segment is allowed, which would park a plain
  * `git add && git commit -F -`. A command is allowed when every segment (heredoc bodies
- * stripped — they are stdin data, not commands) matches one allow rule.
+ * stripped — they are stdin data, not commands) matches one allow rule. Given the worktree,
+ * `cd` into it is a no-op and `git -C` anchored to it is judged as plain `git`.
  */
-export function allowedByRules(req: PermissionRequest, rules: string[]): boolean {
+export function allowedByRules(req: PermissionRequest, rules: string[], worktree?: string): boolean {
   if (req.tool !== 'Bash') return rules.includes(req.tool);
   const firstLine = String(req.input.command ?? '').split('\n')[0];  // heredoc bodies follow the first line
   const segments = firstLine.split(/\s*(?:&&|\|\||;|\|)\s*/).map((x) => x.replace(/<<-?\s*'?"?\w+'?"?\s*$/, '').trim()).filter(Boolean);
   if (!segments.length) return false;
   const prefixes = rules.filter((r) => r.startsWith('Bash(') && r.endsWith(')')).map((r) => r.slice(5, -1));
   const matches = (seg: string) => prefixes.some((p) => p.endsWith(' *') ? (seg + ' ').startsWith(p.slice(0, -1)) : p.endsWith('*') ? seg.startsWith(p.slice(0, -1)) : seg === p);
-  return segments.every((seg) => {
+  return segments.every((raw) => {
+    if (worktree) {
+      const cd = CD.exec(raw);
+      if (cd) return insideWorktree(cd[1], worktree);
+    }
+    const seg = worktree ? unanchor(raw, worktree) : raw;
     // A rule written with the prefix still matches as written; otherwise judge what the segment runs.
     if (matches(seg)) return true;
-    const { command, unsafe } = normalizeSegment(seg);
+    const { command: peeled, unsafe } = normalizeSegment(seg);
+    const command = worktree ? unanchor(peeled, worktree) : peeled;
     return !unsafe && command !== seg && command.length > 0 && matches(command);
   });
 }

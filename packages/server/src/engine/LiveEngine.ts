@@ -1,6 +1,6 @@
 import { join, relative, isAbsolute, extname } from 'node:path';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
-import { validateParts, partsSummary, type Part, serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, type BreakdownChild, type DecisionInput, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState } from '@planestro/shared';
+import { validateParts, partsSummary, type Part, serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, type BreakdownChild, type DecisionInput, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1 } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import type { Ports, TurnPhase, TurnResult, TurnTools, PermissionRequest } from './ports.ts';
@@ -718,7 +718,7 @@ export class LiveEngine implements Engine {
           const why = policy.deny(req);
           if (why) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `denied ${req.tool}: ${why}` } }], 'engine'); return { action: 'deny', message: `Not allowed: ${why}` }; }
           if (req.tool === 'Bash' && oneShot.delete(String(req.input.command ?? '').trim())) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: 'one-shot approval consumed' } }], 'engine'); return { action: 'allow' }; }
-          if (allowedByRules(req, [...BASE_ALLOWED[phase], ...this.store.config.permissions.allow, ...extraAllowed])) return { action: 'allow' };
+          if (allowedByRules(req, [...BASE_ALLOWED[phase], ...this.store.config.permissions.allow, ...extraAllowed], cwd)) return { action: 'allow' };
           const ask = this.permissionsDelegated() && this.mayAskOrchestrator(this.store.requireItem(id).file.frontmatter);
           this.store.mutateItem(id, [{ set: { awaiting: ask ? 'orchestrator' : 'permission', awaiting_data: { ...(ask ? { kind: 'permission' } : {}), tool: req.tool, input: req.input, requested_at: this.now() } } }, { activity: { actor: 'app', text: `parked: permission for ${req.tool} ${String(req.input.command ?? req.input.file_path ?? '').slice(0, 80)}${ask ? ' (asking the orchestrator)' : ''}` } }], 'engine', { commit: `${id}: awaiting permission` });
           if (ask) this.wakeOrchestrator('permission_request', id);
@@ -751,6 +751,7 @@ export class LiveEngine implements Engine {
     this.store.journal.end(opId, id, result.isError ? 'failed' : 'ok', { subtype: result.subtype, cost: result.costUsd, parked: result.parked });
     this.usageSeen(result.rateLimit);
     this.emit({ type: 'session.ended', id, subtype: result.subtype });
+    for (const f of result.toolFailures ?? []) this.store.mutateItem(id, [{ activity: { actor: 'app', text: `planestro tool ${f.tool} failed before reaching planestro (nothing was recorded): ${f.error}` } }], 'engine');
     if (result.subtype === 'killed') { this.store.mutateItem(id, [{ activity: { actor: 'app', text: 'turn interrupted (engine stopping); resumable' } }], 'engine'); return result; }
     if (result.subtype === 'usage_exhausted') {
       // Remember the outage for every item on this machine, then run the same turn again: with
@@ -811,7 +812,19 @@ export class LiveEngine implements Engine {
       return;
     }
     if (phase === 'plan') {
-      if (fm.status === 'PLAN_IN_PROGRESS' && !result.planSubmitted) this.block(id, 'no_plan', 'the planner ended its turn without submitting a plan');
+      if (fm.status !== 'PLAN_IN_PROGRESS' || result.planSubmitted) return;
+      // The plan was written but its hand-in never reached planestro (docs/notes/sdk-notes.md
+      // gotcha 11): resume once and ask for it again, rather than ask a person to read the transcript.
+      const failed = result.toolFailures?.find((f) => f.tool === 'submit_plan' || f.tool === 'submit_breakdown');
+      const retried = Number(fm.op_data?.plan_retry_turns ?? 0);
+      if (failed && retried < 1) {
+        this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), plan_retry_turns: retried + 1 } } }, { activity: { actor: 'app', text: `${failed.tool} failed in transport; asking the session to submit again` } }], 'engine');
+        await this.runTurnFor(id, phase, `Your ${failed.tool} call failed before it reached planestro (${failed.error}); nothing was recorded. This is a transport failure, not a problem with your plan or budget. Call ${failed.tool} again with the same plan, then end your turn.`);
+        return;
+      }
+      this.block(id, 'no_plan', failed
+        ? `the planner's ${failed.tool} call failed in transport${retried ? ' again after a retry' : ''} (${failed.error}); not a budget or plan problem — unblocking resumes the session`
+        : 'the planner ended its turn without submitting a plan');
       return;
     }
     await this.afterWorkTurn(id, phase, result);
@@ -1528,6 +1541,8 @@ export class LiveEngine implements Engine {
       submit_plan: async (plan) => {
         const cur = s.requireItem(id).file.frontmatter;
         if (cur.kind === 'epic') return 'Rejected: this is an epic. Hand in its children with submit_breakdown.';
+        // A retry of a hand-in that did land (the transport failed on the way back): no second commit or review wake.
+        if (cur.status === 'PLAN_READY' && getSection(s.requireItem(id).file, 'Plan').trim() === demoteH1(plan).trim()) return 'Plan already recorded by planestro. End your turn now; you will be resumed once it is approved.';
         const ops: ItemOp[] = [{ section: 'Plan', body: plan }];
         // The planner went on without the permission it had asked for: that request is moot, and must not be mistaken for the plan's own wait.
         if (cur.awaiting === 'permission' || cur.awaiting_data?.kind === 'permission') ops.push({ unset: ['awaiting', 'awaiting_data'] });
@@ -1536,8 +1551,8 @@ export class LiveEngine implements Engine {
         const delegated = cur.status === 'PLAN_IN_PROGRESS' && this.planDelegated(cur);
         if (cur.status === 'PLAN_IN_PROGRESS') ops.push({ transition: { to: 'PLAN_READY', actor: 'engine' } });
         // A new plan is a new decision: whoever had it last time, it starts with the orchestrator again if delegated.
-        const { plan_handed_back: _spent, ...opData } = cur.op_data ?? {};
-        if (cur.op_data?.plan_handed_back) ops.push({ set: { op_data: opData } });
+        const { plan_handed_back: _spent, plan_retry_turns: _retried, ...opData } = cur.op_data ?? {};
+        if (cur.op_data?.plan_handed_back || cur.op_data?.plan_retry_turns) ops.push({ set: { op_data: opData } });
         if (delegated) ops.push({ set: { awaiting: 'orchestrator' } });
         s.mutateItem(id, ops, 'engine', { commit: `${id}: submit plan` });
         this.note('info', `${id}: plan submitted — ${delegated ? 'the orchestrator decides (you asked it to)' : 'needs your approval'}`);

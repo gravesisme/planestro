@@ -71,7 +71,14 @@ pins these versions so planestro can warn when the installed CLI drifts.
    failed: AbortError: Stream closed`, then succeeded on a fresh resumed
    turn). Treat planestro tool results as fallible: the engine's no_plan /
    done detection paths are the safety net, and a resumed turn re-running the
-   tool is the recovery. Cause not yet isolated (SDK-internal transport).
+   tool is the recovery. Cause not yet isolated (SDK-internal transport; the
+   message points at the `canUseTool` control channel, which plan mode uses
+   even for planestro's own tools — gotcha 10). The port records such calls
+   (`noteToolFailures`: an errored `tool_result` for an `mcp__planestro__*`
+   call, whose handler never ran) in `TurnResult.toolFailures`; the engine
+   logs each one, resumes a plan turn once to hand the plan in again, and
+   blocks `no_plan` naming the transport if that fails too. An identical
+   re-submit of a recorded plan is a no-op.
 12. **A model that is out of usage** (subscription limit, or a model that needs
    credits the account lacks) is visible three ways, and planestro reads all
    of them (`noteUsage` / `classifyUsage` in `LiveClaudePort.ts`): a

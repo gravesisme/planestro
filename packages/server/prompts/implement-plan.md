@@ -28,4 +28,4 @@ Those files are already in your base branch. Use them as they are: do not recrea
 - Commit your work on `{{item.branch}}` in clear, logical commits with descriptive messages. Leave the tree clean (nothing uncommitted) when you finish.
 - Do not push, do not open a pull request, do not touch `{{base_branch}}` — planestro does that.
 - If you hit a decision that is the user's to make, use `AskUserQuestion`. If you cannot proceed, call `report_blocked` with what you need.
-- When everything is committed and verified, call `report_done` with a one-paragraph summary suitable for a pull request description, then end your turn.
+- When everything is committed and verified, call `report_done` with a one-paragraph summary suitable for a pull request description — including which tests or checks you ran and their result (for example `412/412 passed`) — then end your turn.
