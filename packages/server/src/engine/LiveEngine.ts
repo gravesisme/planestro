@@ -705,6 +705,8 @@ export class LiveEngine implements Engine {
     this.turns.set(id, { model: model ?? def.label, phase, startedAt: this.now(), lastOutput: '', abort, waiting });
     const admitted = () => { const t = this.turns.get(id); if (t?.waiting) { t.waiting = undefined; t.startedAt = this.now(); } this.emit({ type: 'session.started', id, session_id: fm.session_id }); };
     const budgetLeft = Math.max(MIN_TURN_USD, usdLeft);
+    // A planning turn is capped on its own (dogfood p41): past the cap it is asked for the plan it has, not for more research.
+    const turnCap = phase === 'plan' ? Math.min(budgetLeft, this.store.config.budget_usd_per_plan_turn) : budgetLeft;
     let result: TurnResult;
     try {
       result = await this.withRunnerSlot(runner, () => { admitted(); return agent.runTurn({
@@ -712,7 +714,7 @@ export class LiveEngine implements Engine {
         systemAppend: `${this.store.renderPrompt(metered ? 'worker-system' : `worker-system-${runner}`, item)}\n\n${this.hostNote}`,
         ...(pick.sdkFallback ? { fallbackModel: pick.sdkFallback } : {}),
         allowedTools: [...BASE_ALLOWED[phase], ...this.store.config.permissions.allow, ...extraAllowed],
-        extraDirs: [this.store.dataDir], maxBudgetUsd: budgetLeft,
+        extraDirs: [this.store.dataDir], maxBudgetUsd: turnCap,
         tools: this.makeTools(id),
         onPermission: async (req) => {
           const why = policy.deny(req);
@@ -776,6 +778,8 @@ export class LiveEngine implements Engine {
         return result;
       }
     }
+    // A planning turn that ran out of its cap with no plan is not an error to judge: it is asked for the plan (afterTurn).
+    if (result.isError && phase === 'plan' && result.subtype === 'error_max_budget_usd' && !result.planSubmitted) { await this.afterTurn(id, phase, result); return result; }
     if (result.isError) {
       // A failure the person can act on keeps its own name; the rest are turn errors for the orchestrator to judge.
       const reason = ACTIONABLE_FAILURES.has(result.subtype) ? result.subtype : 'turn_error';
@@ -813,18 +817,23 @@ export class LiveEngine implements Engine {
     }
     if (phase === 'plan') {
       if (fm.status !== 'PLAN_IN_PROGRESS' || result.planSubmitted) return;
-      // The plan was written but its hand-in never reached planestro (docs/notes/sdk-notes.md
-      // gotcha 11): resume once and ask for it again, rather than ask a person to read the transcript.
+      // A planning turn without a plan is asked for one, once, before anyone is woken (dogfood p18,
+      // p35, p41): the hand-in was lost in transport (sdk-notes gotcha 11), the turn hit its cap
+      // while still researching, or the model simply stopped. Only a second miss is a block.
+      const tool = fm.kind === 'epic' ? 'submit_breakdown' : 'submit_plan';
       const failed = result.toolFailures?.find((f) => f.tool === 'submit_plan' || f.tool === 'submit_breakdown');
+      const capped = result.subtype === 'error_max_budget_usd';
+      const cap = `$${this.store.config.budget_usd_per_plan_turn}`;
       const retried = Number(fm.op_data?.plan_retry_turns ?? 0);
-      if (failed && retried < 1) {
-        this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), plan_retry_turns: retried + 1 } } }, { activity: { actor: 'app', text: `${failed.tool} failed in transport; asking the session to submit again` } }], 'engine');
-        await this.runTurnFor(id, phase, `Your ${failed.tool} call failed before it reached planestro (${failed.error}); nothing was recorded. This is a transport failure, not a problem with your plan or budget. Call ${failed.tool} again with the same plan, then end your turn.`);
+      const why = failed ? `its ${failed.tool} call failed in transport (${failed.error})` : capped ? `it hit the ${cap} planning-turn cap (budget_usd_per_plan_turn) while still working` : 'it ended without calling submit_plan';
+      if (retried < 1) {
+        this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), plan_retry_turns: retried + 1 } } }, { activity: { actor: 'app', text: `no plan yet: ${why}; asking the session for it now` } }], 'engine');
+        await this.runTurnFor(id, phase, failed
+          ? `Your ${failed.tool} call failed before it reached planestro (${failed.error}); nothing was recorded. This is a transport failure, not a problem with your plan or budget. Call ${failed.tool} again with the same plan, then end your turn.`
+          : `Your planning turn ended without a plan: ${why}. Do not research further. Write the plan now from what you already know, as concretely as you can, and put anything still unknown in it as an open question for the user; then call ${tool} and end your turn.`);
         return;
       }
-      this.block(id, 'no_plan', failed
-        ? `the planner's ${failed.tool} call failed in transport${retried ? ' again after a retry' : ''} (${failed.error}); not a budget or plan problem — unblocking resumes the session`
-        : 'the planner ended its turn without submitting a plan');
+      this.block(id, 'no_plan', `${why}, and again after being asked for the plan${failed ? '; not a budget or plan problem — unblocking resumes the session' : ''}`);
       return;
     }
     await this.afterWorkTurn(id, phase, result);

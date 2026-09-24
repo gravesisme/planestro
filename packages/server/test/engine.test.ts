@@ -507,6 +507,40 @@ describe('planestro tool calls lost in transport', () => {
     expect(wakes.filter((w) => w === 'plan_review')).toHaveLength(1);
   });
 
+  it('a planning turn that hits its cap is asked once for the plan it has, under the per-turn cap (p41)', async () => {
+    const caps: number[] = []; const prompts: string[] = [];
+    const claude = () => ({ async runTurn(o: TurnOptions): Promise<TurnResult> {
+      caps.push(o.maxBudgetUsd ?? -1); prompts.push(o.prompt);
+      if (prompts.length === 1) return { ...ok, subtype: 'error_max_budget_usd', isError: true, costUsd: 15 };
+      await o.tools.submit_plan('# from what I know'); return { ...ok, planSubmitted: '# from what I know' };
+    } });
+    const { store, engine } = await setup({ claude });
+    store.updateConfig((doc) => { doc.setIn(['budget_usd_per_item'], 60); doc.setIn(['budget_usd_per_plan_turn'], 15); }, 'config: caps');
+    const item = store.createItem({ title: 'Researcher', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    expect(caps).toEqual([15, 15]);                                               // min(budget left, plan-turn cap), both times
+    expect(prompts[1]).toContain('hit the $15 planning-turn cap (budget_usd_per_plan_turn)');
+    expect(prompts[1]).toContain('Do not research further. Write the plan now from what you already know');
+    const fm = store.getItem(item.id)!.file.frontmatter;
+    expect(fm.blocked).toBeUndefined();
+    expect(fm.op_data?.plan_retry_turns).toBeUndefined();
+    expect(activityOf(store, item.id)).toContain('no plan yet: it hit the $15 planning-turn cap');
+  });
+
+  it('a turn that just stops without a plan is asked once; the second miss is no_plan', async () => {
+    let turns = 0;
+    const { store, engine } = await setup({ claude: () => ({ async runTurn(): Promise<TurnResult> { turns += 1; return ok; } }) });
+    const item = store.createItem({ title: 'Silent', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => store.getItem(item.id)!.file.frontmatter.blocked === true);
+    expect(turns).toBe(2);
+    expect(store.getItem(item.id)!.file.frontmatter.blocked_reason).toBe('no_plan');
+    expect(activityOf(store, item.id)).toContain('it ended without calling submit_plan, and again after being asked for the plan');
+  });
+
   it('a second loss blocks no_plan naming the transport, never a budget', async () => {
     let turns = 0;
     const dead = () => ({ async runTurn(): Promise<TurnResult> { turns += 1; return { ...ok, toolFailures: [lost] }; } });
@@ -517,7 +551,7 @@ describe('planestro tool calls lost in transport', () => {
     await waitFor(() => store.getItem(item.id)!.file.frontmatter.blocked === true);
     expect(turns).toBe(2);
     expect(store.getItem(item.id)!.file.frontmatter.blocked_reason).toBe('no_plan');
-    expect(activityOf(store, item.id)).toMatch(/submit_plan call failed in transport again after a retry \(Tool permission request failed: AbortError: Stream closed\)/);
+    expect(activityOf(store, item.id)).toMatch(/its submit_plan call failed in transport \(Tool permission request failed: AbortError: Stream closed\), and again after being asked for the plan/);
   });
 });
 

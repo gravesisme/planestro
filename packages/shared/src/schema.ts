@@ -269,6 +269,8 @@ export const Config = z.object({
   categories: z.array(z.string().min(1)).min(1),
   /** Per-item spend ceiling across all of its turns; a turn starts with what remains. */
   budget_usd_per_item: z.number().positive().default(25),
+  /** What one planning turn may spend: a planner that researches for $97 without handing in a plan (HH-162) is stopped here and asked for the plan it has. */
+  budget_usd_per_plan_turn: z.number().positive().default(15),
   /** The budget for runners that report tokens, not dollars: worker turns per item. */
   budget_turns_per_item: z.number().int().positive().default(20),
   /** …and uncached tokens per item. A live art turn measured 20–35k; the default leaves room for a dozen revisions. */
