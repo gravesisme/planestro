@@ -32,6 +32,7 @@ export function ItemCard({ item, sortable = true, onSelect }: { item: ItemView; 
             {fm.parent && <span className="tag">↳ {fm.parent}</span>}
             {d.external ? <span className="tag">{modelLabel(fm.implementer)} (external)</span> : <span className="tag">{modelLabel(fm.planner)} → {modelLabel(fm.implementer)}</span>}
             {fm.pr && <span className="tag ok">PR #{fm.pr}</span>}
+            {fm.status === 'IN_REVIEW' && fm.skip_merge && <span className={`tag ${fm.ci_result === 'red' ? 'hot' : ''}`} title="Held out of the merge queue: its commits are pushed and its CI is watched, but it does not merge">held · CI {fm.ci_result ?? 'pending'}</span>}
             {fm.triage && <span className="tag triage" title={`It stopped (${fm.triage.reason}); the orchestrator fixes it or asks you one question`}>orchestrator triaging</span>}
             {fm.blocked && !fm.triage && !decisionOf(fm) && <span className="tag hot">BLOCKED{fm.blocked_reason ? `: ${fm.blocked_reason}` : ''}</span>}
             {decisionOf(fm) ? <span className="tag hot">decision needed</span> : fm.awaiting && !(fm.triage && fm.awaiting === 'user') && <span className={`tag ${d.needs_you ? 'wait' : ''}`}>awaiting {fm.awaiting.replace(/_/g, ' ')}</span>}

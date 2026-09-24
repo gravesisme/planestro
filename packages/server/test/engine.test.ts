@@ -541,6 +541,66 @@ describe('epics and external watchers (dry-run ports)', () => {
   });
 });
 
+describe('held pull requests (skip_merge)', () => {
+  const polls: ReturnType<typeof setInterval>[] = [];
+  afterEach(() => { for (const p of polls.splice(0)) clearInterval(p); });
+  /** An item already IN_REVIEW with an open PR and a hold, its worktree on `head`, the PR branch at `head` too. */
+  async function held(opts: { failOnce?: boolean } = {}) {
+    const ctx = await setup();
+    const { store, engine, world } = ctx;
+    const item = store.createItem({ title: 'Held', description: 'x' });
+    const branch = 'tp/1-held', rel = '.claude/worktrees/tp-1-held';
+    const cwd = (engine as any).absWorktree(rel);
+    const head = world.sha();
+    world.worktrees.set(cwd, { path: cwd, head, branch }); world.remoteBranches.set(branch, head);
+    world.prs.set(200, { number: 200, url: 'https://github.com/acme/repo/pull/200', state: 'OPEN', headRefOid: head, headRefName: branch, baseRefName: 'trunk', polls: 0, failOnce: Boolean(opts.failOnce) });
+    store.mutateItem(item.id, [{ set: { status: 'IN_REVIEW', branch, worktree: rel, pr: 200, skip_merge: true, ci_result: 'pending' } }], 'engine');
+    // The tick polls a held item once a minute; tests look again on every tick.
+    const poll = setInterval(() => (engine as any).heldPolledAt.clear(), 30);
+    polls.push(poll);
+    return { ...ctx, id: item.id, branch, cwd, stopPolling: () => clearInterval(poll) };
+  }
+
+  it("pushes the session's commits on a held branch so the PR shows them, without merging (p32)", async () => {
+    const { store, engine, world, id, branch, cwd, stopPolling } = await held();
+    world.worktrees.get(cwd)!.head = world.sha(); // the session committed while held
+    await engine.start();
+    await waitFor(() => activityOf(store, id).includes('held: rebased onto trunk'));
+    expect(world.remoteBranches.get(branch)).toBe(world.worktrees.get(cwd)!.head);
+    await waitFor(() => store.getItem(id)!.file.frontmatter.ci_result === 'green');
+    stopPolling();
+    const fm = store.getItem(id)!.file.frontmatter;
+    expect(fm.status).toBe('IN_REVIEW');
+    expect(fm.ci_head_sha).toBe(world.remoteBranches.get(branch));
+    expect(world.prs.get(200)!.state).toBe('OPEN');
+    expect(activityOf(store, id)).toContain('held: CI is green');
+  });
+
+  it('reads CI for a held item: red goes to the session, the fix is pushed, green waits for the release (p37)', async () => {
+    const { store, engine, world, id, branch, cwd, stopPolling } = await held({ failOnce: true });
+    await engine.start();
+    await waitFor(() => (store.getItem(id)!.file.frontmatter.ci_failed_count ?? 0) === 1);
+    await waitFor(() => activityOf(store, id).includes('held, so it is pushed for CI and review but not merged'), 8000);
+    await waitFor(() => store.getItem(id)!.file.frontmatter.ci_result === 'green', 8000);
+    expect(world.remoteBranches.get(branch)).toBe(world.worktrees.get(cwd)!.head);
+    expect(world.prs.get(200)!.state).toBe('OPEN');
+    stopPolling();
+    await engine.releaseHold(id);
+    await waitFor(() => status(store, id) === 'FINISHED', 8000);
+  });
+
+  it('never pushes over a PR branch that moved on its own', async () => {
+    const { store, engine, world, id, branch, stopPolling } = await held();
+    const theirs = world.sha(); world.remoteBranches.set(branch, theirs);
+    world.worktrees.get((engine as any).absWorktree('.claude/worktrees/tp-1-held'))!.head = world.sha();
+    (engine as any).ports.git.isAncestor = async () => false;
+    await engine.start();
+    await waitFor(() => activityOf(store, id).includes('have diverged; not pushing'));
+    stopPolling();
+    expect(world.remoteBranches.get(branch)).toBe(theirs);
+  });
+});
+
 describe('orchestrator', () => {
   it('wakes on plan_review with a context packet, uses tools, and rotates after the configured wakes', async () => {
     const wakes: { label: string; prompt: string; resume?: string }[] = [];

@@ -32,6 +32,8 @@ const ORCHESTRATOR_FIELDS = ['parent', 'depends_on', 'base_branch_override', 'sk
  */
 /** How long a just-pushed head may still read as the old sha from `gh pr view` before it counts as a real move. */
 const HEAD_PROPAGATION_GRACE_MS = 90_000;
+/** How often a held (skip_merge) pull request's branch and CI are looked at: one `ls-remote` and one run listing per item. */
+const HELD_POLL_MS = 60_000;
 
 export class LiveEngine implements Engine {
   readonly mode: 'live' | 'dry-run';
@@ -131,6 +133,7 @@ export class LiveEngine implements Engine {
       await this.driveEpics();
       await this.driveExternal();
       this.driveInReview();
+      this.driveHeld();
     } catch (e) { this.note('error', `tick: ${(e as Error).message}`); }
   }
 
@@ -281,6 +284,57 @@ export class LiveEngine implements Engine {
       return (fa.merge_order ?? Infinity) - (fb.merge_order ?? Infinity) || (fa.rank ?? Infinity) - (fb.rank ?? Infinity) || (fa.pr_created_at ?? '').localeCompare(fb.pr_created_at ?? '');
     });
     for (const item of candidates) this.runJob(item.id, () => this.mergeJob(item.id)); // mergeChain keeps them strictly serial, in this order
+  }
+
+  /**
+   * A held pull request (skip_merge) stays out of the merge queue, not out of sight. Its session's
+   * fix commits are pushed, so the PR and CI show them, and its CI is read, so a red run reaches
+   * the fix path and a green one is for the head it names. None of it waits inside the serial merge
+   * chain: only the push goes through it, and CI is polled once per HELD_POLL_MS from the tick.
+   */
+  private heldPolledAt = new Map<string, number>();
+  private driveHeld(): void {
+    const now = Date.now();
+    for (const item of this.store.listItems()) {
+      const fm = item.file.frontmatter;
+      if (fm.status !== 'IN_REVIEW' || !fm.skip_merge || fm.blocked || fm.awaiting || !fm.pr || !fm.branch || !fm.worktree) continue;
+      if (this.jobs.has(item.id) || this.turns.has(item.id) || fm.op || fm.op_data?.needs_session_rebase) continue;
+      if (this.store.derived(item).flavor !== 'worker') continue;
+      if (now - (this.heldPolledAt.get(item.id) ?? 0) < HELD_POLL_MS) continue;
+      this.heldPolledAt.set(item.id, now);
+      this.runJob(item.id, () => this.heldStep(item.id));
+    }
+  }
+
+  private async heldStep(id: string): Promise<void> {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    const cwd = this.absWorktree(fm.worktree!);
+    const [local, remote] = await Promise.all([this.ports.git.revParse(cwd, 'HEAD'), this.ports.git.remoteBranchSha(this.repo, fm.branch!)]);
+    if (remote && local !== remote) {
+      // Commits the session made while the item was held. Pushed only when they build on what the
+      // PR has; a remote that moved on its own is someone else's work and is left alone.
+      if (await this.ports.git.isAncestor(cwd, remote, local)) { await this.mergeJob(id, { hold: true }); return; }
+      if (fm.op_data?.held_diverged !== remote) this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), held_diverged: remote } } }, { activity: { actor: 'app', text: `held: the worktree (${local.slice(0, 7)}) and the PR branch (${remote.slice(0, 7)}) have diverged; not pushing either way` } }], 'engine');
+      return;
+    }
+    if (!remote) return;
+    const ci = await this.ports.gh.ciForSha(this.github, fm.branch!, remote, this.ciWorkflow);
+    const cur = this.store.requireItem(id).file.frontmatter;
+    if (ci.runId && (cur.op_data?.ci as { runId?: number } | undefined)?.runId !== ci.runId) this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), ci: { runId: ci.runId, url: ci.url } } } }], 'engine');
+    if (ci.state === 'success') {
+      if (cur.ci_result !== 'green' || cur.ci_head_sha !== remote) this.store.mutateItem(id, [{ set: { ci_result: 'green', ci_head_sha: remote } }, { activity: { actor: 'app', text: `held: CI is green for ${remote.slice(0, 7)} (not merging until the hold is released)` } }], 'engine');
+      return;
+    }
+    if (ci.state === 'failure') {
+      if (ci.runId && await this.ports.gh.isBillingBlocked(this.github, ci.runId)) return;
+      const lastRed = cur.op_data?.last_red as { runId?: number; sha?: string } | undefined;
+      if (cur.ci_result === 'red' || (lastRed?.runId === ci.runId && lastRed?.sha === remote)) return;
+      this.store.mutateItem(id, [{ set: { ci_head_sha: remote } }], 'engine');
+      await this.onCiRed(id, this.store.journal.begin('held_ci', id, { pr: fm.pr, sha: remote }), remote, undefined, 'github', true);
+      return;
+    }
+    // Still running, or not started: a green (or red) from another head is not this head's verdict.
+    if (cur.ci_head_sha !== remote || cur.ci_result === 'green' || cur.ci_result === 'red') this.store.mutateItem(id, [{ set: { ci_result: 'pending', ci_head_sha: remote } }], 'engine');
   }
 
   private followUps = new Map<string, () => Promise<unknown>>();
@@ -607,10 +661,12 @@ export class LiveEngine implements Engine {
       if (await this.blockOversize(id)) return;
       const head = await this.ports.git.revParse(cwd, 'HEAD');
       const moved = head !== fm.ci_head_sha;
+      const held = Boolean(fm.skip_merge);
       this.store.mutateItem(id, [
         { set: { ci_result: 'pending', op_data: { ...(fm.op_data ?? {}), needs_session_rebase: false } } },
-        { activity: { actor: 'app', text: moved ? `session updated the branch (${head.slice(0, 7)}); re-entering the merge pipeline` : 'session finished without changing the branch; re-checking' } },
+        { activity: { actor: 'app', text: moved ? `session updated the branch (${head.slice(0, 7)}); ${held ? 'held, so it is pushed for CI and review but not merged' : 're-entering the merge pipeline'}` : 'session finished without changing the branch; re-checking' } },
       ], 'engine');
+      this.heldPolledAt.delete(id);
       void this.tick();
     }
   }
@@ -645,17 +701,22 @@ export class LiveEngine implements Engine {
   }
 
   // ---- merge pipeline (serial) ----
-  private mergeJob(id: string): Promise<void> {
-    const run = this.mergeChain.then(() => this.mergeStep(id));
+  private mergeJob(id: string, opts: { hold?: boolean } = {}): Promise<void> {
+    const run = this.mergeChain.then(() => this.mergeStep(id, opts));
     this.mergeChain = run.catch(() => undefined);
     return run;
   }
 
-  private async mergeStep(id: string): Promise<void> {
+  /**
+   * One pass of the merge pipeline. With `hold`, for a held item whose session committed: sync and
+   * push only, then leave, so the PR shows the work and CI runs; driveHeld reads the verdict.
+   */
+  private async mergeStep(id: string, { hold = false }: { hold?: boolean } = {}): Promise<void> {
     if (this._paused || this.stopping) return;
     let item = this.store.requireItem(id);
     let fm = item.file.frontmatter;
     if (fm.status !== 'IN_REVIEW' || fm.blocked || fm.awaiting) return;
+    if (hold && !fm.skip_merge) return;
     const d = this.store.derived(item);
     const base = d.base_branch!;
     const integration = fm.kind === 'epic';
@@ -670,9 +731,9 @@ export class LiveEngine implements Engine {
     }
     const cwd = this.absWorktree(fm.worktree!);
     const cfg = this.store.config.ci;
-    const opId = this.store.journal.begin('merge', id, { pr: fm.pr, base });
+    const opId = this.store.journal.begin(hold ? 'held_sync' : 'merge', id, { pr: fm.pr, base });
 
-    if (cfg.require_green_base) {
+    if (cfg.require_green_base && !hold) {
       const health = await this.ports.gh.branchCi(this.github, base, this.ciWorkflow);
       // A verdict only counts if it is about the CURRENT base tip. Since push-triggered
       // runs on the default branch were removed (PRs gate it), the latest push run can be
@@ -693,6 +754,11 @@ export class LiveEngine implements Engine {
     const localHead = await this.ports.git.revParse(cwd, 'HEAD');
     const { behind } = await this.ports.git.aheadBehind(cwd, `origin/${base}`, 'HEAD');
     let headSha: string;
+    if (hold && expected === localHead) {
+      this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }], 'engine');
+      this.store.journal.end(opId, id, 'aborted', { reason: 'nothing_to_push' });
+      return;
+    }
     if (behind === 0 && expected === localHead) {
       // Already on the base tip and the remote matches: there is nothing to sync, and the CI
       // run for this head is still the truth. Re-pushing the same commit bought nothing, and
@@ -719,6 +785,11 @@ export class LiveEngine implements Engine {
       if (integration) await this.ports.git.pushSetUpstream(cwd, fm.branch!);
       else await this.ports.git.pushForceWithLease(cwd, fm.branch!, expected);
       headSha = sync.head;
+      if (hold) {
+        this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { ci_head_sha: headSha, ci_result: 'pending' } }, { activity: { actor: 'app', text: `held: rebased onto ${base}@${baseSha.slice(0, 7)} and pushed ${headSha.slice(0, 7)} so the PR and CI show the session's commits; not merging` } }], 'engine');
+        this.store.journal.end(opId, id, 'ok', { held: true, head: headSha });
+        return;
+      }
       this.store.mutateItem(id, [{ set: { op: 'awaiting_ci', op_started_at: this.now(), ci_head_sha: headSha, ci_result: 'pending' } }, { activity: { actor: 'app', text: `rebased onto ${base}@${baseSha.slice(0, 7)} and pushed ${headSha.slice(0, 7)}; waiting for CI` } }], 'engine');
     }
 

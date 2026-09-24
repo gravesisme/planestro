@@ -55,6 +55,8 @@ Sync only when behind: a branch already on the base tip is neither rebased nor
 re-pushed, and the CI run for its head is reused. Right after a push GitHub still
 reports the old head for a few seconds; `waitForCi` reads that as propagation lag,
 never as a moved head (the `head_moved` storm re-ran every open PR per merge).
+A held item (`skip_merge`) skips only the merge: its new commits are pushed and its
+CI is polled from the tick, outside the merge chain (`driveHeld`).
 
 ## Data model notes
 

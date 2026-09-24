@@ -76,8 +76,12 @@ An epic's children can be written by hand, or proposed by the planner: see
   synced and through CI as usual; then, instead of merging, the item parks on
   `awaiting: review` with before/after images. Approve, or send it back to the same session
   with a note.
-- **`skip_merge`** — takes an item out of the merge queue entirely (the orchestrator can
-  set it, with a reason). Releasing it sends the item back through sync and CI.
+- **`skip_merge`** — takes an item out of the merge queue (the orchestrator can set it, with
+  a reason). It still gets everything short of the merge: when its session commits, the
+  branch is rebased if behind and pushed, so the PR shows the work; its CI is read about once
+  a minute, a red run goes to the session like any other, and the card says `held · CI …`.
+  None of this waits inside the serial merge chain. A PR branch that moved on its own is never
+  pushed over. Releasing it sends the item back through sync and CI before it merges.
 - **PAUSE AUTOMATION** — the global lever: running steps finish, nothing new starts,
   across restarts.
 
