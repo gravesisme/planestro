@@ -5,6 +5,7 @@ import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import type { Ports, TurnPhase, TurnResult, TurnTools, PermissionRequest } from './ports.ts';
 import { makePolicy, ruleFor, allowedByRules, BASE_ALLOWED } from './policy.ts';
+import { hostNote } from './hostNote.ts';
 import { Orchestrator } from './orchestrator.ts';
 import { pngSize } from './placeholderPng.ts';
 import type { ReviewImage } from './Engine.ts';
@@ -53,6 +54,8 @@ export class LiveEngine implements Engine {
   /** Turns this engine started. `waiting` names the runner whose slot (concurrency.runner_limits) the turn is still queued for: no process yet. */
   private turns = new Map<string, { model: string; phase: TurnPhase; startedAt: string; lastOutput: string; abort: AbortController; waiting?: string }>();
   private mergeChain: Promise<void> = Promise.resolve();
+  /** The machine's facts for every session's system prompt (hostNote), read once. */
+  private readonly hostNote = hostNote();
   private timer?: NodeJS.Timeout;
   private stopping = false;
   private readonly sleep: (ms: number) => Promise<void>;
@@ -684,7 +687,7 @@ export class LiveEngine implements Engine {
     try {
       result = await this.withRunnerSlot(runner, () => { admitted(); return agent.runTurn({
         itemId: id, phase, cwd, model: model as string, permissionMode: phase === 'plan' ? 'plan' : 'acceptEdits', prompt, resume: resumeId, images,
-        systemAppend: this.store.renderPrompt(metered ? 'worker-system' : `worker-system-${runner}`, item),
+        systemAppend: `${this.store.renderPrompt(metered ? 'worker-system' : `worker-system-${runner}`, item)}\n\n${this.hostNote}`,
         ...(pick.sdkFallback ? { fallbackModel: pick.sdkFallback } : {}),
         allowedTools: [...BASE_ALLOWED[phase], ...this.store.config.permissions.allow, ...extraAllowed],
         extraDirs: [this.store.dataDir], maxBudgetUsd: budgetLeft,

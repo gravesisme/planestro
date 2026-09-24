@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
 import { getSection, partsSummary, serializeItemFile, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent } from '@planestro/shared';
+import { hostNote } from './hostNote.ts';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Ports, CustomToolDef, TurnResult } from './ports.ts';
 import type { DecisionInput, RateLimitSnapshot } from '@planestro/shared';
@@ -182,9 +183,11 @@ export class Orchestrator {
     this.log('info', `orchestrator: ${doneSummary || result.subtype}`);
   }
 
+  private readonly host = hostNote();
   private systemIntro(): string {
-    try { return this.store.renderPrompt('orchestrator-system', undefined); }
-    catch { return 'You are the planestro orchestrator: the judgment layer over a deterministic pipeline. Decide, instruct and annotate through the planestro tools; never perform git/gh operations yourself.'; }
+    // The host note goes with the standing rules: the orchestrator writes instructions for workers on this machine.
+    try { return `${this.store.renderPrompt('orchestrator-system', undefined)}\n\n${this.host}`; }
+    catch { return `You are the planestro orchestrator: the judgment layer over a deterministic pipeline. Decide, instruct and annotate through the planestro tools; never perform git/gh operations yourself.\n\n${this.host}`; }
   }
 
   private renderPacket(e: WakeEvent): string {

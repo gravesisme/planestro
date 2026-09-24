@@ -912,6 +912,21 @@ describe('API errors returned as text (p5)', () => {
   });
 });
 
+describe('the host note (p21)', () => {
+  it("is appended to a worker's system prompt", async () => {
+    const appends: string[] = [];
+    const claude = (world: FakeWorld) => { const inner = new DryRunClaudePort(world); return { async runTurn(o: TurnOptions): Promise<TurnResult> { appends.push(o.systemAppend); return inner.runTurn(o); }, runCustomTurn: inner.runCustomTurn.bind(inner) }; };
+    const { store, engine } = await setup({ claude });
+    const item = store.createItem({ title: 'Host', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => appends.length > 0);
+    expect(appends[0]).toContain('planestro worker session');
+    expect(appends[0]).toContain('## This host');
+    expect(appends[0]).toContain('exit code 127');
+  });
+});
+
 describe('orchestrator', () => {
   it('wakes on plan_review with a context packet, uses tools, and rotates after the configured wakes', async () => {
     const wakes: { label: string; prompt: string; resume?: string }[] = [];
