@@ -20,7 +20,7 @@ const MAX_ORCHESTRATOR_DENIALS = 3;
 const JUDGMENT_BLOCKS = ['turn_error', 'no_plan', 'no_commits', 'dirty_tree', 'sync_conflict', 'ci_timeout', 'ci_blocked', 'base_red', 'pr_closed_externally', 'merge_unverified', 'agent_blocked', 'engine_error'] as const;
 const ACTIVE_FOR_SLOTS: Status[] = ['PLAN_IN_PROGRESS', 'IN_PROGRESS'];
 /** Turn failures with their own block reason, because the fix is the user's (log in, wait, start over) and not a judgment call. */
-const ACTIONABLE_FAILURES = new Set(['auth_required', 'rate_limited', 'session_lost', 'spawn_error']);
+const ACTIONABLE_FAILURES = new Set(['auth_required', 'rate_limited', 'session_lost', 'spawn_error', 'cli_too_old']);
 /** Spend past this share of a budget is said out loud once (Activity and the log), before the hard stop. */
 const BUDGET_WARN_AT = 0.8;
 /** Below this many dollars left on an item's budget a Claude turn cannot do real work: it is not started. */

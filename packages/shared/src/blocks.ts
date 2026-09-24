@@ -5,6 +5,7 @@
  */
 export const BLOCK_HELP: Record<string, { meaning: string; todo: string }> = {
   agent_blocked: { meaning: "The worker reported it cannot proceed and said what it needs (a decision, a missing reference image, a sandbox refusal of something the task requires).", todo: "Answer in the unblock message, or fix the item (attach the reference, correct the brief) and unblock." },
+  cli_too_old: { meaning: "The Claude Code that runs the sessions is too old for the item's model (the API answered \"does not support this model; version … or newer is required\").", todo: "Update Claude Code, or point `claude_bin` in planestro.local.yml at a newer `claude`, restart planestro, and unblock." },
   turn_error: { meaning: "A turn failed for a reason that needs judgment: an SDK error, the budget ran out mid-turn, a Codex turn that ended without its closing JSON. The orchestrator is woken for these.", todo: "Read the detail. Unblocking resumes the same conversation." },
   no_plan: { meaning: "The planner ended its turn without submitting a plan (or an epic's breakdown).", todo: "Unblock with \"submit your plan\"; if the work is already done, **close as done…**." },
   no_commits: { meaning: "The worker said it was done, but the branch has nothing ahead of its base.", todo: "If the work truly needed no change: **close as done…**. Otherwise unblock with what is missing." },

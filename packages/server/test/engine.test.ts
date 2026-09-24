@@ -885,6 +885,33 @@ describe('session slots and stalls (p25, f1)', () => {
 
 const isoNow = () => new Date().toISOString();
 
+describe('API errors returned as text (p5)', () => {
+  it('a worker turn that ended on "too old for this model" blocks as cli_too_old', async () => {
+    const claude = () => ({ async runTurn(): Promise<TurnResult> { return { sessionId: 's', subtype: 'cli_too_old', isError: true, costUsd: 0, numTurns: 1, text: '', error: 'API Error: 400 Claude Code 2.1.251 does not support this model; version 2.1.280 or newer is required.' }; } });
+    const { store, engine } = await setup({ claude });
+    const item = store.createItem({ title: 'Old CLI', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => store.getItem(item.id)!.file.frontmatter.blocked_reason === 'cli_too_old');
+  });
+
+  it('an orchestrator wake that fails on an API error is retried once, and the journal says it failed', async () => {
+    let wakes = 0;
+    const scripted = (world: FakeWorld) => {
+      const inner = new DryRunClaudePort(world);
+      return {
+        runTurn: (o: TurnOptions) => inner.runTurn(o),
+        async runCustomTurn(): Promise<TurnResult> { wakes += 1; return { sessionId: 'o', subtype: 'api_error', isError: true, costUsd: 0, numTurns: 1, text: 'API Error: 500', error: 'API Error: 500 internal' }; },
+      };
+    };
+    const { store, engine } = await setup({ claude: scripted });
+    engine.orchestrator.wake({ type: 'user_message', data: { message: 'hi' } });
+    await waitFor(() => store.journal.read({ type: 'orchestrator.done' }).length === 1);
+    expect(wakes).toBe(2);
+    expect(String(store.journal.read({ type: 'orchestrator.done' })[0].data?.summary)).toBe('(failed: api_error) API Error: 500 internal');
+  });
+});
+
 describe('orchestrator', () => {
   it('wakes on plan_review with a context packet, uses tools, and rotates after the configured wakes', async () => {
     const wakes: { label: string; prompt: string; resume?: string }[] = [];
