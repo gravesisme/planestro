@@ -122,6 +122,33 @@ requests, no protected branches, no force flags) are checked before anyone is as
 request the orchestrator refuses three times on one item comes to you. While it is deciding,
 the item is not "needs you"; you can still answer the request yourself.
 
+### Needs-you triage
+
+With `orchestrator.triage` on (the default), anything that would land on your NEEDS YOU list
+because an item *stopped* — a block of any reason, or a worker's question — goes to the
+orchestrator first. While it looks, the card shows **orchestrator triaging** and the item is
+not counted as needing you. It then does one of two things:
+
+- **resolves it** when the fix is within its authority: `unblock_item` with an instruction
+  (resubmit the plan an MCP "Stream closed" ate, carry on after a hiccup), `answer_question`
+  when the brief already answers the worker, `retry_op` for a transient GitHub 5xx or network
+  failure, `set_item_fields` for a wrong parent / base / dependency / implementer / fallback
+  setting (a whitelist — nothing else), and `recreate_worktree` for a missing worktree or one
+  cut from the wrong base. That last one refuses if the tree is dirty or the branch has any
+  commit that is not on the old or the new base, re-runs the setup hooks, then unblocks;
+- **asks you one decision** with `ask_user_decision` when the call is genuinely yours —
+  spending (budget caps, usage limits), scope, taste, anything irreversible. The item page
+  and the board's preview show it as a card: the question in plain words, one sentence of
+  why, two to four options with its recommendation first, a box for your own answer, and the
+  raw block reason tucked under *details*. Your answer (`POST /api/items/:id/decision`) is
+  logged, and the orchestrator is woken with the question and the answer to carry it out.
+
+Nothing is stranded: a wake that ends without resolving or asking, a triage older than
+`orchestrator.triage_timeout_min`, a paused engine or an unavailable orchestrator all put the
+item back on you exactly as it stopped, and after four triaged stops in one status an item's
+next stops come straight to you. You can unblock or answer yourself at any time; that ends
+the triage.
+
 ## Handing files to another item
 
 The merge-time hand-off above needs the giver's branch merged. When another item needs a

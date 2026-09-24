@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { api, type ItemView } from '../api.ts';
 import { act } from '../store.ts';
+import { decisionOf } from '@planestro/shared';
+import { TriageNote } from './DecisionCard.tsx';
 
 type Question = { question: string; header?: string; options: { label: string; description?: string }[]; multiSelect?: boolean };
 
@@ -12,8 +14,11 @@ export function AwaitingPanels({ item }: { item: ItemView }) {
   const fm = item.frontmatter;
   const data = fm.awaiting_data as { kind?: string; questions?: Question[]; tool?: string; input?: Record<string, unknown>; handed_back?: boolean } | undefined;
   const orchestrating = fm.awaiting === 'orchestrator' && data?.kind === 'permission';
+  // The orchestrator's plain-words card replaces whatever it was made from (a block, the worker's questions).
+  if (decisionOf(fm)) return null; // shown by DecisionCard, at the top of the page and the preview
   if (fm.awaiting === 'question' && data?.questions) return (
     <div className="approval">
+      {fm.triage && <TriageNote item={item} />}
       <h2 style={{ margin: '0 0 8px' }}>The agent asked</h2>
       <QuestionForm questions={data.questions} onSubmit={(answers) => act(() => api.respond(item.id, { kind: 'question', answers }))} />
     </div>

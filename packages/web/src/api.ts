@@ -45,6 +45,7 @@ export const api = {
   message: (id: string, text: string) => req<{ ok: true }>('POST', `/api/items/${id}/message`, { text }),
   epicAction: (id: string, action: 'open' | 'submit' | 'sync') => req<ItemView>('POST', `/api/items/${id}/epic/${action}`, {}),
   unblock: (id: string, message?: string) => req<ItemView>('POST', `/api/items/${id}/unblock`, { message }),
+  decide: (id: string, body: { choice?: string; text?: string }) => req<ItemView>('POST', `/api/items/${id}/decision`, body),
   respond: (id: string, payload: Record<string, unknown>) => req<{ ok: true }>('POST', `/api/items/${id}/respond`, payload),
   uploadAttachment: (id: string, file: File) => { const fd = new FormData(); fd.append('file', file, file.name); return req<{ path: string }>('POST', `/api/items/${id}/attachments`, undefined, fd); },
   referenceAttachment: (id: string, path: string) => req<{ path: string }>('POST', `/api/items/${id}/attachments`, { path }),

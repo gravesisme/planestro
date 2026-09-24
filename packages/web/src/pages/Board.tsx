@@ -130,7 +130,7 @@ function PhoneBoard({ columns, items, filtered, onSelect }: { columns: string[];
       {columns.length > 1 && (
         <div className="pipeline">
           {stages.map((s) => (
-            <button key={s.status} disabled={!s.items.length} className={s.items.some((i) => i.frontmatter.blocked) ? 'has hot' : s.items.some((i) => i.derived.needs_you) ? 'has wait' : s.items.length ? 'has' : ''} title={statusLabel(s.status)}
+            <button key={s.status} disabled={!s.items.length} className={s.items.some((i) => i.frontmatter.blocked && !i.frontmatter.triage) ? 'has hot' : s.items.some((i) => i.derived.needs_you) ? 'has wait' : s.items.length ? 'has' : ''} title={statusLabel(s.status)}
               onClick={() => document.getElementById(`stage-${s.status}`)?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' })}><b>{s.items.length}</b><span>{STAGE_SHORT[s.status] ?? statusLabel(s.status)}</span></button>
           ))}
         </div>

@@ -61,7 +61,10 @@ never as a moved head (the `head_moved` storm re-ran every open PR per merge).
 - Statuses are the lifecycle only: `NOT_YET_SUBMITTED, QUEUED, PLAN_IN_PROGRESS,
   PLAN_READY, IN_PROGRESS, IN_REVIEW, MERGED, FINISHED, ICEBOX`. `blocked` /
   `blocked_reason`, `awaiting` / `awaiting_data` and `op` / `op_data` are
-  orthogonal, so an item never loses its phase when it needs a human.
+  orthogonal, so an item never loses its phase when it needs a human. A stop
+  goes to the orchestrator first (`triage`, not "needs you"): it resolves it with
+  its tools or leaves one plain decision card (`awaiting_data.decision`); a wake
+  that ends without either, or `orchestrator.triage_timeout_min`, hands it back.
 - FINISHED has two ways in: the engine after a merged PR, and the user's
   **close as done** (`Engine.closeAsDone`) for work that landed some other way.
   The second is user-only, stops at IN_REVIEW (a PR decides from there), and

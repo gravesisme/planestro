@@ -103,6 +103,8 @@ for a decision.
 | `orchestrator.allow_model_fallback` | `false` | While the orchestrator's model is out of usage, wake on its `fallback` instead. |
 | `orchestrator.may_approve_plans` | `false` | Whether it may approve plans of items that opted in (**let the orchestrator approve the plan** on the item). It can never approve an epic's breakdown or release a review hold. |
 | `orchestrator.may_decide_permissions` | `false` | Whether workers' permission requests go to it before you. It allows ordinary work in the worktree, denies with a reason (three denials on one item and the rest come to you), and hands over anything outside the worktree, installing software or touching credentials. The hard rules run first regardless. |
+| `orchestrator.triage` | `true` | Needs-you triage: a block or a worker's question goes to the orchestrator before it reaches you. It resolves what is within its authority (unblock with an instruction, answer from the brief, retry a transient failure, fix a wrong parent or base and recreate an empty worktree) or turns it into one plain decision card. See [Needs-you triage](concepts.md#needs-you-triage). |
+| `orchestrator.triage_timeout_min` | `10` | How long an item may stay in triage. Past it — or with the orchestrator off, unavailable or paused — the item comes to you exactly as it stopped. |
 | `orchestrator.max_plan_revisions` | `2` | How many times it may send one item's plan back to the planner with fixes. Past that it can only approve the plan or leave it to you. |
 | `orchestrator.rotate_after_wakes` | `40` | Start a fresh orchestrator conversation after this many wakes… |
 | `orchestrator.rotate_after_days` | `3` | …or this many days. The files are its memory. |

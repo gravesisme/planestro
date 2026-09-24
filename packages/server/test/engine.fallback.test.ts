@@ -82,7 +82,7 @@ describe('model fallback in the engine', () => {
     await waitFor(() => fm(store, a.id).blocked === true);
     expect(fm(store, a.id).blocked_reason).toBe('usage_exhausted');
     expect(activity(store, a.id)).toContain('(this item does not allow a fallback model)');
-    expect(used.map((u) => u.model)).toEqual(['claude-fable-5']);
+    expect(used.filter((u) => u.item).map((u) => u.model)).toEqual(['claude-fable-5']); // worker turns (the orchestrator's triage wake is its own)
     expect(store.local.model_unavailable?.['fable-5']?.until).toBe(RESET);
   });
 
@@ -94,12 +94,12 @@ describe('model fallback in the engine', () => {
     await engine.start();
     await waitFor(() => fm(store, a.id).blocked === true);
     expect(fm(store, a.id).blocked_reason).toBe('usage_exhausted');
-    expect(used.map((u) => u.model)).toEqual(['claude-fable-5', 'claude-opus-5']);
+    expect(used.filter((u) => u.item).map((u) => u.model)).toEqual(['claude-fable-5', 'claude-opus-5']);
     const b = store.createItem({ title: 'After', description: 'y', allow_model_fallback: true });
     store.transition(b.id, 'QUEUED', 'user');
     await waitFor(() => fm(store, b.id).blocked === true);
     expect(activity(store, b.id)).toContain('Fable 5, Opus 5 are all out of usage until');
-    expect(used.length).toBe(2);
+    expect(used.filter((u) => u.item).length).toBe(2);
   });
 
   it('defaults.allow_model_fallback starts new items with it, and an epic hands it to its children', async () => {
