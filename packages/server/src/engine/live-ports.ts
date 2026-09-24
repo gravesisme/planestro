@@ -158,10 +158,10 @@ export class LiveGhPort implements GhPort {
     return (JSON.parse(await ghRead(args)) as any[]).map(toPr);
   }
   async ciForSha(repo: string, branch: string, sha: string, workflow: string): Promise<CiStatus> {
-    const runs = JSON.parse(await ghRead(['run', 'list', '--repo', repo, '--branch', branch, '--workflow', workflow, '--limit', '10', '--json', 'databaseId,status,conclusion,headSha,url,createdAt'])) as any[];
+    const runs = JSON.parse(await ghRead(['run', 'list', '--repo', repo, '--branch', branch, '--workflow', workflow, '--limit', '10', '--json', 'databaseId,status,conclusion,headSha,url,createdAt,attempt'])) as any[];
     const run = runs.find((r) => r.headSha === sha);
     if (!run) return { state: 'none', sha };
-    const base = { runId: run.databaseId, url: run.url, sha, startedAt: run.createdAt };
+    const base = { runId: run.databaseId, url: run.url, sha, startedAt: run.createdAt, attempt: run.attempt };
     if (run.status !== 'completed') return { ...base, state: 'pending' };
     if (run.conclusion === 'success') return { ...base, state: 'success' };
     if (run.conclusion === 'cancelled') return { ...base, state: 'cancelled' };
@@ -193,6 +193,7 @@ export class LiveGhPort implements GhPort {
     } catch { /* fall through */ }
     return false;
   }
+  async rerunFailed(repo: string, runId: number) { await gh(['run', 'rerun', String(runId), '--repo', repo, '--failed']); }
   async mergePr(repo: string, number: number, opts: { deleteBranch: boolean }) {
     await gh(['pr', 'merge', String(number), '--repo', repo, '--merge', ...(opts.deleteBranch ? ['--delete-branch'] : [])]);
   }

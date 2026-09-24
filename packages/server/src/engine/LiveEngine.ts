@@ -841,7 +841,13 @@ export class LiveEngine implements Engine {
 
     // 3. wait for CI. `expected` is the head the push replaced: GitHub keeps reporting it for a
     // few seconds, and that must read as propagation lag, not as someone moving the branch.
-    const verdict = await this.waitForCi(id, fm.branch!, headSha, fm.pr!, expected);
+    let verdict = await this.waitForCi(id, fm.branch!, headSha, fm.pr!, expected);
+    // A known flake is re-run once, here, for this same head: leaving the pipeline would re-sync
+    // (and on a moved base, push a new head) before the re-run could answer.
+    if (verdict === 'red' && canFix) {
+      const attempt = await this.rerunIfFlaky(id, headSha);
+      if (attempt) verdict = await this.waitForCi(id, fm.branch!, headSha, fm.pr!, null, attempt);
+    }
     if (verdict === 'moved') { this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { ci_result: 'pending' } }], 'engine'); this.store.journal.end(opId, id, 'aborted', { reason: 'head_moved' }); void this.tick(); return; }
     // The engine is stopping, which says nothing about CI: leave `op: awaiting_ci` on the item, and the next start re-enters the pipeline.
     if (verdict === 'stopping') { this.store.journal.end(opId, id, 'aborted', { reason: 'engine_stopping' }); return; }
@@ -889,6 +895,29 @@ export class LiveEngine implements Engine {
     await this.cleanup(id);
   }
 
+  /**
+   * A known flake gets one re-run of its failed jobs for this head before a session is paid to "fix"
+   * it (HH-122's atlas_layout_check: an 80 ms wall-clock bound on a 2-vCPU runner). Returns the
+   * attempt to wait for, or undefined when this red is to be handled as a red.
+   */
+  private async rerunIfFlaky(id: string, headSha: string): Promise<number | undefined> {
+    const patterns = this.store.config.ci.flaky_checks;
+    const fm = this.store.requireItem(id).file.frontmatter;
+    const ci = fm.op_data?.ci as { runId?: number; attempt?: number } | undefined;
+    if (!patterns.length || !ci?.runId || (fm.op_data?.flake_rerun as { sha?: string } | undefined)?.sha === headSha) return undefined;
+    const log = await this.ports.gh.runFailedLog(this.github, ci.runId, 120);
+    const known = patterns.find((c) => log.includes(c));
+    if (!known) return undefined;
+    try { await this.ports.gh.rerunFailed(this.github, ci.runId); }
+    catch (e) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `could not re-run the failed jobs of run ${ci.runId}: ${(e as Error).message.slice(0, 200)}` } }], 'engine'); return undefined; }
+    const attempt = (ci.attempt ?? 1) + 1;
+    this.store.mutateItem(id, [
+      { set: { op_data: { ...(fm.op_data ?? {}), flake_rerun: { sha: headSha, runId: ci.runId, attempt, check: known } } } },
+      { activity: { actor: 'app', text: `CI red for ${headSha.slice(0, 7)} on a known flaky check (${known}, ci.flaky_checks); re-running the failed jobs once before handing it to the session` } },
+    ], 'engine', { commit: `${id}: re-run flaky CI` });
+    return attempt;
+  }
+
   private async onCiRed(id: string, opId: string, headSha: string, logText: string | undefined, source: 'github' | 'local', canFix = true): Promise<void> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
@@ -930,7 +959,7 @@ export class LiveEngine implements Engine {
    * Within HEAD_PROPAGATION_GRACE_MS the old sha is lag and we keep polling; anything else is
    * a real move. 'stopping' is the engine shutting down, which says nothing about CI.
    */
-  private async waitForCi(id: string, branch: string, sha: string, pr: number, previousSha: string | null = null): Promise<'green' | 'red' | 'blocked' | 'moved' | 'timeout' | 'stopping'> {
+  private async waitForCi(id: string, branch: string, sha: string, pr: number, previousSha: string | null = null, minAttempt = 0): Promise<'green' | 'red' | 'blocked' | 'moved' | 'timeout' | 'stopping'> {
     const cfg = this.store.config.ci;
     const started = Date.now();
     let sawRun = false;
@@ -946,9 +975,11 @@ export class LiveEngine implements Engine {
       }
       const ci = await this.ports.gh.ciForSha(this.github, branch, sha, this.ciWorkflow);
       const elapsedMin = (Date.now() - started) / 60_000;
-      if (ci.runId) { sawRun = true; const cur = this.store.requireItem(id).file.frontmatter; if ((cur.op_data?.ci as any)?.runId !== ci.runId) this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), ci: { runId: ci.runId, url: ci.url } } } }], 'engine'); }
+      if (ci.runId) { sawRun = true; const cur = this.store.requireItem(id).file.frontmatter; const seen = cur.op_data?.ci as { runId?: number; attempt?: number } | undefined; if (seen?.runId !== ci.runId || seen?.attempt !== ci.attempt) this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), ci: { runId: ci.runId, url: ci.url, ...(ci.attempt ? { attempt: ci.attempt } : {}) } } } }], 'engine'); }
       if (ci.state === 'success') return 'green';
-      if (ci.state === 'failure') return (ci.runId && await this.ports.gh.isBillingBlocked(this.github, ci.runId)) ? 'blocked' : 'red';
+      // A re-run keeps its run id: until its attempt shows up, the completed run is the old verdict.
+      const stale = minAttempt > 0 && (ci.attempt ?? 0) < minAttempt;
+      if (ci.state === 'failure' && !stale) return (ci.runId && await this.ports.gh.isBillingBlocked(this.github, ci.runId)) ? 'blocked' : 'red';
       if (ci.state === 'cancelled') { /* superseded; keep polling for the new run */ }
       if (ci.state === 'none' && !sawRun && elapsedMin > cfg.start_timeout_min) return 'blocked';
       if (elapsedMin > cfg.timeout_min) return 'timeout';

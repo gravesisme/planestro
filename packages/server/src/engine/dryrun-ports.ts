@@ -17,7 +17,11 @@ export class FakeWorld {
   dirty = new Set<string>();
   /** Shas the fake base does not contain (isAncestor answers false for them). */
   unreachable = new Set<string>();
-  prs = new Map<number, PrInfo & { polls: number; failOnce: boolean }>();
+  prs = new Map<number, PrInfo & { polls: number; failOnce: boolean; attempt?: number; staleFailures?: number }>();
+  /** Polls after a re-run request that still report the old, failed attempt (GitHub's lag). */
+  rerunLagPolls = 0;
+  /** A re-run of failed jobs fails again (a real failure, not a flake). */
+  rerunFailsAgain = false;
   nextPr = 100;
   seq = 0;
   ciMode: 'green' | 'red-once' | 'conflict-once' = (process.env.PLANESTRO_DRYRUN_CI as any) ?? 'green';
@@ -98,12 +102,18 @@ export class DryRunGhPort implements GhPort {
     if (!p) return { state: 'none', sha };
     if (p.isDraft) { this.w.ciPolledWhileDraft += 1; return { state: 'none', sha }; } // CI skips drafts (dogfood f6)
     p.polls += 1;
-    if (p.polls < 2) return { state: 'pending', runId: 1, sha, url: 'https://example/run/1' };
-    if (p.failOnce) { p.failOnce = false; p.polls = 0; return { state: 'failure', runId: 2, sha, url: 'https://example/run/2' }; }
-    return { state: 'success', runId: 3, sha, url: 'https://example/run/3' };
+    const attempt = p.attempt ?? 1;
+    if (p.staleFailures) { p.staleFailures -= 1; return { state: 'failure', runId: 2, sha, url: 'https://example/run/2', attempt: attempt - 1 }; }
+    if (p.polls < 2) return { state: 'pending', runId: 1, sha, url: 'https://example/run/1', attempt };
+    if (p.failOnce) { p.failOnce = false; p.polls = 0; return { state: 'failure', runId: 2, sha, url: 'https://example/run/2', attempt }; }
+    return { state: 'success', runId: 3, sha, url: 'https://example/run/3', attempt };
   }
   async runFailedLog() { return '[fake-check] FAIL: simulated failure (PLANESTRO_DRYRUN_CI=red-once)'; }
   async isBillingBlocked() { return false; }
+  async rerunFailed(_repo: string, runId: number) {
+    this.say(`gh run rerun ${runId} --failed`);
+    for (const p of this.w.prs.values()) { p.attempt = (p.attempt ?? 1) + 1; p.polls = 0; p.staleFailures = this.w.rerunLagPolls; if (this.w.rerunFailsAgain) { p.failOnce = true; this.w.rerunFailsAgain = false; } }
+  }
   async mergePr(_repo: string, number: number, opts: { deleteBranch: boolean }) {
     this.say(`gh pr merge ${number} --merge${opts.deleteBranch ? ' --delete-branch' : ''}`);
     const p = this.w.prs.get(number)!; p.state = 'MERGED'; p.mergedAt = new Date().toISOString(); p.mergeCommit = this.w.sha();
