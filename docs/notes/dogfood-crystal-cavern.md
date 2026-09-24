@@ -420,6 +420,17 @@ HH-125 blocked because no worker can generate audio. Today a human (or this sess
 
 **Proposal.** For your review: (1) a sound-effects runner behind a per-item spend cap; (2) an 'audition' review hold with a candidate grid on the item page; (3) picks delivered to the worker as JSON. Keep it project-neutral: prompts, roles and the build command come from the item and the project's config.
 
+### f6 — Feature (APPROVED by the designer 2026-09-23): open held PRs as drafts, with no CI until they're released
+
+Held items (skip_merge or hold_for_review) run full CI on every push and rebase while they wait for the designer, often 2–3 times before anyone looks. Open them as GitHub **draft** PRs, have CI skip drafts, and on release mark the PR ready (`gh pr ready`), which runs CI exactly once on the up-to-date branch before the merge. The worker's local full suite stays the evidence during the hold.
+
+**Evidence.** Sept 2026: about 6,200 hosted CI minutes, of which about 97% were epic-child PRs, with 1.7 runs per branch. The budget was exhausted on 2026-09-23 and raised to $50/month.
+
+**Proposal (approved).**
+- planestro: create the PR as a draft when the item is held at PR time; `gh pr ready` on releaseHold and art approval; back to draft if a hold is re-applied.
+- The game's `ci.yml`: skip draft PRs (`if: !github.event.pull_request.draft`) and add `types: [opened, synchronize, reopened, ready_for_review]`.
+- It pairs with the game's self-hosted runner for epic children (game PR #337).
+
 ## Shipped since these notes began
 
 - Model fallback (Fable 5 → Opus 5.5), per item and for the orchestrator: PR #9.
