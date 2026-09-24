@@ -239,3 +239,7 @@ committed on the branch but the item stopped before its pull request (over budge
 committing, a size gate, a commit a person made for a runner that could not). It clears the stop
 and opens the pull request from the worktree, through the same sync and CI as any item. It refuses
 a dirty tree or a branch with nothing ahead of its base.
+
+Every wake about an item also carries the repository's open pull requests (number, title, branch,
+author, age, and which are planestro's own), so a stop is not escalated while a person is already
+fixing it in a pull request planestro did not open.
