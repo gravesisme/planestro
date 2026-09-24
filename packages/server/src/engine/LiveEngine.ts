@@ -94,6 +94,7 @@ export class LiveEngine implements Engine {
       retryOp: (id) => this.retryOp(id),
       resumeAfter: (id, items, message) => this.resumeAfter(id, items, message, 'orchestrator'),
       askUserDecision: (id, input) => this.askUserDecision(id, input),
+      withdrawDecision: (id, reason) => this.withdrawDecision(id, reason),
       triageEnded: (id) => this.endTriage(id, 'the orchestrator looked at it without resolving it'),
       poke: () => this.poke(),
       usageSeen: (r) => this.usageSeen(r),
@@ -1655,8 +1656,11 @@ export class LiveEngine implements Engine {
       const cur = this.store.requireItem(id).file.frontmatter;
       // A stop for a person goes to the orchestrator first (triage); it resolves it or asks one plain question.
       const triage = this.triageOps(cur, reason);
+      // A card that was waiting for an answer is about a stop that no longer exists: this block replaces it (HH-162, dogfood p42).
+      const { decision: staleCard, ...restData } = cur.awaiting_data ?? {};
       this.store.mutateItem(id, [
         { set: { blocked: true, blocked_reason: reason, ...(awaiting ? { awaiting } : {}) } },
+        ...(staleCard ? [(Object.keys(restData).length ? { set: { awaiting_data: restData } } : { unset: ['awaiting_data'] }) as ItemOp, { activity: { actor: 'app', text: 'the decision card it had is withdrawn: this block replaces it' } } as ItemOp] : []),
         ...(cur.op ? [{ unset: ['op', 'op_started_at'] } as ItemOp] : []),
         { activity: { actor: 'app', text: `BLOCKED (${reason}): ${detail.replace(/\s+/g, ' ').slice(0, 500)}` } },
         ...triage.ops,
@@ -1931,6 +1935,17 @@ export class LiveEngine implements Engine {
     if (!lines.length) return;
     this.store.mutateItem(id, [{ activity: { actor: 'app', text: `budget warning: ${lines.join('; ')}. Raise it on the item page if the work is worth it, before it stops.` } }], 'engine');
     this.note('warn', `${id}: ${lines.join('; ')}`);
+  }
+
+  /** The orchestrator takes a card back: the item keeps its stop, and stops asking the user this question. */
+  private withdrawDecision(id: string, reason: string): string {
+    const item = this.store.getItem(id);
+    if (!item) return `no item ${id}`;
+    const { decision, ...rest } = item.file.frontmatter.awaiting_data ?? {};
+    if (!decision) return `nothing to withdraw: ${id} has no decision card`;
+    this.store.mutateItem(id, [Object.keys(rest).length ? { set: { awaiting_data: rest } } : { unset: ['awaiting_data'] }, { activity: { actor: 'orchestrator', text: `withdrew the decision card (${String((decision as { question?: string }).question ?? '').slice(0, 80)}): ${reason}` } }], 'orchestrator', { commit: `${id}: decision withdrawn` });
+    this.store.journal.append({ type: 'orchestrator.decision_withdrawn', item: id, actor: 'orchestrator', data: { question: (decision as { question?: string }).question, reason } });
+    return 'withdrawn: the card is gone; the item is otherwise as it was (still stopped, if it was). Resolve it or file a new card in this wake, or it goes to the user as a plain block.';
   }
 
   /** The orchestrator's escalation: one plain decision, parked on an item that is already stopped. */
