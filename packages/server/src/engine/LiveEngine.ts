@@ -1158,6 +1158,21 @@ export class LiveEngine implements Engine {
     }
   }
 
+  /**
+   * Before a worktree goes: what `worktrees.keep_on_remove` names is set aside (dogfood p40: a merge
+   * removed HH-161's worktree and the art worker's raw sources in its git-ignored tmp/ with it).
+   * Moved, never deleted (invariant 7), to a folder the Activity log names. Returns that line.
+   */
+  private async setAsideBeforeRemove(id: string, cwd: string): Promise<string | undefined> {
+    const keep = this.store.config.worktrees.keep_on_remove;
+    if (!keep.length) return undefined;
+    const files = await this.ports.git.filesUnder(cwd, keep).catch(() => [] as string[]);
+    if (!files.length) return undefined;
+    const dest = join(this.store.worktreesRoot(), '.displaced', `${id.toLowerCase()}-${this.now().replace(/[:+]/g, '-')}`);
+    await this.ports.git.moveAside(cwd, files, dest);
+    return `set aside ${files.length} file${files.length === 1 ? '' : 's'} under ${keep.join(', ')} (worktrees.keep_on_remove) before removing the worktree: ${dest}`;
+  }
+
   private async cleanup(id: string): Promise<void> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
@@ -1188,6 +1203,8 @@ export class LiveEngine implements Engine {
     if (view.state !== 'MERGED' || stranded.length) { this.store.journal.end(opId, id, 'aborted', { reason: 'unverifiable', stranded }); this.block(id, 'cleanup_unverifiable', view.state !== 'MERGED' ? `PR #${fm.pr} is ${view.state}; nothing was deleted` : `cannot prove ${stranded.join(', ')} reachable from origin/${base}; nothing was deleted`); return; }
     const { clean } = await this.ports.git.status(cwd).catch(() => ({ clean: true }));
     if (!clean) { this.store.journal.end(opId, id, 'aborted', { reason: 'dirty' }); this.block(id, 'cleanup_dirty', 'the worktree has uncommitted changes after the merge; remove it by hand or discard them'); return; }
+    const kept = await this.setAsideBeforeRemove(id, cwd);
+    if (kept) this.store.mutateItem(id, [{ activity: { actor: 'app', text: kept } }], 'engine');
     await this.ports.git.worktreeRemove(this.repo, cwd, false);
     await this.ports.git.worktreePrune(this.repo);
     await this.ports.git.deleteLocalBranch(this.repo, fm.branch!);
@@ -1772,6 +1789,7 @@ export class LiveEngine implements Engine {
     this.runJob(id, async () => {
       const opId = this.store.journal.begin('creating_worktree', id, { branch, dir, base, recreate: true });
       this.store.mutateItem(id, [{ set: { op: 'creating_worktree', op_started_at: this.now() } }, { activity: { actor: 'orchestrator', text: `recreating ${fm.worktree} on ${branch} from origin/${base}${hadWorktree ? '' : ' (the old one was gone)'}` } }], 'engine', { commit: `${id}: recreate worktree` });
+      if (hadWorktree) { const kept = await this.setAsideBeforeRemove(id, dir); if (kept) this.store.mutateItem(id, [{ activity: { actor: 'app', text: kept } }], 'engine'); }
       if (hadWorktree) await this.ports.git.worktreeRemove(this.repo, dir, false);
       await this.ports.git.worktreePrune(this.repo);
       await this.ports.git.deleteLocalBranch(this.repo, branch);
@@ -2095,13 +2113,15 @@ export class LiveEngine implements Engine {
       remote = await this.ports.git.remoteBranchSha(this.repo, branch);
       if (remote && !await this.ports.git.isAncestor(this.repo, remote, `origin/${base}`)) return keep(`the pushed branch has commits that are not on origin/${base}`);
     } catch (e) { return keep(`could not verify it is unused (${brief(e)})`); }
+    let kept: string | undefined;
     try {
+      kept = await this.setAsideBeforeRemove(branch.replace(/[\/\\]/g, '-'), cwd);
       await this.ports.git.worktreeRemove(this.repo, cwd, false);
       await this.ports.git.worktreePrune(this.repo);
       await this.ports.git.deleteLocalBranch(this.repo, branch);
       if (remote) await this.ports.git.deleteRemoteBranch(this.repo, branch);
     } catch (e) { return `removing the unused worktree ${cwd} / branch ${branch} stopped partway (${brief(e)}); finish it by hand`; }
-    return `removed unused worktree and branch ${branch} (clean, nothing ahead of origin/${base})`;
+    return `removed unused worktree and branch ${branch} (clean, nothing ahead of origin/${base})${kept ? `; ${kept}` : ''}`;
   }
 
   /** `concurrency.runner_limits`: a runner with its own rate limit takes its turns a few at a time; unlisted runners are not limited here. */

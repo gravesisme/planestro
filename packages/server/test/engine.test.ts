@@ -999,6 +999,51 @@ describe('regenerated files that collide with the base (p17)', () => {
   });
 });
 
+describe('files a worktree must not take with it (p40)', () => {
+  it('what worktrees.keep_on_remove names is set aside before cleanup removes the worktree, tracked or ignored', async () => {
+    const { store, engine, world } = await setup();
+    store.updateConfig((doc) => { doc.setIn(['worktrees', 'keep_on_remove'], ['tmp']); }, 'config: keep tmp');
+    const item = store.createItem({ title: 'Raws', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    const cwd = (engine as any).absWorktree(store.getItem(item.id)!.file.frontmatter.worktree!);
+    world.ignored.set(cwd, ['tmp/cc_dressing/source/a.png', 'tmp/cc_dressing/source/b.png', '.godot/imported/x.md5']);
+    await engine.approvePlan(item.id);
+    await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
+    expect(activityOf(store, item.id)).toMatch(/set aside 2 files under tmp \(worktrees\.keep_on_remove\) before removing the worktree: \S+\.displaced\//);
+    expect(world.ignored.get(cwd)).toEqual(['.godot/imported/x.md5']);        // only what was named moved; caches stay with the worktree
+  });
+
+  it('close as done sets them aside too, before it removes an unused worktree', async () => {
+    const { store, engine, world } = await setup();
+    store.updateConfig((doc) => { doc.setIn(['worktrees', 'keep_on_remove'], ['tmp']); }, 'config: keep tmp');
+    const item = store.createItem({ title: 'Unused', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    const cwd = (engine as any).absWorktree(store.getItem(item.id)!.file.frontmatter.worktree!);
+    world.ignored.set(cwd, ['tmp/raw.png']); world.commits.set(cwd, 0); world.behind.set(cwd, 0);
+    await engine.closeAsDone(item.id, 'landed elsewhere');
+    expect(status(store, item.id)).toBe('FINISHED');
+    expect(activityOf(store, item.id)).toMatch(/removed .*; set aside 1 file under tmp/);
+    expect(world.ignored.get(cwd)).toEqual([]);
+  });
+
+  it('with nothing named, cleanup is as before', async () => {
+    const { store, engine, world } = await setup();
+    const item = store.createItem({ title: 'Plain', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    const cwd = (engine as any).absWorktree(store.getItem(item.id)!.file.frontmatter.worktree!);
+    world.ignored.set(cwd, ['tmp/raw.png']);
+    await engine.approvePlan(item.id);
+    await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
+    expect(activityOf(store, item.id)).not.toContain('set aside');
+  });
+});
+
 describe('orchestrator', () => {
   it('wakes on plan_review with a context packet, uses tools, and rotates after the configured wakes', async () => {
     const wakes: { label: string; prompt: string; resume?: string }[] = [];

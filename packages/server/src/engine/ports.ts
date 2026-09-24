@@ -26,6 +26,8 @@ export interface GitPort {
   trackedAt(cwd: string, ref: string, paths: string[]): Promise<string[]>;
   /** Move files (relative to cwd) into `dest`, keeping their relative paths: set aside, never deleted. */
   moveAside(cwd: string, paths: string[], dest: string): Promise<void>;
+  /** Every file (tracked, ignored or unknown to git) under the given relative directories or files of `cwd`, as relative paths. */
+  filesUnder(cwd: string, paths: string[]): Promise<string[]>;
   aheadBehind(cwd: string, base: string, head: string): Promise<{ ahead: number; behind: number }>;
   /** Rebase `cwd`'s HEAD onto `onto`; on conflict the rebase is aborted and the files listed. */
   rebase(cwd: string, onto: string): Promise<RebaseResult>;

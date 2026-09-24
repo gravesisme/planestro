@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, mkdirSync, renameSync, copyFileSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, renameSync, copyFileSync, unlinkSync, lstatSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import type { GitPort, GhPort, ProcPort, WorktreeEntry, RebaseResult, CiStatus, PrInfo, ChangedFile } from './ports.ts';
 
@@ -103,6 +103,18 @@ export class LiveGitPort implements GitPort {
   async trackedAt(cwd: string, ref: string, paths: string[]) {
     const out: string[] = [];
     for (let i = 0; i < paths.length; i += 200) out.push(...(await git(cwd, ['ls-tree', '-r', '--name-only', ref, '--', ...paths.slice(i, i + 200)])).stdout.split('\n').filter(Boolean));
+    return out;
+  }
+  async filesUnder(cwd: string, paths: string[]) {
+    const out: string[] = [];
+    const walk = (rel: string) => {
+      const abs = join(cwd, rel);
+      let st; try { st = lstatSync(abs); } catch { return; }
+      if (st.isSymbolicLink()) return;
+      if (st.isFile()) { out.push(rel); return; }
+      if (st.isDirectory()) for (const name of readdirSync(abs)) walk(join(rel, name));
+    };
+    for (const p of paths) { const rel = p.replace(/^\.?\/+/, '').replace(/\/+$/, ''); if (rel && !rel.split('/').includes('..')) walk(rel); }
     return out;
   }
   async moveAside(cwd: string, paths: string[], dest: string) {
