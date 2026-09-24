@@ -45,7 +45,8 @@ export interface GitPort {
 }
 
 export type CiState = 'none' | 'pending' | 'success' | 'failure' | 'cancelled';
-export interface CiStatus { state: CiState; runId?: number; url?: string; sha?: string; startedAt?: string }
+/** `attempt` is the run's attempt number: a re-run keeps its run id and counts up. */
+export interface CiStatus { state: CiState; runId?: number; url?: string; sha?: string; startedAt?: string; attempt?: number }
 export interface PrInfo { number: number; url: string; state: 'OPEN' | 'MERGED' | 'CLOSED'; mergedAt?: string; headRefOid: string; headRefName: string; baseRefName: string; mergeCommit?: string; title?: string; isDraft?: boolean }
 
 export interface GhPort {
@@ -58,6 +59,8 @@ export interface GhPort {
   ciForSha(repo: string, branch: string, sha: string, workflow: string): Promise<CiStatus>;
   runFailedLog(repo: string, runId: number, maxLines: number): Promise<string>;
   isBillingBlocked(repo: string, runId: number): Promise<boolean>;
+  /** Re-run only the failed jobs of a completed run (same run id, next attempt). */
+  rerunFailed(repo: string, runId: number): Promise<void>;
   mergePr(repo: string, number: number, opts: { deleteBranch: boolean }): Promise<void>;
   /** Latest run of the workflow on a branch (base health). */
   branchCi(repo: string, branch: string, workflow: string): Promise<CiStatus>;

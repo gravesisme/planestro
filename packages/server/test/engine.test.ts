@@ -776,6 +776,57 @@ describe('structured parts (f4)', () => {
   });
 });
 
+describe('known flaky CI checks (p33)', () => {
+  async function flaky() {
+    const ctx = await setup({ ci: 'red-once' });
+    ctx.world.ciMode = 'red-once';
+    ctx.store.updateConfig((doc) => { doc.setIn(['ci', 'flaky_checks'], ['fake-check']); }, 'config: flaky');
+    const item = ctx.store.createItem({ title: 'Flaky', description: 'x' });
+    ctx.store.transition(item.id, 'QUEUED', 'user');
+    await ctx.engine.start();
+    await waitFor(() => status(ctx.store, item.id) === 'PLAN_READY');
+    return { ...ctx, id: item.id };
+  }
+
+  it('a red run on a known flaky check is re-run once, and no fix turn is spent when it passes', async () => {
+    const { store, engine, id } = await flaky();
+    await engine.approvePlan(id);
+    await waitFor(() => status(store, id) === 'FINISHED', 10000);
+    const activity = activityOf(store, id);
+    expect(activity).toContain('on a known flaky check (fake-check, ci.flaky_checks); re-running the failed jobs once');
+    expect(activity).not.toContain('CI red (github');
+    expect(store.getItem(id)!.file.frontmatter.ci_failed_count ?? 0).toBe(0);
+  });
+
+  it('the old failed attempt, still reported just after the re-run request, is not the re-run\'s verdict', async () => {
+    const { store, engine, world, id } = await flaky();
+    world.rerunLagPolls = 2;
+    await engine.approvePlan(id);
+    await waitFor(() => status(store, id) === 'FINISHED', 10000);
+    expect(store.getItem(id)!.file.frontmatter.ci_failed_count ?? 0).toBe(0);
+  });
+
+  it('re-runs a head at most once, whichever pass through the pipeline sees it red', async () => {
+    const { store, engine, id } = await flaky();
+    await engine.stop();
+    store.mutateItem(id, [{ set: { op_data: { ci: { runId: 2, attempt: 1 } } } }], 'engine');
+    expect(await (engine as any).rerunIfFlaky(id, 'a'.repeat(40))).toBe(2);
+    expect(await (engine as any).rerunIfFlaky(id, 'a'.repeat(40))).toBeUndefined();
+    expect(await (engine as any).rerunIfFlaky(id, 'b'.repeat(40))).toBe(2);
+  });
+
+  it('a second red after the re-run is a real red: the session gets it', async () => {
+    const { store, engine, world, id } = await flaky();
+    world.rerunFailsAgain = true;
+    await engine.approvePlan(id);
+    await waitFor(() => status(store, id) === 'FINISHED', 12000);
+    const activity = activityOf(store, id);
+    expect(activity.match(/re-running the failed jobs once/g)?.length).toBe(1);
+    expect(activity).toContain('CI red (github, attempt 1)');
+    expect(store.getItem(id)!.file.frontmatter.ci_failed_count).toBe(1);
+  });
+});
+
 describe('orchestrator', () => {
   it('wakes on plan_review with a context packet, uses tools, and rotates after the configured wakes', async () => {
     const wakes: { label: string; prompt: string; resume?: string }[] = [];

@@ -279,7 +279,9 @@ export const Config = z.object({
     /** Open a held item's PR as a draft, and mark it ready (which starts CI, when the project's CI skips drafts) only once the hold is released. */
     draft_while_held: z.boolean().default(true),
     local_check_command: z.string().optional(),
-  }).default({ mode: 'github', require_green_base: true, start_timeout_min: 10, timeout_min: 45, draft_while_held: true }),
+    /** Text that marks a CI failure as a known flake (a check name, a message): the failed jobs are re-run once for that head before a fix turn is spent. */
+    flaky_checks: z.array(z.string().min(1)).default([]),
+  }).default({ mode: 'github', require_green_base: true, start_timeout_min: 10, timeout_min: 45, draft_while_held: true, flaky_checks: [] }),
   orchestrator: z.object({
     model: z.string().default('claude-fable-5'),
     /** When the orchestrator's model is out of usage, wake on its model row's `fallback` instead. */
