@@ -53,7 +53,7 @@ and brings you only a plain decision card. See [Needs-you triage](concepts.md#ne
 | `pr_closed_externally` | The pull request was closed without merging. | Reopen it, or close the item. |
 | `cleanup_unverifiable` | After the merge, the branch tip could not be proven reachable from the base. **Nothing was deleted.** | Check the merge; remove the worktree and branch by hand if it is right. |
 | `cleanup_dirty` | The worktree has uncommitted changes after the merge. | Discard or rescue them, then remove the worktree by hand. |
-| `engine_error` | An unexpected error inside a lifecycle step; the message is the exception. | If a retry makes sense, unblock; if it repeats, it is a bug — the Activity log and journal have what is needed to report it. |
+| `engine_error` | An unexpected error inside a lifecycle step; the message is the exception. Transient git and GitHub failures (a ref lock held by another git process, a network or GitHub timeout, a 5xx) are retried with backoff before a step fails, so one that still arrives here persisted for about a minute. | If a retry makes sense, unblock; if it repeats, it is a bug — the Activity log and journal have what is needed to report it. |
 
 ## Not blocked, but stuck?
 

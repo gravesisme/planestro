@@ -57,6 +57,8 @@ reports the old head for a few seconds; `waitForCi` reads that as propagation la
 never as a moved head (the `head_moved` storm re-ran every open PR per merge).
 A held item (`skip_merge`) skips only the merge: its new commits are pushed and its
 CI is polled from the tick, outside the merge chain (`driveHeld`).
+Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
+`live-ports.ts`: worktrees share the ref store); transient git/gh errors are retried there.
 
 ## Data model notes
 

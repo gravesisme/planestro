@@ -19,6 +19,39 @@ async function gh(args: string[]): Promise<string> {
   catch (e: any) { throw new Error(`gh ${args.slice(0, 3).join(' ')} failed: ${(e.stderr || e.message || '').trim().split('\n').slice(-2).join(' | ')}`); }
 }
 
+/**
+ * What git and gh say when the answer is "try again", not "this is wrong": another process held a
+ * ref lock (a fetch racing a merge's push, HH-124), or the network or GitHub blinked (a `gh pr
+ * view` timeout, HH-123). Anything else fails at once, as before.
+ */
+export const TRANSIENT = /cannot lock ref|unable to update local ref|could not resolve host|connection (timed out|reset|refused|closed)|operation timed out|timed out|i\/o timeout|early EOF|RPC failed|remote end hung up|ECONNRESET|ETIMEDOUT|EAI_AGAIN|TLS handshake|unexpected EOF|HTTP 50[0234]|Bad Gateway|Service Unavailable|Gateway Timeout|secondary rate limit/i;
+const pause = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/** Retry `fn` after each delay while it fails with a TRANSIENT message. Exported for tests. */
+export async function retrying<T>(fn: () => Promise<T>, delaysMs: number[], sleep: (ms: number) => Promise<void> = pause): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try { return await fn(); }
+    catch (e) { if (attempt >= delaysMs.length || !TRANSIENT.test(String((e as Error).message))) throw e; await sleep(delaysMs[attempt]); }
+  }
+}
+/** A git operation that races only with itself: a couple of seconds covers a lock held by a sibling. */
+const GIT_RETRY_MS = [2_000, 5_000];
+/** A read from GitHub: three tries over about a minute before the caller sees the error. */
+const GH_RETRY_MS = [5_000, 15_000, 40_000];
+
+let refQueue: Promise<unknown> = Promise.resolve();
+/**
+ * One ref-updating git operation at a time. The main checkout and every worktree share one ref
+ * store, so a fetch (which rewrites refs/remotes/origin/*), a push (which updates the pushed
+ * branch's tracking ref) and a worktree add (which creates a branch) race when two engine jobs run
+ * them at once. Exported for tests.
+ */
+export function refLocked<T>(fn: () => Promise<T>): Promise<T> {
+  const run = refQueue.then(fn, fn);
+  refQueue = run.catch(() => undefined);
+  return run;
+}
+const ghRead = (args: string[]) => retrying(() => gh(args), GH_RETRY_MS);
+
 export class LiveGitPort implements GitPort {
   async changedFiles(cwd: string, base: string, head: string): Promise<ChangedFile[]> {
     const out = (await git(cwd, ['diff', '--name-status', '--no-renames', '-z', `${base}...${head}`])).stdout.split('\0');
@@ -35,13 +68,15 @@ export class LiveGitPort implements GitPort {
   async readBlob(cwd: string, ref: string, path: string): Promise<Buffer | null> {
     try { return (await execFileP('git', ['-C', cwd, 'show', `${ref}:${path}`], { encoding: 'buffer', maxBuffer: 64 * 1024 * 1024 })).stdout as unknown as Buffer; } catch { return null; }
   }
-  async fetch(repo: string) { await git(repo, ['fetch', '--prune', 'origin']); }
+  async fetch(repo: string) { await refLocked(() => retrying(() => git(repo, ['fetch', '--prune', 'origin']), GIT_RETRY_MS)); }
   async revParse(cwd: string, ref: string) { return (await git(cwd, ['rev-parse', ref])).stdout.trim(); }
   async refExists(repo: string, ref: string) { return (await git(repo, ['rev-parse', '--verify', '--quiet', ref], true)).code === 0; }
-  async worktreeAddDetached(repo: string, path: string, ref: string) { await git(repo, ['worktree', 'add', '--detach', path, ref]); }
+  async worktreeAddDetached(repo: string, path: string, ref: string) { await refLocked(() => git(repo, ['worktree', 'add', '--detach', path, ref])); }
   async worktreeAdd(repo: string, path: string, branch: string, startRef: string) {
-    const exists = await this.localBranchExists(repo, branch);
-    await git(repo, exists ? ['worktree', 'add', path, branch] : ['worktree', 'add', '-b', branch, path, startRef]);
+    await refLocked(async () => {
+      const exists = await this.localBranchExists(repo, branch);
+      await git(repo, exists ? ['worktree', 'add', path, branch] : ['worktree', 'add', '-b', branch, path, startRef]);
+    });
   }
   async worktreeRemove(repo: string, path: string, force: boolean) { if (existsSync(path)) await git(repo, ['worktree', 'remove', ...(force ? ['--force'] : []), path]); }
   async worktreePrune(repo: string) { await git(repo, ['worktree', 'prune']); }
@@ -86,18 +121,20 @@ export class LiveGitPort implements GitPort {
   }
   async abortInProgress(cwd: string) { const op = await this.inProgressOp(cwd); if (op === 'rebase') await git(cwd, ['rebase', '--abort'], true); if (op === 'merge') await git(cwd, ['merge', '--abort'], true); }
   async pushForceWithLease(cwd: string, branch: string, expected: string | null) {
-    await git(cwd, ['push', '--force-with-lease=' + (expected ? `${branch}:${expected}` : branch), 'origin', `HEAD:refs/heads/${branch}`]);
+    await refLocked(() => retrying(() => git(cwd, ['push', '--force-with-lease=' + (expected ? `${branch}:${expected}` : branch), 'origin', `HEAD:refs/heads/${branch}`]), GIT_RETRY_MS));
   }
-  async pushSetUpstream(cwd: string, branch: string) { await git(cwd, ['push', '-u', 'origin', `HEAD:refs/heads/${branch}`]); }
-  async pushRef(repo: string, srcRef: string, dstBranch: string) { await git(repo, ['push', 'origin', `${srcRef}:refs/heads/${dstBranch}`]); }
+  async pushSetUpstream(cwd: string, branch: string) { await refLocked(() => retrying(() => git(cwd, ['push', '-u', 'origin', `HEAD:refs/heads/${branch}`]), GIT_RETRY_MS)); }
+  async pushRef(repo: string, srcRef: string, dstBranch: string) { await refLocked(() => retrying(() => git(repo, ['push', 'origin', `${srcRef}:refs/heads/${dstBranch}`]), GIT_RETRY_MS)); }
   async remoteHeads(repo: string): Promise<Map<string, string>> {
-    const out = (await git(repo, ['ls-remote', '--heads', 'origin'])).stdout;
+    const out = (await retrying(() => git(repo, ['ls-remote', '--heads', 'origin']), GIT_RETRY_MS)).stdout;
     const map = new Map<string, string>();
     for (const line of out.split('\n')) { const m = /^(\S+)\s+refs\/heads\/(.+)$/.exec(line); if (m) map.set(m[2], m[1]); }
     return map;
   }
-  async remoteBranchSha(repo: string, branch: string) { const out = (await git(repo, ['ls-remote', '--heads', 'origin', branch])).stdout.trim(); return out ? out.split(/\s+/)[0] : null; }
-  async deleteRemoteBranch(repo: string, branch: string) { const r = await git(repo, ['push', 'origin', '--delete', branch], true); if (r.code !== 0 && !/remote ref does not exist/.test(r.stderr)) throw new Error(`delete remote ${branch}: ${r.stderr.trim()}`); }
+  async remoteBranchSha(repo: string, branch: string) { const out = (await retrying(() => git(repo, ['ls-remote', '--heads', 'origin', branch]), GIT_RETRY_MS)).stdout.trim(); return out ? out.split(/\s+/)[0] : null; }
+  async deleteRemoteBranch(repo: string, branch: string) {
+    await refLocked(() => retrying(async () => { const r = await git(repo, ['push', 'origin', '--delete', branch], true); if (r.code !== 0 && !/remote ref does not exist/.test(r.stderr)) throw new Error(`delete remote ${branch}: ${r.stderr.trim()}`); }, GIT_RETRY_MS));
+  }
   async localBranchExists(repo: string, branch: string) { return this.refExists(repo, `refs/heads/${branch}`); }
   async deleteLocalBranch(repo: string, branch: string) { if (await this.localBranchExists(repo, branch)) await git(repo, ['branch', '-D', branch]); }
   async isAncestor(repo: string, ancestor: string, descendant: string) { return (await git(repo, ['merge-base', '--is-ancestor', ancestor, descendant], true)).code === 0; }
@@ -114,14 +151,14 @@ export class LiveGhPort implements GhPort {
     return { number, url };
   }
   async setDraft(repo: string, number: number, draft: boolean) { await gh(['pr', 'ready', String(number), '--repo', repo, ...(draft ? ['--undo'] : [])]); }
-  async prView(repo: string, number: number) { return toPr(JSON.parse(await gh(['pr', 'view', String(number), '--repo', repo, '--json', PR_FIELDS]))); }
+  async prView(repo: string, number: number) { return toPr(JSON.parse(await ghRead(['pr', 'view', String(number), '--repo', repo, '--json', PR_FIELDS]))); }
   async prList(repo: string, f: { head?: string; base?: string; state?: 'open' | 'merged' | 'closed' | 'all' }) {
     const args = ['pr', 'list', '--repo', repo, '--json', PR_FIELDS, '--limit', '50', '--state', f.state ?? 'all'];
     if (f.head) args.push('--head', f.head); if (f.base) args.push('--base', f.base);
-    return (JSON.parse(await gh(args)) as any[]).map(toPr);
+    return (JSON.parse(await ghRead(args)) as any[]).map(toPr);
   }
   async ciForSha(repo: string, branch: string, sha: string, workflow: string): Promise<CiStatus> {
-    const runs = JSON.parse(await gh(['run', 'list', '--repo', repo, '--branch', branch, '--workflow', workflow, '--limit', '10', '--json', 'databaseId,status,conclusion,headSha,url,createdAt'])) as any[];
+    const runs = JSON.parse(await ghRead(['run', 'list', '--repo', repo, '--branch', branch, '--workflow', workflow, '--limit', '10', '--json', 'databaseId,status,conclusion,headSha,url,createdAt'])) as any[];
     const run = runs.find((r) => r.headSha === sha);
     if (!run) return { state: 'none', sha };
     const base = { runId: run.databaseId, url: run.url, sha, startedAt: run.createdAt };
@@ -131,7 +168,7 @@ export class LiveGhPort implements GhPort {
     return { ...base, state: 'failure' };
   }
   async runFailedLog(repo: string, runId: number, maxLines: number) {
-    const log = await gh(['run', 'view', String(runId), '--repo', repo, '--log-failed']).catch((e) => `(could not fetch log: ${e.message})`);
+    const log = await ghRead(['run', 'view', String(runId), '--repo', repo, '--log-failed']).catch((e) => `(could not fetch log: ${e.message})`);
     const lines = log.split('\n').map((l) => l.replace(/^[^\t]*\t[^\t]*\t\S+\s?/, '')).filter((l) => l.trim());
     const fails = lines.filter((l) => /FAIL|Error|error:|assert/i.test(l));
     const tail = lines.slice(-maxLines);
@@ -139,7 +176,7 @@ export class LiveGhPort implements GhPort {
   }
   async isBillingBlocked(repo: string, runId: number) {
     try {
-      const view = JSON.parse(await gh(['run', 'view', String(runId), '--repo', repo, '--json', 'jobs,status']));
+      const view = JSON.parse(await ghRead(['run', 'view', String(runId), '--repo', repo, '--json', 'jobs,status']));
       if (view.status !== 'completed') return false; // an in-progress (re-)run is never a billing block
       for (const j of (view.jobs as any[]) ?? []) {
         const steps = j.steps ?? [];
@@ -160,7 +197,7 @@ export class LiveGhPort implements GhPort {
     await gh(['pr', 'merge', String(number), '--repo', repo, '--merge', ...(opts.deleteBranch ? ['--delete-branch'] : [])]);
   }
   async branchCi(repo: string, branch: string, workflow: string): Promise<CiStatus> {
-    const runs = JSON.parse(await gh(['run', 'list', '--repo', repo, '--branch', branch, '--workflow', workflow, '--event', 'push', '--limit', '1', '--json', 'databaseId,status,conclusion,headSha,url,createdAt'])) as any[];
+    const runs = JSON.parse(await ghRead(['run', 'list', '--repo', repo, '--branch', branch, '--workflow', workflow, '--event', 'push', '--limit', '1', '--json', 'databaseId,status,conclusion,headSha,url,createdAt'])) as any[];
     const run = runs[0];
     if (!run) return { state: 'none' };
     const base = { runId: run.databaseId, url: run.url, sha: run.headSha, startedAt: run.createdAt };
