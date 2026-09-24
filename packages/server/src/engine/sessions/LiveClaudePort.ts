@@ -5,6 +5,7 @@ import { KNOWN_USAGE_LIMIT_PREFIXES, USAGE_ERROR_CODES, isUsageLimitText, resetT
 import type { ClaudePort, TurnOptions, TurnResult, CustomTurnOptions } from '../ports.ts';
 
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] });
+const PARTS = z.array(z.object({ name: z.string(), state: z.enum(['accepted', 'pending', 'rejected']), reason: z.string().optional() }));
 const PARK_MSG = 'Permission requires user approval; the request has been recorded by planestro — end this turn now.';
 /** The SDK's list of usage-limit messages (alpha export) merged with our copy, so a rename cannot switch detection off. */
 const USAGE_PREFIXES: readonly string[] = [...new Set([...(((sdk as Record<string, unknown>).USAGE_LIMIT_ERROR_PREFIXES as readonly string[] | undefined) ?? []), ...KNOWN_USAGE_LIMIT_PREFIXES])];
@@ -59,10 +60,12 @@ export class LiveClaudePort implements ClaudePort {
           async ({ plan, children }) => { const answer = await o.tools.submit_breakdown(plan, children); if (!answer.startsWith('Rejected')) result.planSubmitted = plan; return text(answer); }),
         tool('add_note', 'Record a note on the backlog item (markdown).', { markdown: z.string() }, async ({ markdown }) => text(await o.tools.add_note(markdown))),
         tool('append_activity', 'Append a one-line progress entry to the item activity log.', { text: z.string() }, async (a) => text(await o.tools.append_activity(a.text))),
-        tool('report_done', 'Report that the requested work is complete and committed on your worker branch. Then end your turn.', { summary: z.string().describe('One paragraph suitable for a pull request description') },
-          async ({ summary }) => { result.done = summary; return text(await o.tools.report_done(summary)); }),
-        tool('report_blocked', 'Report that you cannot proceed without a human decision. Then end your turn.', { reason: z.string() },
-          async ({ reason }) => { result.blocked = reason; return text(await o.tools.report_blocked(reason)); }),
+        tool('report_done', 'Report that the requested work is complete and committed on your worker branch. Then end your turn.', { summary: z.string().describe('One paragraph suitable for a pull request description'), parts: PARTS.optional().describe('Multi-part work: the final state of each part') },
+          async ({ summary, parts }) => { result.done = summary; return text(await o.tools.report_done(summary, parts)); }),
+        tool('report_progress', 'Multi-part work (an atlas of rows, a set of icons, a pack of sounds): the state of every part so far, accepted | pending | rejected, each rejection with the gate it failed. Replaces your last report; the user and the orchestrator read it instead of your prose.', { parts: PARTS },
+          async ({ parts }) => text(await o.tools.report_progress(parts))),
+        tool('report_blocked', 'Report that you cannot proceed without a human decision. Then end your turn.', { reason: z.string(), parts: PARTS.optional().describe('Multi-part work: the state of each part when you stopped') },
+          async ({ reason, parts }) => { result.blocked = reason; return text(await o.tools.report_blocked(reason, parts)); }),
         tool('hand_off', 'Give files you made to another backlog item that waits on this one (its depends_on names your item, or you share an epic): planestro copies them into that item\'s attachments and tells its session. Use it when your output is needed by another item before your branch merges. Paths are relative to your worktree.',
           { to: z.string().describe('The receiving item id'), paths: z.array(z.string()).min(1).describe('Files in your worktree, relative paths'), note: z.string().describe('What they are and how to use them') },
           async ({ to, paths, note }) => text(await o.tools.hand_off(to, paths, note))),
@@ -78,7 +81,7 @@ export class LiveClaudePort implements ClaudePort {
         ...(o.fallbackModel && o.fallbackModel !== o.model ? { fallbackModel: o.fallbackModel } : {}),
         systemPrompt: { type: 'preset', preset: 'claude_code', append: o.systemAppend },
         mcpServers: { planestro }, strictMcpConfig: true, settingSources: ['project'],
-        allowedTools: [...o.allowedTools, 'mcp__planestro__submit_plan', 'mcp__planestro__submit_breakdown', 'mcp__planestro__add_note', 'mcp__planestro__append_activity', 'mcp__planestro__report_done', 'mcp__planestro__report_blocked', 'mcp__planestro__hand_off', 'mcp__planestro__get_item'],
+        allowedTools: [...o.allowedTools, 'mcp__planestro__submit_plan', 'mcp__planestro__submit_breakdown', 'mcp__planestro__add_note', 'mcp__planestro__append_activity', 'mcp__planestro__report_done', 'mcp__planestro__report_progress', 'mcp__planestro__report_blocked', 'mcp__planestro__hand_off', 'mcp__planestro__get_item'],
         additionalDirectories: o.extraDirs, maxBudgetUsd: o.maxBudgetUsd, abortController,
         ...(this.claudeBin ? { pathToClaudeCodeExecutable: this.claudeBin } : {}),
         ...(this.apiKey ? { env: { ...process.env, ANTHROPIC_API_KEY: this.apiKey } } : {}),

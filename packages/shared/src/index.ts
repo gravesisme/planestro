@@ -2,6 +2,7 @@ export * from './schema.ts';
 export * from './timestamps.ts';
 export * from './frontmatter.ts';
 export * from './itemfile.ts';
+export * from './parts.ts';
 export * from './promptfile.ts';
 export * from './releasefile.ts';
 export * from './rank.ts';

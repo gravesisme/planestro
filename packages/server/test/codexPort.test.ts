@@ -114,3 +114,13 @@ describe('LiveCodexPort (against a recorded fake codex)', () => {
     expect(describeEvent({ type: 'item.completed', item: { type: 'command_execution', exit_code: 2, aggregated_output: 'a\nboom' } })).toBe('  exit 2: boom');
   });
 });
+
+describe('parts in the closing JSON (f4)', () => {
+  it('parseFinal keeps a parts list and drops an empty or missing one', async () => {
+    const { parseFinal } = await import('../src/engine/sessions/LiveCodexPort.ts');
+    expect(parseFinal('{"outcome":"done","summary":"s","question":null,"hand_off":null,"parts":[{"name":"a","state":"accepted","reason":null}]}')?.parts).toEqual([{ name: 'a', state: 'accepted', reason: null }]);
+    expect(parseFinal('{"outcome":"done","summary":"s","question":null,"hand_off":null,"parts":[]}')?.parts).toBeUndefined();
+    expect(parseFinal('{"outcome":"done","summary":"s","question":null,"hand_off":null}')?.parts).toBeUndefined();
+  });
+});
+

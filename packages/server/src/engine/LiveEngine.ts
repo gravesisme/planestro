@@ -1,6 +1,6 @@
 import { join, relative, isAbsolute } from 'node:path';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
-import { serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, type BreakdownChild, type DecisionInput, type Decision, type ServerEvent, type Status } from '@planestro/shared';
+import { validateParts, partsSummary, type Part, serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, type BreakdownChild, type DecisionInput, type Decision, type ServerEvent, type Status } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import type { Ports, TurnPhase, TurnResult, TurnTools, PermissionRequest } from './ports.ts';
@@ -1324,8 +1324,10 @@ export class LiveEngine implements Engine {
       },
       add_note: async (markdown) => { const cur = getSection(s.requireItem(id).file, 'Notes'); s.mutateItem(id, [{ section: 'Notes', body: cur ? `${cur}\n\n${markdown}` : markdown }], 'engine', { commit: `${id}: worker note` }); return 'Note recorded.'; },
       append_activity: async (text) => { s.mutateItem(id, [{ activity: { actor: 'worker', text } }], 'engine'); return 'Recorded.'; },
-      report_done: async (summary) => { const cur = s.requireItem(id).file.frontmatter; s.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), done_summary: summary } } }, { activity: { actor: 'worker', text: `done: ${summary.slice(0, 300)}` } }], 'engine'); return 'Recorded. End your turn now.'; },
-      report_blocked: async (reason) => {
+      report_progress: async (parts) => this.recordParts(id, parts) ?? 'Recorded.',
+      report_done: async (summary, parts) => { const bad = parts === undefined ? undefined : this.recordParts(id, parts); const cur = s.requireItem(id).file.frontmatter; s.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), done_summary: summary } } }, { activity: { actor: 'worker', text: `done: ${summary.slice(0, 300)}` } }], 'engine'); return bad ? `Recorded, but ${bad} End your turn now.` : 'Recorded. End your turn now.'; },
+      report_blocked: async (reason, parts) => {
+        if (parts !== undefined) this.recordParts(id, parts);
         const cur = s.requireItem(id).file.frontmatter;
         if (cur.op_data?.done_summary !== undefined) { const { done_summary: _withdrawn, ...rest } = cur.op_data; s.mutateItem(id, [{ set: { op_data: rest } }], 'engine'); }
         this.block(id, 'agent_blocked', reason, 'user'); return 'Recorded. End your turn now; planestro will resume you with the answer.';
@@ -1636,6 +1638,14 @@ export class LiveEngine implements Engine {
     return 'retrying: the session is resumed';
   }
 
+  /** A worker's structured progress (f4): validated, stored on the item, summarised in Activity. Returns the problem, or undefined. */
+  private recordParts(id: string, parts: unknown): string | undefined {
+    const v = validateParts(parts);
+    if (!v.ok) return `the parts were not recorded: ${v.error}.`;
+    this.store.mutateItem(id, [{ set: { parts: v.value } }, { activity: { actor: 'worker', text: `progress: ${partsSummary(v.value)}` } }], 'engine');
+    return undefined;
+  }
+
   /** An item's caps: its own budget_usd / budget_turns / budget_tokens when set, else the project's. Each names the setting for messages. */
   private budgetOf(fm: { budget_usd?: number; budget_turns?: number; budget_tokens?: number }): { usd: number; usdKey: string; turns: number; turnsKey: string; tokens: number; tokensKey: string } {
     const c = this.store.config;
@@ -1651,13 +1661,26 @@ export class LiveEngine implements Engine {
    * p16, p24: HH-120 stopped one step from done, HH-118 crossed its token cap with a pack half drawn).
    * A raised cap starts the warning over.
    */
-  private warnOnBudget(id: string, before: { cost_usd?: number; tokens?: number; agent_turns?: number }, after: { cost_usd?: number; tokens?: number; agent_turns?: number; budget_usd?: number; budget_turns?: number; budget_tokens?: number }): void {
+  private warnOnBudget(id: string, before: { cost_usd?: number; tokens?: number; agent_turns?: number }, after: { cost_usd?: number; tokens?: number; agent_turns?: number; budget_usd?: number; budget_turns?: number; budget_tokens?: number; parts?: Part[]; op_data?: Record<string, unknown> }): void {
     const b = this.budgetOf(after);
     const crossed = (was: number, now: number, cap: number) => was / cap < BUDGET_WARN_AT && now / cap >= BUDGET_WARN_AT;
     const lines: string[] = [];
     if (crossed(before.cost_usd ?? 0, after.cost_usd ?? 0, b.usd)) lines.push(`$${(after.cost_usd ?? 0).toFixed(2)} of its $${b.usd} budget (${b.usdKey}) is spent`);
     if (crossed(before.tokens ?? 0, after.tokens ?? 0, b.tokens)) lines.push(`${(after.tokens ?? 0).toLocaleString()} of its ${b.tokens.toLocaleString()} tokens (${b.tokensKey}) are used`);
     if (crossed(before.agent_turns ?? 0, after.agent_turns ?? 0, b.turns)) lines.push(`${after.agent_turns} of its ${b.turns} turns (${b.turnsKey}) are used`);
+    // The forecast (f4): parts accepted so far against what they cost projects the whole. Said once per cap.
+    const parts = after.parts ?? [];
+    const accepted = parts.filter((p) => p.state === 'accepted').length;
+    if (accepted > 0 && accepted < parts.length) {
+      const key = `${b.usd}/${b.tokens}`;
+      const spentUsd = after.cost_usd ?? 0, spentTok = after.tokens ?? 0;
+      const projUsd = spentUsd / accepted * parts.length, projTok = spentTok / accepted * parts.length;
+      const over = (spentUsd > 0 && projUsd > b.usd) || (spentTok > 0 && projTok > b.tokens);
+      if (over && after.op_data?.parts_forecast_warned !== key) {
+        lines.push(`at this rate the remaining parts will not fit: ${accepted} of ${parts.length} accepted so far${spentUsd > 0 ? ` for $${spentUsd.toFixed(2)}, all ${parts.length} project to ~$${projUsd.toFixed(0)} against $${b.usd}` : ''}${spentTok > 0 ? ` for ${spentTok.toLocaleString()} tokens, all ${parts.length} project to ~${Math.round(projTok).toLocaleString()} against ${b.tokens.toLocaleString()}` : ''}`);
+        this.store.mutateItem(id, [{ set: { op_data: { ...(after.op_data ?? {}), parts_forecast_warned: key } } }], 'engine');
+      }
+    }
     if (!lines.length) return;
     this.store.mutateItem(id, [{ activity: { actor: 'app', text: `budget warning: ${lines.join('; ')}. Raise it on the item page if the work is worth it, before it stops.` } }], 'engine');
     this.note('warn', `${id}: ${lines.join('; ')}`);

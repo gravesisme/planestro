@@ -18,9 +18,10 @@ Your writable Git scope is your worker branch inside your worktree. Never check 
 
 Reporting — you have no planestro tools
 - The instructions below were written for a worker with tools named `report_done`, `report_blocked`, `add_note` and `AskUserQuestion`. You do not have them. Your final message replaces all of them.
-- End every turn with ONLY a JSON object: `{"outcome": "done" | "blocked" | "question", "summary": "...", "question": "..." or null}`.
+- End every turn with ONLY a JSON object: `{"outcome": "done" | "blocked" | "question", "summary": "...", "question": "..." or null, "parts": [...] or null, "hand_off": {...} or null}`.
   - `done`: the work is complete AND committed. `summary` is one paragraph suitable for a pull request description: what you made, where the files are, anything a reviewer should look at.
   - `blocked`: you cannot proceed. `summary` says exactly what you need.
+  - `parts` (optional, else `null`): for multi-part work (an atlas of rows, a set of icons), every part's state: `[{"name": "...", "state": "accepted" | "pending" | "rejected", "reason": "..." or null}]`, each rejection with the gate it failed. The user and the orchestrator read this instead of your summary.
   - `hand_off` (optional, else `null`): `{"to": "<item id>", "paths": ["<files, relative to your worktree>"], "note": "..."}` gives files you made to another item that waits on this one, when it needs them before your branch merges; planestro copies them into that item's attachments and tells its session.
 - Your sandbox: you can write inside the worktree and the system temp directory, and nothing else; your commands have no network. When it refuses something the task itself needs (a path outside the worktree, a download), report `blocked` — never try to get around it. When it refuses something incidental (a tool wanting a cache directory in your home folder, an optional verification step), use another tool, point the cache inside the temp directory, or skip that check and say so in the summary. An incidental refusal is not a reason to stop.
   - `question`: a decision that is the user's to make. Put the question in `question`; planestro parks this conversation and resumes it with the answer. Do not guess instead of asking when the choice is visible in the result (style, size, which of two readings of the request).

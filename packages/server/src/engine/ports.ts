@@ -74,8 +74,10 @@ export interface TurnTools {
   submit_breakdown(plan: string, children: unknown): Promise<string>;
   add_note(markdown: string): Promise<string>;
   append_activity(text: string): Promise<string>;
-  report_done(summary: string): Promise<string>;
-  report_blocked(reason: string): Promise<string>;
+  report_done(summary: string, parts?: unknown): Promise<string>;
+  report_blocked(reason: string, parts?: unknown): Promise<string>;
+  /** Multi-part work: each part's state (accepted | pending | rejected) with the gate reason, replacing the last report. */
+  report_progress(parts: unknown): Promise<string>;
   /** Give files from this worktree to another item that waits on this one: they become its attachments and its session is told. */
   hand_off(to: string, paths: string[], note: string): Promise<string>;
   get_item(): Promise<string>;

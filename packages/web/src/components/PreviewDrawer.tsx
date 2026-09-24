@@ -9,6 +9,7 @@ import { ReviewPanel } from './ReviewPanel.tsx';
 import { BlockedPanel } from './BlockedPanel.tsx';
 import { AwaitingPanels } from './AwaitingPanels.tsx';
 import { DecisionCard } from './DecisionCard.tsx';
+import { PartsStrip } from './PartsStrip.tsx';
 import { decisionOf } from '@planestro/shared';
 
 const LIVE_STATUSES = ['PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW', 'MERGED'];
@@ -51,6 +52,7 @@ export function PreviewDrawer({ id, onClose }: { id: string; onClose: () => void
         {fm.pr ? <> · <a href={`https://github.com/${state!.config.code_repo.github}/pull/${fm.pr}`} target="_blank" rel="noreferrer">PR #{fm.pr}</a>{fm.ci_result ? ` (CI ${fm.ci_result})` : ''}</> : null}
       </p>
       <DecisionCard item={item} />
+      {fm.parts?.length ? <PartsStrip parts={fm.parts} compact /> : null}
       <BlockedPanel item={item} compact />
       <AwaitingPanels item={item} />
       {fm.awaiting === 'review' ? <ReviewPanel item={item} compact /> : <QuickActions item={item} />}

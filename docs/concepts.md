@@ -90,6 +90,15 @@ An epic's children can be written by hand, or proposed by the planner: see
 - **PAUSE AUTOMATION** — the global lever: running steps finish, nothing new starts,
   across restarts.
 
+## Parts
+
+Work that is really N parts (an atlas of eight rows, a set of icons, a pack of sounds) is reported
+as parts: the worker calls `report_progress` (or gives `parts` to `report_done` / `report_blocked`,
+or in Codex's closing JSON) with every part's state, `accepted` | `pending` | `rejected`, and the
+gate a rejection failed. The item page and the board card show the strip, the orchestrator's packets
+quote it instead of summarising prose, and when the parts accepted so far project the whole past
+the item's budget the Activity log says so once, before the cap.
+
 ## The orchestrator
 
 A separate Claude conversation that wakes on events that need judgment — a plan to look
