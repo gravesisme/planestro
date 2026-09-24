@@ -53,6 +53,8 @@ export interface OrchestratorHooks {
   recreateWorktree(id: string, message?: string): Promise<string>;
   /** Re-run the step a transient failure stopped (a GitHub 5xx, a network hiccup). */
   retryOp(id: string): Promise<string>;
+  /** Open the pull request for work already committed on a clean worktree ahead of its base, clearing any stop (LiveEngine.finishFromWorktree). */
+  finishFromWorktree(id: string): Promise<string>;
   /** Park a structured decision card on a stopped item for the user. */
   askUserDecision(id: string, input: DecisionInput): string;
   /** Take a decision card off an item that no longer needs one (the stop is being handled another way). */
@@ -298,6 +300,7 @@ export class Orchestrator {
       'Resolve (preferred) with one of:',
       '- unblock_item — the fix is an instruction to the session: resubmit a plan it already wrote (an MCP "Stream closed" ate submit_plan), carry on after a hiccup, use what the brief already says. Pass the message it should act on.',
       '- answer_question — the worker asked something the brief, plan, notes or project rules already answer.',
+      '- finish_from_worktree — the work is committed on a clean worktree ahead of its base but the item stopped before its pull request (over budget after committing, a size gate, a commit made for a runner that could not): open the pull request from there.',
       '- retry_op — a transient failure: a GitHub 5xx, an SSH or network hiccup, a timeout. Not for anything that failed the same way twice.',
       '- set_item_fields — a wrong parent/base/dependency/implementer/fallback setting (e.g. an epic child created without its parent, so it was cut from the wrong base). Then recreate_worktree if the worktree was cut from the wrong base.',
       '- recreate_worktree — a missing worktree (worktree_missing after a fetch race) or one cut from the wrong base. It refuses if the worktree or branch holds any work, re-runs setup, then unblocks with your message.',
@@ -359,6 +362,7 @@ export class Orchestrator {
           return `filed ${it.id} (NOT_YET_SUBMITTED, for the maintainer). Note on the stopped item what it waits for; do not put this on a card.`;
         } catch (e) { return `failed: ${(e as Error).message}`; }
       } },
+      { name: 'finish_from_worktree', description: "The work is committed on the item's branch but the item could not reach a pull request (over budget, a size gate cleared, a runner that could not commit and a person committed for it): open the pull request from the worktree as planestro would have. Refuses a dirty tree or a branch with nothing ahead of its base.", schema: idArg, handler: async (a) => this.hooks.finishFromWorktree(String(a.id)) },
       { name: 'ask_user', description: 'Ask the user something; the answer arrives as a later wake. Returns immediately.', schema: { question: z.string(), item: z.string().optional() }, handler: async (a) => { const entry = store.journal.append({ type: 'orchestrator.question', item: a.item ? String(a.item) : undefined, actor: 'orchestrator', data: { question: String(a.question) } }); if (a.item) store.mutateItem(String(a.item), [{ activity: { actor: 'orchestrator', text: `question for you: ${a.question}` } }], 'orchestrator'); this.emit({ type: 'engine.log', level: 'warn', message: `[orchestrator asks] ${a.question}` }); return `recorded at ${entry.ts}; the user will see it in the console`; } },
       { name: 'resume_after', description: "Park a stopped item until other items merge, then resume its session with `message`: for a worker that needs what another item delivers (a flag, an asset) before it can go on. It stops needing the user; planestro rebases its branch onto the base first. Use it instead of unblocking into a wait.", schema: { ...idArg, items: z.array(z.string()).min(1), message: z.string() }, handler: async (a) => this.hooks.resumeAfter(String(a.id), a.items as string[], String(a.message)) },
       { name: 'reply_to_user', description: 'Answer the user in the planestro chat. In a user_message wake this is the only thing they read: say what you found and what you did, briefly. Call it once, near the end of the wake.', schema: { text: z.string(), item: z.string().optional() }, handler: async (a) => { store.journal.append({ type: 'orchestrator.reply', item: a.item ? String(a.item) : undefined, actor: 'orchestrator', data: { text: String(a.text) } }); return 'sent to the chat'; } },
