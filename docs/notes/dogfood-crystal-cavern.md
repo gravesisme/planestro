@@ -328,6 +328,56 @@ HH-122 was on skip_merge for the designer's review. I sent it the designer's fou
 
 **Fix.** When a held item's branch moves, run the sync step (rebase onto base plus push) without the merge, so the PR and CI reflect the fix and the reviewer sees fresh captures. Never set ci_result: pending without a push that will produce a CI run. Surface 'held, local commits not pushed' on the item.
 
+### p33 — Game CI (not planestro): atlas_layout_check's 80 ms wall-clock assertion flakes on the 2-vCPU runner
+
+*bug · open*
+
+HH-122's merge CI failed only on atlas_layout_check: 'second Ruins build stays cheap: 80 ms' (and 86 ms), against an `elapsed < 80` limit whose own comment says ~8 ms headless on a Mac. Nothing in the greybox touches the Ruins. The worker's fix turn also hit the $0.5 per-turn budget and blocked the item as turn_error, so one flake cost a block plus a manual rerun.
+
+**Evidence.** run 35852982291 (e7ccce3d), 352/353 passed; tools/atlas_layout_check.gd:32. Rerun of the failed job started 07:3x.
+
+**Fix.** Game side: compare against the first (uncached) build as a ratio (for example second < first × 0.5), or raise the absolute bound well clear of CI noise; or run the check in the serial slow class. planestro side: on ci_red, re-run the failed job once before waking a worker turn when the failure is a known-flaky check (or when the failing check doesn't touch the diff).
+
+### p34 — Worktree setup races the merge op's fetch; unblock doesn't retry setup, so the item re-blocks as worktree_missing
+
+*bug · open*
+
+HH-122's merge moved origin/feature/crystal-cavern in the same second that HH-124's admission ran `git fetch --prune`, so the fetch failed with 'cannot lock ref … is at 5850b31 but expected d81cc47' and HH-124 blocked as engine_error. The orchestrator correctly called it transient. But unblocking doesn't re-run worktree creation, so the item re-blocked as worktree_missing, and a user can't move it back to QUEUED. I created the worktree and branch by hand, ran the after_worktree_create hook, and unblocked with a message.
+
+**Evidence.** HH-124 07:49:33–34 engine_error, 07:5x worktree_missing; 'User may not move a worker item from PLAN_IN_PROGRESS to QUEUED'.
+
+**Fix.** Serialize the engine's git fetches in the main checkout (one mutex for fetch and merge ops), and retry a 'cannot lock ref' fetch once. On unblock of an item with no worktree, re-run worktree creation plus hooks instead of blocking worktree_missing. Or allow PLAN_IN_PROGRESS → QUEUED when there's no worktree.
+
+### p35 — planestro MCP 'Stream closed' mid-turn turns a finished plan into no_plan
+
+*bug · open*
+
+HH-125's planner wrote a full 215-line plan, but its submit_plan call (and a question) failed with 'Stream closed', so the planestro MCP connection had dropped. The turn ended 'success' and the engine blocked it as no_plan. The orchestrator guessed a budget cap, which was wrong. The plan survived only because the planner saved it to ~/.claude/plans/. Cost of the lost turn: $8.93.
+
+**Evidence.** HH-125 07:49:50–07:54:15: op.end outcome ok, subtype success, cost 8.93; console: "the `submit_plan` call failed with 'Stream closed'". AGAIN HH-127 12:26: submit_plan failed twice with Stream closed, the plan was saved to ~/.claude/plans/, and the item blocked as no_plan. It recurs, and both times it came late in a long planning turn.
+
+**Fix.** Detect MCP tool errors (Stream closed) in the session stream and reconnect or retry the tool call; on no_plan, scan the final message and the SDK plan file for a plan and offer 'submit this plan' instead of a bare block; include the tool error in the block reason, so the orchestrator doesn't guess.
+
+### p36 — Over-budget items get $0.50 fix turns that always fail, then strand at ci_result 'unknown'
+
+*bug · open*
+
+HH-125 ($274 spent against a $250 cap) hit a rebase conflict when the designer released its hold. The engine handed the conflict to a fix turn with maxBudgetUsd = max(0.5, cap minus spent) = $0.50. The worker resolved the rebase and filed report_done, but the turn ended error_max_budget_usd, so afterWorkTurn never ran. The item was left at ci_result 'unknown' with no op, and a messageless unblock only ticks, so it sat idle until my stall detector flagged it. The same $0.50 floor killed HH-122's CI-flake turn.
+
+**Evidence.** HH-125 10:02:25 conflict then fix turn; 10:12:25 report_done and BLOCKED turn_error; 10:22:40 unblocked, then idle. LiveEngine.ts:471 (budget floor) and :693 (ci_result unknown). Worked around by pushing the resolved branch myself and merging PR #317 by hand on green.
+
+**Fix.** (1) When an item is over budget, block with 'over_budget' before starting a turn, naming the cap, instead of launching a $0.50 turn. (2) After a turn that errored but already called report_done or moved the branch, still run the re-check. (3) Make unblock re-enter the merge pipeline for an IN_REVIEW item at ci_result 'unknown', as restart recovery already does. (4) Allow ci_result in PATCH, or add a 're-check CI' action.
+
+### p37 — Held items never see their CI result: ci_result stays 'pending' while GitHub is red
+
+*bug · open*
+
+Items on skip_merge sit at ci_result 'pending' indefinitely. The CI poll only runs inside the merge op, which a hold skips. At 18:00, PR #325 (HH-146) and PR #329 (HH-145) were both red on GitHub (a reaper_endgame_check timeout flake, and a real break where HH-148's new check used the old cart API) while planestro showed 'pending'. So no fix turn started, and the orchestrator and board both implied that things were fine. Combined with p32 (held items' fix commits never pushed), a held item is effectively invisible to the pipeline.
+
+**Evidence.** At 18:00: HH-146 and HH-145 showed ci_result pending and skip_merge true; gh pr checks 325/329 were fail. Fixed by hand: re-ran #325's flaky job, and sent HH-145 the failing test.
+
+**Fix.** Poll CI for held items too (read-only: update ci_result and wake the fix path on red without merging). Show 'held · CI red' on the board card. When an item is released, re-check CI before merging, and never trust a stale 'green'.
+
 ## Feature proposals (for review)
 
 ### f1 — Feature: a stall detector
@@ -361,3 +411,18 @@ An art item like a boss atlas is really N parts (eight rows here), each accepted
 **Evidence.** HH-118: 4/8 rows accepted at 1.54M tokens; finished at ~2.78M after a raise to 2.5M.
 
 **Proposal.** For your review: a `parts` field on the report tools and items, a progress strip on the item page and board card, and a forecast warning at 80% of the budget.
+
+### f5 — Feature: an audio-asset path for workers (ElevenLabs), like Codex Art is for images
+
+HH-125 blocked because no worker can generate audio. Today a human (or this session) runs ElevenLabs, publishes an audition page, and hands picks back by message. planestro could treat audio like art: an 'audio' runner or tool that the worker calls with prompts (cost-capped per item, like budget_tokens_per_item), writing masters to a declared folder; the item then parks on an 'audition' hold that renders the candidates with pick buttons on the item page, and resumes the worker with the picks as structured data.
+
+**Evidence.** HH-125 08:26 agent_blocked on the voice set; d25; the per-boss SFX recipe (tools/build_boss_sfx.py + audition artifact) done by hand for the sixth time.
+
+**Proposal.** For your review: (1) a sound-effects runner behind a per-item spend cap; (2) an 'audition' review hold with a candidate grid on the item page; (3) picks delivered to the worker as JSON. Keep it project-neutral: prompts, roles and the build command come from the item and the project's config.
+
+## Shipped since these notes began
+
+- Model fallback (Fable 5 → Opus 5.5), per item and for the orchestrator: PR #9.
+- Permission matching for env-prefixed commands: PR #10.
+- Phone photo attachments (file picker, HEIC to JPEG, shrink to the limit): PR #14.
+- Needs-you triage (the orchestrator resolves blocks itself or files a plain decision card): PR #15. It addresses much of p12, p28, p30, p34 and p35 and f1/f2 in spirit; re-check each against it.
