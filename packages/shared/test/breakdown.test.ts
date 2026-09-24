@@ -3,7 +3,7 @@ import { validateBreakdown, dependencyOrder, type BreakdownChild } from '../src/
 import { findTransition, applyTransition } from '../src/transitions.ts';
 import type { ItemFrontmatter } from '../src/schema.ts';
 
-const models = [{ id: 'opus-5' }, { id: 'codex-art' }];
+const models = [{ id: 'opus-5' }, { id: 'codex-art', runner: 'codex' as const }];
 const cats = ['Feature', 'Bug'];
 const child = (over: Partial<BreakdownChild> = {}): BreakdownChild => ({ title: 'Icon', description: 'Draw the 256px icon at assets/icon.png.', implementer: 'codex-art', ...over });
 
@@ -20,6 +20,10 @@ describe('epic breakdowns', () => {
     expect(validateBreakdown([child({ depends_on: [0] })], models, cats)).toMatch(/depends on itself/);
     expect(validateBreakdown([child({ depends_on: [1] }), child({ depends_on: [2] }), child({ depends_on: [0] })], models, cats)).toMatch(/cycle/);
     expect(validateBreakdown(Array.from({ length: 25 }, () => child()), models, cats)).toMatch(/too large/);
+    expect(validateBreakdown([child({ planner: 'opus-5', hold_for_review: true })], models, cats)).toBeNull();
+    expect(validateBreakdown([child({ planner: 'codex-art' })], models, cats)).toMatch(/planner "codex-art", which is not a model that can plan: opus-5/);
+    expect(validateBreakdown([child({ planner: 'nobody' })], models, cats)).toMatch(/not a model that can plan/);
+    expect(validateBreakdown([child({ hold_for_review: 'yes' as unknown as boolean })], models, cats)).toMatch(/true or false/);
   });
   it('orders children so every dependency is created before what waits on it', () => {
     const order = dependencyOrder([child({ depends_on: [2] }), child(), child({ depends_on: [1] })]);

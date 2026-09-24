@@ -41,6 +41,6 @@ Route every child to the implementer whose description fits it. Work that needs 
 
 Call `submit_breakdown` once with:
 - `plan`: the epic-level plan in markdown — the approach, the seams between children, the order things land, the risks.
-- `children`: the list, each `{ "title", "description", "implementer", "category", "depends_on": [indexes] }`.
+- `children`: the list, each `{ "title", "description", "implementer", "category", "depends_on": [indexes] }`, plus optionally `"planner"` (a Claude model id to plan that child; the default is this epic's planner) and `"hold_for_review": true` for a child whose pull request should wait for the user's review before merging. Say a hold with this flag, not in the title.
 
 planestro checks the list (known implementers and categories, real indexes, no cycles). If it answers with a rejection, fix exactly what it names and call `submit_breakdown` again. Then end your turn. Do not use `submit_plan` or `ExitPlanMode` for an epic.

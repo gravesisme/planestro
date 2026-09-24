@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { validateBreakdown, type BreakdownChild } from '@planestro/shared';
+import { validateBreakdown, canPlan, type BreakdownChild } from '@planestro/shared';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 
@@ -21,6 +21,7 @@ export function BreakdownPanel({ item }: { item: ItemView }) {
   const patch = (i: number, p: Partial<BreakdownChild>) => setChildren((cs) => cs.map((c, k) => k === i ? { ...c, ...p } : c));
   const remove = (i: number) => setChildren((cs) => cs.filter((_c, k) => k !== i).map((c) => ({ ...c, depends_on: (c.depends_on ?? []).filter((d) => d !== i).map((d) => d > i ? d - 1 : d) })));
   const runnerOf = (id: string) => models.find((m) => m.id === id)?.runner ?? 'claude';
+  const planners = models.filter((m) => canPlan(m));
   return (
     <div className="approval">
       <h2 style={{ margin: '0 0 8px' }}><span>Proposed breakdown · {children.length} {children.length === 1 ? 'child' : 'children'}</span></h2>
@@ -34,6 +35,8 @@ export function BreakdownPanel({ item }: { item: ItemView }) {
               <input className="grow" value={c.title} onChange={(e) => patch(i, { title: e.target.value })} />
               <select value={c.implementer} onChange={(e) => patch(i, { implementer: e.target.value })} title={models.find((m) => m.id === c.implementer)?.description}>{models.map((m) => <option key={m.id} value={m.id}>{m.label}{(m.runner ?? 'claude') !== 'claude' ? ` (${m.runner})` : ''}</option>)}</select>
               <select value={c.category ?? item.frontmatter.category} onChange={(e) => patch(i, { category: e.target.value })}>{state.config.categories.map((x) => <option key={x}>{x}</option>)}</select>
+              <select value={c.planner ?? ''} title="Who plans this child" onChange={(e) => patch(i, { planner: e.target.value || undefined })}><option value="">planned by {planners.find((m) => m.id === item.frontmatter.planner)?.label ?? item.frontmatter.planner} (epic's)</option>{planners.map((m) => <option key={m.id} value={m.id}>planned by {m.label}</option>)}</select>
+              <label className="small" title="Its pull request waits for your review before it merges"><input type="checkbox" checked={!!c.hold_for_review} onChange={(e) => patch(i, { hold_for_review: e.target.checked || undefined })} /> hold for review</label>
               <button className="small" onClick={() => setOpen(open === i ? null : i)}>{open === i ? 'hide brief' : 'brief'}</button>
               <button className="small danger" title="Drop this child" onClick={() => remove(i)}>×</button>
             </div>

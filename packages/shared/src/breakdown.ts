@@ -1,13 +1,23 @@
-import type { ModelDef } from './schema.ts';
+import { canPlan, type ModelDef } from './schema.ts';
+
+/** What a breakdown needs to know of a model: its id, and whether it can plan. */
+type ModelRef = Pick<ModelDef, 'id'> & Partial<Pick<ModelDef, 'runner' | 'external'>>;
+const plans = (m: ModelRef) => canPlan({ runner: m.runner ?? 'claude', external: m.external ?? false });
 
 /** One proposed child of an epic. `depends_on` holds indexes into the same list, not item ids: the items do not exist yet. */
-export interface BreakdownChild { title: string; description: string; implementer: string; category?: string; depends_on?: number[] }
+export interface BreakdownChild {
+  title: string; description: string; implementer: string; category?: string; depends_on?: number[];
+  /** Who plans the child; omitted, the epic's own planner does. Must be a model that can plan. */
+  planner?: string;
+  /** The child's pull request waits for the user's review before it merges (review_hold). */
+  hold_for_review?: boolean;
+}
 
 /**
  * Whether a proposed breakdown can be turned into items. Code decides this, not the planner and not
  * the user: a rejection goes straight back to the planner with the reason. Returns the first problem.
  */
-export function validateBreakdown(children: unknown, models: readonly Pick<ModelDef, 'id'>[], categories: readonly string[]): string | null {
+export function validateBreakdown(children: unknown, models: readonly ModelRef[], categories: readonly string[]): string | null {
   if (!Array.isArray(children) || children.length === 0) return 'a breakdown needs at least one child';
   if (children.length > 24) return `a breakdown of ${children.length} children is too large to review; group the work into at most 24`;
   const ids = new Set(models.map((m) => m.id));
@@ -16,6 +26,11 @@ export function validateBreakdown(children: unknown, models: readonly Pick<Model
     if (!c || typeof c.title !== 'string' || !c.title.trim()) return `child ${i} has no title`;
     if (typeof c.description !== 'string' || c.description.trim().length < 20) return `${at} needs a description that stands on its own: its worker sees nothing else`;
     if (typeof c.implementer !== 'string' || !ids.has(c.implementer)) return `${at} names implementer "${c.implementer}", which is not one of: ${[...ids].join(', ')}`;
+    if (c.planner !== undefined) {
+      const p = models.find((m) => m.id === c.planner);
+      if (!p || !plans(p)) return `${at} names planner "${c.planner}", which is not a model that can plan: ${models.filter(plans).map((m) => m.id).join(', ')}`;
+    }
+    if (c.hold_for_review !== undefined && typeof c.hold_for_review !== 'boolean') return `${at} has hold_for_review ${JSON.stringify(c.hold_for_review)}; it is true or false`;
     if (c.category !== undefined && !categories.includes(c.category)) return `${at} names category "${c.category}", which is not one of: ${categories.join(', ')}`;
     for (const d of c.depends_on ?? []) {
       if (!Number.isInteger(d) || d < 0 || d >= children.length) return `${at} depends on index ${d}, which is not a child of this breakdown (0–${children.length - 1})`;

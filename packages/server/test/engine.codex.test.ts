@@ -294,3 +294,38 @@ describe('a turn queued for its runner slot (p9)', () => {
   });
 });
 
+
+describe('planners and holds in a breakdown (p3, p6, p7)', () => {
+  it('a child can name its planner and a hold; otherwise it is planned by the epic\'s planner', async () => {
+    const { store, engine } = await setup();
+    const epic = store.createItem({ title: 'Tide chart view', description: 'A chart of the day\'s tide with its own icon and header art.', kind: 'epic', category: 'Game', planner: 'opus-5' });
+    await engine.start();
+    await engine.planEpic(epic.id);
+    await waitFor(() => fmOf(store, epic.id).awaiting === 'breakdown_approval');
+    const proposed = fmOf(store, epic.id).awaiting_data!.children as any[];
+    await expect(engine.approveBreakdown(epic.id, [{ ...proposed[0], planner: 'codex-art' }])).rejects.toThrow(/not a model that can plan/);
+    const created = await engine.approveBreakdown(epic.id, [{ ...proposed[0], hold_for_review: true, planner: 'fable-5', depends_on: [] }, { ...proposed[2], depends_on: [0] }], { queue: false });
+    const [art, code] = created.map((id) => fmOf(store, id));
+    expect(art.planner).toBe('fable-5');
+    expect(art.review_hold).toBe(true);
+    expect(code.planner).toBe('opus-5');      // the epic's planner, not the project default
+    expect(code.review_hold).toBeUndefined();
+  });
+
+  it("a planner is told who implements the plan, and not to do a non-Claude runner's work itself", async () => {
+    const prompts: Record<string, string> = {};
+    const spy = (world: FakeWorld) => { const inner = new DryRunClaudePort(world); return { async runTurn(o: any): Promise<TurnResult> { if (o.phase === 'plan') prompts[o.itemId] = o.prompt; return inner.runTurn(o); }, runCustomTurn: inner.runCustomTurn.bind(inner) }; };
+    const { store, engine } = await setup({ claude: spy });
+    const art = store.createItem({ title: 'Icon', description: 'a 512px icon', implementer: 'codex-art' });
+    const code = store.createItem({ title: 'Wire it', description: 'use the icon', implementer: 'opus-5' });
+    store.transition(art.id, 'QUEUED', 'user'); store.transition(code.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => Boolean(prompts[art.id] && prompts[code.id]));
+    expect(prompts[art.id]).toContain('## Who implements this plan');
+    expect(prompts[art.id]).toContain('Codex Art (`codex-art`, codex runner) carries out the approved plan, not you. all raster art');
+    expect(prompts[art.id]).toContain('do not plan to do its work yourself');
+    expect(prompts[code.id]).toContain('(`opus-5`, claude runner)');
+    expect(prompts[code.id]).not.toContain('do not plan to do its work yourself');
+  });
+});
+

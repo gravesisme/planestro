@@ -519,7 +519,7 @@ export class LiveEngine implements Engine {
     else if (!(await this.runSetupHooks(id, dir, opId))) return;
     this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }], 'engine');
     this.store.journal.end(opId, id, 'ok');
-    await this.runTurnFor(id, 'plan', this.withDelivered(id, 'plan-item', this.store.renderPrompt('plan-item', this.store.requireItem(id))), [], [], { opener: true });
+    await this.runTurnFor(id, 'plan', this.withImplementer(id, this.withDelivered(id, 'plan-item', this.store.renderPrompt('plan-item', this.store.requireItem(id)))), [], [], { opener: true });
   }
 
   async approvePlan(id: string, notes?: string, by: 'user' | 'orchestrator' = 'user'): Promise<void> {
@@ -663,7 +663,7 @@ export class LiveEngine implements Engine {
     // opening turn died before the agent heard the task, or the thread was lost — a fresh conversation
     // gets the phase's full prompt first, and the resume note after it.
     if (!resumeId && !opts.opener && (phase === 'plan' || phase === 'implement')) {
-      const opener = phase === 'plan' ? this.withDelivered(id, 'plan-item', this.store.renderPrompt('plan-item', item)) : this.withDelivered(id, 'implement-plan', this.store.renderPrompt('implement-plan', item, { approval_notes: String(fm.op_data?.approval_notes ?? '').trim() || '(none)' }));
+      const opener = phase === 'plan' ? this.withImplementer(id, this.withDelivered(id, 'plan-item', this.store.renderPrompt('plan-item', item))) : this.withDelivered(id, 'implement-plan', this.store.renderPrompt('implement-plan', item, { approval_notes: String(fm.op_data?.approval_notes ?? '').trim() || '(none)' }));
       prompt = `${opener}\n\n---\n\n${prompt}`;
       this.store.mutateItem(id, [{ activity: { actor: 'app', text: `no ${def.label} conversation to resume: starting a fresh one with the full ${phase} prompt` } }], 'engine');
     }
@@ -1301,7 +1301,8 @@ export class LiveEngine implements Engine {
     const ids = new Map<number, string>();
     for (const i of dependencyOrder(children)) {
       const c = children[i];
-      const child = this.store.createItem({ title: c.title.trim(), description: c.description.trim(), category: c.category ?? fm.category, implementer: c.implementer, allow_model_fallback: fm.allow_model_fallback === true, parent: id, depends_on: (c.depends_on ?? []).map((d) => ids.get(d)!) }, 'user');
+      // A child is planned by the model the breakdown names, else by the epic's own planner (not the project default: an outage of that one should not reach every child).
+      const child = this.store.createItem({ title: c.title.trim(), description: c.description.trim(), category: c.category ?? fm.category, implementer: c.implementer, planner: c.planner ?? fm.planner, allow_model_fallback: fm.allow_model_fallback === true, parent: id, depends_on: (c.depends_on ?? []).map((d) => ids.get(d)!), ...(c.hold_for_review ? { extra: { review_hold: true } } : {}) }, 'user');
       ids.set(i, child.id);
     }
     const created = children.map((_c, i) => ids.get(i)!);
@@ -1919,6 +1920,21 @@ export class LiveEngine implements Engine {
     if (!refs) return undefined;
     const files = (await this.ports.git.changedFiles(refs.cwd, refs.base, refs.head)).slice(0, 200);
     return Promise.all(files.map(async (f) => ({ ...f, ...(f.change !== 'deleted' && /\.png$/i.test(f.path) ? pngSize(await this.ports.git.readBlob(refs.cwd, refs.head, f.path)) : {}) })));
+  }
+
+  /**
+   * Who will carry the plan out, said in code rather than in plan-item (data dirs keep their own
+   * copies of it): a planner writing for an image-generating runner asked how it was meant to draw images
+   * itself, and proposed drawing them procedurally (HH-114).
+   */
+  private withImplementer(id: string, rendered: string): string {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    const impl = this.store.config.models.find((m) => m.id === fm.implementer);
+    if (!impl || fm.kind === 'epic') return rendered;
+    const runner = impl.runner ?? 'claude';
+    const lines = [`## Who implements this plan`, '', `${impl.label} (\`${impl.id}\`, ${runner} runner) carries out the approved plan, not you.${impl.description ? ` ${impl.description}` : ''}`];
+    if (fm.planner !== fm.implementer) lines.push('', `You are writing the brief it follows. Plan for what ${impl.label} can do${runner === 'claude' ? '' : ', and do not plan to do its work yourself (for example drawing images in code because you cannot generate them)'}: name the files it must produce, the checks that prove them, and anything it must not touch.`);
+    return `${rendered}\n\n${lines.join('\n')}`;
   }
 
   /** A project whose copy of a template predates `{{dependencies.delivered}}` still gets the facts, appended. */

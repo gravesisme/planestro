@@ -47,17 +47,24 @@ description, the categories, and the rules that keep children mergeable:
 - an art brief names the exact path, pixel size, format and the look to match; each child's
   description is a complete brief, because its worker sees nothing else.
 
-It hands the list in with `submit_breakdown`. **Code validates it** — known implementers and
-categories, real indexes, no cycles, a sane size. A bad list is answered with the reason and
+It hands the list in with `submit_breakdown`. A child may also name its **planner** (any model
+that can plan; by default the epic's own planner plans it, so an outage of the project default
+does not reach every child) and ask to be **held for review** (`hold_for_review`: its pull
+request waits for your look before it merges). **Code validates it** — known implementers,
+planners and categories, real indexes, no cycles, a sane size. A bad list is answered with the reason and
 the planner fixes it; you only ever see a list that can be created.
 
 ## 3. Edit and approve
 
 The item parks on `awaiting: breakdown_approval`. Retitle, re-route a child to another
-implementer, rewrite a brief, drop or add a child, fix what waits on what — the same
+implementer or planner, hold it for review, rewrite a brief, drop or add a child, fix what waits on what — the same
 validation runs as you type. **Approve & create** makes exactly the items on screen, under
 the epic, in dependency order; removes the planning checkout; opens the integration branch;
 and (by default) queues them. Only you can approve a breakdown: the orchestrator cannot.
+
+When a child's planner is not its implementer, its planning prompt ends with **who implements
+this plan**, from that model's label, runner and description, so a Claude planner writes a brief for
+an image model instead of planning to draw the images itself.
 
 ## 4. Art is drawn, then reviewed by eye
 
