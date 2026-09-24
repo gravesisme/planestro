@@ -1,0 +1,64 @@
+import { describe, it, expect } from 'vitest';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { LiveGitPort, refLocked, retrying, TRANSIENT } from '../src/engine/live-ports.ts';
+import { git, sleep } from './helpers.ts';
+
+describe('transient git and gh failures (p30, p34)', () => {
+  it('knows a retryable message from a real failure', () => {
+    for (const m of [
+      "git fetch --prune origin failed in /r: error: cannot lock ref 'refs/remotes/origin/feature/x': is at 5850b31 but expected d81cc47",
+      'gh pr view 306 failed: Get "https://api.github.com/graphql": net/http: TLS handshake timeout',
+      'gh pr view 306 failed: dial tcp 140.82.112.6:443: i/o timeout',
+      'git push failed: fatal: unable to access \'https://github.com/a/b/\': Could not resolve host: github.com',
+      'gh run list failed: HTTP 502: Bad Gateway',
+    ]) expect(TRANSIENT.test(m), m).toBe(true);
+    for (const m of [
+      'git rebase failed: CONFLICT (content): Merge conflict in a.ts',
+      'git push failed: ! [rejected] x -> x (stale info)',
+      'gh pr view 9 failed: GraphQL: Could not resolve to a PullRequest with the number of 9.',
+    ]) expect(TRANSIENT.test(m), m).toBe(false);
+  });
+
+  it('retries a transient failure after each delay, and gives up after the last', async () => {
+    const waits: number[] = [];
+    let calls = 0;
+    const flaky = async () => { calls += 1; if (calls < 3) throw new Error('gh pr view failed: i/o timeout'); return 'ok'; };
+    expect(await retrying(flaky, [5, 15, 40], async (ms) => { waits.push(ms); })).toBe('ok');
+    expect(waits).toEqual([5, 15]);
+    calls = -10;
+    await expect(retrying(flaky, [1, 1], async () => {})).rejects.toThrow('i/o timeout');
+  });
+
+  it('never retries a real failure', async () => {
+    let calls = 0;
+    await expect(retrying(async () => { calls += 1; throw new Error('CONFLICT (content)'); }, [1, 1, 1], async () => {})).rejects.toThrow('CONFLICT');
+    expect(calls).toBe(1);
+  });
+
+  it('runs ref-updating operations one at a time, and a failure does not jam the queue', async () => {
+    let inside = 0, most = 0;
+    const op = (fail = false) => refLocked(async () => { inside += 1; most = Math.max(most, inside); await sleep(15); inside -= 1; if (fail) throw new Error('boom'); return 'done'; });
+    const results = await Promise.allSettled([op(), op(true), op(), op()]);
+    expect(most).toBe(1);
+    expect(results.map((r) => r.status)).toEqual(['fulfilled', 'rejected', 'fulfilled', 'fulfilled']);
+  });
+
+  it('a fetch in the main checkout and pushes from its worktrees, all at once, all succeed', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'planestro-race-'));
+    const origin = join(root, 'origin.git'), repo = join(root, 'repo');
+    git(root, 'init', '-q', '--bare', '-b', 'trunk', origin);
+    git(root, 'clone', '-q', origin, repo);
+    writeFileSync(join(repo, 'a.txt'), 'a\n'); git(repo, 'add', '-A'); git(repo, 'commit', '-q', '-m', 'init'); git(repo, 'push', '-q', 'origin', 'HEAD:trunk');
+    const port = new LiveGitPort();
+    const trees = [1, 2, 3].map((n) => join(root, `wt-${n}`));
+    for (const [n, wt] of trees.entries()) await port.worktreeAdd(repo, wt, `b${n}`, 'origin/trunk');
+    for (let round = 0; round < 5; round++) {
+      for (const [n, wt] of trees.entries()) { writeFileSync(join(wt, `f${n}.txt`), `${round}\n`); git(wt, 'add', '-A'); git(wt, 'commit', '-q', '-m', `r${round}`); }
+      await Promise.all([port.fetch(repo), ...trees.map((wt, n) => port.pushSetUpstream(wt, `b${n}`)), port.fetch(repo)]);
+    }
+    const heads = await port.remoteHeads(repo);
+    for (const [n, wt] of trees.entries()) expect(heads.get(`b${n}`)).toBe(await port.revParse(wt, 'HEAD'));
+  }, 30_000);
+});
