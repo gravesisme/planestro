@@ -12,6 +12,11 @@ import {
   type Config, type LocalConfig, type ServerEvent, type ActivityActor,
 } from '@planestro/shared';
 import { atomicWrite, cleanStaleTemps } from './atomicWrite.ts';
+import { Journal } from './Journal.ts';
+import { GitCommitter } from './GitCommitter.ts';
+import { IdAllocator } from './IdAllocator.ts';
+import { matches } from './Search.ts';
+import { readConfig, readLocalConfig, patchConfigFile, writeLocalConfig, resolveCodeRepo, resolveWorktreesRoot, schemaStatus, TOOL_VERSION, type SchemaStatus } from '../config.ts';
 
 /**
  * p49: a polling loop wrote the same two app lines ("already on …; waiting for CI outside the merge
@@ -25,11 +30,6 @@ function repeatsRecentAppLine(file: ItemFile, actor: ActivityActor, text: string
   const line = `[app] ${text.replace(/\s*\n\s*/g, ' ').trim()}`;
   return getSection(file, 'Activity').split('\n').filter((l) => l.startsWith('- ')).slice(-ACTIVITY_REPEAT_WINDOW).some((l) => l.slice(l.indexOf(' ', 2) + 1) === line);
 }
-import { Journal } from './Journal.ts';
-import { GitCommitter } from './GitCommitter.ts';
-import { IdAllocator } from './IdAllocator.ts';
-import { matches } from './Search.ts';
-import { readConfig, readLocalConfig, patchConfigFile, writeLocalConfig, resolveCodeRepo, resolveWorktreesRoot, schemaStatus, TOOL_VERSION, type SchemaStatus } from '../config.ts';
 
 export interface StoredItem { id: string; path: string; file: ItemFile }
 export interface StoredPrompt { name: string; path: string; file: PromptFile }
