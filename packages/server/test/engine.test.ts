@@ -1246,6 +1246,57 @@ describe('regenerated files that collide with the base (p17)', () => {
   });
 });
 
+describe('untracked byproducts are never dirt (p52)', () => {
+  it('an implement turn that leaves only byproducts goes straight to its pull request, and cleanup sets them aside', async () => {
+    const { store, engine, world } = await setup();
+    store.updateConfig((doc) => { doc.setIn(['worktrees', 'byproducts'], ['*.import']); }, 'config: byproducts');
+    const item = store.createItem({ title: 'Art import', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    const cwd = (engine as any).absWorktree(store.getItem(item.id)!.file.frontmatter.worktree!);
+    world.untracked.set(cwd, ['assets/ui/a.png.import', 'docs/shot.png.import']);
+    await engine.approvePlan(item.id);
+    await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
+    const log = activityOf(store, item.id);
+    expect(log).not.toMatch(/worktree dirty after turn/);
+    expect(log).toMatch(/set aside 2 byproducts \(worktrees\.byproducts\) before removing the worktree: \S+\.displaced\//);
+    expect(world.untracked.get(cwd)).toEqual([]);
+  });
+
+  it('the merge pipeline syncs past byproducts, and names the files when something else is in the way', async () => {
+    const ctx = await setup();
+    const { store, engine, world } = ctx;
+    store.updateConfig((doc) => { doc.setIn(['worktrees', 'byproducts'], ['assets/**/*.import']); }, 'config: byproducts');
+    const item = store.createItem({ title: 'Sidecars', description: 'x' });
+    const branch = 'tp/1-sidecars', rel = '.claude/worktrees/tp-1-sidecars';
+    const cwd = (engine as any).absWorktree(rel);
+    const head = world.sha();
+    world.worktrees.set(cwd, { path: cwd, head, branch }); world.remoteBranches.set(branch, head);
+    world.prs.set(200, { number: 200, url: 'u', state: 'OPEN', headRefOid: head, headRefName: branch, baseRefName: 'trunk', polls: 0, failOnce: false });
+    world.untracked.set(cwd, ['assets/ui/a.png.import', 'b.png.import', 'notes/mine.txt']);
+    store.mutateItem(item.id, [{ set: { status: 'IN_REVIEW', branch, worktree: rel, pr: 200, ci_result: 'pending' } }], 'engine');
+    await engine.start();
+    await waitFor(() => store.getItem(item.id)!.file.frontmatter.blocked_reason === 'dirty_tree');
+    expect(activityOf(store, item.id)).toMatch(/cannot be synced: b\.png\.import, notes\/mine\.txt/);
+    expect(world.untracked.get(cwd)).toHaveLength(3);
+  });
+
+  it('finish from worktree does not count them', async () => {
+    const { store, engine, world } = await setup();
+    store.updateConfig((doc) => { doc.setIn(['worktrees', 'byproducts'], ['*.import']); }, 'config: byproducts');
+    const item = store.createItem({ title: 'Finish', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    const cwd = (engine as any).absWorktree(store.getItem(item.id)!.file.frontmatter.worktree!);
+    world.untracked.set(cwd, ['a.png.import']);
+    expect(await (engine as any).worktreeDirt(cwd)).toEqual({ clean: true, dirty: [], byproducts: ['a.png.import'] });
+    world.untracked.set(cwd, ['a.png.import', 'a.png']);
+    expect((await (engine as any).worktreeDirt(cwd)).dirty).toEqual(['a.png']);
+  });
+});
+
 describe('max_sessions holds for every turn, not only admission (p51)', () => {
   it('two plans approved together never run more implement turns than max_sessions', async () => {
     let running = 0; let peak = 0; let hold = false; const gates: Array<() => void> = [];

@@ -1,4 +1,4 @@
-import { join, relative, isAbsolute, extname } from 'node:path';
+import { join, relative, isAbsolute, extname, basename, matchesGlob } from 'node:path';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { validateParts, partsSummary, type Part, serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, type BreakdownChild, type DecisionInput, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1 } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
@@ -349,7 +349,7 @@ export class LiveEngine implements Engine {
     // A missing worktree is triage's to judge (recreate_worktree, or retry_op's requeue), not a stall's.
     if (!exists) { this.block(id, 'worktree_missing', `${from.why} with its worktree ${fm.worktree ?? '(none)'} missing; nothing recreated`); return; }
     if (fm.status === 'IN_PROGRESS') {
-      const { clean } = await this.ports.git.status(dir!);
+      const { clean } = await this.worktreeDirt(dir!);
       const base = this.store.derived(item).base_branch;
       const ahead = clean && base ? (await this.ports.git.aheadBehind(dir!, `origin/${base}`, 'HEAD')).ahead : 0;
       if (ahead > 0) { await this.afterWorkTurn(id, 'implement', { subtype: 'success', isError: false, costUsd: 0, numTurns: 0, text: '', done: String(fm.op_data?.done_summary ?? '') || undefined }); return; }
@@ -973,10 +973,11 @@ export class LiveEngine implements Engine {
   private async commitForWorker(id: string, summary: string): Promise<string | undefined> {
     const fm = this.store.requireItem(id).file.frontmatter;
     const cwd = this.absWorktree(fm.worktree!);
-    if ((await this.ports.git.status(cwd)).clean) return undefined;
+    const { clean, byproducts } = await this.worktreeDirt(cwd);
+    if (clean) return undefined;
     const label = this.store.config.models.find((m) => m.id === fm.implementer)?.label ?? fm.implementer;
     const first = summary.split('\n')[0].slice(0, 72);
-    try { return await this.ports.git.commitAll(cwd, `${id}: ${first}\n\n${summary}\n\nCommitted by planestro for ${label} (engine_commits).`); }
+    try { return await this.ports.git.commitAll(cwd, `${id}: ${first}\n\n${summary}\n\nCommitted by planestro for ${label} (engine_commits).`, byproducts); }
     catch (e) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `could not commit the session's work for it: ${(e as Error).message.slice(0, 200)}` } }], 'engine'); return undefined; }
   }
 
@@ -987,12 +988,12 @@ export class LiveEngine implements Engine {
     if (fm.taken_over) return; // the person decides what is done now; the hand-back runs this check again
     const cwd = this.absWorktree(fm.worktree!);
     const base = this.store.derived(item).base_branch!;
-    let { clean, dirty } = await this.ports.git.status(cwd);
+    let { clean, dirty } = await this.worktreeDirt(cwd);
     // It reported done and left the work uncommitted, and its model's commits are planestro's (p11).
     const summary = result.done ?? (fm.op_data?.done_summary as string | undefined);
     if (!clean && summary && this.commitsFor(fm)) {
       const head = await this.commitForWorker(id, summary);
-      if (head) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `committed the session's work for it (${head.slice(0, 7)}, ${dirty.length} file${dirty.length === 1 ? '' : 's'}): its model's commits are planestro's (engine_commits)` } }], 'engine'); ({ clean, dirty } = await this.ports.git.status(cwd)); }
+      if (head) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `committed the session's work for it (${head.slice(0, 7)}, ${dirty.length} file${dirty.length === 1 ? '' : 's'}): its model's commits are planestro's (engine_commits)` } }], 'engine'); ({ clean, dirty } = await this.worktreeDirt(cwd)); }
     }
     if (!clean) {
       const tries = Number(fm.op_data?.dirty_tree_turns ?? 0) + 1;
@@ -1109,8 +1110,8 @@ export class LiveEngine implements Engine {
     // 1. sync with the base — worker branches rebase, integration branches merge (never rewritten)
     this.store.mutateItem(id, [{ set: { op: integration ? 'syncing_base' : 'rebasing', op_started_at: this.now(), op_data: { ...(fm.op_data ?? {}), base_sha: null } } }], 'engine');
     await this.ports.git.fetch(this.repo);
-    const { clean } = await this.ports.git.status(cwd);
-    if (!clean && !(await this.displaceRegenerated(id, cwd, base))) { this.store.journal.end(opId, id, 'aborted', { reason: 'dirty' }); this.block(id, 'dirty_tree', 'the worktree has uncommitted changes; it cannot be synced'); return; }
+    const inTheWay = await this.clearForSync(id, cwd, base);
+    if (inTheWay.length) { this.store.journal.end(opId, id, 'aborted', { reason: 'dirty' }); this.block(id, 'dirty_tree', `the worktree has uncommitted changes, so it cannot be synced: ${inTheWay.slice(0, 5).join(', ')}${inTheWay.length > 5 ? ` and ${inTheWay.length - 5} more` : ''}`); return; }
     const baseSha = await this.ports.git.revParse(this.repo, `origin/${base}`);
     const expected = await this.ports.git.remoteBranchSha(this.repo, fm.branch!);
     const localHead = await this.ports.git.revParse(cwd, 'HEAD');
@@ -1323,24 +1324,46 @@ export class LiveEngine implements Engine {
     return attempt;
   }
 
-  /**
-   * The one dirty tree the sync may clear by itself (dogfood p17): every change is an untracked file
-   * that the base now tracks under the same path. Those are artefacts regenerated in this worktree
-   * (a Godot import run leaves .import sidecars) that collide with the copies another item just
-   * merged. They are moved aside to a folder outside the worktree, never deleted (invariant 7), and
-   * the Activity log names them and where they went. Anything else leaves the tree as it is.
-   */
-  private async displaceRegenerated(id: string, cwd: string, base: string): Promise<boolean> {
+  /** An untracked file `worktrees.byproducts` names: something the project's tools regenerate in any worktree (Godot's `.import` sidecars), never a session's work. */
+  private isByproduct(path: string): boolean {
+    return this.store.config.worktrees.byproducts.some((p) => matchesGlob(p.includes('/') ? path : basename(path), p));
+  }
+
+  /** The worktree's uncommitted work: what `git status` lists, less untracked byproducts (dogfood p52). */
+  private async worktreeDirt(cwd: string): Promise<{ clean: boolean; dirty: string[]; byproducts: string[] }> {
+    if (!this.store.config.worktrees.byproducts.length) return { ...(await this.ports.git.status(cwd)), byproducts: [] };
     const { tracked, untracked } = await this.ports.git.dirtyDetail(cwd);
-    if (tracked.length || !untracked.length) return false;
+    const byproducts = untracked.filter((f) => this.isByproduct(f));
+    const dirty = [...tracked, ...untracked.filter((f) => !this.isByproduct(f))];
+    return { clean: dirty.length === 0, dirty, byproducts };
+  }
+
+  /**
+   * Clear the way for a sync, and return what is still in it (empty: go on). The one dirty tree the
+   * sync may clear by itself (dogfood p17): every change is an untracked file that the base now
+   * tracks under the same path. Those are artefacts regenerated in this worktree (a Godot import run
+   * leaves .import sidecars) that collide with the copies another item just merged. They are moved
+   * aside to a folder outside the worktree, never deleted (invariant 7), and the Activity log names
+   * them and where they went. Untracked byproducts are not in the way unless they collide too.
+   * Anything else leaves the tree as it is.
+   */
+  private async clearForSync(id: string, cwd: string, base: string): Promise<string[]> {
+    const { tracked, untracked } = await this.ports.git.dirtyDetail(cwd);
+    const work = untracked.filter((f) => !this.isByproduct(f));
+    if (tracked.length) return [...tracked, ...work];
+    if (!untracked.length) return [];
     await this.ports.git.fetch(this.repo);
     const colliding = await this.ports.git.trackedAt(cwd, `origin/${base}`, untracked);
-    if (colliding.length !== untracked.length) return false;
+    const hit = new Set(colliding);
+    const stays = work.filter((f) => !hit.has(f));
+    if (stays.length) return stays;
+    if (!colliding.length) return [];
     const dest = join(this.store.worktreesRoot(), '.displaced', `${id.toLowerCase()}-${this.now().replace(/[:+]/g, '-')}`);
     await this.ports.git.moveAside(cwd, colliding, dest);
-    if (!(await this.ports.git.status(cwd)).clean) return false;
+    const left = (await this.worktreeDirt(cwd)).dirty;
+    if (left.length) return left;
     this.store.mutateItem(id, [{ activity: { actor: 'app', text: `moved ${colliding.length} untracked file${colliding.length === 1 ? '' : 's'} that ${base} now tracks out of the way (regenerated copies; nothing deleted) to ${dest}: ${colliding.slice(0, 12).join(', ')}${colliding.length > 12 ? ', …' : ''}` } }], 'engine', { commit: `${id}: set regenerated files aside` });
-    return true;
+    return [];
   }
 
   private async onCiRed(id: string, opId: string, headSha: string, logText: string | undefined, source: 'github' | 'local', canFix = true): Promise<void> {
@@ -1445,17 +1468,25 @@ export class LiveEngine implements Engine {
    */
   private async setAsideBeforeRemove(id: string, cwd: string): Promise<string | undefined> {
     const keep = this.store.config.worktrees.keep_on_remove;
-    if (!keep.length) return undefined;
+    const byproducts = this.store.config.worktrees.byproducts.length ? (await this.worktreeDirt(cwd).catch(() => ({ byproducts: [] as string[] }))).byproducts : [];
+    if (!keep.length && !byproducts.length) return undefined;
     // Only what git does not track: a tracked file (HH's tmp/.gdignore) moved away is a deletion,
     // which leaves the worktree dirty and `git worktree remove` refuses it (dogfood p46). The
     // branch is merged, so its tracked files are safe in history anyway.
-    const under = await this.ports.git.filesUnder(cwd, keep).catch(() => [] as string[]);
+    const under = keep.length ? await this.ports.git.filesUnder(cwd, keep).catch(() => [] as string[]) : [];
     const tracked = new Set(under.length ? await this.ports.git.trackedAt(cwd, 'HEAD', under).catch(() => under) : []);
     const files = under.filter((f) => !tracked.has(f));
-    if (!files.length) return undefined;
+    // Byproducts are untracked by definition; `git worktree remove` refuses a tree that has them.
+    const regenerated = byproducts.filter((f) => !files.includes(f));
+    if (!files.length && !regenerated.length) return undefined;
     const dest = join(this.store.worktreesRoot(), '.displaced', `${id.toLowerCase()}-${this.now().replace(/[:+]/g, '-')}`);
-    await this.ports.git.moveAside(cwd, files, dest);
-    return `set aside ${files.length} file${files.length === 1 ? '' : 's'} under ${keep.join(', ')} (worktrees.keep_on_remove) before removing the worktree: ${dest}`;
+    await this.ports.git.moveAside(cwd, [...files, ...regenerated], dest);
+    const n = (k: number, what: string) => `${k} ${what}${k === 1 ? '' : 's'}`;
+    const what = [
+      ...(files.length ? [`${n(files.length, 'file')} under ${keep.join(', ')} (worktrees.keep_on_remove)`] : []),
+      ...(regenerated.length ? [`${n(regenerated.length, 'byproduct')} (worktrees.byproducts)`] : []),
+    ];
+    return `set aside ${what.join(' and ')} before removing the worktree: ${dest}`;
   }
 
   private async cleanup(id: string): Promise<void> {
@@ -1488,7 +1519,7 @@ export class LiveEngine implements Engine {
     const stranded: string[] = [];
     for (const [what, sha] of tips) if (!await this.ports.git.isAncestor(this.repo, sha, `origin/${base}`)) stranded.push(`${what} ${sha.slice(0, 7)}`);
     if (view.state !== 'MERGED' || stranded.length) { this.store.journal.end(opId, id, 'aborted', { reason: 'unverifiable', stranded }); this.block(id, 'cleanup_unverifiable', view.state !== 'MERGED' ? `PR #${fm.pr} is ${view.state}; nothing was deleted` : `cannot prove ${stranded.join(', ')} reachable from origin/${base}; nothing was deleted`); return; }
-    const { clean } = await this.ports.git.status(cwd).catch(() => ({ clean: true }));
+    const { clean } = await this.worktreeDirt(cwd).catch(() => ({ clean: true }));
     if (!clean) { this.store.journal.end(opId, id, 'aborted', { reason: 'dirty' }); this.block(id, 'cleanup_dirty', 'the worktree has uncommitted changes after the merge; remove it by hand or discard them'); return; }
     const kept = await this.setAsideBeforeRemove(id, cwd);
     if (kept) this.store.mutateItem(id, [{ activity: { actor: 'app', text: kept } }], 'engine');
@@ -2061,7 +2092,7 @@ export class LiveEngine implements Engine {
       await this.ports.git.fetch(this.repo);
       entry = (await this.ports.git.worktreeList(this.repo)).find((w) => w.path === dir && !w.prunable);
       if (entry) {
-        const { clean, dirty } = await this.ports.git.status(dir);
+        const { clean, dirty } = await this.worktreeDirt(dir);
         if (!clean) return `refused: ${fm.worktree} has uncommitted changes (${dirty.slice(0, 5).join(', ')}); nothing was touched`;
         let empty = false;
         for (const b of bases) if ((await this.ports.git.aheadBehind(dir, `origin/${b}`, 'HEAD')).ahead === 0) { empty = true; break; }
@@ -2135,7 +2166,7 @@ export class LiveEngine implements Engine {
     }
     if (!exists) return `not possible: the worktree ${fm.worktree} is missing; use recreate_worktree`;
     if (fm.status === 'IN_PROGRESS') {
-      const { clean } = await this.ports.git.status(dir);
+      const { clean } = await this.worktreeDirt(dir);
       const base = this.store.derived(item).base_branch;
       const ahead = clean && base ? (await this.ports.git.aheadBehind(dir, `origin/${base}`, 'HEAD')).ahead : 0;
       if (ahead > 0) {
@@ -2224,12 +2255,12 @@ export class LiveEngine implements Engine {
     const cwd = this.absWorktree(fm.worktree);
     const base = this.store.derived(item).base_branch;
     if (!base) return `not possible: ${id} has no base branch`;
-    let { clean, dirty } = await this.ports.git.status(cwd);
+    let { clean, dirty } = await this.worktreeDirt(cwd);
     // A model whose commits are planestro's leaves its work in the tree: committing it is this step's first half (#55).
     if (!clean && this.commitsFor(fm)) {
       const head = await this.commitForWorker(id, String(fm.op_data?.done_summary ?? '') || `work committed by planestro to finish ${id} from its worktree`);
       if (head) this.store.mutateItem(id, [{ activity: { actor: by, text: `finish from here: committed the session's work first (${head.slice(0, 7)}, ${dirty.length} file${dirty.length === 1 ? '' : 's'}; engine_commits)` } }], by);
-      ({ clean, dirty } = await this.ports.git.status(cwd));
+      ({ clean, dirty } = await this.worktreeDirt(cwd));
     }
     if (!clean) return `not possible: the worktree has uncommitted changes (${dirty.slice(0, 5).join(', ')}); commit or discard them first`;
     await this.ports.git.fetch(this.repo);
@@ -2429,7 +2460,7 @@ export class LiveEngine implements Engine {
    * The git of a sync, run inside the item's job. `op` says what is in flight (rebasing /
    * syncing_base / pushing), so a restart part-way is recovered by reconcile (a half-done rebase is
    * aborted). The mechanics are the merge step's: fetch, the one dirty tree it may clear
-   * (displaceRegenerated), sync only when behind, rebase or merge, push with a lease or plainly.
+   * (clearForSync), sync only when behind, rebase or merge, push with a lease or plainly.
    */
   private async syncBranch(id: string, context = ''): Promise<SyncOutcome> {
     const item = this.store.requireItem(id);
@@ -2455,10 +2486,9 @@ export class LiveEngine implements Engine {
         if (!own.ok) { done('aborted', { reason: 'conflict', files: own.conflicts }, `merge of origin/${branch} into its local copy conflicted in ${own.conflicts.join(', ')}`); return { kind: 'conflict', base, baseSha: await this.ports.git.revParse(this.repo, `origin/${base}`), files: own.conflicts, integration, cwd }; }
       }
     } else cwd = this.absWorktree(fm.worktree!);
-    const { clean } = await this.ports.git.status(cwd);
-    if (!clean && !(await this.displaceRegenerated(id, cwd, base))) {
+    const dirty = await this.clearForSync(id, cwd, base);
+    if (dirty.length) {
       const { behind } = await this.ports.git.aheadBehind(cwd, `origin/${base}`, 'HEAD');
-      const { dirty } = await this.ports.git.status(cwd);
       done('aborted', { reason: 'dirty' }, `not synced with origin/${base}: the worktree has uncommitted changes (${dirty.slice(0, 5).join(', ')})`);
       return { kind: 'dirty', base, behind, files: dirty };
     }
@@ -2750,7 +2780,7 @@ export class LiveEngine implements Engine {
     const brief = (e: unknown) => (e as Error).message.replace(/\s+/g, ' ').slice(0, 200);
     let remote: string | null;
     try {
-      const { clean, dirty } = await this.ports.git.status(cwd);
+      const { clean, dirty } = await this.worktreeDirt(cwd);
       if (!clean) return keep(`uncommitted changes (${dirty.slice(0, 5).join(', ')})`);
       await this.ports.git.fetch(this.repo);
       const { ahead } = await this.ports.git.aheadBehind(cwd, `origin/${base}`, 'HEAD');

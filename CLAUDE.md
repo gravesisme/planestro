@@ -46,7 +46,8 @@ Evaluate every change against these; they are the architecture.
    `MERGED`, and `git merge-base --is-ancestor <tip> origin/<base>`.
    Ambiguity → `blocked` with a reason, never deletion. (Untracked files that
    collide with ones the base now tracks are moved aside to `.displaced/`,
-   not deleted: `displaceRegenerated`.)
+   not deleted: `clearForSync`. Untracked files the project names in
+   `worktrees.byproducts` are never dirt: cleanup sets them aside the same way.)
 8. **No lifecycle code contains the literal default branch name.** Everything
    operates on the item's resolved `base_branch`; a test greps `engine/` for it.
 
