@@ -756,6 +756,24 @@ describe('CI is waited for outside the serial merge chain (p15)', () => {
     expect(world.prs.get(a.pr)!.state).toBe('MERGED');
   });
 
+  it('a head whose runs still all skip after ready_for_review was sent again blocks as ci_skipped, not ci_blocked (p48)', async () => {
+    const { store, engine, world } = await setup();
+    store.updateConfig((doc) => { doc.setIn(['ci', 'start_timeout_min'], 0.0001); }, 'config: short start timeout');
+    const c = inReview(store, engine, world, 6);
+    world.behind.set(c.cwd, 0);   // on the base tip: no push, so its only runs are the skipped ones
+    world.draftGuard = true;
+    let toggles = 0;
+    (engine as any).ports.gh.setDraft = async (_r: string, n: number, draft: boolean) => { toggles += 1; world.prs.get(n)!.isDraft = draft; };   // a job condition that skips every run, ready or not
+    await engine.start();
+    await waitFor(() => store.getItem(c.id)!.file.frontmatter.blocked === true, 8000);
+    const fm = store.getItem(c.id)!.file.frontmatter;
+    expect(fm.blocked_reason).toBe('ci_skipped');
+    expect(fm.op_data?.ci_refired).toBe(fm.ci_head_sha);   // sent ready for review again first, once
+    expect(toggles).toBe(2);
+    expect(fm.ci_failed_count).toBeUndefined();
+    expect(activityOf(store, c.id)).toContain('again after planestro sent ready for review once more');
+  });
+
   it('releasing a hold keeps a green that still describes the head on the base tip, and merges without a new CI wait', async () => {
     const { store, engine, world } = await setup();
     const kept = inReview(store, engine, world, 3, { review_hold: true, awaiting: 'review' });
