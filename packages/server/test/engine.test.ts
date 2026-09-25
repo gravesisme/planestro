@@ -756,6 +756,24 @@ describe('CI is waited for outside the serial merge chain (p15)', () => {
     expect(world.prs.get(a.pr)!.state).toBe('MERGED');
   });
 
+  it('a head whose runs still all skip after ready_for_review was sent again blocks as ci_skipped, not ci_blocked (p48)', async () => {
+    const { store, engine, world } = await setup();
+    store.updateConfig((doc) => { doc.setIn(['ci', 'start_timeout_min'], 0.0001); }, 'config: short start timeout');
+    const c = inReview(store, engine, world, 6);
+    world.behind.set(c.cwd, 0);   // on the base tip: no push, so its only runs are the skipped ones
+    world.draftGuard = true;
+    let toggles = 0;
+    (engine as any).ports.gh.setDraft = async (_r: string, n: number, draft: boolean) => { toggles += 1; world.prs.get(n)!.isDraft = draft; };   // a job condition that skips every run, ready or not
+    await engine.start();
+    await waitFor(() => store.getItem(c.id)!.file.frontmatter.blocked === true, 8000);
+    const fm = store.getItem(c.id)!.file.frontmatter;
+    expect(fm.blocked_reason).toBe('ci_skipped');
+    expect(fm.op_data?.ci_refired).toBe(fm.ci_head_sha);   // sent ready for review again first, once
+    expect(toggles).toBe(2);
+    expect(fm.ci_failed_count).toBeUndefined();
+    expect(activityOf(store, c.id)).toContain('again after planestro sent ready for review once more');
+  });
+
   it('releasing a hold keeps a green that still describes the head on the base tip, and merges without a new CI wait', async () => {
     const { store, engine, world } = await setup();
     const kept = inReview(store, engine, world, 3, { review_hold: true, awaiting: 'review' });
@@ -1601,6 +1619,24 @@ describe('cleanup proves what it deletes (dogfood p39)', () => {
     expect(store.getItem(lost)!.file.frontmatter.blocked_reason).toBe('cleanup_unverifiable');
     expect(activityOf(store, lost)).toContain('worktree HEAD uuuuuuu');
     expect(world.worktrees.has(join(store.codeRepoPath(), '.claude/worktrees/tp-3-x'))).toBe(true); // nothing deleted
+  });
+});
+
+describe('unblocking a merged item retries its cleanup (p50)', () => {
+  it('a cleanup that failed is run again on unblock, with a message too, not five minutes later by reconcile', async () => {
+    const { store, engine, world } = await setup();
+    const branch = 'tp/1-x', wt = '.claude/worktrees/tp-1-x', abs = join(store.codeRepoPath(), wt);
+    const id = store.mutateItem(store.createItem({ title: 'Merged, cleanup failed' }).id, [{ set: { status: 'IN_REVIEW' } }, { set: { pr: 410, branch, worktree: wt } }], 'engine').id;
+    store.mutateItem(id, [{ set: { status: 'MERGED' } }], 'engine');
+    const head = world.sha();
+    world.worktrees.set(abs, { path: abs, head, branch }); world.localBranches.add(branch);
+    world.prs.set(410, { number: 410, url: 'u', state: 'MERGED', mergedAt: new Date().toISOString(), headRefOid: head, headRefName: branch, baseRefName: 'trunk', mergeCommit: world.sha(), polls: 9, failOnce: false });
+    (engine as any).block(id, 'engine_error', 'git worktree remove failed: Directory not empty');
+    expect(store.getItem(id)!.file.frontmatter.blocked).toBe(true);
+    await engine.unblock(id, 'I cleared the directory; try again');
+    await waitFor(() => status(store, id) === 'FINISHED', 4000);
+    expect(world.worktrees.has(abs)).toBe(false);
+    expect(activityOf(store, id)).toContain('removed worktree and branch tp/1-x');
   });
 });
 

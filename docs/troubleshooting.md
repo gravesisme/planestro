@@ -52,6 +52,7 @@ and brings you only a plain decision card. See [Needs-you triage](concepts.md#ne
 | `ci_red_twice` | CI failed again after the session's fix. | Read both logs; message the session with what it is missing, or take over. |
 | `ci_timeout` | A run did not finish within `ci.timeout_min`. | Check the run; unblock to re-enter the pipeline. |
 | `ci_disagree` | CI was seen green for a head, then the merge step's own look at that same head disagreed twice (the PR's head moved, or GitHub reported different verdicts). It is stopped rather than bounced between the two. | Check the pull request's head and its run; unblock to re-enter the pipeline. |
+| `ci_skipped` | Every CI run for the head skipped its jobs (a draft guard), and none ran after planestro sent ready for review once more (or the pull request is still a draft). A skipped run is not a verdict. | Check the pull request's draft state and the workflow's job conditions, start a run by hand, then unblock. |
 | `ci_blocked` | GitHub Actions did not run at all (billing block, no workflow). | Set `ci.mode: github-or-local` with a `ci.local_check_command`, or re-run by hand. |
 | `base_red` | The base branch's own tip is red and `ci.require_green_base` is on. | Fix the base, or turn the gate off. |
 | `merge_unverified` | `gh` reported a merge but the pull request is not MERGED. | Look at the pull request; reconcile. |

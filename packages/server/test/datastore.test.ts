@@ -253,3 +253,24 @@ describe('a base that was a merged epic\'s branch (p45)', () => {
   });
 });
 
+
+describe('activity lines (p49)', () => {
+  it('an app line identical to one of the last two entries is not appended again; people and the orchestrator always are', async () => {
+    const { dataDir } = makeFixture();
+    const store = await DataStore.open(dataDir);
+    try {
+      const { id } = store.createItem({ title: 'Polled', description: 'x' });
+      const waiting = 'already on trunk@abc1234; no sync needed, reusing CI for def5678; waiting for CI outside the merge queue';
+      const same = 'same red run 42 re-observed for def5678; not counted again (waiting for a re-run or a new push)';
+      for (let i = 0; i < 5; i++) { store.mutateItem(id, [{ activity: { actor: 'app', text: waiting } }], 'engine'); store.mutateItem(id, [{ activity: { actor: 'app', text: same } }], 'engine'); }
+      const lines = () => getSection(store.getItem(id)!.file, 'Activity').split('\n');
+      expect(lines().filter((l) => l.endsWith(waiting))).toHaveLength(1);
+      expect(lines().filter((l) => l.endsWith(same))).toHaveLength(1);
+      for (let i = 0; i < 2; i++) store.mutateItem(id, [{ activity: { actor: 'user', text: 'unblocked' } }], 'user');
+      expect(lines().filter((l) => l.endsWith('[user] unblocked'))).toHaveLength(2);
+      // Out of the window, the same line is news again.
+      store.mutateItem(id, [{ activity: { actor: 'app', text: waiting } }], 'engine');
+      expect(lines().filter((l) => l.endsWith(waiting))).toHaveLength(2);
+    } finally { store.close(); }
+  });
+});

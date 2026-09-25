@@ -1235,6 +1235,7 @@ export class LiveEngine implements Engine {
     // The engine is stopping, which says nothing about CI: leave `op: awaiting_ci` on the item, and the next start re-enters the pipeline.
     if (verdict === 'stopping') { this.store.journal.end(opId, id, 'aborted', { reason: 'engine_stopping' }); return; }
     if (verdict === 'taken_over') { this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { activity: { actor: 'app', text: 'stopped waiting for CI to merge: you took this item over (its CI is still read)' } }], 'engine'); this.store.journal.end(opId, id, 'aborted', { reason: 'taken_over' }); return; }
+    if (verdict === 'skipped') { this.store.journal.end(opId, id, 'aborted', { reason: 'ci_skipped', head: headSha }); this.block(id, 'ci_skipped', (await this.ports.gh.prView(this.github, fm.pr)).isDraft ? `every CI run for ${headSha.slice(0, 7)} skipped its jobs because PR #${fm.pr} is a draft; mark it ready for review, then unblock` : `every CI run for ${headSha.slice(0, 7)} skipped its jobs, again after planestro sent ready for review once more; check the workflow's job conditions, start a run by hand, then unblock`); return; }
     if (verdict === 'timeout') { this.store.journal.end(opId, id, 'aborted', { reason: 'ci_timeout' }); this.block(id, 'ci_timeout', `CI for ${headSha.slice(0, 7)} did not finish within ${cfg.timeout_min} min`); return; }
     if (verdict === 'blocked') {
       if (cfg.mode === 'github-or-local' && cfg.local_check_command) {
@@ -1381,7 +1382,7 @@ export class LiveEngine implements Engine {
    * Within HEAD_PROPAGATION_GRACE_MS the old sha is lag and we keep polling; anything else is
    * a real move. 'stopping' is the engine shutting down, which says nothing about CI.
    */
-  private async waitForCi(id: string, branch: string, sha: string, pr: number, previousSha: string | null = null, minAttempt = 0): Promise<'green' | 'red' | 'blocked' | 'moved' | 'timeout' | 'stopping' | 'taken_over'> {
+  private async waitForCi(id: string, branch: string, sha: string, pr: number, previousSha: string | null = null, minAttempt = 0): Promise<'green' | 'red' | 'blocked' | 'moved' | 'timeout' | 'stopping' | 'taken_over' | 'skipped'> {
     const cfg = this.store.config.ci;
     const started = Date.now();
     let sawRun = false;
@@ -1410,7 +1411,10 @@ export class LiveEngine implements Engine {
       // not coming by itself either, when ready_for_review landed on the head the push replaced.
       skippedPolls = ci.state === 'skipped' ? skippedPolls + 1 : 0;
       if (skippedPolls >= SKIPPED_REFIRE_POLLS && !view.isDraft) { await this.refireReady(id, pr, sha); skippedPolls = 0; }
-      if ((ci.state === 'none' || ci.state === 'skipped') && !sawRun && elapsedMin > cfg.start_timeout_min) return 'blocked';
+      // p48: still only skipped once ready_for_review was sent again (or the PR is a draft, so it is never sent) is its own
+      // stop, not ci_blocked: Actions did run, and the local gate is no answer to a job condition that skips everything.
+      if (ci.state === 'skipped' && !sawRun && elapsedMin > cfg.start_timeout_min && (view.isDraft || this.store.requireItem(id).file.frontmatter.op_data?.ci_refired === sha)) return 'skipped';
+      if (ci.state === 'none' && !sawRun && elapsedMin > cfg.start_timeout_min) return 'blocked';
       if (elapsedMin > cfg.timeout_min) return 'timeout';
       await this.sleep(elapsedMin < 2 ? 10_000 : 30_000);
     }
@@ -1420,7 +1424,7 @@ export class LiveEngine implements Engine {
    * Every run for this ready PR's head skipped its jobs: the ready_for_review event landed on another
    * head (HH-180: marked ready while GitHub still showed the head the push replaced), so no run is
    * coming. Draft and ready again sends the event for this head, once per head: a head that is still
-   * only skipped after that waits out ci.start_timeout_min like one with no run at all.
+   * only skipped after that waits out ci.start_timeout_min, then blocks as ci_skipped (p48).
    */
   private async refireReady(id: string, pr: number, sha: string): Promise<void> {
     const fm = this.store.requireItem(id).file.frontmatter;
@@ -2497,6 +2501,9 @@ export class LiveEngine implements Engine {
     this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, { activity: { actor: by, text: `unblocked${message ? `: ${message}` : ''}` } }], by, { commit: `${id}: unblock${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
     const phase = this.phaseFor(fm.status);
     if (message && phase) this.queueFollowUp(id, () => this.runTurnFor(id, phase, `${this.resumeNote(id, by === 'orchestrator' ? 'the orchestrator' : 'a decision from the user')}\n\n${message}`));
+    // p50: a merged item that stopped in cleanup (a worktree removal failed) retries it now, the path reconcile takes
+    // five minutes later; with a message, or a retry that declined, clearing the flag alone left it MERGED until then.
+    else if (fm.status === 'MERGED') this.runJob(id, () => this.cleanup(id));
     else void this.tick();
   }
 
