@@ -18,6 +18,9 @@ export function ReviewPanel({ item, compact = false }: { item: ItemView; compact
   const [scaled, setScaled] = useState(false);
   const [zoom, setZoom] = useState<string | null>(null);
   const [note, setNote] = useState('');
+  // An audition (f5): the candidates a sound or 3D worker made; the ones ticked go back to it as the note's first line.
+  const [picks, setPicks] = useState<string[]>([]);
+  const togglePick = (path: string) => setPicks((p) => p.includes(path) ? p.filter((x) => x !== path) : [...p, path]);
   const [pasted, setPasted] = useState<string[]>([]);
   const maxBytes = useStore((s) => s.state?.config.attachments.managed_max_bytes) ?? 8_000_000;
   // Paste on desktop, the picker on a phone (which can't paste from Photos); both convert HEIC and shrink to the limit.
@@ -27,6 +30,17 @@ export function ReviewPanel({ item, compact = false }: { item: ItemView; compact
   useEffect(() => { let live = true; api.reviewImages(item.id).then((r) => { if (live) setImages(r); }).catch(() => { if (live) setImages([]); }); return () => { live = false; }; }, [item.id, fm.updated_at, fm.status]);
   if (!awaiting && !images?.length) return null;
   const px = scaled ? scaleN : 1;
+  const candidate = (f: ReviewImage) => {
+    const url = src(item.id, f.path, 'after', v);
+    return (
+      <div key={f.path} className="review-card">
+        <div className="small"><code>{f.path}</code> <span className={`tag ${f.change === 'added' ? 'ok' : f.change === 'deleted' ? 'hot' : ''}`}>{f.change}</span> <span className="muted">{kb(f.bytes)}</span>{awaiting && f.change !== 'deleted' && <label className="small" style={{ marginLeft: 8 }}><input type="checkbox" checked={picks.includes(f.path)} onChange={() => togglePick(f.path)} /> pick</label>}</div>
+        {f.change === 'deleted' ? <div className="review-none small muted">removed</div>
+          : f.kind === 'audio' ? <audio controls preload="none" src={url} style={{ width: '100%', marginTop: 6 }} />
+          : <a className="small" href={url} download>download to look at it (a 3D model)</a>}
+      </div>
+    );
+  };
   const picture = (img: ReviewImage, side: 'before' | 'after') => {
     const missing = (side === 'before' && img.change === 'added') || (side === 'after' && img.change === 'deleted');
     const url = src(item.id, img.path, side, v);
@@ -41,13 +55,14 @@ export function ReviewPanel({ item, compact = false }: { item: ItemView; compact
   return (
     <div className={awaiting ? 'approval' : 'section'}>
       <h2 style={{ margin: '0 0 8px' }}>
-        <span>{awaiting ? 'Waiting for your review before it merges' : `Images on this branch · ${images?.length ?? 0}`}</span>
+        <span>{awaiting ? 'Waiting for your review before it merges' : `Files to review on this branch · ${images?.length ?? 0}`}</span>
         {scaleN > 1 && <button className="small" onClick={() => setScaled(!scaled)}>{scaled ? `showing ${scaleN}× — show 1×` : `showing 1× — show ${scaleN}×`}</button>}
       </h2>
       {awaiting && <p className="small" style={{ marginTop: 0 }}>Synced and CI is green{fm.pr ? ` (PR #${fm.pr})` : ''}. Everything a machine can check has passed; this part is yours.</p>}
-      {images === null ? <p className="small muted">Reading the branch…</p> : !images.length ? <p className="small muted">This branch changes no image files{awaiting ? ' — review the pull request itself.' : '.'}</p> : (
+      {images === null ? <p className="small muted">Reading the branch…</p> : !images.length ? <p className="small muted">This branch changes no image, sound or model files{awaiting ? ' — review the pull request itself.' : '.'}</p> : (
         <div className={`review-grid ${compact ? 'compact' : ''}`}>
-          {images.map((img) => (
+          {images.filter((f) => f.kind && f.kind !== 'image').map(candidate)}
+          {images.filter((f) => !f.kind || f.kind === 'image').map((img) => (
             <div key={img.path} className="review-card">
               <div className="small"><code>{img.path}</code> <span className={`tag ${img.change === 'added' ? 'ok' : img.change === 'deleted' ? 'hot' : ''}`}>{img.change}</span> <span className="muted">{img.width ? `${img.width}×${img.height} · ` : ''}{kb(img.bytes)}</span></div>
               <div className="review-pair">{img.change !== 'added' && picture(img, 'before')}{picture(img, 'after')}</div>
@@ -57,6 +72,7 @@ export function ReviewPanel({ item, compact = false }: { item: ItemView; compact
       )}
       {awaiting && (
         <>
+          {picks.length > 0 && <p className="small" style={{ margin: '8px 0 0' }}>Picked: <b>{picks.join(', ')}</b> — sent to the worker as the first line of your note (say what to do with the rest).</p>}
           <textarea style={{ minHeight: 56, marginTop: 8 }} placeholder="What should change? Paste a screenshot to send it along." value={note} onChange={(e) => setNote(e.target.value)}
             onPaste={(e) => { const f = [...e.clipboardData.files].find((x) => x.type.startsWith('image/')); if (!f) return; e.preventDefault(); e.stopPropagation(); attach([f]); }} />
           <label className="small" style={{ display: 'inline-block', margin: '4px 0', cursor: 'pointer' }}>
@@ -67,7 +83,7 @@ export function ReviewPanel({ item, compact = false }: { item: ItemView; compact
           <div className="row">
             <button className="primary" onClick={() => { const n = prompt(`Approve ${item.id} and let it merge? Optional note for the log:`); if (n !== null) void act(() => api.releaseHold(item.id, n || undefined)); }}>Approve &amp; merge</button>
             <span className="grow" />
-            <button className="danger" disabled={!note.trim()} onClick={() => void act(() => api.requestReviewChanges(item.id, note.trim())).then((r) => { if (r) { setNote(''); setPasted([]); } })}>Request changes</button>
+            <button className="danger" disabled={!note.trim() && !picks.length} onClick={() => void act(() => api.requestReviewChanges(item.id, `${picks.length ? `Picked: ${picks.join(', ')}.` : ''}${picks.length && note.trim() ? ' ' : ''}${note.trim()}`)).then((r) => { if (r) { setNote(''); setPasted([]); setPicks([]); } })}>{picks.length ? 'Send picks & changes' : 'Request changes'}</button>
           </div>
         </>
       )}

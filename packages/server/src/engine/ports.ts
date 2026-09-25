@@ -94,6 +94,7 @@ export interface TurnTools {
   get_item(): Promise<string>;
 }
 export interface PermissionRequest { tool: string; input: Record<string, unknown> }
+export type McpServerSpec = { type?: 'stdio'; command: string; args?: string[]; env?: Record<string, string> } | { type: 'http'; url: string; headers?: Record<string, string> };
 /** What every runner needs for a worker turn. */
 export interface AgentTurnOptions {
   itemId: string;
@@ -124,6 +125,8 @@ export interface ClaudeTurnExtras {
   maxBudgetUsd?: number;
   /** The SDK's own fallback for an overloaded or unavailable model (the next model in the item's fallback chain). */
   fallbackModel?: string;
+  /** Servers beyond planestro's own that this session gets, by name, as the SDK takes them. Their tools reach onPermission like any other. */
+  mcpServers?: Record<string, McpServerSpec>;
   /** Decide a permission prompt. Return 'park' to persist + deny + park, 'deny' with a reason, or 'allow'. */
   onPermission(req: PermissionRequest): Promise<{ action: 'allow' } | { action: 'deny'; message: string } | { action: 'park' }>;
 }

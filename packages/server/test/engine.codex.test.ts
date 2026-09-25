@@ -135,7 +135,7 @@ describe('mixed runners (dry-run ports)', () => {
     await engine.approvePlan(item.id);
     await waitFor(() => fmOf(store, item.id).awaiting === 'review');
     const images = await engine.reviewImages(item.id);
-    expect(images).toEqual([{ path: `assets/${item.id.toLowerCase()}.png`, change: 'added', bytes: expect.any(Number), width: 96, height: 96 }]);
+    expect(images).toEqual([{ path: `assets/${item.id.toLowerCase()}.png`, change: 'added', kind: 'image', bytes: expect.any(Number), width: 96, height: 96 }]);
     const first = (await engine.reviewImage(item.id, images[0].path, 'after'))!;
     expect(first.subarray(1, 4).toString()).toBe('PNG');
     expect(await engine.reviewImage(item.id, images[0].path, 'before')).toBeNull();      // it is new
@@ -346,6 +346,45 @@ describe('planners and holds in a breakdown (p3, p6, p7)', () => {
     expect(prompts[art.id]).toContain('do not plan to do its work yourself');
     expect(prompts[code.id]).toContain('(`opus-5`, claude runner)');
     expect(prompts[code.id]).not.toContain('do not plan to do its work yourself');
+  });
+});
+
+
+describe('tools from outside: MCP servers per model (f5)', () => {
+  const MCP = (yml: string) => yml.replace('  - { id: codex-free, label: Codex (no hold), runner: codex }\n', '  - { id: codex-free, label: Codex (no hold), runner: codex }\n  - { id: sfx, label: Sound worker, runner: claude, claude_model: x, mcp: [sounds], mcp_calls_per_item: 2, hold_for_review: true }\n  - { id: lonely, label: No server, runner: claude, claude_model: x, mcp: [nowhere] }\n');
+
+  it("the model's servers ride along with the session, and calls to them are counted against the item's cap", async () => {
+    const seen: string[] = []; let servers: Record<string, unknown> | undefined;
+    const claude = (world: FakeWorld) => { const inner = new DryRunClaudePort(world); return { async runTurn(o: any): Promise<TurnResult> {
+      if (o.phase === 'plan') return inner.runTurn(o);
+      servers = o.mcpServers;
+      for (let i = 0; i < 3; i++) seen.push((await o.onPermission({ tool: 'mcp__sounds__text_to_sound_effects', input: { text: 'a door' } })).action);
+      seen.push((await o.onPermission({ tool: 'mcp__sounds__list_voices', input: {} })).action);
+      return inner.runTurn(o);
+    }, runCustomTurn: inner.runCustomTurn.bind(inner) }; };
+    const { store, engine } = await setup({ claude, config: MCP });
+    store.updateLocal({ mcp_servers: { sounds: { command: 'uvx', args: ['sounds-mcp'], env: { SOUNDS_KEY: 'k' } } } } as any);
+    const item = store.createItem({ title: 'Door sound', description: 'x', implementer: 'sfx' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => fmOf(store, item.id).status === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => seen.length === 4 && fmOf(store, item.id).awaiting === 'review');
+    expect(servers).toEqual({ sounds: { command: 'uvx', args: ['sounds-mcp'], env: { SOUNDS_KEY: 'k' } } });
+    expect(seen).toEqual(['allow', 'allow', 'deny', 'deny']);
+    expect((fmOf(store, item.id).op_data as any).mcp_calls).toEqual({ sounds: 3 });
+    expect(activityOf(store, item.id)).toContain("sounds: the item's 2 calls (mcp_calls_per_item on Sound worker) are spent; further calls are refused");
+  });
+
+  it('a model naming a server this machine does not define stops the item as mcp_missing', async () => {
+    const { store, engine } = await setup({ config: MCP });
+    const item = store.createItem({ title: 'Nowhere', description: 'x', implementer: 'lonely' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => fmOf(store, item.id).status === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => fmOf(store, item.id).blocked_reason === 'mcp_missing');
+    expect(activityOf(store, item.id)).toContain('names the MCP server "nowhere", which planestro.local.yml on this machine does not define');
   });
 });
 

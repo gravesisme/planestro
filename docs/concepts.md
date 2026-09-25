@@ -106,6 +106,18 @@ gate a rejection failed. The item page and the board card show the strip, the or
 quote it instead of summarising prose, and when the parts accepted so far project the whole past
 the item's budget the Activity log says so once, before the cap.
 
+## Tools from outside: sound, 3D, and whatever comes next
+
+A worker that makes sounds or models is a Claude session with that service's tools. A model row
+names MCP servers in `mcp` (`elevenlabs`, `meshy`, …); the servers themselves, with their keys,
+live in `planestro.local.yml` under `mcp_servers`, machine-local like the API key. Every call to
+those tools passes through planestro and counts against `mcp_calls_per_item`, the one spend cap
+planestro can meter itself; past it the calls are refused and the worker is told to finish or say
+what it still needs. With `hold_for_review` the result is an **audition**: the review panel plays
+each sound (or offers each model file), you tick the candidates you want, and *Send picks & changes*
+resumes the worker with the picks as the first line of your note. What it commits is a pull request
+like any other.
+
 ## The orchestrator
 
 A separate Claude conversation that wakes on events that need judgment — a plan to look

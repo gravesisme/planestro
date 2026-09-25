@@ -121,7 +121,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   api.get('/items/:id/images', async (c) => { try { return c.json(await engine.reviewImages(c.req.param('id'))); } catch (e) { return fail(c, e); } });
   api.get('/items/:id/thumb', async (c) => {
     const id = c.req.param('id');
-    const first = (await engine.reviewImages(id).catch(() => [])).find((f) => f.change !== 'deleted' && !/\.svg$/i.test(f.path));
+    const first = (await engine.reviewImages(id).catch(() => [])).find((f) => f.change !== 'deleted' && (f.kind ?? 'image') === 'image' && !/\.svg$/i.test(f.path));
     const buf = first ? await engine.reviewImage(id, first.path, 'after').catch(() => null) : null;
     if (!first || !buf) return c.json({ error: 'not found' }, 404);
     const ext = first.path.split('.').pop()!.toLowerCase();
@@ -132,7 +132,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
     const buf = await engine.reviewImage(c.req.param('id'), path, side).catch(() => null);
     if (!buf) return c.json({ error: 'not found' }, 404);
     const ext = path.split('.').pop()!.toLowerCase();
-    const type = ({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', svg: 'image/svg+xml' } as Record<string, string>)[ext] ?? 'application/octet-stream';
+    const type = ({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', svg: 'image/svg+xml', mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', flac: 'audio/flac', m4a: 'audio/mp4', aac: 'audio/aac', glb: 'model/gltf-binary', gltf: 'model/gltf+json', obj: 'text/plain', fbx: 'application/octet-stream' } as Record<string, string>)[ext] ?? 'application/octet-stream';
     // SVG can carry script: serve it as an image only, never as a document.
     return new Response(new Uint8Array(buf), { headers: { 'content-type': type, 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'", 'x-content-type-options': 'nosniff' } });
   });

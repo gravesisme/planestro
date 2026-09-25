@@ -3,7 +3,7 @@ import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { validateParts, partsSummary, type Part, serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, type BreakdownChild, type DecisionInput, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1 } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
-import type { Ports, TurnPhase, TurnResult, TurnTools, PermissionRequest } from './ports.ts';
+import type { Ports, TurnPhase, TurnResult, TurnTools, PermissionRequest, McpServerSpec } from './ports.ts';
 import { makePolicy, ruleFor, allowedByRules, BASE_ALLOWED } from './policy.ts';
 import { hostNote } from './hostNote.ts';
 import { Orchestrator } from './orchestrator.ts';
@@ -11,6 +11,10 @@ import { pngSize } from './placeholderPng.ts';
 import type { ReviewImage } from './Engine.ts';
 
 const IMAGE_FILE = /\.(png|jpe?g|webp|gif|svg)$/i;
+/** What a person reviews by eye or ear (f5): images, sounds a sound worker made, models a 3D worker made. */
+const AUDIO_FILE = /\.(mp3|wav|ogg|flac|m4a|aac)$/i;
+const MODEL_FILE = /\.(glb|gltf|obj|fbx)$/i;
+const reviewKind = (path: string): 'image' | 'audio' | 'model' | undefined => IMAGE_FILE.test(path) ? 'image' : AUDIO_FILE.test(path) ? 'audio' : MODEL_FILE.test(path) ? 'model' : undefined;
 
 /** `schedule` runs `fn` after `ms` and returns a cancel (tests capture it instead of waiting). */
 export interface EngineOptions { sleep?: (ms: number) => Promise<void>; tickMs?: number; now?: () => string; ciWorkflow?: string; schedule?: (fn: () => void, ms: number) => () => void }
@@ -716,6 +720,15 @@ export class LiveEngine implements Engine {
     }
     const images = fm.attachments.map((a) => this.store.attachmentAbsPath(a)).filter((p) => /\.(png|jpe?g|webp|gif)$/i.test(p));
     const policy = makePolicy(this.store.config, d.base_branch!, cwd);
+    // Tools from outside (f5): the model row names MCP servers, the machine-local file holds them with
+    // their keys. A name with no server on this machine is a stop, not a session without its tools.
+    const mcpServers: Record<string, McpServerSpec> = {};
+    for (const name of metered ? def.mcp : []) {
+      const spec = this.store.local.mcp_servers[name];
+      if (!spec || (!spec.command && !spec.url)) { this.block(id, 'mcp_missing', `${def.label} names the MCP server "${name}", which planestro.local.yml on this machine does not define (mcp_servers.${name} needs a command or a url)`); return undefined; }
+      mcpServers[name] = spec.url ? { type: 'http', url: spec.url, headers: spec.headers } : { command: spec.command!, args: spec.args, env: spec.env };
+    }
+    const mcpCap = def.mcp_calls_per_item;
     const op = phase === 'plan' ? 'planning_turn' : 'implement_turn';
     // Where the branch stood, so a turn that fails after committing is still checked (below).
     const headBefore = phase === 'plan' ? undefined : await this.ports.git.revParse(cwd, 'HEAD').catch(() => undefined);
@@ -735,10 +748,24 @@ export class LiveEngine implements Engine {
         itemId: id, phase, cwd, model: model as string, permissionMode: phase === 'plan' ? 'plan' : 'acceptEdits', prompt, resume: resumeId, images,
         systemAppend: `${this.store.renderPrompt(metered ? 'worker-system' : `worker-system-${runner}`, item)}\n\n${this.hostNote}`,
         ...(pick.sdkFallback ? { fallbackModel: pick.sdkFallback } : {}),
+        ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
         allowedTools: [...BASE_ALLOWED[phase], ...this.store.config.permissions.allow, ...extraAllowed],
         extraDirs: [this.store.dataDir], maxBudgetUsd: turnCap,
         tools: this.makeTools(id),
         onPermission: async (req) => {
+          // A call to one of the model's own servers: allowed while the item's call cap holds, counted on the item.
+          const server = /^mcp__([^_]+(?:_[^_]+)*?)__/.exec(req.tool)?.[1];
+          if (server && mcpServers[server]) {
+            const cur = this.store.requireItem(id).file.frontmatter;
+            const calls = { ...((cur.op_data?.mcp_calls as Record<string, number> | undefined) ?? {}) };
+            calls[server] = (calls[server] ?? 0) + 1;
+            if (mcpCap !== undefined && calls[server] > mcpCap) {
+              if (calls[server] === mcpCap + 1) this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), mcp_calls: calls } } }, { activity: { actor: 'app', text: `${server}: the item's ${mcpCap} calls (mcp_calls_per_item on ${def.label}) are spent; further calls are refused` } }], 'engine');
+              return { action: 'deny', message: `Not allowed: this item has used its ${mcpCap} ${server} calls (mcp_calls_per_item). Finish with what you have, or report_blocked saying how many more you need.` };
+            }
+            this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), mcp_calls: calls } } }], 'engine');
+            return { action: 'allow' };
+          }
           const why = policy.deny(req);
           if (why) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `denied ${req.tool}: ${why}` } }], 'engine'); return { action: 'deny', message: `Not allowed: ${why}` }; }
           if (req.tool === 'Bash' && oneShot.delete(String(req.input.command ?? '').trim())) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: 'one-shot approval consumed' } }], 'engine'); return { action: 'allow' }; }
@@ -2200,8 +2227,8 @@ export class LiveEngine implements Engine {
   async reviewImages(id: string): Promise<ReviewImage[]> {
     const refs = this.reviewRefs(id);
     if (!refs) return [];
-    const files = (await this.ports.git.changedFiles(refs.cwd, refs.base, refs.head).catch(() => [])).filter((f) => IMAGE_FILE.test(f.path));
-    return Promise.all(files.map(async (f) => ({ ...f, ...(f.change !== 'deleted' && /\.png$/i.test(f.path) ? pngSize(await this.ports.git.readBlob(refs.cwd, refs.head, f.path)) : {}) })));
+    const files = (await this.ports.git.changedFiles(refs.cwd, refs.base, refs.head).catch(() => [])).filter((f) => reviewKind(f.path));
+    return Promise.all(files.map(async (f) => ({ ...f, kind: reviewKind(f.path)!, ...(f.change !== 'deleted' && /\.png$/i.test(f.path) ? pngSize(await this.ports.git.readBlob(refs.cwd, refs.head, f.path)) : {}) })));
   }
 
   /** Only files the branch actually changed can be read through here. */
