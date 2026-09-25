@@ -61,12 +61,18 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
         for (const [k, v] of Object.entries(body.fields)) { if (v === null) unset.push(k); else if (v !== undefined) set[k] = v; }
         if (set.category && !store.config.categories.includes(set.category as string)) throw new Error(`unknown category ${set.category}`);
         if (set.parent) { const p = store.requireItem(set.parent as string); if (p.file.frontmatter.kind !== 'epic') throw new Error(`${set.parent} is not an epic`); }
+        // A pull request attached by hand (finished outside planestro) must enter the merge pipeline
+        // like one planestro opened: only ci_result 'pending' gets it picked up (dogfood p44).
+        const cur = store.requireItem(id).file.frontmatter;
+        if (set.pr !== undefined && cur.status === 'IN_REVIEW' && (cur.ci_result === undefined || cur.ci_result === 'unknown')) set.ci_result = 'pending';
         if (Object.keys(set).length) ops.push({ set });
         if (unset.length) ops.push({ unset });
       }
       for (const [name, text] of Object.entries(body.sections ?? {})) if (text !== undefined) ops.push({ section: name, body: text });
       if (!ops.length) return c.json(itemView(store, store.requireItem(id)));
-      return c.json(itemView(store, store.editItem(id, ops)));
+      const edited = store.editItem(id, ops);
+      if (body.fields?.pr !== undefined) engine.poke();
+      return c.json(itemView(store, edited));
     } catch (e) { return fail(c, e); }
   });
 
@@ -95,8 +101,10 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
       if (to === 'QUEUED' && d.base_branch_error) throw new Error(d.base_branch_error);
       const e = engine as Engine & { openEpic?: (id: string) => Promise<void> };
       if (to === 'IN_PROGRESS' && it.file.frontmatter.kind === 'epic' && e.openEpic) { await e.openEpic(id); return c.json(itemView(store, store.requireItem(id))); }
-      const stored = store.transition(id, to, 'user' as Actor);
-      if (to === 'QUEUED') engine.poke();
+      let stored = store.transition(id, to, 'user' as Actor);
+      // Moved into review by hand with a pull request already attached: it enters the merge pipeline (p44).
+      if (to === 'IN_REVIEW' && stored.file.frontmatter.pr && (stored.file.frontmatter.ci_result === undefined || stored.file.frontmatter.ci_result === 'unknown')) stored = store.mutateItem(id, [{ set: { ci_result: 'pending' } }, { activity: { actor: 'app', text: `PR #${stored.file.frontmatter.pr} attached by hand: entering the merge pipeline` } }], 'user');
+      if (to === 'QUEUED' || to === 'IN_REVIEW') engine.poke();
       return c.json(itemView(store, stored));
     } catch (e) { return fail(c, e); }
   });

@@ -82,6 +82,8 @@ An epic's children can be written by hand, or proposed by the planner: see
   a minute, a red run goes to the session like any other, and the card says `held · CI …`.
   None of this waits inside the serial merge chain. A PR branch that moved on its own is never
   pushed over. Releasing it sends the item back through sync and CI before it merges.
+  A held item whose CI is green, or whose PR is a draft until release, counts as **NEEDS YOU**:
+  nothing automatic moves it, only you.
 - **Draft while held** (`ci.draft_while_held`, on by default) — a held item's pull request (a
   review hold or `skip_merge`) is a GitHub **draft**. With CI that skips drafts, nothing runs
   while it waits for you: a review-held item comes to you as soon as it is synced, and releasing

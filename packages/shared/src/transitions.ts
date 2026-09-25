@@ -92,9 +92,13 @@ export function laneOf(status: Status): Lane {
 
 export const NEEDS_YOU_AWAITING = new Set(['plan_approval', 'breakdown_approval', 'permission', 'question', 'review', 'user']);
 /** A stop the orchestrator is still triaging is not yours yet: it resolves it, or comes back with one decision. */
-export function needsYou(fm: Pick<ItemFrontmatter, 'blocked' | 'awaiting' | 'triage'>): boolean {
+export function needsYou(fm: Pick<ItemFrontmatter, 'blocked' | 'awaiting' | 'triage'> & Partial<Pick<ItemFrontmatter, 'status' | 'skip_merge' | 'ci_result' | 'op_data'>>): boolean {
   if (fm.triage) return false;
-  return Boolean(fm.blocked) || (fm.awaiting !== undefined && NEEDS_YOU_AWAITING.has(fm.awaiting));
+  if (fm.blocked || (fm.awaiting !== undefined && NEEDS_YOU_AWAITING.has(fm.awaiting))) return true;
+  // A held pull request whose CI is green waits for exactly one thing, a person releasing the hold:
+  // nothing automatic moves it, so it is yours (dogfood p44: HH-162 sat held and green at NEEDS YOU 0).
+  // A held PR kept as a draft (ci.draft_while_held) never goes green, since CI waits for the release: same wait.
+  return fm.status === 'IN_REVIEW' && Boolean(fm.skip_merge) && (fm.ci_result === 'green' || fm.op_data?.pr_draft === true);
 }
 
 export function isDone(status: Status): boolean {
