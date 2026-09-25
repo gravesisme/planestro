@@ -6,7 +6,7 @@ import { act, useStore } from '../store.ts';
 import { Markdown } from '../components/Markdown.tsx';
 import { statusLabel } from '../components/ItemCard.tsx';
 import { ItemConsole } from '../components/ItemConsole.tsx';
-import { CLOSE_HINT, confirmMove, promptCloseAsDone } from '../components/QuickActions.tsx';
+import { CLOSE_HINT, SYNC_HINT, canSyncWithBase, confirmMove, promptCloseAsDone, promptSyncWithBase } from '../components/QuickActions.tsx';
 import { ReviewPanel } from '../components/ReviewPanel.tsx';
 import { fallbackHint } from '../components/NewItemDialog.tsx';
 import { BreakdownPanel } from '../components/BreakdownPanel.tsx';
@@ -93,6 +93,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
               ? <button key={t.to} title={CLOSE_HINT} onClick={closeAsDone}>{t.label}…</button>
               : <button key={t.to} disabled={t.to === 'QUEUED' && (!d.deps_satisfied || !!d.base_branch_error)} title={d.base_branch_error ?? (!d.deps_satisfied ? 'dependencies not merged' : '')} onClick={() => { if (confirmMove(item, t.to, t.label)) void act(() => api.transition(item.id, t.to)); }}>{t.label}</button>
           ))}
+          {canSyncWithBase(item, !!session) && <button title={SYNC_HINT} onClick={() => promptSyncWithBase(item)}>Sync with {d.base_branch ?? 'base'}…</button>}
         </div>
         <div className="controls">
           <label>category <select value={fm.category} onChange={(e) => field({ category: e.target.value })}>{state.config.categories.map((c) => <option key={c}>{c}</option>)}</select></label>

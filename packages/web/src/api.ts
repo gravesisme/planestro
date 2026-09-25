@@ -45,6 +45,7 @@ export const api = {
   message: (id: string, text: string) => req<{ ok: true }>('POST', `/api/items/${id}/message`, { text }),
   epicAction: (id: string, action: 'open' | 'submit' | 'sync') => req<ItemView>('POST', `/api/items/${id}/epic/${action}`, {}),
   finishFromWorktree: (id: string) => req<ItemView>('POST', `/api/items/${id}/finish`),
+  syncWithBase: (id: string) => req<ItemView & { result: string }>('POST', `/api/items/${id}/sync`, {}),
   unblock: (id: string, message?: string) => req<ItemView>('POST', `/api/items/${id}/unblock`, { message }),
   decide: (id: string, body: { choice?: string; text?: string }) => req<ItemView>('POST', `/api/items/${id}/decision`, body),
   respond: (id: string, payload: Record<string, unknown>) => req<{ ok: true }>('POST', `/api/items/${id}/respond`, payload),

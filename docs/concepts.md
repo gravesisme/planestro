@@ -94,6 +94,17 @@ An epic's children can be written by hand, or proposed by the planner: see
   once they have all merged, planestro rebases its branch onto the base (a conflict goes to the
   session, as in any sync) and resumes the session with the message. The orchestrator can do
   the same from triage (`resume_after`). **Stop waiting** makes it a plain block again.
+- **Sync with base** (an item action, and the orchestrator's `sync_with_base`) — brings a worker
+  branch up to date with its base between turns, for when something it needs has merged since
+  its worktree was cut (the session cannot use what its branch does not have). It rebases onto
+  `origin/<base>` and pushes with `--force-with-lease` only if the branch is already pushed; an
+  epic's integration branch has the base merged in instead and is never rewritten. A branch
+  already on the base tip is left alone, and a pushed branch that moved on its own (commits the
+  worktree lacks) is never rebased or pushed over: the sync is refused as diverged. It is refused while a turn or step runs, while the item
+  awaits an answer, or with uncommitted changes; a conflict is aborted and goes to the session
+  (a blocked item stays blocked). The orchestrator's `unblock_item` takes `sync_first: true` to
+  sync before the session resumes, and a wake about an item says which of its dependencies
+  merged after its worktree was cut.
 - **PAUSE AUTOMATION** — the global lever: running steps finish, nothing new starts,
   across restarts.
 
@@ -187,7 +198,9 @@ not counted as needing you. It then does one of two things:
   (resubmit the plan an MCP "Stream closed" ate, carry on after a hiccup), `answer_question`
   when the brief already answers the worker, `retry_op` for a transient GitHub 5xx or network
   failure, `set_item_fields` for a wrong parent / base / dependency / implementer / fallback
-  setting (a whitelist — nothing else), and `recreate_worktree` for a missing worktree or one
+  setting (a whitelist — nothing else), `sync_with_base` (or `unblock_item` with
+  `sync_first`) for an item whose dependency merged after its worktree was cut, and
+  `recreate_worktree` for a missing worktree or one
   cut from the wrong base. That last one refuses if the tree is dirty or the branch has any
   commit that is not on the old or the new base, re-runs the setup hooks, then unblocks;
 - **asks you one decision** with `ask_user_decision` when the call is genuinely yours —

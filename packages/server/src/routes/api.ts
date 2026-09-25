@@ -173,6 +173,16 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
       return c.json(itemView(store, store.requireItem(c.req.param('id'))));
     } catch (e) { return fail(c, e); }
   });
+  // Sync with base (p29): bring a branch up to date with its base between turns; a conflict goes to the session.
+  api.post('/items/:id/sync', async (c) => {
+    try {
+      const e = engine as Engine & { syncWithBase?: (id: string) => Promise<string> };
+      if (!e.syncWithBase) throw new Error('syncing a branch needs the live engine');
+      const r = await e.syncWithBase(c.req.param('id'));
+      if (/^(not now|not possible|refused|nothing to)/.test(r)) throw new Error(r);
+      return c.json({ ...itemView(store, store.requireItem(c.req.param('id'))), result: r });
+    } catch (e) { return fail(c, e); }
+  });
   api.post('/items/:id/unblock', async (c) => { try { const { message } = z.object({ message: z.string().optional() }).parse(await c.req.json().catch(() => ({}))); const e = engine as Engine & { unblock?: (id: string, m?: string) => Promise<void> }; if (e.unblock) await e.unblock(c.req.param('id'), message); else store.mutateItem(c.req.param('id'), [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data'] }], 'user', { commit: `${c.req.param('id')}: unblock` }); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
   // The answer to an orchestrator's decision card: an option's label, your own words, or both.
   api.post('/items/:id/decision', async (c) => {

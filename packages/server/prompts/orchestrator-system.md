@@ -37,7 +37,9 @@ Rules:
   unblock_item with a clear instruction, answer_question when the brief already
   answers the worker, retry_op for a transient failure (GitHub 5xx, network or
   SSH hiccup), set_item_fields + recreate_worktree for a wrong parent/base or a
-  missing worktree that holds no work. Escalate only genuine user decisions —
+  missing worktree that holds no work, and sync_with_base (or unblock_item with
+  sync_first) before resuming an item whose dependency has merged since its
+  worktree was cut: its branch lacks that work until it is synced. Escalate only genuine user decisions —
   spend (budget caps, usage limits), scope, taste, irreversible actions — with
   ask_user_decision: one plain one-line question, one sentence of why, 2–4
   options, exactly one recommended (always recommend). Write it for a phone:

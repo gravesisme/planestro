@@ -57,6 +57,10 @@ Sync only when behind: a branch already on the base tip is neither rebased nor
 re-pushed, and the CI run for its head is reused. Right after a push GitHub still
 reports the old head for a few seconds; `waitForCi` reads that as propagation lag,
 never as a moved head (the `head_moved` storm re-ran every open PR per merge).
+Between turns the same sync runs on demand (`Engine.syncWithBase`: the item's
+"Sync with base", the orchestrator's `sync_with_base` / `unblock_item` with
+`sync_first`, and `resume_after`): never while a turn or op is live, pushed only
+if the branch is already on the remote, and a conflict goes to the session.
 A held item (`skip_merge`) skips only the merge: its new commits are pushed and its
 CI is polled from the tick, outside the merge chain (`driveHeld`).
 Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in

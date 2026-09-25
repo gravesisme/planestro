@@ -52,6 +52,14 @@ const USAGE_RESUME_GRACE_MS = 60_000;
 const SAME_CROSSING_MS = 5 * 60_000;
 const MAX_TIMER_MS = 2 ** 31 - 1;
 
+/** What a sync with the base did (LiveEngine.syncBranch). */
+type SyncOutcome =
+  | { kind: 'current'; base: string; baseSha: string }
+  | { kind: 'synced'; base: string; baseSha: string; head: string; pushed: boolean; integration: boolean }
+  | { kind: 'dirty'; base: string; behind: number; files: string[] }
+  | { kind: 'diverged'; base: string; local: string; remote: string }
+  | { kind: 'conflict'; base: string; baseSha: string; files: string[]; integration: boolean; cwd: string };
+
 export class LiveEngine implements Engine {
   readonly mode: 'live' | 'dry-run';
   log: ServerEvent[] = [];
@@ -94,7 +102,8 @@ export class LiveEngine implements Engine {
       decidePermission: (id, decision, reason) => this.orchestratorDecidesPermission(id, decision, reason),
       permissionReviewEnded: (id) => this.handPermissionToUser(id, 'the orchestrator looked at it without deciding'),
       handOff: (from, to, paths, note) => this.handOff(from, to, paths, note, 'orchestrator'),
-      unblock: (id, message) => this.orchestratorUnblocks(id, message),
+      unblock: (id, message, syncFirst) => this.orchestratorUnblocks(id, message, syncFirst),
+      syncWithBase: (id) => this.syncWithBase(id, { by: 'orchestrator' }),
       answerQuestion: (id, answers) => this.orchestratorAnswers(id, answers),
       setItemFields: (id, fields) => this.orchestratorSetsFields(id, fields),
       recreateWorktree: (id, message) => this.recreateWorktree(id, message),
@@ -1350,8 +1359,10 @@ export class LiveEngine implements Engine {
         // stale in-flight ops (turn ops are handled by resumeInterrupted)
         if (fm.op && !RESUMABLE_TURN_OPS.has(fm.op) && !this.jobs.has(id) && !this.turns.has(id)) {
           if (fm.op === 'rebasing' || fm.op === 'syncing_base') {
-            if (wtAbs && wtEntry && await this.ports.git.inProgressOp(wtAbs)) { await this.ports.git.abortInProgress(wtAbs); correct(id, `aborted a half-done ${fm.op} left by a crash`, [{ unset: ['op', 'op_started_at'] }, { set: { ci_result: 'pending' } }]); }
-            else correct(id, `cleared stale op ${fm.op}`, [{ unset: ['op', 'op_started_at'] }, { set: { ci_result: 'pending' } }]);
+            // A sync between turns (syncWithBase) has no CI verdict to reset; the merge step's does.
+            const pendingCi: ItemOp[] = fm.status === 'IN_REVIEW' ? [{ set: { ci_result: 'pending' } }] : [];
+            if (wtAbs && wtEntry && await this.ports.git.inProgressOp(wtAbs)) { await this.ports.git.abortInProgress(wtAbs); correct(id, `aborted a half-done ${fm.op} left by a crash`, [{ unset: ['op', 'op_started_at'] }, ...pendingCi]); }
+            else correct(id, `cleared stale op ${fm.op}`, [{ unset: ['op', 'op_started_at'] }, ...pendingCi]);
           } else if (fm.op === 'pushing' || fm.op === 'creating_pr') {
             const pr = github && fm.branch ? (await this.ports.gh.prList(github, { head: fm.branch, state: 'open' }))[0] : undefined;
             if (pr && fm.status === 'IN_PROGRESS') correct(id, `adopted PR #${pr.number} opened before the crash`, [{ transition: { to: 'IN_REVIEW', actor: 'engine' } }, { set: { pr: pr.number, ci_result: 'pending' } }, { unset: ['op', 'op_started_at'] }]);
@@ -1559,22 +1570,10 @@ export class LiveEngine implements Engine {
     void this.tick();
   }
 
-  /** Deterministic "Sync with base": merge origin/<base> into the integration branch and push plainly. */
+  /** The epic page's "Sync with base": the general sync (syncWithBase), which merges origin/<base> into an integration branch. */
   async syncBase(id: string): Promise<void> {
-    const item = this.store.requireItem(id);
-    const fm = item.file.frontmatter;
-    if (fm.kind !== 'epic' || fm.status !== 'IN_PROGRESS' || !fm.branch) throw new Error(`${id} is not an open epic`);
-    const base = this.store.derived(item).base_branch!;
-    const dir = fm.worktree ? this.absWorktree(fm.worktree) : join(this.store.worktreesRoot(), `merge-${id.toLowerCase()}`);
-    const opId = this.store.journal.begin('syncing_base', id, { base });
-    this.store.mutateItem(id, [{ set: { op: 'syncing_base', op_started_at: this.now(), ...(fm.worktree ? {} : { worktree: dir }) } }], 'engine');
-    await this.ports.git.fetch(this.repo);
-    await this.ports.git.worktreeAdd(this.repo, dir, fm.branch, `origin/${fm.branch}`);
-    const sync = await this.ports.git.merge(dir, `origin/${base}`);
-    if (!sync.ok) { this.store.journal.end(opId, id, 'aborted', { reason: 'conflict' }); this.block(id, 'sync_conflict', `merging ${base} into ${fm.branch} conflicted in ${sync.conflicts.join(', ')}; resolve by hand in ${dir}`); return; }
-    await this.ports.git.pushSetUpstream(dir, fm.branch);
-    this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { activity: { actor: 'app', text: `merged origin/${base} into ${fm.branch} and pushed (${sync.head.slice(0, 7)})` } }], 'engine', { commit: `${id}: sync with ${base}` });
-    this.store.journal.end(opId, id, 'ok');
+    const r = await this.syncWithBase(id, { by: 'user' });
+    if (/^(not now|not possible|refused)/.test(r)) throw new Error(r);
   }
 
   // ---- externally driven items (watched) ----
@@ -1801,10 +1800,12 @@ export class LiveEngine implements Engine {
 
   private busyWith(id: string): string | undefined { return this.jobs.has(id) || this.turns.has(id) ? `${id} has a step running; let it finish first` : undefined; }
 
-  private async orchestratorUnblocks(id: string, message?: string): Promise<string> {
+  private async orchestratorUnblocks(id: string, message?: string, syncFirst = false): Promise<string> {
     const fm = this.store.requireItem(id).file.frontmatter;
     if (!fm.blocked && fm.awaiting !== 'user') return `nothing to unblock: ${id} is not blocked${fm.awaiting ? ` (it is awaiting ${fm.awaiting}; answer that instead)` : ''}`;
     const busy = this.busyWith(id); if (busy) return `not now: ${busy}`;
+    // Sync first (p29): the branch takes in what merged since it was cut before the session resumes; a refusal leaves it blocked.
+    if (syncFirst) return this.syncWithBase(id, { by: 'orchestrator', unblock: { message: message?.trim() || undefined } });
     await this.unblock(id, message?.trim() || undefined, 'orchestrator');
     return message?.trim() && this.phaseFor(fm.status) ? 'unblocked; the session resumes with your message' : 'unblocked; the pipeline retries from where it stopped';
   }
@@ -2154,34 +2155,152 @@ export class LiveEngine implements Engine {
   }
 
   /**
-   * What it waited for is in the base now, not yet on its branch: bring a clean branch up to date
-   * first (a worker branch rebases), so the session resumes with what it needs (HH-118 resumed without
-   * the flag it had waited for, p29). A conflict goes to the session as any sync conflict does.
+   * What it waited for is in the base now, not yet on its branch: bring the branch up to date first
+   * (syncBranch: a worker branch rebases), so the session resumes with what it needs (HH-118 resumed
+   * without the flag it had waited for, p29). A conflict goes to the session as any sync conflict does.
    */
   private async resumeWaited(id: string, merged: string[], message: string): Promise<void> {
-    const item = this.store.requireItem(id);
-    const fm = item.file.frontmatter;
+    const fm = this.store.requireItem(id).file.frontmatter;
     const phase = this.phaseFor(fm.status);
     if (!phase) return;
+    const had = `${merged.join(', ')} ${merged.length === 1 ? 'has' : 'have'} merged`;
+    const sync = fm.worktree ? await this.syncBranch(id, 'before resuming') : undefined;
+    if (sync?.kind === 'conflict') { await this.runTurnFor(id, 'fix', `${this.conflictPrompt(id, sync)}\n\nThen continue with what you were waiting to do (${had}):\n\n${message}`); return; }
+    const synced = sync?.kind === 'diverged' ? `planestro did not rebase your branch: the worktree (${sync.local.slice(0, 7)}) and the pushed branch (${sync.remote.slice(0, 7)}) have diverged, so someone pushed commits you do not have. Look at them first (git log HEAD..origin/${fm.branch}); ask with report_blocked if you need them brought in.`
+      : sync?.kind === 'synced' ? `Your branch was rebased onto origin/${sync.base} (${sync.head.slice(0, 7)}), so it has what ${merged.join(', ')} delivered.`
+      : sync?.kind === 'dirty' ? `Your branch is ${sync.behind} commit${sync.behind === 1 ? '' : 's'} behind origin/${sync.base}, which now has ${merged.join(', ')}; planestro did not rebase it because your worktree has uncommitted changes. Commit them first; ask with report_blocked if you need the rebase.`
+      : '';
+    await this.runTurnFor(id, phase, `${this.resumeNote(id, `${merged.join(', ')} merging`)}\n\n${had}.${synced ? ` ${synced}` : ''}\n\n${message}`);
+  }
+
+  /**
+   * "Sync with base" between turns (p29): bring an item's branch up to date with origin/<base_branch>
+   * while no turn is live, so a session resumed after a dependency merged has it (the orchestrator has
+   * no git, and resumed HH-118 on the old base). A worker branch rebases and, only if it is already
+   * pushed, is pushed with --force-with-lease; an epic's integration branch merges the base in and is
+   * pushed plainly, never rewritten. A branch already on the base tip is left alone. A conflict is
+   * aborted and goes to the item's session (the rebase-conflict prompt), or blocks it when there is
+   * no session to take it or it is blocked and was not asked to go on. With `unblock`, a stopped item
+   * is then unblocked as unblock_item would (with the message, its session resumes told of the sync).
+   * Waits for the git part and returns what happened, in words, for the API and the orchestrator.
+   */
+  async syncWithBase(id: string, opts: { by?: 'user' | 'orchestrator'; unblock?: { message?: string } } = {}): Promise<string> {
+    const by = opts.by ?? 'user';
+    const item = this.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    const d = this.store.derived(item);
+    const epic = fm.kind === 'epic';
+    if (this._paused || this.draining || this.stopping) return `not now: automation is ${this._paused ? 'paused' : 'stopping'}; nothing was synced`;
+    if (epic ? fm.status !== 'IN_PROGRESS' || !fm.branch : d.flavor !== 'worker' || !['PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS'].includes(fm.status)) return `not possible: ${id} is ${epic ? 'an epic that is not open' : `${fm.status}${d.flavor !== 'worker' ? ` (${d.flavor})` : ''}`}; only a worker item planning or in progress, or an open epic, is synced this way${fm.status === 'IN_REVIEW' ? ' (the merge pipeline syncs a pull request; retry_op re-enters it)' : ''}`;
+    if (!epic && (!fm.worktree || !fm.branch)) return `not possible: ${id} has no worktree or branch yet`;
+    const busy = this.busyWith(id); if (busy) return `not now: ${busy}`;
+    if (fm.op) return `not now: ${id} is ${fm.op.replace(/_/g, ' ')}; let it finish first`;
+    if (fm.awaiting && fm.awaiting !== 'user') return `not now: ${id} is awaiting ${fm.awaiting.replace(/_/g, ' ')}; answer that first`;
+    if (opts.unblock && !fm.blocked && fm.awaiting !== 'user') return `nothing to unblock: ${id} is not blocked; sync it without unblocking`;
+    const base = d.base_branch;
+    if (!base) return `not possible: ${d.base_branch_error ?? 'the base branch cannot be resolved'}`;
+    if (!epic) {
+      const dir = this.absWorktree(fm.worktree!);
+      if (!(await this.ports.git.worktreeList(this.repo).catch(() => [])).some((w) => w.path === dir && !w.prunable)) return `not possible: the worktree ${fm.worktree} is missing; use recreate_worktree`;
+      const { tracked } = await this.ports.git.dirtyDetail(dir);
+      if (tracked.length) return `refused: ${fm.worktree} has uncommitted changes (${tracked.slice(0, 5).join(', ')}); a rebase needs a clean tree, so nothing was touched`;
+    }
+    let out: SyncOutcome | undefined;
+    this.runJob(id, async () => { out = await this.syncBranch(id, by === 'orchestrator' ? 'for the orchestrator' : ''); });
+    await this.jobs.get(id);
+    const r = out as SyncOutcome | undefined;
+    if (!r) return `not synced: the sync of ${id} stopped (see its Activity log)`;
+    if (r.kind === 'conflict') {
+      const where = `${r.integration ? `merging origin/${r.base} into ${fm.branch}` : `rebasing ${fm.branch} onto origin/${r.base}`} conflicted in ${r.files.join(', ')}; it was aborted, so the branch is as it was`;
+      const cur = this.store.requireItem(id).file.frontmatter;
+      const phase = this.phaseFor(cur.status);
+      if (r.integration || !phase || !cur.session_id) { this.block(id, 'sync_conflict', `${where}, and ${r.integration ? 'an integration branch has' : 'it has'} no session to hand it to; resolve it by hand${r.integration ? ` in ${r.cwd}` : ''}`); return `conflict: ${where}; blocked for a person to resolve`; }
+      if (cur.blocked && !opts.unblock) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `${where}; ${id} stays blocked (${cur.blocked_reason}), so the conflict waits for it to be unblocked with a sync first` } }], 'engine'); return `conflict: ${where}. ${id} stays blocked (${cur.blocked_reason}); unblock it with sync_first to hand the conflict to its session`; }
+      const then = opts.unblock?.message?.trim() ? `Then continue with this:\n\n${opts.unblock.message.trim()}` : 'Once the rebase is done, carry on with your work on this item where you left off.';
+      this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, { activity: { actor: by, text: `${opts.unblock ? 'unblocked; ' : ''}the sync conflict goes to the session` } }], by, { commit: `${id}: sync conflict to the session` });
+      this.queueFollowUp(id, () => this.runTurnFor(id, 'fix', `${this.conflictPrompt(id, r)}\n\n${then}`));
+      return `conflict: ${where}. Handed to the session to resolve${opts.unblock?.message?.trim() ? ', with your message to act on after' : ''}`;
+    }
+    if (r.kind === 'diverged') return `refused: the worktree (${r.local.slice(0, 7)}) and the pushed branch ${fm.branch} (${r.remote.slice(0, 7)}) have diverged; not pushing either way. Someone pushed commits the worktree lacks: bring them into the worktree (or reset it to them) first; nothing was rebased or pushed`;
+    const said = r.kind === 'current' ? `already up to date: ${epic ? fm.branch : fm.branch ?? id} is on origin/${r.base}@${r.baseSha.slice(0, 7)}; nothing to sync`
+      : r.kind === 'dirty' ? `not synced: ${fm.worktree} has files in the way (${r.files.slice(0, 5).join(', ')}); commit or remove them first`
+      : `synced: ${r.integration ? `merged origin/${r.base} into ${fm.branch}` : `rebased onto origin/${r.base}`}@${r.baseSha.slice(0, 7)} (${r.head.slice(0, 7)})${r.pushed ? (r.integration ? ', pushed' : ', pushed with --force-with-lease') : ', local only (not pushed yet)'}`;
+    if (r.kind === 'dirty') return said;
+    if (opts.unblock) {
+      const note = r.kind === 'synced' ? `planestro rebased your branch onto origin/${r.base} (${r.head.slice(0, 7)}), so it has what has merged there since you started.` : `Your branch is already on origin/${r.base}.`;
+      await this.unblock(id, opts.unblock.message?.trim() ? `${note}\n\n${opts.unblock.message.trim()}` : undefined, by);
+      return `${said}; unblocked${opts.unblock.message?.trim() ? ', and the session resumes with your message' : ', and the pipeline retries from where it stopped'}`;
+    }
+    return said;
+  }
+
+  /** The rebase-conflict prompt for a sync that stopped on a conflict. */
+  private conflictPrompt(id: string, r: { files: string[]; baseSha: string }): string {
+    return this.store.renderPrompt('rebase-conflict', this.store.requireItem(id), { conflict_files: r.files.join('\n'), base_sha: r.baseSha.slice(0, 12) });
+  }
+
+  /**
+   * The git of a sync, run inside the item's job. `op` says what is in flight (rebasing /
+   * syncing_base / pushing), so a restart part-way is recovered by reconcile (a half-done rebase is
+   * aborted). The mechanics are the merge step's: fetch, the one dirty tree it may clear
+   * (displaceRegenerated), sync only when behind, rebase or merge, push with a lease or plainly.
+   */
+  private async syncBranch(id: string, context = ''): Promise<SyncOutcome> {
+    const item = this.store.requireItem(id);
+    let fm = item.file.frontmatter;
     const base = this.store.derived(item).base_branch!;
-    const cwd = fm.worktree ? this.absWorktree(fm.worktree) : undefined;
-    let synced = '';
-    if (cwd) {
-      await this.ports.git.fetch(this.repo);
-      const { clean } = await this.ports.git.status(cwd);
+    const integration = fm.kind === 'epic';
+    const branch = fm.branch!;
+    const opId = this.store.journal.begin('sync_with_base', id, { base, branch });
+    this.store.mutateItem(id, [{ set: { op: integration ? 'syncing_base' : 'rebasing', op_started_at: this.now() } }], 'engine');
+    const done = (status: 'ok' | 'aborted', data: Record<string, unknown>, text?: string): void => {
+      this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, ...(text ? [{ activity: { actor: 'app', text } } as ItemOp] : [])], 'engine', text ? { commit: `${id}: sync with ${base}` } : undefined);
+      this.store.journal.end(opId, id, status, data);
+    };
+    await this.ports.git.fetch(this.repo);
+    let cwd: string;
+    if (integration) {
+      // An epic has no session worktree: sync in a temporary one on its integration branch, first taking in what merged into that branch remotely.
+      cwd = fm.worktree ? this.absWorktree(fm.worktree) : join(this.store.worktreesRoot(), `merge-${id.toLowerCase()}`);
+      if (!(await this.ports.git.worktreeList(this.repo)).some((w) => w.path === cwd && !w.prunable)) await this.ports.git.worktreeAdd(this.repo, cwd, branch, `origin/${branch}`);
+      if (!fm.worktree) { this.store.mutateItem(id, [{ set: { worktree: cwd } }], 'engine'); fm = this.store.requireItem(id).file.frontmatter; }
+      if (await this.ports.git.remoteBranchSha(this.repo, branch)) {
+        const own = await this.ports.git.merge(cwd, `origin/${branch}`);
+        if (!own.ok) { done('aborted', { reason: 'conflict', files: own.conflicts }, `merge of origin/${branch} into its local copy conflicted in ${own.conflicts.join(', ')}`); return { kind: 'conflict', base, baseSha: await this.ports.git.revParse(this.repo, `origin/${base}`), files: own.conflicts, integration, cwd }; }
+      }
+    } else cwd = this.absWorktree(fm.worktree!);
+    const { clean } = await this.ports.git.status(cwd);
+    if (!clean && !(await this.displaceRegenerated(id, cwd, base))) {
       const { behind } = await this.ports.git.aheadBehind(cwd, `origin/${base}`, 'HEAD');
-      if (behind > 0 && !clean) synced = `Your branch is ${behind} commit${behind === 1 ? '' : 's'} behind origin/${base}, which now has ${merged.join(', ')}; planestro did not rebase it because your worktree has uncommitted changes. Commit them first; ask with report_blocked if you need the rebase.`;
-      else if (behind > 0) {
-        const r = await this.ports.git.rebase(cwd, `origin/${base}`);
-        if (!r.ok) {
-          await this.runTurnFor(id, 'fix', `${this.store.renderPrompt('rebase-conflict', this.store.requireItem(id), { conflict_files: r.conflicts.join('\n'), base_sha: (await this.ports.git.revParse(this.repo, `origin/${base}`)).slice(0, 12) })}\n\nThen continue with what you were waiting to do (${merged.join(', ')} ${merged.length === 1 ? 'has' : 'have'} merged):\n\n${message}`);
-          return;
-        }
-        synced = `Your branch was rebased onto origin/${base} (${r.head.slice(0, 7)}), so it has what ${merged.join(', ')} delivered.`;
-        this.store.mutateItem(id, [{ activity: { actor: 'app', text: `rebased onto origin/${base} before resuming (${r.head.slice(0, 7)})` } }], 'engine');
+      const { dirty } = await this.ports.git.status(cwd);
+      done('aborted', { reason: 'dirty' }, `not synced with origin/${base}: the worktree has uncommitted changes (${dirty.slice(0, 5).join(', ')})`);
+      return { kind: 'dirty', base, behind, files: dirty };
+    }
+    const baseSha = await this.ports.git.revParse(this.repo, `origin/${base}`);
+    const { behind } = await this.ports.git.aheadBehind(cwd, `origin/${base}`, 'HEAD');
+    if (behind === 0) { done('aborted', { reason: 'up_to_date' }, `already on ${base}@${baseSha.slice(0, 7)}; no sync needed${context ? ` ${context}` : ''}`); return { kind: 'current', base, baseSha }; }
+    const expected = await this.ports.git.remoteBranchSha(this.repo, branch);
+    // A pushed worker branch that moved on its own (a person finishing it by hand, p28) is never rebased away and pushed over: positive evidence first, as driveHeld and cleanup ask.
+    if (!integration && expected) {
+      const local = await this.ports.git.revParse(cwd, 'HEAD');
+      if (expected !== local && !(await this.ports.git.isAncestor(cwd, expected, local))) {
+        done('aborted', { reason: 'diverged', local, remote: expected }, `not synced: the worktree (${local.slice(0, 7)}) and the pushed branch (${expected.slice(0, 7)}) have diverged; not pushing either way`);
+        return { kind: 'diverged', base, local, remote: expected };
       }
     }
-    await this.runTurnFor(id, phase, `${this.resumeNote(id, `${merged.join(', ')} merging`)}\n\n${merged.join(', ')} ${merged.length === 1 ? 'has' : 'have'} merged.${synced ? ` ${synced}` : ''}\n\n${message}`);
+    const sync = integration ? await this.ports.git.merge(cwd, `origin/${base}`) : await this.ports.git.rebase(cwd, `origin/${base}`);
+    if (!sync.ok) {
+      done('aborted', { reason: 'conflict', files: sync.conflicts }, `${integration ? 'merge of' : 'rebase onto'} origin/${base} (${baseSha.slice(0, 7)}) conflicted in ${sync.conflicts.join(', ')}; aborted, the branch is unchanged`);
+      return { kind: 'conflict', base, baseSha, files: sync.conflicts, integration, cwd };
+    }
+    // Pushed only when the branch is already on the remote: a branch no one has seen needs only the local rebase.
+    if (expected) {
+      this.store.mutateItem(id, [{ set: { op: 'pushing', op_started_at: this.now() } }], 'engine');
+      if (integration) await this.ports.git.pushSetUpstream(cwd, branch);
+      else await this.ports.git.pushForceWithLease(cwd, branch, expected);
+    }
+    done('ok', { head: sync.head, pushed: Boolean(expected) }, `${integration ? `merged origin/${base} into ${branch}` : `rebased onto origin/${base}`}${context ? ` ${context}` : ''} (${sync.head.slice(0, 7)}${expected ? (integration ? ', pushed' : ', pushed with --force-with-lease') : ''})`);
+    return { kind: 'synced', base, baseSha, head: sync.head, pushed: Boolean(expected), integration };
   }
 
   /** User-driven unblock: clears the flag and, if the item is in a session phase, resumes with a message. */
