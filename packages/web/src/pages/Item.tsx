@@ -12,6 +12,7 @@ import { fallbackHint } from '../components/NewItemDialog.tsx';
 import { BreakdownPanel } from '../components/BreakdownPanel.tsx';
 import { BlockedPanel } from '../components/BlockedPanel.tsx';
 import { WaitingPanel } from '../components/ResumeAfter.tsx';
+import { TakeOverButton, TakenOverPanel } from '../components/TakeOver.tsx';
 import { AwaitingPanels } from '../components/AwaitingPanels.tsx';
 import { PartsStrip } from '../components/PartsStrip.tsx';
 import { DecisionCard } from '../components/DecisionCard.tsx';
@@ -87,7 +88,9 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           {fm.blocked && <span className="pill blocked">BLOCKED{fm.blocked_reason ? ` · ${fm.blocked_reason}` : ''}</span>}
           {fm.awaiting && <span className={`pill ${d.needs_you ? 'await' : ''}`}>{decisionOf(fm) ? 'your decision' : `awaiting ${fm.awaiting.replace(/_/g, ' ')}`}</span>}
           {fm.triage && <span className="pill triage">orchestrator triaging</span>}
+          {fm.taken_over && <span className="pill yours">yours · by hand</span>}
           {fm.op && <span className="pill">{fm.op.replace(/_/g, ' ')}</span>}
+          <TakeOverButton item={item} />
           {transitions.filter((t) => !(t.to === 'IN_PROGRESS' && fm.status === 'PLAN_READY') && !(t.to === 'PLAN_IN_PROGRESS' && fm.status === 'PLAN_READY')).map((t) => (
             t.to === 'FINISHED'
               ? <button key={t.to} title={CLOSE_HINT} onClick={closeAsDone}>{t.label}…</button>
@@ -118,6 +121,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           </div>
         )}
 
+        <TakenOverPanel item={item} />
         <BlockedPanel item={item} />
         <WaitingPanel item={item} />
         {fm.status === 'PLAN_READY' && fm.kind === 'epic' && <BreakdownPanel item={item} />}
@@ -159,7 +163,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
         <div className="section"><h2>Session</h2>
           {session ? <p>{session.busy ? 'running' : 'idle'} · {session.model} · {session.op ?? ''}<br /><span className="small muted">{session.last_output}</span></p> : <p className="muted small">No live session. {fm.session_id ? `Parked session ${fm.session_id.slice(0, 8)}… resumes when needed.` : 'Nothing has run for this item yet.'}</p>}
           {fm.session_id && !session && <p className="small muted">Open in a terminal (pauses planestro's use of it while attached): <code>claude --resume {fm.session_id}</code> <button className="small" onClick={() => void navigator.clipboard.writeText(`claude --resume ${fm.session_id}`)}>copy</button></p>}
-          <form className="row" onSubmit={(e) => { e.preventDefault(); if (!msg.trim()) return; void act(() => api.message(item.id, msg)); setMsg(''); }}><input className="grow" placeholder="Message to the session (queued for its next turn)" value={msg} onChange={(e) => setMsg(e.target.value)} /><button type="submit" disabled={!msg.trim()}>Send</button></form>
+          <form className="row" onSubmit={(e) => { e.preventDefault(); if (!msg.trim()) return; void act(() => api.message(item.id, msg)); setMsg(''); }}><input className="grow" placeholder={fm.taken_over ? 'You have this item: hand it back to talk to its session' : 'Message to the session (queued for its next turn)'} disabled={!!fm.taken_over} value={msg} onChange={(e) => setMsg(e.target.value)} /><button type="submit" disabled={!msg.trim() || !!fm.taken_over}>Send</button></form>
           <h2 style={{ marginTop: 12 }}>Console</h2>
           <ItemConsole id={item.id} />
         </div>

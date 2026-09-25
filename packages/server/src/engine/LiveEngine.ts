@@ -120,6 +120,7 @@ export class LiveEngine implements Engine {
 
   /** Fire-and-forget judgment wake (invariant 4: never for anything a state machine can know). */
   private wakeOrchestrator(type: string, item?: string, data?: Record<string, unknown>): void {
+    if (item && this.store.getItem(item)?.file.frontmatter.taken_over) return; // a person has it: nothing to judge
     this.orchestrator.wake({ type, item, data });
   }
 
@@ -254,7 +255,7 @@ export class LiveEngine implements Engine {
     const after = this.store.config.review.nudge_after_min * 60_000;
     for (const item of this.store.listItems()) {
       const fm = item.file.frontmatter;
-      if (fm.awaiting !== 'review' || fm.op_data?.review_nudged || Date.now() - new Date(fm.updated_at).getTime() < after) continue;
+      if (fm.awaiting !== 'review' || fm.taken_over || fm.op_data?.review_nudged || Date.now() - new Date(fm.updated_at).getTime() < after) continue;
       this.store.mutateItem(item.id, [{ set: { op_data: { ...(fm.op_data ?? {}), review_nudged: true } } }], 'engine');
       this.wakeOrchestrator('review_pending', item.id, { waiting_min: Math.round((Date.now() - new Date(fm.updated_at).getTime()) / 60_000) });
     }
@@ -279,7 +280,7 @@ export class LiveEngine implements Engine {
     for (const item of items) {
       if (free <= 0) break;
       const fm = item.file.frontmatter;
-      if (fm.status !== 'QUEUED' || this.jobs.has(item.id)) continue;
+      if (fm.status !== 'QUEUED' || this.jobs.has(item.id) || fm.taken_over) continue;
       let d = this.store.derived(item);
       if (d.flavor !== 'worker' || !d.deps_satisfied) continue;
       if (fm.parent) {
@@ -311,7 +312,7 @@ export class LiveEngine implements Engine {
     for (const item of this.store.listItems()) {
       const fm = item.file.frontmatter;
       if (!ACTIVE_FOR_SLOTS.includes(fm.status) || fm.kind === 'epic' || this.store.derived(item).flavor !== 'worker') continue;
-      if (this.turns.has(item.id) || this.jobs.has(item.id) || this.followUps.has(item.id) || fm.op || fm.awaiting || fm.blocked || fm.triage) continue;
+      if (this.turns.has(item.id) || this.jobs.has(item.id) || this.followUps.has(item.id) || fm.op || fm.awaiting || fm.blocked || fm.triage || fm.taken_over) continue;
       seen.add(item.id);
       const since = this.idleSince.get(item.id) ?? now;
       this.idleSince.set(item.id, since);
@@ -326,13 +327,14 @@ export class LiveEngine implements Engine {
     for (const id of this.idleSince.keys()) if (!seen.has(id)) this.idleSince.delete(id);
   }
 
-  private async carryOnStalled(id: string): Promise<void> {
+  /** Carry an idle item on from where it stands: committed work goes to its pull request, otherwise the session resumes. `from` says who found it idle, and why. */
+  private async carryOnStalled(id: string, from: { why: string; who: string; say: string } = { why: 'stalled', who: 'planestro (it found this item idle)', say: 'Nothing was driving this item: your last turn ended without finishing the step. Check your worktree and continue where you left off.' }): Promise<void> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
     const dir = fm.worktree ? this.absWorktree(fm.worktree) : undefined;
     const exists = dir ? (await this.ports.git.worktreeList(this.repo)).some((w) => w.path === dir && !w.prunable) : false;
     // A missing worktree is triage's to judge (recreate_worktree, or retry_op's requeue), not a stall's.
-    if (!exists) { this.block(id, 'worktree_missing', `stalled with its worktree ${fm.worktree ?? '(none)'} missing; nothing recreated`); return; }
+    if (!exists) { this.block(id, 'worktree_missing', `${from.why} with its worktree ${fm.worktree ?? '(none)'} missing; nothing recreated`); return; }
     if (fm.status === 'IN_PROGRESS') {
       const { clean } = await this.ports.git.status(dir!);
       const base = this.store.derived(item).base_branch;
@@ -340,7 +342,7 @@ export class LiveEngine implements Engine {
       if (ahead > 0) { await this.afterWorkTurn(id, 'implement', { subtype: 'success', isError: false, costUsd: 0, numTurns: 0, text: '', done: String(fm.op_data?.done_summary ?? '') || undefined }); return; }
     }
     const phase = this.phaseFor(fm.status)!;
-    await this.runTurnFor(id, phase, `${this.resumeNote(id, 'planestro (it found this item idle)')}\n\nNothing was driving this item: your last turn ended without finishing the step. Check your worktree and continue where you left off.`);
+    await this.runTurnFor(id, phase, `${this.resumeNote(id, from.who)}\n\n${from.say}`);
   }
 
   /**
@@ -353,7 +355,7 @@ export class LiveEngine implements Engine {
       const fm = item.file.frontmatter;
       if (fm.status !== 'IN_PROGRESS' || !fm.blocked || fm.blocked_reason !== 'agent_blocked' || (fm.awaiting && fm.awaiting !== 'user')) continue;
       const done = fm.op_data?.done_summary as string | undefined;
-      if (!done || !fm.worktree || this.store.derived(item).flavor !== 'worker' || this.jobs.has(item.id) || this.turns.has(item.id)) continue;
+      if (!done || !fm.worktree || fm.taken_over || this.store.derived(item).flavor !== 'worker' || this.jobs.has(item.id) || this.turns.has(item.id)) continue;
       this.store.mutateItem(item.id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, { activity: { actor: 'app', text: 'cleared a stale agent_blocked flag (the session reported done after it); checking the work' } }], 'engine', { commit: `${item.id}: clear stale block` });
       this.runJob(item.id, () => this.afterWorkTurn(item.id, 'implement', { subtype: 'success', isError: false, costUsd: 0, numTurns: 0, text: '', done }));
     }
@@ -373,7 +375,7 @@ export class LiveEngine implements Engine {
   private drivePlanReviews(): void {
     for (const item of this.store.listItems()) {
       const fm = item.file.frontmatter;
-      if (fm.status !== 'PLAN_READY' || fm.blocked || fm.awaiting_data?.kind === 'permission') continue;
+      if (fm.status !== 'PLAN_READY' || fm.blocked || fm.taken_over || fm.awaiting_data?.kind === 'permission') continue;
       if (fm.awaiting === 'orchestrator') {
         if (!this.planDelegated(fm)) this.handPlanToUser(item.id, 'its approval is no longer delegated to the orchestrator');
         else if (!this.orchestrator.reviewing(item.id)) this.wakeOrchestrator('plan_review', item.id);
@@ -392,7 +394,7 @@ export class LiveEngine implements Engine {
   private drivePermissionReviews(): void {
     for (const item of this.store.listItems()) {
       const fm = item.file.frontmatter;
-      if (fm.blocked || !this.phaseFor(fm.status)) continue;
+      if (fm.blocked || fm.taken_over || !this.phaseFor(fm.status)) continue;
       if (fm.awaiting === 'orchestrator' && fm.awaiting_data?.kind === 'permission') {
         if (!this.permissionsDelegated()) this.handPermissionToUser(item.id, 'permission requests are no longer delegated to the orchestrator');
         else if (!this.orchestrator.reviewing(item.id)) this.wakeOrchestrator('permission_request', item.id);
@@ -464,7 +466,7 @@ export class LiveEngine implements Engine {
   private driveInReview(): void {
     const candidates = this.store.listItems().filter((item) => {
       const fm = item.file.frontmatter;
-      if (fm.status !== 'IN_REVIEW' || fm.blocked || fm.awaiting || fm.skip_merge || this.jobs.has(item.id) || this.turns.has(item.id)) return false;
+      if (fm.status !== 'IN_REVIEW' || fm.blocked || fm.awaiting || fm.skip_merge || fm.taken_over || this.jobs.has(item.id) || this.turns.has(item.id)) return false;
       if (fm.ci_result === 'red' || fm.op_data?.needs_session_rebase) return false;
       const flavor = this.store.derived(item).flavor;
       if (flavor === 'external' && (fm.merge_policy ?? 'watch') === 'watch') return false; // watched: driveExternal observes it
@@ -488,13 +490,34 @@ export class LiveEngine implements Engine {
     const now = Date.now();
     for (const item of this.store.listItems()) {
       const fm = item.file.frontmatter;
-      if (fm.status !== 'IN_REVIEW' || !fm.skip_merge || fm.blocked || fm.awaiting || !fm.pr || !fm.branch || !fm.worktree) continue;
-      if (this.jobs.has(item.id) || this.turns.has(item.id) || fm.op || fm.op_data?.needs_session_rebase) continue;
+      // A taken-over PR is polled the same way, for its CI only: it is shown, never acted on.
+      const owned = Boolean(fm.taken_over);
+      if (fm.status !== 'IN_REVIEW' || !(fm.skip_merge || owned) || fm.blocked || fm.awaiting || !fm.pr || !fm.branch || (!fm.worktree && !owned)) continue;
+      if (this.jobs.has(item.id) || this.turns.has(item.id) || fm.op || (fm.op_data?.needs_session_rebase && !owned)) continue;
       if (this.store.derived(item).flavor !== 'worker') continue;
       if (now - (this.heldPolledAt.get(item.id) ?? 0) < HELD_POLL_MS) continue;
       this.heldPolledAt.set(item.id, now);
-      this.runJob(item.id, () => this.heldStep(item.id));
+      this.runJob(item.id, () => owned ? this.readOwnedCi(item.id) : this.heldStep(item.id));
     }
+  }
+
+  /**
+   * CI of a pull request a person has taken over (dogfood p28), for whatever head is on GitHub,
+   * whoever pushed it: recorded so the board shows it, and nothing else. No push, no fix turn, no
+   * merge; the hand-back sends it through the pipeline, which reuses this run for an unchanged head.
+   */
+  private async readOwnedCi(id: string): Promise<void> {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    const remote = await this.ports.git.remoteBranchSha(this.repo, fm.branch!);
+    if (!remote) return;
+    const ci = await this.ports.gh.ciForSha(this.github, fm.branch!, remote, this.ciWorkflow);
+    const result = ci.state === 'success' ? 'green' : ci.state === 'failure' ? 'red' : 'pending';
+    const cur = this.store.requireItem(id).file.frontmatter;
+    if (!cur.taken_over || (cur.ci_result === result && cur.ci_head_sha === remote)) return;
+    this.store.mutateItem(id, [
+      { set: { ci_result: result, ci_head_sha: remote, ...(ci.runId ? { op_data: { ...(cur.op_data ?? {}), ci: { runId: ci.runId, url: ci.url } } } : {}) } },
+      ...(result !== 'pending' ? [{ activity: { actor: 'app' as const, text: `CI is ${result} for ${remote.slice(0, 7)}${ci.url ? ` ${ci.url}` : ''} (you have this item: nothing is fixed or merged until you hand it back)` } }] : []),
+    ], 'engine');
   }
 
   private async heldStep(id: string): Promise<void> {
@@ -535,6 +558,8 @@ export class LiveEngine implements Engine {
   }
 
   private followUps = new Map<string, () => Promise<unknown>>();
+  /** Why a live turn was aborted on purpose (a take-over, a move into review), for the line its end writes. */
+  private stoppedFor = new Map<string, string>();
   /** Triage wakes held until the item's step (the turn that stopped) has finished: the orchestrator must find it idle to act on it. */
   private pendingWakes = new Map<string, { type: string; data?: Record<string, unknown> }>();
 
@@ -623,6 +648,7 @@ export class LiveEngine implements Engine {
     const fm = item.file.frontmatter;
     const phase = this.phaseFor(fm.status);
     if (!phase) throw new Error(`${id} has no session to message in status ${fm.status}`);
+    if (fm.taken_over) throw new Error(`${id} is yours (taken over): hand it back before messaging its session`);
     if (this.turns.has(id) || this.jobs.has(id)) {
       const pending = [...((fm.op_data?.pending_messages as string[] | undefined) ?? []), text];
       this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), pending_messages: pending } } }, { activity: { actor: 'user', text: `message queued: ${text}` } }], 'user');
@@ -641,6 +667,7 @@ export class LiveEngine implements Engine {
     const fm = item.file.frontmatter;
     const phase = this.phaseFor(fm.status);
     if (!phase) throw new Error(`${id} is not in a session phase`);
+    if (fm.taken_over) throw new Error(`${id} is yours (taken over): hand it back first`);
     if (payload.kind === 'question') {
       if (fm.awaiting !== 'question') throw new Error(`${id} is not awaiting a question`);
       const answers = payload.answers as Record<string, string>;
@@ -698,6 +725,8 @@ export class LiveEngine implements Engine {
     if (this.stopping) return undefined;
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
+    // The one door every turn goes through: nothing queued before a take-over (a fix, an answer, a resume) starts while a person has the item.
+    if (fm.taken_over) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `not starting its ${phase} turn: you have this item (taken over)` } }], 'engine'); return undefined; }
     const d = this.store.derived(item);
     const cwd = this.absWorktree(fm.worktree!);
     const modelId = phase === 'plan' ? fm.planner : fm.implementer;
@@ -761,7 +790,7 @@ export class LiveEngine implements Engine {
     const turnCap = phase === 'plan' ? Math.min(budgetLeft, this.store.config.budget_usd_per_plan_turn) : budgetLeft;
     let result: TurnResult;
     try {
-      result = await this.withRunnerSlot(runner, () => { admitted(); return agent.runTurn({
+      result = await this.withRunnerSlot(runner, () => { if (abort.signal.aborted) return Promise.resolve<TurnResult>({ subtype: 'killed', isError: false, costUsd: 0, numTurns: 0, text: '' }); admitted(); return agent.runTurn({
         itemId: id, phase, cwd, model: model as string, permissionMode: phase === 'plan' ? 'plan' : 'acceptEdits', prompt, resume: resumeId, images,
         systemAppend: `${this.store.renderPrompt(metered ? 'worker-system' : `worker-system-${runner}`, item)}\n\n${this.hostNote}`,
         ...(pick.sdkFallback ? { fallbackModel: pick.sdkFallback } : {}),
@@ -770,6 +799,8 @@ export class LiveEngine implements Engine {
         extraDirs: [this.store.dataDir], maxBudgetUsd: turnCap,
         tools: this.makeTools(id),
         onPermission: async (req) => {
+          // The turn is being stopped under a person who took the item over: nothing may park on them or wake anyone.
+          if (this.store.requireItem(id).file.frontmatter.taken_over) return { action: 'deny', message: 'Not allowed: the user has taken this item over and is finishing it by hand. Stop now and end your turn.' };
           // A call to one of the model's own servers: allowed while the item's call cap holds, counted on the item.
           const server = /^mcp__([^_]+(?:_[^_]+)*?)__/.exec(req.tool)?.[1];
           if (server && mcpServers[server]) {
@@ -793,6 +824,7 @@ export class LiveEngine implements Engine {
           return { action: 'park' };
         },
         onQuestion: async (questions) => {
+          if (this.store.requireItem(id).file.frontmatter.taken_over) return;
           const triage = this.triageOps(this.store.requireItem(id).file.frontmatter, 'question');
           this.store.mutateItem(id, [{ set: { awaiting: 'question', awaiting_data: { questions, requested_at: this.now() } } }, { activity: { actor: 'app', text: `parked: agent asked ${questions.length} question(s)` } }, ...triage.ops], 'engine', { commit: `${id}: awaiting answers` });
           if (triage.on) this.wakeWhenIdle(id, 'worker_question');
@@ -820,7 +852,8 @@ export class LiveEngine implements Engine {
     this.usageSeen(result.rateLimit);
     this.emit({ type: 'session.ended', id, subtype: result.subtype });
     for (const f of result.toolFailures ?? []) this.store.mutateItem(id, [{ activity: { actor: 'app', text: `planestro tool ${f.tool} failed before reaching planestro (nothing was recorded): ${f.error}` } }], 'engine');
-    if (result.subtype === 'killed') { this.store.mutateItem(id, [{ activity: { actor: 'app', text: 'turn interrupted (engine stopping); resumable' } }], 'engine'); return result; }
+    const stoppedFor = this.stoppedFor.get(id); this.stoppedFor.delete(id);
+    if (result.subtype === 'killed') { this.store.mutateItem(id, [{ activity: { actor: 'app', text: stoppedFor && !this.stopping ? `turn stopped: ${stoppedFor}` : 'turn interrupted (engine stopping); resumable' } }], 'engine'); return result; }
     if (result.subtype === 'usage_exhausted') {
       // Remember the outage for every item on this machine, then run the same turn again: with
       // fallback allowed it resolves to the next model in the chain; without, it blocks.
@@ -934,6 +967,7 @@ export class LiveEngine implements Engine {
   private async afterWorkTurn(id: string, phase: TurnPhase, result: TurnResult): Promise<void> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
+    if (fm.taken_over) return; // the person decides what is done now; the hand-back runs this check again
     const cwd = this.absWorktree(fm.worktree!);
     const base = this.store.derived(item).base_branch!;
     let { clean, dirty } = await this.ports.git.status(cwd);
@@ -976,6 +1010,7 @@ export class LiveEngine implements Engine {
   private async openPr(id: string, summary?: string): Promise<void> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
+    if (fm.taken_over) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: 'not opening a pull request: you have this item (taken over)' } }], 'engine'); return; }
     const cwd = this.absWorktree(fm.worktree!);
     const base = this.store.derived(item).base_branch!;
     const implementer = this.store.config.models.find((m) => m.id === fm.implementer);
@@ -1025,7 +1060,7 @@ export class LiveEngine implements Engine {
     if (this._paused || this.draining || this.stopping) return;
     let item = this.store.requireItem(id);
     let fm = item.file.frontmatter;
-    if (fm.status !== 'IN_REVIEW' || fm.blocked || fm.awaiting) return;
+    if (fm.status !== 'IN_REVIEW' || fm.blocked || fm.awaiting || fm.taken_over) return;
     if (hold && !fm.skip_merge) return;
     const d = this.store.derived(item);
     const base = d.base_branch!;
@@ -1181,6 +1216,7 @@ export class LiveEngine implements Engine {
     if (verdict === 'moved') { this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { ci_result: 'pending' } }], 'engine'); this.store.journal.end(opId, id, 'aborted', { reason: 'head_moved' }); void this.tick(); return; }
     // The engine is stopping, which says nothing about CI: leave `op: awaiting_ci` on the item, and the next start re-enters the pipeline.
     if (verdict === 'stopping') { this.store.journal.end(opId, id, 'aborted', { reason: 'engine_stopping' }); return; }
+    if (verdict === 'taken_over') { this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { activity: { actor: 'app', text: 'stopped waiting for CI to merge: you took this item over (its CI is still read)' } }], 'engine'); this.store.journal.end(opId, id, 'aborted', { reason: 'taken_over' }); return; }
     if (verdict === 'timeout') { this.store.journal.end(opId, id, 'aborted', { reason: 'ci_timeout' }); this.block(id, 'ci_timeout', `CI for ${headSha.slice(0, 7)} did not finish within ${cfg.timeout_min} min`); return; }
     if (verdict === 'blocked') {
       if (cfg.mode === 'github-or-local' && cfg.local_check_command) {
@@ -1211,8 +1247,8 @@ export class LiveEngine implements Engine {
       this.store.journal.end(opId, id, 'aborted', { reason: 'awaiting_review' });
       return true;
     }
-    if (latest.skip_merge || latest.blocked || latest.awaiting) {
-      this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { ci_result: 'green' } }, { activity: { actor: 'app', text: `CI is green but the item is held (${latest.skip_merge ? 'skip_merge' : latest.blocked ? 'blocked' : 'awaiting ' + latest.awaiting}); not merging` } }], 'engine');
+    if (latest.skip_merge || latest.blocked || latest.awaiting || latest.taken_over) {
+      this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { ci_result: 'green' } }, { activity: { actor: 'app', text: `CI is green but the item is held (${latest.taken_over ? 'taken over' : latest.skip_merge ? 'skip_merge' : latest.blocked ? 'blocked' : 'awaiting ' + latest.awaiting}); not merging` } }], 'engine');
       this.store.journal.end(opId, id, 'aborted', { reason: 'held_after_ci' });
       return true;
     }
@@ -1311,6 +1347,7 @@ export class LiveEngine implements Engine {
       { activity: { actor: 'app', text: `CI red (${source}, attempt ${count}) for ${headSha.slice(0, 7)}${ci?.url ? ` ${ci.url}` : ''}` } },
     ], 'engine', { commit: `${id}: CI red (${count})` });
     this.store.journal.end(opId, id, 'failed', { reason: 'ci_red', count });
+    if (this.store.requireItem(id).file.frontmatter.taken_over) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: 'no fix turn: you have this item (taken over)' } }], 'engine'); return; }
     if (!canFix) { this.block(id, 'ci_red', 'CI is red and there is no session to hand the failure to; investigate by hand'); return; }
     if (count >= 2) { this.block(id, 'ci_red_twice', `CI failed ${count} times`); this.wakeOrchestrator('ci_red_again', id, { failed_log: log.slice(0, 3000) }); return; }
     this.queueFollowUp(id, () => this.runTurnFor(id, 'fix', this.store.renderPrompt('ci-failed', this.store.requireItem(id), { ci: { attempt: String(count), run_url: ci?.url ?? '(local run)', failed_log: log } })));
@@ -1326,12 +1363,14 @@ export class LiveEngine implements Engine {
    * Within HEAD_PROPAGATION_GRACE_MS the old sha is lag and we keep polling; anything else is
    * a real move. 'stopping' is the engine shutting down, which says nothing about CI.
    */
-  private async waitForCi(id: string, branch: string, sha: string, pr: number, previousSha: string | null = null, minAttempt = 0): Promise<'green' | 'red' | 'blocked' | 'moved' | 'timeout' | 'stopping'> {
+  private async waitForCi(id: string, branch: string, sha: string, pr: number, previousSha: string | null = null, minAttempt = 0): Promise<'green' | 'red' | 'blocked' | 'moved' | 'timeout' | 'stopping' | 'taken_over'> {
     const cfg = this.store.config.ci;
     const started = Date.now();
     let sawRun = false;
     while (true) {
       if (this.stopping) return 'stopping';
+      // A person took the item over while its CI ran: the merge chain is not held for them.
+      if (this.store.getItem(id)?.file.frontmatter.taken_over) return 'taken_over';
       const view = await this.ports.gh.prView(this.github, pr);
       if (view.state === 'MERGED') return 'green';
       if (view.headRefOid !== sha) {
@@ -1372,6 +1411,8 @@ export class LiveEngine implements Engine {
   private async cleanup(id: string): Promise<void> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
+    // A person may be standing in the worktree: it and the branch stay until the item is handed back.
+    if (fm.taken_over) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: 'merged; its worktree and branch stay until you hand the item back' } }], 'engine'); return; }
     const d = this.store.derived(item);
     if (d.flavor === 'external' && (fm.merge_policy ?? 'watch') === 'watch') {
       this.store.mutateItem(id, [{ transition: { to: 'FINISHED', actor: 'engine' } }, { activity: { actor: 'app', text: 'externally driven: no local resources to clean (the remote branch is not planestro\'s to delete)' } }], 'engine', { commit: `${id}: finish` });
@@ -1462,7 +1503,7 @@ export class LiveEngine implements Engine {
             if (fm.status === 'IN_PROGRESS') this.store.mutateItem(id, [{ transition: { to: 'IN_REVIEW', actor: 'engine' } }], 'engine');
             correct(id, `PR #${fm.pr} was merged outside planestro`, [{ transition: { to: 'MERGED', actor: 'engine' } }, { set: { merged_at: pr.mergedAt ? isoLocal(new Date(pr.mergedAt)) : this.now(), ci_result: 'green' } }]);
             this.runJob(id, () => this.cleanup(id));
-          } else if (pr?.state === 'CLOSED' && fm.status === 'IN_REVIEW' && !fm.blocked) {
+          } else if (pr?.state === 'CLOSED' && fm.status === 'IN_REVIEW' && !fm.blocked && !fm.taken_over) {
             this.block(id, 'pr_closed_externally', `PR #${fm.pr} was closed without merging`);
             corrections.push(`${id}: PR #${fm.pr} closed externally`);
           } else if (pr?.state === 'OPEN' && fm.status === 'IN_REVIEW' && fm.ci_head_sha && pr.headRefOid !== fm.ci_head_sha && fm.ci_result !== 'pending') {
@@ -1470,12 +1511,12 @@ export class LiveEngine implements Engine {
           }
         }
         // worktree truth (never recreate silently: local commits could be lost)
-        if (d.flavor === 'worker' && wtAbs && !wtEntry && ['PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW'].includes(fm.status) && !fm.blocked) {
+        if (d.flavor === 'worker' && wtAbs && !wtEntry && ['PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW'].includes(fm.status) && !fm.blocked && !fm.taken_over) {
           this.block(id, 'worktree_missing', `the worktree ${fm.worktree} no longer exists; status preserved, nothing recreated`);
           corrections.push(`${id}: worktree missing`);
         }
         // MERGED but never finished, or FINISHED leftovers
-        if (fm.status === 'MERGED' && !fm.op && !this.jobs.has(id) && !fm.blocked) { corrections.push(`${id}: resuming cleanup`); this.runJob(id, () => this.cleanup(id)); }
+        if (fm.status === 'MERGED' && !fm.op && !this.jobs.has(id) && !fm.blocked && !fm.taken_over) { corrections.push(`${id}: resuming cleanup`); this.runJob(id, () => this.cleanup(id)); }
         if (fm.status === 'FINISHED' && fm.branch && d.flavor !== 'external' && remoteHeads.has(fm.branch)) correct(id, `remote branch ${fm.branch} still exists after finish (left in place; delete by hand or re-run cleanup)`);
       } catch (e) { corrections.push(`${id}: reconcile error ${(e as Error).message}`); }
     }
@@ -1507,8 +1548,8 @@ export class LiveEngine implements Engine {
       if (!fm.op) continue;
       if (RESUMABLE_TURN_OPS.has(fm.op)) {
         const phase = this.phaseFor(fm.status);
-        this.store.mutateItem(item.id, [{ unset: ['op', 'op_started_at'] }, { activity: { actor: 'app', text: `turn (${fm.op}) was interrupted by a restart; resuming` } }], 'engine');
-        if (phase && !fm.awaiting && !fm.blocked) this.runJob(item.id, () => this.runTurnFor(item.id, phase, `${this.resumeNote(item.id, 'a planestro restart')}\n\nYour previous turn was interrupted before it finished. Check the state of your worktree and continue where you left off.`));
+        this.store.mutateItem(item.id, [{ unset: ['op', 'op_started_at'] }, { activity: { actor: 'app', text: `turn (${fm.op}) was interrupted by a restart; ${fm.taken_over ? 'not resumed: you have this item' : 'resuming'}` } }], 'engine');
+        if (phase && !fm.awaiting && !fm.blocked && !fm.taken_over) this.runJob(item.id, () => this.runTurnFor(item.id, phase, `${this.resumeNote(item.id, 'a planestro restart')}\n\nYour previous turn was interrupted before it finished. Check the state of your worktree and continue where you left off.`));
       } else if (fm.op === 'awaiting_ci') {
         this.store.mutateItem(item.id, [{ unset: ['op', 'op_started_at'] }, { set: { ci_result: 'pending' } }, { activity: { actor: 'app', text: 'restart while waiting for CI; re-entering the merge pipeline' } }], 'engine');
       } else {
@@ -1789,7 +1830,8 @@ export class LiveEngine implements Engine {
     if (phase) {
       const text = `${from} handed off ${copied.length} file${copied.length === 1 ? '' : 's'} to you, now attached to your item:\n${absPaths.map((p) => `- ${p}`).join('\n')}${noteText ? `\n\n${noteText}` : ''}`;
       const cur = this.store.requireItem(to).file.frontmatter;
-      if (this.turns.has(to) || this.jobs.has(to) || (cur.awaiting && cur.awaiting !== 'user')) {
+      if (cur.taken_over) told = 'the user has taken it over; the files and your note are in its attachments and notes';
+      else if (this.turns.has(to) || this.jobs.has(to) || (cur.awaiting && cur.awaiting !== 'user')) {
         const pending = [...((cur.op_data?.pending_messages as string[] | undefined) ?? []), text];
         this.store.mutateItem(to, [{ set: { op_data: { ...(cur.op_data ?? {}), pending_messages: pending } } }], 'engine');
         told = cur.awaiting && cur.awaiting !== 'user' ? `its session is parked (awaiting ${cur.awaiting}) and will read the hand-off when it resumes` : 'its session is busy and will read the hand-off at its next turn';
@@ -1815,6 +1857,9 @@ export class LiveEngine implements Engine {
   private block(id: string, reason: string, detail: string, awaiting: 'user' | undefined = 'user'): void {
     try {
       const cur = this.store.requireItem(id).file.frontmatter;
+      // The person who has the item is already looking at it: a stop is said, not raised (dogfood p28: a worker still
+      // running under a take-over blocked HH-136, by then in review with its PR, as agent_blocked).
+      if (cur.taken_over) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `not blocked (${reason}), since you have this item: ${detail.replace(/\s+/g, ' ').slice(0, 300)}` } }], 'engine'); return; }
       // A stop for a person goes to the orchestrator first (triage); it resolves it or asks one plain question.
       const triage = this.triageOps(cur, reason);
       // A card that was waiting for an answer is about a stop that no longer exists: this block replaces it (HH-162, dogfood p42).
@@ -1951,6 +1996,7 @@ export class LiveEngine implements Engine {
     const fm = item.file.frontmatter;
     const d = this.store.derived(item);
     if (d.flavor !== 'worker') return `not possible: ${id} is not a worker item with a session worktree`;
+    if (fm.taken_over) return `not possible: the user has taken ${id} over`;
     if (!['PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS'].includes(fm.status)) return `not possible: ${id} is ${fm.status}; only an item still planning or implementing gets a new worktree`;
     if (fm.pr) return `not possible: ${id} already has pull request #${fm.pr}`;
     if (!fm.worktree || !fm.branch) return `not possible: ${id} has no worktree recorded`;
@@ -2017,6 +2063,7 @@ export class LiveEngine implements Engine {
   async retryOp(id: string, by: 'user' | 'orchestrator' = 'orchestrator'): Promise<string> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
+    if (fm.taken_over) return `not now: the user has taken ${id} over`;
     if (!fm.blocked) return `nothing to retry: ${id} is not blocked`;
     if (fm.awaiting && fm.awaiting !== 'user') return `not now: ${id} is awaiting ${fm.awaiting}; answer that instead`;
     const busy = this.busyWith(id); if (busy) return `not now: ${busy}`;
@@ -2122,6 +2169,7 @@ export class LiveEngine implements Engine {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
     if (fm.status !== 'IN_PROGRESS' || this.store.derived(item).flavor !== 'worker' || !fm.worktree) return `not possible: ${id} is ${fm.status}${fm.worktree ? '' : ' with no worktree'}; only a worker item in progress can be finished from its worktree`;
+    if (fm.taken_over) return `not now: ${id} is taken over; hand it back and planestro runs this same check`;
     const busy = this.busyWith(id); if (busy) return `not now: ${busy}`;
     const cwd = this.absWorktree(fm.worktree);
     const base = this.store.derived(item).base_branch;
@@ -2201,6 +2249,7 @@ export class LiveEngine implements Engine {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
     if (!this.phaseFor(fm.status) || this.store.derived(item).flavor !== 'worker') return `not possible: ${id} is ${fm.status}; only a worker item planning or in progress can wait to resume`;
+    if (fm.taken_over) return `not possible: the user has taken ${id} over`;
     const busy = this.busyWith(id); if (busy) return `not now: ${busy}`;
     const ids = [...new Set(items.map((x) => x.trim()).filter(Boolean))];
     if (!ids.length || !message.trim()) return 'not recorded: name at least one item to wait for, and the message to resume with';
@@ -2226,7 +2275,7 @@ export class LiveEngine implements Engine {
     for (const item of this.store.listItems()) {
       const fm = item.file.frontmatter;
       const wait = fm.resume_after;
-      if (!wait || this.jobs.has(item.id) || this.turns.has(item.id)) continue;
+      if (!wait || fm.taken_over || this.jobs.has(item.id) || this.turns.has(item.id)) continue;
       const gone = wait.items.filter((x) => !this.store.getItem(x));
       if (gone.length) { this.store.mutateItem(item.id, [{ unset: ['resume_after'] }], 'engine'); this.block(item.id, 'waited_on_gone', `it was waiting for ${gone.join(', ')}, which no longer exist${gone.length === 1 ? 's' : ''}; its message was: ${wait.message}`); continue; }
       if (!wait.items.every((x) => ['MERGED', 'FINISHED'].includes(this.store.requireItem(x).file.frontmatter.status))) continue;
@@ -2387,6 +2436,7 @@ export class LiveEngine implements Engine {
   /** User-driven unblock: clears the flag and, if the item is in a session phase, resumes with a message. */
   async unblock(id: string, message?: string, by: 'user' | 'orchestrator' = 'user'): Promise<void> {
     const fm = this.store.requireItem(id).file.frontmatter;
+    if (fm.taken_over) throw new Error(`${id} is taken over: hand it back instead`);
     // Without a message there is nothing to tell a session, so "unblock" means "carry on from where
     // it stopped": the same step retry_op takes (open the PR for committed work, re-enter the merge
     // pipeline, requeue a setup that never ran, resume the session). Clearing the flag alone left
@@ -2477,6 +2527,7 @@ export class LiveEngine implements Engine {
   async requestReviewChanges(id: string, note: string): Promise<void> {
     const fm = this.store.requireItem(id).file.frontmatter;
     if (fm.status !== 'IN_REVIEW' || fm.awaiting !== 'review') throw new Error(`${id} is not waiting for a review`);
+    if (fm.taken_over) throw new Error(`${id} is taken over: hand it back first`);
     if (!note.trim()) throw new Error('say what should change');
     this.store.mutateItem(id, [{ unset: ['awaiting', 'awaiting_data'] }, { set: { op_data: { ...(fm.op_data ?? {}), review_nudged: false } } }, { activity: { actor: 'user', text: `review: changes requested: ${note.trim()}` } }], 'user', { commit: `${id}: request review changes` });
     this.runJob(id, () => this.runTurnFor(id, 'fix', `${this.resumeNote(id, 'your review')}\n\nThe user reviewed what you delivered and asks for changes:\n\n${note.trim()}\n\nRevise it in your worktree, commit on your branch, leave the tree clean, and finish as before. It will come back to the user for another look.`));
@@ -2536,6 +2587,101 @@ export class LiveEngine implements Engine {
     ], 'user', { commit: `${id}: close as done` });
     this.note('info', `${id}: closed as done`);
     void this.tick();
+  }
+
+  // ---- take-over: a person finishes the item by hand (dogfood p28) ----
+  /**
+   * Everything that would drive this item's session, stopped: the live turn is aborted through its
+   * own controller (its runTurnFor ends as `killed`, so nothing is left waiting on anyone), and the
+   * turn queued behind it, a triage wake held for it, queued messages, a one-shot resume, a parked
+   * request of the session's and triage are dropped. Returns the ops that clear what is persisted,
+   * and what was stopped, in words.
+   */
+  private stopSessionWork(id: string, why: string): { ops: ItemOp[]; said: string[] } {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    const said: string[] = [];
+    const turn = this.turns.get(id);
+    if (turn) { this.stoppedFor.set(id, why); turn.abort.abort(); said.push(`its ${turn.phase} turn`); }
+    if (this.followUps.delete(id)) said.push('the turn queued behind it');
+    if (this.pendingWakes.delete(id)) said.push('an orchestrator wake');
+    this.idleSince.delete(id);
+    const pending = (fm.op_data?.pending_messages as string[] | undefined) ?? [];
+    if (pending.length) said.push(`${pending.length} queued message${pending.length === 1 ? '' : 's'}`);
+    if (fm.resume_after) said.push(`the resume after ${fm.resume_after.items.join(', ')}`);
+    const parked = fm.awaiting === 'permission' || fm.awaiting === 'question' || (fm.awaiting === 'orchestrator' && fm.awaiting_data?.kind === 'permission');
+    if (parked) said.push(`its parked ${fm.awaiting === 'question' ? 'question' : 'permission request'}`);
+    if (fm.triage) said.push('triage');
+    const unset = [...(fm.resume_after ? ['resume_after'] : []), ...(fm.triage ? ['triage'] : []), ...(parked ? ['awaiting', 'awaiting_data'] : [])];
+    return { said, ops: [
+      ...(pending.length ? [{ set: { op_data: { ...(fm.op_data ?? {}), pending_messages: [] } } } as ItemOp] : []),
+      ...(unset.length ? [{ unset } as ItemOp] : []),
+    ] };
+  }
+
+  /**
+   * "I'm taking this over": the person finishes the item by hand. Its session is stopped and what was
+   * queued for it dropped (stopSessionWork); a block, a decision card or a review wait is theirs now
+   * and is cleared with it, and a plan waiting for approval stays waiting. Until handBack nothing
+   * automatic drives it: no admission, turn, orchestrator wake, stall, triage, fix turn or merge.
+   * Its CI is still read. User-only: the orchestrator's tools refuse the item instead.
+   */
+  async takeOver(id: string, note?: string): Promise<void> {
+    const item = this.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    if (fm.taken_over) throw new Error(`${id} is already yours`);
+    if (this.store.derived(item).flavor !== 'worker' || !['QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW'].includes(fm.status)) throw new Error(`${id} is ${fm.status}; only a worker item planestro is driving can be taken over`);
+    const { ops, said } = this.stopSessionWork(id, 'you took this item over');
+    const theirs = fm.awaiting === 'user' || fm.awaiting === 'review';
+    if (fm.blocked) said.push(`its block (${fm.blocked_reason ?? 'blocked'})`);
+    if (fm.op_data?.needs_session_rebase) said.push('the conflict handed to its session');
+    this.store.mutateItem(id, [
+      ...ops,
+      { set: { taken_over: { since: this.now(), ...(note?.trim() ? { note: note.trim() } : {}) } } },
+      ...(fm.blocked || theirs ? [{ unset: ['blocked', 'blocked_reason', ...(theirs ? ['awaiting', 'awaiting_data'] : [])] } as ItemOp] : []),
+      // A plan the orchestrator was reviewing is the person's to approve while they have the item; the hand-back delegates it again.
+      ...(fm.status === 'PLAN_READY' && fm.awaiting === 'orchestrator' ? [{ set: { awaiting: 'plan_approval' } } as ItemOp] : []),
+      { activity: { actor: 'user', text: `took this item over by hand${note?.trim() ? `: ${note.trim()}` : ''}${said.length ? `; stopped ${said.join(', ')}` : ''}. Nothing automatic drives it until you hand it back.` } },
+    ], 'user', { commit: `${id}: take over` });
+    this.heldPolledAt.delete(id);
+    this.note('info', `${id}: taken over by hand${said.length ? ` (stopped ${said.join(', ')})` : ''}`);
+  }
+
+  /**
+   * The person is done with it. planestro carries on from the item as it is now (invariant 3), by
+   * the doors it already has: an item in review re-enters the merge pipeline (its CI is asked for
+   * again, for whatever head it now has); work planning or in progress takes the stall check, so a
+   * clean worktree ahead of its base goes to a pull request and anything else resumes the session,
+   * told that someone else had the worktree; a merged one is cleaned up on positive evidence.
+   */
+  async handBack(id: string, note?: string): Promise<void> {
+    const item = this.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    if (!fm.taken_over) throw new Error(`${id} is not taken over`);
+    const said = note?.trim() ? `: ${note.trim()}` : '';
+    const inReview = fm.status === 'IN_REVIEW' && Boolean(fm.pr);
+    const carryOn = ['PLAN_IN_PROGRESS', 'IN_PROGRESS'].includes(fm.status) && Boolean(fm.worktree);
+    const next = inReview ? 'it re-enters the merge pipeline' : carryOn ? 'planestro carries on from where the work stands' : fm.status === 'MERGED' ? 'its merged branch is cleaned up' : 'planestro drives it again';
+    this.store.mutateItem(id, [
+      { unset: ['taken_over'] },
+      ...(inReview ? [{ set: { ci_result: 'pending', op_data: { ...(fm.op_data ?? {}), needs_session_rebase: false } } } as ItemOp] : []),
+      { activity: { actor: 'user', text: `handed back to planestro${said}; ${next}` } },
+    ], 'user', { commit: `${id}: hand back` });
+    // queued, not dropped: the turn the take-over stopped may still be winding down
+    if (fm.status === 'MERGED') this.queueFollowUp(id, () => this.cleanup(id));
+    else if (carryOn) this.queueFollowUp(id, () => this.carryOnStalled(id, { why: 'handed back', who: 'the user handing the item back', say: `The user took this item over and worked on it by hand, and has now handed it back to you${said}. Your worktree may have changed while they had it: check \`git status\` and \`git log\` first, then continue from where the work stands.` }));
+    else void this.tick();
+  }
+
+  /**
+   * The user moved the item into review by hand (they opened its pull request themselves): its
+   * session's work is over, so a live turn is stopped and what was queued for it dropped, as a
+   * take-over does. Left running, HH-136's worker hit the person's half-made edits and blocked an
+   * item that was by then in review with its PR (dogfood p28).
+   */
+  stopForReview(id: string): void {
+    const { ops, said } = this.stopSessionWork(id, 'the item was moved into review by hand');
+    if (!said.length) return;
+    this.store.mutateItem(id, [...ops, { activity: { actor: 'app', text: `moved into review by hand: stopped ${said.join(', ')}` } }], 'engine', { commit: `${id}: stop the session (moved to review)` });
   }
 
   /** Returns the Activity line describing what was removed, or what was left in place and why. */

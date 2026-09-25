@@ -109,6 +109,21 @@ An epic's children can be written by hand, or proposed by the planner: see
   (a blocked item stays blocked). The orchestrator's `unblock_item` takes `sync_first: true` to
   sync before the session resumes, and a wake about an item says which of its dependencies
   merged after its worktree was cut.
+- **Take over** (`taken_over`) — you finish the item by hand. Its running turn is stopped (the
+  same abort a restart uses, so nothing is left waiting), and whatever was queued for it is
+  dropped: messages, the turn behind a permission answer, a fix, a resume, a held orchestrator
+  wake, triage. A block, a decision card or a review wait is yours now and is cleared; a plan
+  still waits for approval (approving it starts no session). Until you **hand it back**, nothing
+  automatic drives it: no admission, turn, orchestrator wake, stall check, fix turn on red CI,
+  merge or cleanup. Its CI is still read, so the card and page show it. The orchestrator is told
+  in every packet, and its tools that act on an item refuse this one. Handing it back carries
+  on from the item as it is: in review with a pull request, it re-enters the merge pipeline; in
+  progress, the done check runs (committed work on a clean worktree goes to a pull request,
+  otherwise the session resumes, told someone had its worktree); merged, it is cleaned up.
+  Leaving the board (icebox, backlog, close as done) ends a take-over.
+- **Moved into review by hand** — you opened the pull request yourself and moved the item to
+  IN_REVIEW: its session's work is over, so its live turn is stopped and the follow-ups queued
+  for it are dropped, as a take-over does, even without one.
 - **PAUSE AUTOMATION** — the global lever: running steps finish, nothing new starts,
   across restarts.
 

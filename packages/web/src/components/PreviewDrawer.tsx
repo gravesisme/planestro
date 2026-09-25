@@ -8,6 +8,7 @@ import { QuickActions } from './QuickActions.tsx';
 import { ReviewPanel } from './ReviewPanel.tsx';
 import { BlockedPanel } from './BlockedPanel.tsx';
 import { WaitingPanel } from './ResumeAfter.tsx';
+import { TakenOverPanel } from './TakeOver.tsx';
 import { AwaitingPanels } from './AwaitingPanels.tsx';
 import { DecisionCard } from './DecisionCard.tsx';
 import { PartsStrip } from './PartsStrip.tsx';
@@ -31,7 +32,7 @@ export function PreviewDrawer({ id, onClose }: { id: string; onClose: () => void
   const showConsole = session || fm.session_id || LIVE_STATUSES.includes(fm.status);
   // At a decision, a review or a block, what you need is the latest activity and the card, not the
   // brief you wrote weeks ago (dogfood f9): the description folds to one line and activity comes first.
-  const deciding = Boolean(decisionOf(fm)) || fm.awaiting === 'review' || (fm.blocked && !fm.triage);
+  const deciding = Boolean(decisionOf(fm)) || fm.awaiting === 'review' || (fm.blocked && !fm.triage) || Boolean(fm.taken_over);
   const [descOpen, setDescOpen] = useState(false);
   const firstLine = (item.sections.Description || '').split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('#')) ?? '(no description)';
   const description = deciding && !descOpen
@@ -53,6 +54,7 @@ export function PreviewDrawer({ id, onClose }: { id: string; onClose: () => void
         {fm.blocked && <span className="pill blocked">BLOCKED · {fm.blocked_reason}</span>}
         {fm.awaiting && <span className={`pill ${d.needs_you ? 'await' : ''}`}>{decisionOf(fm) ? 'your decision' : `awaiting ${fm.awaiting.replace(/_/g, ' ')}`}</span>}
         {fm.triage && <span className="pill triage">orchestrator triaging</span>}
+        {fm.taken_over && <span className="pill yours">yours · by hand</span>}
         {fm.op && <span className="pill">{fm.op.replace(/_/g, ' ')}</span>}
         {session && <span className="pill">session {session.busy ? 'running' : 'idle'}</span>}
       </div>
@@ -63,6 +65,7 @@ export function PreviewDrawer({ id, onClose }: { id: string; onClose: () => void
       </p>
       <DecisionCard item={item} />
       {fm.parts?.length ? <PartsStrip parts={fm.parts} compact /> : null}
+      <TakenOverPanel item={item} />
       <BlockedPanel item={item} compact />
       <WaitingPanel item={item} />
       <AwaitingPanels item={item} />

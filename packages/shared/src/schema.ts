@@ -53,7 +53,7 @@ export const AUTHORITATIVE_KEYS = [
 export const OPERATIONAL_KEYS = [
   'created_at', 'updated_at', 'queued_at', 'started_at', 'plan_ready_at', 'plan_approved_at',
   'pr_created_at', 'merged_at', 'finished_at', 'iceboxed_at',
-  'branch', 'worktree', 'pr', 'session_id', 'agent_sessions', 'awaiting', 'awaiting_data', 'triage', 'resume_after',
+  'branch', 'worktree', 'pr', 'session_id', 'agent_sessions', 'awaiting', 'awaiting_data', 'triage', 'resume_after', 'taken_over',
   'op', 'op_started_at', 'op_data', 'plan_revisions', 'ci_head_sha', 'ci_result', 'ci_failed_count',
   'merge_order', 'skip_merge', 'review_hold', 'delivered', 'parts', 'blocked', 'blocked_reason', 'cost_usd', 'turns', 'agent_turns', 'tokens',
   'imported_from', 'dates_estimated',
@@ -116,6 +116,12 @@ export const ItemFrontmatter = z.object({
    * the engine resumes it.
    */
   resume_after: z.object({ items: z.array(z.string()).min(1), message: z.string(), since: ts }).passthrough().optional(),
+  /**
+   * A person is finishing this item by hand (dogfood p28): nothing automatic drives it (no turns, no
+   * orchestrator, no stall or triage, no merge) until they hand it back. Its status is left as it
+   * is; CI is still read. Cleared by the hand-back, or by leaving the board.
+   */
+  taken_over: z.object({ since: ts, note: z.string().optional() }).passthrough().optional(),
   op: z.enum(OPS).optional(),
   op_started_at: ts.optional(),
   op_data: z.record(z.string(), z.unknown()).optional(),

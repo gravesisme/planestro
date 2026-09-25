@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { Status } from '@planestro/shared';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
+import { canTakeOver, TakeOverButton } from './TakeOver.tsx';
 
 export const CLOSE_HINT = 'The work already landed some other way: finish this item without a pull request';
 export const FINISH_HINT = 'The work is committed on the branch but never reached a pull request (over budget, a size gate, a commit made by hand): open the pull request from the worktree, as planestro would have';
@@ -64,7 +65,7 @@ export function QuickActions({ item, onActed }: { item: ItemView; onActed?: () =
   const planReady = fm.status === 'PLAN_READY' && fm.kind !== 'epic'; // an epic's breakdown is edited on its page, not approved blind
   // Approve / request-changes have their own endpoints (they start a session turn); the bare transition would not.
   const plain = transitions.filter((t) => !(fm.status === 'PLAN_READY' && (t.to === 'IN_PROGRESS' || t.to === 'PLAN_IN_PROGRESS')));
-  if (!plain.length && !planReady && !fm.blocked && !sync && fm.status !== 'IN_PROGRESS' && !(fm.status === 'IN_REVIEW' && (fm.awaiting === 'review' || fm.skip_merge))) return null;
+  if (!plain.length && !planReady && !fm.blocked && !sync && fm.status !== 'IN_PROGRESS' && !canTakeOver(item) && !(fm.status === 'IN_REVIEW' && (fm.awaiting === 'review' || fm.skip_merge))) return null;
   return (
     <div className="row quick-actions">
       {planReady && <button className="primary" onClick={() => run(() => api.approvePlan(item.id))}>Approve &amp; implement</button>}
@@ -74,7 +75,8 @@ export function QuickActions({ item, onActed }: { item: ItemView; onActed?: () =
         ? <button key={t.to} title={CLOSE_HINT} onClick={() => promptCloseAsDone(item.id)}>{t.label}…</button>
         : <button key={t.to} className={t.to === 'QUEUED' ? 'primary' : ''} disabled={t.to === 'QUEUED' && (!d.deps_satisfied || !!d.base_branch_error)} title={d.base_branch_error ?? (t.to === 'QUEUED' && !d.deps_satisfied ? 'dependencies not merged' : '')} onClick={() => { if (confirmMove(item, t.to, t.label)) run(() => api.transition(item.id, t.to)); }}>{t.label}</button>)}
       {fm.blocked && <button className="danger" onClick={() => { const m = prompt(`Unblock ${item.id} (${fm.blocked_reason}). Optional message for the session:`); if (m !== null) run(() => api.unblock(item.id, m || undefined)); }}>unblock…</button>}
-      {fm.status === 'IN_PROGRESS' && !d.external && fm.kind !== 'epic' && fm.worktree && <button title={FINISH_HINT} onClick={() => { promptFinishFromWorktree(item.id); onActed?.(); }}>finish from here…</button>}
+      {fm.status === 'IN_PROGRESS' && !d.external && fm.kind !== 'epic' && fm.worktree && !fm.taken_over && <button title={FINISH_HINT} onClick={() => { promptFinishFromWorktree(item.id); onActed?.(); }}>finish from here…</button>}
+      <TakeOverButton item={item} onActed={onActed} />
       {sync && <button title={SYNC_HINT} onClick={() => { promptSyncWithBase(item); onActed?.(); }}>sync with base…</button>}
     </div>
   );
