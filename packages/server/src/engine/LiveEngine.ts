@@ -80,6 +80,7 @@ export class LiveEngine implements Engine {
       message: (id, text) => this.message(id, text),
       approvePlan: (id, notes) => this.approvePlan(id, notes, 'orchestrator'),
       requestPlanChanges: (id, m) => this.orchestratorRequestsPlanChanges(id, m),
+      amendPlan: (id, m) => this.orchestratorAmendsPlan(id, m),
       planDelegated: (id) => this.planDelegated(this.store.requireItem(id).file.frontmatter),
       handPlanToUser: (id, reason) => this.handPlanToUser(id, `the orchestrator left it to you: ${reason}`),
       planReviewEnded: (id) => this.handPlanToUser(id, 'the orchestrator reviewed it without deciding'),
@@ -426,6 +427,19 @@ export class LiveEngine implements Engine {
     return `sent back to planning (fix round ${used + 1} of ${max}); you will review the revised plan`;
   }
 
+  /**
+   * "Approve with amendments" (dogfood f7): the stipulation is not left in a note the user misses and
+   * the planner never sees. It goes back to the planner as an amendment, outside the fix-round
+   * count, and the revised plan comes back to whoever approves it.
+   */
+  private async orchestratorAmendsPlan(id: string, amendments: string): Promise<string> {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    if (fm.status !== 'PLAN_READY') return `not possible: ${id} is ${fm.status}, not waiting for plan approval`;
+    if (!amendments.trim()) return 'not sent: say what to amend';
+    await this.rejectPlan(id, amendments.trim(), 'orchestrator', { amend: true });
+    return `sent back to be amended; you will review the revised plan${this.planDelegated(fm) ? '' : ' (its approval stays with the user)'}`;
+  }
+
   private driveInReview(): void {
     const candidates = this.store.listItems().filter((item) => {
       const fm = item.file.frontmatter;
@@ -552,7 +566,7 @@ export class LiveEngine implements Engine {
     const item = this.store.requireItem(id);
     if (item.file.frontmatter.kind === 'epic') { if (by !== 'user') throw new Error(`${id} is an epic: its breakdown is the user's to approve`); await this.approveBreakdown(id); return; }
     if (item.file.frontmatter.status !== 'PLAN_READY') throw new Error(`${id} is ${item.file.frontmatter.status}, not PLAN_READY`);
-    const { plan_handed_back: _spent, ...opData } = item.file.frontmatter.op_data ?? {};
+    const { plan_handed_back: _spent, plan_amended: _folded, ...opData } = item.file.frontmatter.op_data ?? {};
     this.store.mutateItem(id, [
       { transition: { to: 'IN_PROGRESS', actor: by } },
       { set: { op_data: { ...opData, approval_notes: notes ?? '' } } },
@@ -562,18 +576,24 @@ export class LiveEngine implements Engine {
     this.queueFollowUp(id, () => this.runTurnFor(id, 'implement', this.withDelivered(id, 'implement-plan', this.store.renderPrompt('implement-plan', this.store.requireItem(id), { approval_notes: notes?.trim() || '(none)' })), [], [], { opener: true }));
   }
 
-  async rejectPlan(id: string, message: string, by: 'user' | 'orchestrator' = 'user'): Promise<void> {
+  async rejectPlan(id: string, message: string, by: 'user' | 'orchestrator' = 'user', { amend = false }: { amend?: boolean } = {}): Promise<void> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
     if (fm.status !== 'PLAN_READY') throw new Error(`${id} is ${fm.status}, not PLAN_READY`);
     const round = (fm.plan_revisions ?? 0) + 1;
+    const counted = by === 'orchestrator' && !amend;   // an amendment is a stipulation the orchestrator accepts with, not one of its fix rounds
+    const { plan_amended: _old, ...opData } = fm.op_data ?? {};
     this.store.mutateItem(id, [
       { transition: { to: 'PLAN_IN_PROGRESS', actor: by } },
-      ...(by === 'orchestrator' ? [{ set: { plan_revisions: round } } as ItemOp] : []),
-      { activity: { actor: by, text: by === 'orchestrator' ? `plan changes requested (fix round ${round} of ${this.store.config.orchestrator.max_plan_revisions}): ${message}` : `plan changes requested: ${message}` } },
-    ], by, { commit: `${id}: request plan changes${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
+      ...(counted ? [{ set: { plan_revisions: round } } as ItemOp] : []),
+      { set: { op_data: amend ? { ...opData, plan_amended: message } : opData } },
+      { activity: { actor: by, text: amend ? `plan sent back to be amended: ${message}` : counted ? `plan changes requested (fix round ${round} of ${this.store.config.orchestrator.max_plan_revisions}): ${message}` : `plan changes requested: ${message}` } },
+    ], by, { commit: `${id}: ${amend ? 'amend plan' : 'request plan changes'}${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
     const tool = item.file.frontmatter.kind === 'epic' ? 'submit_breakdown' : 'submit_plan';
-    this.queueFollowUp(id, () => this.runTurnFor(id, 'plan', `${this.resumeNote(id, 'your plan review')}\n\nChanges requested on your plan:\n\n${message}\n\nRevise it accordingly and submit it again with the ${tool} tool, then end your turn.`));
+    const ask = amend
+      ? `The orchestrator approves your plan with these amendments. Fold them into the plan (do not just append them) and submit the whole plan again with the ${tool} tool, then end your turn:\n\n${message}`
+      : `Changes requested on your plan:\n\n${message}\n\nRevise it accordingly and submit it again with the ${tool} tool, then end your turn.`;
+    this.queueFollowUp(id, () => this.runTurnFor(id, 'plan', `${this.resumeNote(id, 'your plan review')}\n\n${ask}`));
   }
 
   async message(id: string, text: string): Promise<void> {

@@ -141,6 +141,11 @@ A review that fails, or ends without deciding, also lands on you; so does untick
 while it is looking. You can approve or send back the plan yourself at any point. Leave the
 box unticked for anything you want to read first.
 
+Whether or not the approval is delegated, the orchestrator can **amend** instead of approving with
+a stipulation nobody sees (`amend_plan`): the stipulation goes to the planner as an amendment to
+fold in (not one of the fix rounds), the revised plan comes back for review, and the approval
+card says *amended by the orchestrator* with the text, so what you approve is the complete plan.
+
 ### Letting it decide permission requests
 
 A worker that wants to run something outside its allow-list parks until someone answers,

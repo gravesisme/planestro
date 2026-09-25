@@ -26,6 +26,8 @@ export interface OrchestratorHooks {
   approvePlan(id: string, notes?: string): Promise<void>;
   /** Send a plan back for fixes, within the item's round limit. Returns what happened, for the tool result. */
   requestPlanChanges(id: string, message: string): Promise<string>;
+  /** Approve WITH stipulations: they go to the planner as amendments (not a fix round) and the revised plan comes back for review. */
+  amendPlan(id: string, amendments: string): Promise<string>;
   /** Whether this item's plan is the orchestrator's to approve (the item opted in and the project allows it). */
   planDelegated(id: string): boolean;
   /** Give a delegated plan's approval back to the user, with the reason. */
@@ -220,7 +222,10 @@ export class Orchestrator {
         const plan = getSection(item.file, 'Plan'); if (plan) lines.push(`Approved/submitted plan:\n${plan.slice(0, 2000)}`);
         const activity = getSection(item.file, 'Activity').split('\n').slice(-8).join('\n'); if (activity) lines.push(`Recent activity:\n${activity}`);
         if (fm.parts?.length) lines.push(`Parts, as the worker itself reports them (${partsSummary(fm.parts)}). Quote this; never summarise the state of the work from memory or prose:\n${fm.parts.map((p) => `- ${p.name}: ${p.state}${p.reason ? ` — ${p.reason}` : ''}`).join('\n')}`);
-        if (e.type === 'plan_review') lines.push(this.planPolicy(fm.id, fm.plan_revisions ?? 0, this.priorReview(item.file, fm.plan_ready_at)));
+        if (e.type === 'plan_review') {
+          if (fm.op_data?.plan_amended) lines.push(`Amended: you sent this plan back to be amended with: ${String(fm.op_data.plan_amended).slice(0, 1500)}\nThis is the revision. Check that it carries the amendment before deciding.`);
+          lines.push(this.planPolicy(fm.id, fm.plan_revisions ?? 0, this.priorReview(item.file, fm.plan_ready_at)));
+        }
         if (e.type === 'permission_request') lines.push(this.permissionPacket(fm));
         if (fm.triage) lines.push(e.type === 'decision_answered' ? this.decisionAnsweredPacket() : this.triagePacket(fm));
       }
@@ -245,13 +250,14 @@ export class Orchestrator {
   }
 
   private planPolicy(id: string, used: number, prior: string[] = []): string {
-    if (!this.hooks.planDelegated(id)) return 'Plan approval: the user\'s. Review it and record what is risky, missing or out of scope with annotate_item; approve_plan is not permitted for this item.';
+    if (!this.hooks.planDelegated(id)) return 'Plan approval: the user\'s. Review it and record what is risky, missing or out of scope with annotate_item; approve_plan is not permitted for this item. If you would approve it WITH a stipulation, do not write the stipulation in a note (the user misses it and the planner never sees it): amend_plan sends it to the planner, who folds it in, and the user then approves a complete plan.';
     const max = this.store.config.orchestrator.max_plan_revisions;
     const left = Math.max(0, max - used);
     return [
       'Plan approval: DELEGATED TO YOU. The user trusts your judgment on this item; decide it in this wake, with exactly one of:',
       ...(prior.length ? [`You already reviewed this version of the plan, before its approval was delegated to you. Your notes then:\n${prior.map((t) => `- ${t.slice(0, 600)}`).join('\n')}\nDecide from that review; re-read the plan only for what it leaves open, and do not annotate it again.`] : []),
       '- approve_plan — the plan is sound and matches the request. Implementation starts at once. Put anything the implementer should watch in `notes`.',
+      '- amend_plan — you would approve it WITH stipulations: send them to the planner as amendments (not one of the fix rounds); the revised plan comes back to you. Never approve with a stipulation written only in notes.',
       left > 0
         ? `- request_plan_changes — small, specific fixes would make it approvable. Say exactly what to change; the planner revises and you review the result. ${used} of ${max} fix rounds used, so ${left} left.`
         : `- (request_plan_changes is spent: all ${max} fix rounds are used. Approve it or hand it over.)`,
@@ -330,6 +336,7 @@ export class Orchestrator {
       { name: 'submit_item', description: 'Queue a NOT_YET_SUBMITTED worker item for planning.', schema: idArg, handler: async (a) => { store.transition(String(a.id), 'QUEUED', 'orchestrator'); this.hooks.poke(); return 'queued'; } },
       { name: 'mark_blocked', description: 'Block an item for the user with a reason.', schema: { ...idArg, reason: z.string() }, handler: async (a) => { const { decision: stale, ...rest } = store.requireItem(String(a.id)).file.frontmatter.awaiting_data ?? {}; store.mutateItem(String(a.id), [{ set: { blocked: true, blocked_reason: 'orchestrator', awaiting: 'user' } }, { unset: ['triage'] }, ...(stale ? [(Object.keys(rest).length ? { set: { awaiting_data: rest } } : { unset: ['awaiting_data'] }) as ItemOp] : []), { activity: { actor: 'orchestrator', text: `blocked for the user: ${a.reason}${stale ? ' (the decision card it had is withdrawn: this block replaces it)' : ''}` } }], 'orchestrator', { commit: `${a.id}: blocked (orchestrator)` }); return 'blocked'; } },
       { name: 'approve_plan', description: 'Approve a PLAN_READY item (only allowed when the item opted into auto-approval and config permits).', schema: { ...idArg, notes: z.string().optional() }, handler: async (a) => { if (!this.hooks.planDelegated(String(a.id))) return 'not permitted: the user approves this plan (add review notes with annotate_item instead)'; await this.hooks.approvePlan(String(a.id), a.notes ? String(a.notes) : undefined); return 'approved'; } },
+      { name: 'amend_plan', description: "Approve a PLAN_READY item's plan WITH stipulations: they go to the planner as amendments to fold in, the plan comes back for review, and whoever approves it approves a complete plan. Not one of the fix rounds. Use it instead of approving (or annotating) with a stipulation.", schema: { ...idArg, amendments: z.string() }, handler: async (a) => this.hooks.amendPlan(String(a.id), String(a.amendments)) },
       { name: 'request_plan_changes', description: 'Send a PLAN_READY item back to planning with specific fixes. Limited to a few rounds per item; past the limit the plan goes to the user instead.', schema: { ...idArg, message: z.string() }, handler: async (a) => this.hooks.requestPlanChanges(String(a.id), String(a.message)) },
       { name: 'hand_plan_to_user', description: 'Leave the approval of a plan that was delegated to you to the user, with the reason (a decision that is theirs, real risk, a large rework, low confidence).', schema: { ...idArg, reason: z.string() }, handler: async (a) => { this.hooks.handPlanToUser(String(a.id), String(a.reason)); return 'handed to the user'; } },
       { name: 'decide_permission', description: "Decide a worker's parked permission request that was delegated to you: allow (once), deny (with what to do instead), or ask_user (leave it to the user).", schema: { ...idArg, decision: z.enum(['allow', 'deny', 'ask_user']), reason: z.string() }, handler: async (a) => this.hooks.decidePermission(String(a.id), a.decision as 'allow' | 'deny' | 'ask_user', String(a.reason)) },
