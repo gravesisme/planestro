@@ -164,7 +164,7 @@ export class Orchestrator {
       this.log('info', `orchestrator: rotating session after ${state.wakes_served} wakes (the files are its memory)`);
       state = { wakes_served: 0 };
     }
-    const packet = events.map((e) => this.renderPacket(e)).join('\n\n---\n\n');
+    const packet = [...events.map((e) => this.renderPacket(e)), ...(await this.inFlightSection(events))].join('\n\n---\n\n');
     const prompt = `${state.session_id ? '' : this.systemIntro() + '\n\n'}# Wake: ${events.map((e) => e.type).join(', ')} — ${isoLocal()}\n\n${packet}\n\nHandle what needs judgment using the planestro tools, then call done_with_wake with a one-line summary. Everything mechanical is already handled by the app; do not attempt git or gh operations.`;
     let doneSummary = '';
     const pick = this.modelForWake();
@@ -209,6 +209,28 @@ export class Orchestrator {
     // The host note goes with the standing rules: the orchestrator writes instructions for workers on this machine.
     try { return `${this.store.renderPrompt('orchestrator-system', undefined)}\n\n${this.host}`; }
     catch { return `You are the planestro orchestrator: the judgment layer over a deterministic pipeline. Decide, instruct and annotate through the planestro tools; never perform git/gh operations yourself.\n\n${this.host}`; }
+  }
+
+  /**
+   * Work in flight outside planestro (dogfood p38 part 2): the repository's open pull requests, so a
+   * stop is not escalated while a person is already fixing it (HH-149's card asked the designer to
+   * fix ci.yml twenty minutes after game PR #338, the fix, was opened from a supervising session).
+   * Read once per wake, only for wakes about an item; never for a wake that is only a message.
+   */
+  private async inFlightSection(events: WakeEvent[]): Promise<string[]> {
+    const github = this.store.config.code_repo.github;
+    if (!github || !events.some((e) => e.item)) return [];
+    let prs: Awaited<ReturnType<Ports['gh']['prList']>>;
+    try { prs = await this.ports.gh.prList(github, { state: 'open' }); } catch (e) { return [`Open pull requests in the repository: could not be read (${(e as Error).message.slice(0, 120)}).`]; }
+    if (!prs.length) return ['Open pull requests in the repository: none.'];
+    const byBranch = new Map(this.store.listItems().map((i) => [i.file.frontmatter.branch, i.id] as const));
+    const age = (iso?: string) => { if (!iso) return ''; const h = Math.round((Date.now() - Date.parse(iso)) / 3_600_000); return h < 1 ? 'updated just now' : h < 48 ? `updated ${h} h ago` : `updated ${Math.round(h / 24)} d ago`; };
+    const lines = [...prs].sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '')).slice(0, 20)
+      .map((p) => `- #${p.number} "${(p.title ?? '').slice(0, 100)}" — ${p.headRefName} → ${p.baseRefName}${p.author ? `, by ${p.author}` : ''}${age(p.updatedAt) ? `, ${age(p.updatedAt)}` : ''}${byBranch.has(p.headRefName) ? ` (item ${byBranch.get(p.headRefName)})` : ' (not a planestro item: a person opened it)'}`);
+    return [[
+      `Open pull requests in the repository (${prs.length}${prs.length > 20 ? ', newest 20 shown' : ''}). Before escalating a failure, look here: a pull request by a person that touches the same area is a fix already in flight. Note it on the stopped item (annotate_item) and let it wait for that pull request, rather than filing a card or a maintainer item for what is already being done.`,
+      ...lines,
+    ].join('\n')];
   }
 
   private renderPacket(e: WakeEvent): string {

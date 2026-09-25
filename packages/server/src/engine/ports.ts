@@ -55,7 +55,7 @@ export interface GitPort {
 export type CiState = 'none' | 'pending' | 'success' | 'failure' | 'cancelled';
 /** `attempt` is the run's attempt number: a re-run keeps its run id and counts up. */
 export interface CiStatus { state: CiState; runId?: number; url?: string; sha?: string; startedAt?: string; attempt?: number }
-export interface PrInfo { number: number; url: string; state: 'OPEN' | 'MERGED' | 'CLOSED'; mergedAt?: string; headRefOid: string; headRefName: string; baseRefName: string; mergeCommit?: string; title?: string; isDraft?: boolean }
+export interface PrInfo { number: number; url: string; state: 'OPEN' | 'MERGED' | 'CLOSED'; mergedAt?: string; headRefOid: string; headRefName: string; baseRefName: string; mergeCommit?: string; title?: string; isDraft?: boolean; author?: string; updatedAt?: string }
 
 export interface GhPort {
   createPr(repo: string, args: { base: string; head: string; title: string; body: string; draft?: boolean }): Promise<{ number: number; url: string }>;
