@@ -2497,6 +2497,9 @@ export class LiveEngine implements Engine {
     this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, { activity: { actor: by, text: `unblocked${message ? `: ${message}` : ''}` } }], by, { commit: `${id}: unblock${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
     const phase = this.phaseFor(fm.status);
     if (message && phase) this.queueFollowUp(id, () => this.runTurnFor(id, phase, `${this.resumeNote(id, by === 'orchestrator' ? 'the orchestrator' : 'a decision from the user')}\n\n${message}`));
+    // p50: a merged item that stopped in cleanup (a worktree removal failed) retries it now, the path reconcile takes
+    // five minutes later; with a message, or a retry that declined, clearing the flag alone left it MERGED until then.
+    else if (fm.status === 'MERGED') this.runJob(id, () => this.cleanup(id));
     else void this.tick();
   }
 

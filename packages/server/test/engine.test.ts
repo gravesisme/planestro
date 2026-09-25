@@ -1604,6 +1604,24 @@ describe('cleanup proves what it deletes (dogfood p39)', () => {
   });
 });
 
+describe('unblocking a merged item retries its cleanup (p50)', () => {
+  it('a cleanup that failed is run again on unblock, with a message too, not five minutes later by reconcile', async () => {
+    const { store, engine, world } = await setup();
+    const branch = 'tp/1-x', wt = '.claude/worktrees/tp-1-x', abs = join(store.codeRepoPath(), wt);
+    const id = store.mutateItem(store.createItem({ title: 'Merged, cleanup failed' }).id, [{ set: { status: 'IN_REVIEW' } }, { set: { pr: 410, branch, worktree: wt } }], 'engine').id;
+    store.mutateItem(id, [{ set: { status: 'MERGED' } }], 'engine');
+    const head = world.sha();
+    world.worktrees.set(abs, { path: abs, head, branch }); world.localBranches.add(branch);
+    world.prs.set(410, { number: 410, url: 'u', state: 'MERGED', mergedAt: new Date().toISOString(), headRefOid: head, headRefName: branch, baseRefName: 'trunk', mergeCommit: world.sha(), polls: 9, failOnce: false });
+    (engine as any).block(id, 'engine_error', 'git worktree remove failed: Directory not empty');
+    expect(store.getItem(id)!.file.frontmatter.blocked).toBe(true);
+    await engine.unblock(id, 'I cleared the directory; try again');
+    await waitFor(() => status(store, id) === 'FINISHED', 4000);
+    expect(world.worktrees.has(abs)).toBe(false);
+    expect(activityOf(store, id)).toContain('removed worktree and branch tp/1-x');
+  });
+});
+
 describe('plan approval delegated to the orchestrator', () => {
   /** An orchestrator whose plan reviews are scripted: each wake about a plan runs the next step. */
   const reviewer = (steps: ((t: (n: string) => { handler(a: Record<string, unknown>): Promise<unknown> }, prompt: string) => Promise<void>)[], prompts: string[] = []) => (world: FakeWorld) => {
