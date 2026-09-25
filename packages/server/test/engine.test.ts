@@ -1210,6 +1210,25 @@ describe('files a worktree must not take with it (p40)', () => {
     expect(world.ignored.get(cwd)).toEqual(['.godot/imported/x.md5']);        // only what was named moved; caches stay with the worktree
   });
 
+  it('a tracked file under the named folder stays: moving it would dirty the worktree (p46)', async () => {
+    const { store, engine, world } = await setup();
+    store.updateConfig((doc) => { doc.setIn(['worktrees', 'keep_on_remove'], ['tmp']); }, 'config: keep tmp');
+    world.baseFiles.add('tmp/.gdignore');
+    const item = store.createItem({ title: 'Tracked marker', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    const cwd = (engine as any).absWorktree(store.getItem(item.id)!.file.frontmatter.worktree!);
+    world.ignored.set(cwd, ['tmp/raw.png']);
+    const moved: string[][] = [];
+    const git = (engine as any).ports.git; const inner = git.moveAside.bind(git);
+    git.moveAside = async (c: string, paths: string[], dest: string) => { moved.push(paths); return inner(c, paths, dest); };
+    await engine.approvePlan(item.id);
+    await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
+    expect(activityOf(store, item.id)).toMatch(/set aside 1 file under tmp/);
+    expect(moved.flat()).toEqual(['tmp/raw.png']);
+  });
+
   it('close as done sets them aside too, before it removes an unused worktree', async () => {
     const { store, engine, world } = await setup();
     store.updateConfig((doc) => { doc.setIn(['worktrees', 'keep_on_remove'], ['tmp']); }, 'config: keep tmp');
