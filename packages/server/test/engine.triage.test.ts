@@ -195,6 +195,39 @@ describe('needs-you triage', () => {
     expect(s.journal.read({ type: 'orchestrator.decision_answered' })[0].data?.budget_raised_to).toBe(s.config.budget_usd_per_item + 40);
   });
 
+  it('a card is withdrawn by withdraw_decision, replaced by a new block, and cleared by an engine block; never left moot (p42)', async () => {
+    let messages = 0, stops = 0; const replies: string[] = [];
+    const card = { question: 'Raise the budget?', why: 'It spent its cap.', options: [{ label: '+$40', description: 'more', recommended: true }, { label: 'Stop', description: 'leave it' }] };
+    const a = agents({ firstTurn: blocksOnce, orchestrate: async (w) => {
+      if (w.label.startsWith('blocked_') && ++stops === 1) await w.tools('ask_user_decision').handler({ item: 'TP-1', ...card });   // only the first stop gets a card
+      if (w.label === 'user_message') {
+        messages += 1;
+        if (messages === 1) { replies.push(await w.tools('withdraw_decision').handler({ id: 'TP-1', reason: 'the user raised it by hand' })); replies.push(await w.tools('withdraw_decision').handler({ id: 'TP-1', reason: 'again' })); }
+        if (messages === 2) { await w.tools('ask_user_decision').handler({ item: 'TP-1', ...card }); await w.tools('mark_blocked').handler({ id: 'TP-1', reason: 'the user took it over' }); }
+      }
+    } });
+    const { store: s, engine: e, id } = await setup(a.claude);
+    await e.start();
+    await waitFor(() => Boolean((fmOf(s, id).awaiting_data as any)?.decision));
+    e.orchestrator.wake({ type: 'user_message', item: id, data: { message: 'I raised it' } });
+    await waitFor(() => replies.length === 2);
+    expect(replies[0]).toContain('withdrawn');
+    expect(replies[1]).toContain('nothing to withdraw');
+    let fm = fmOf(s, id);
+    expect((fm.awaiting_data as any)?.decision).toBeUndefined();
+    expect(fm).toMatchObject({ blocked: true, blocked_reason: 'agent_blocked' });        // the stop itself is untouched
+    expect(activityOf(s, id)).toContain('withdrew the decision card (Raise the budget?): the user raised it by hand');
+    e.orchestrator.wake({ type: 'user_message', item: id, data: { message: 'x' } });
+    await waitFor(() => fmOf(s, id).blocked_reason === 'orchestrator');
+    fm = fmOf(s, id);
+    expect((fm.awaiting_data as any)?.decision).toBeUndefined();                          // mark_blocked replaced the new card
+    expect(activityOf(s, id)).toContain('the decision card it had is withdrawn: this block replaces it');
+    s.mutateItem(id, [{ set: { awaiting_data: { decision: { ...card, allow_free_text: true, requested_at: 'now' } } } }], 'engine');
+    (e as any).block(id, 'engine_error', 'something else broke');
+    expect((fmOf(s, id).awaiting_data as any)?.decision).toBeUndefined();                // an engine block clears it too
+    expect(activityOf(s, id)).toContain('BLOCKED (engine_error): something else broke');
+  });
+
   it('ask_user_decision stores one structured decision, recommended first; your answer wakes the orchestrator to carry it out', async () => {
     const replies: string[] = [];
     const a = agents({ firstTurn: blocksOnce, orchestrate: async (w) => {

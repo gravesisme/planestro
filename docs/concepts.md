@@ -203,3 +203,7 @@ make.
 An item whose implementer is an `external: true` model is *watched*, not run: someone else
 (another tool, a colleague) pushes the branch and opens the pull request; planestro follows
 it to merge and keeps the board honest.
+
+A card never outlives the stop it asked about: a new block (the orchestrator's `mark_blocked`, or the
+engine's own) replaces it, a new card replaces it, and `withdraw_decision` takes it back when the
+situation changed, so you are never asked something that is already moot.
