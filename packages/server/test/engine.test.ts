@@ -700,6 +700,121 @@ describe('held pull requests (skip_merge)', () => {
   });
 });
 
+describe('CI is waited for outside the serial merge chain (p15)', () => {
+  /** An item already IN_REVIEW with an open PR, its worktree and the PR branch on the same head (behind the base unless a test says otherwise). */
+  function inReview(store: DataStore, engine: LiveEngine, world: FakeWorld, n: number, extra: Record<string, unknown> = {}) {
+    const item = store.createItem({ title: `Review ${n}`, description: 'x' });
+    const branch = `tp/${n}-review`, rel = `.claude/worktrees/tp-${n}-review`, pr = 400 + n;
+    const cwd = (engine as any).absWorktree(rel);
+    const head = world.sha();
+    world.worktrees.set(cwd, { path: cwd, head, branch }); world.localBranches.add(branch); world.remoteBranches.set(branch, head); world.commits.set(cwd, 1);
+    world.prs.set(pr, { number: pr, url: `https://github.com/acme/repo/pull/${pr}`, state: 'OPEN', headRefOid: head, headRefName: branch, baseRefName: 'trunk', polls: 0, failOnce: false });
+    store.mutateItem(item.id, [{ set: { status: 'IN_REVIEW', branch, worktree: rel, pr, ci_result: 'pending', ...extra } }], 'engine');
+    return { id: item.id, branch, cwd, pr, head };
+  }
+  /** CI for `branch` stays running until the returned function lets it finish. */
+  function slowCi(engine: LiveEngine, branch: string): () => void {
+    let done = false;
+    const gh = (engine as any).ports.gh; const real = gh.ciForSha.bind(gh);
+    gh.ciForSha = async (r: string, b: string, sha: string, wf: string) => b === branch && !done ? { state: 'pending', runId: 9, sha, url: 'https://example/run/9' } : real(r, b, sha, wf);
+    (engine as any).sleep = () => sleep(10);
+    return () => { done = true; };
+  }
+
+  it('an item waiting on slow CI does not delay the merge of one whose CI is already green', async () => {
+    const { store, engine, world } = await setup();
+    const a = inReview(store, engine, world, 1, { merge_order: 1 });   // first in the queue; its sync pushes, and its CI runs long
+    const b = inReview(store, engine, world, 2, { merge_order: 2 });
+    world.behind.set(b.cwd, 0); world.prs.get(b.pr)!.polls = 5;      // on the base tip, CI already green
+    const finishA = slowCi(engine, a.branch);
+    await engine.start();
+    await waitFor(() => status(store, b.id) === 'FINISHED', 8000);
+    expect(store.getItem(a.id)!.file.frontmatter.op).toBe('awaiting_ci');   // still waiting, beside the chain
+    expect(activityOf(store, b.id)).toContain('CI is green for it');
+    finishA();
+    await waitFor(() => status(store, a.id) === 'FINISHED', 8000);
+    // B's merge moved the base while A's CI ran: A came back green, synced again, and merged on the new tip.
+    expect(activityOf(store, a.id).match(/rebased onto/g)?.length).toBe(2);
+    expect(world.prs.get(a.pr)!.state).toBe('MERGED');
+  });
+
+  it('releasing a hold keeps a green that still describes the head on the base tip, and merges without a new CI wait', async () => {
+    const { store, engine, world } = await setup();
+    const kept = inReview(store, engine, world, 3, { review_hold: true, awaiting: 'review' });
+    store.mutateItem(kept.id, [{ set: { ci_result: 'green', ci_head_sha: kept.head } }], 'engine');
+    world.behind.set(kept.cwd, 0); world.prs.get(kept.pr)!.polls = 5;
+    const moved = inReview(store, engine, world, 4, { review_hold: true, awaiting: 'review' });   // behind: the base moved since its green
+    store.mutateItem(moved.id, [{ set: { ci_result: 'green', ci_head_sha: moved.head } }], 'engine');
+    await engine.start();
+    await sleep(200);
+    expect(status(store, kept.id)).toBe('IN_REVIEW');
+    const polls = world.prs.get(kept.pr)!.polls;
+    await engine.releaseHold(kept.id);
+    expect(store.getItem(kept.id)!.file.frontmatter.ci_result).toBe('green');
+    await waitFor(() => status(store, kept.id) === 'FINISHED', 8000);
+    expect(world.prs.get(kept.pr)!.polls).toBe(polls + 1);   // one look from the chain; no wait
+    const activity = activityOf(store, kept.id);
+    expect(activity).toContain('CI stays green');
+    expect(activity).not.toContain('waiting for CI');
+    expect(activity).not.toContain('rebased onto');
+
+    await engine.releaseHold(moved.id);
+    expect(store.getItem(moved.id)!.file.frontmatter.ci_result).toBe('pending');
+    await waitFor(() => status(store, moved.id) === 'FINISHED', 8000);
+    expect(activityOf(store, moved.id)).not.toContain('CI stays green');
+    expect(activityOf(store, moved.id)).toContain('rebased onto');
+  });
+
+  it('a sync that pushes a new head leaves the chain while its CI runs, and merges once it is green', async () => {
+    const { store, engine, world } = await setup();
+    const c = inReview(store, engine, world, 5);
+    const finish = slowCi(engine, c.branch);
+    await engine.start();
+    await waitFor(() => store.getItem(c.id)!.file.frontmatter.op === 'awaiting_ci');
+    const pushed = world.remoteBranches.get(c.branch)!;
+    expect(pushed).not.toBe(c.head);
+    expect(store.getItem(c.id)!.file.frontmatter.ci_head_sha).toBe(pushed);
+    expect(activityOf(store, c.id)).toContain('waiting for CI outside the merge queue');
+    expect(await Promise.race([(engine as any).mergeChain.then(() => 'free'), sleep(500).then(() => 'held')])).toBe('free');
+    expect(world.prs.get(c.pr)!.state).toBe('OPEN');
+    finish();
+    await waitFor(() => status(store, c.id) === 'FINISHED', 8000);
+    const activity = activityOf(store, c.id);
+    expect(activity).toContain(`CI is green for ${pushed.slice(0, 7)}; back in the merge queue`);
+    expect(activity.match(/rebased onto/g)?.length).toBe(1);   // back on the same base tip: merged as it was, no second sync
+  });
+
+  it('a green the watcher saw is the green the chain merges on: a status API that disagrees on the next look does not bounce it', async () => {
+    const { store, engine, world } = await setup();
+    const e = inReview(store, engine, world, 6);
+    world.prs.get(e.pr)!.polls = 5;
+    // Every other look at the run says it is still going: the watcher's look is green, the one after it would not be.
+    const gh = (engine as any).ports.gh; const real = gh.ciForSha.bind(gh); let looks = 0;
+    gh.ciForSha = async (r: string, b: string, sha: string, wf: string) => b === e.branch && ++looks % 2 === 0 ? { state: 'pending', runId: 3, sha, url: 'https://example/run/3' } : real(r, b, sha, wf);
+    (engine as any).sleep = () => sleep(10);
+    await engine.start();
+    await waitFor(() => status(store, e.id) === 'FINISHED' || Boolean(store.getItem(e.id)!.file.frontmatter.blocked), 8000);
+    expect(store.getItem(e.id)!.file.frontmatter.blocked_reason).toBeUndefined();
+    expect(status(store, e.id)).toBe('FINISHED');
+    expect(looks).toBe(1);   // the chain took the watcher's recorded green for this head; it did not ask again
+  });
+
+  it('a chain that still disagrees with the watcher about the same head blocks it as ci_disagree instead of bouncing', async () => {
+    const { store, engine, world } = await setup();
+    const f = inReview(store, engine, world, 7);
+    world.prs.get(f.pr)!.polls = 5;
+    // The recorded green bypassed: the chain's look says no, every time (a macrotask each, so a loop would still let the test time out).
+    (engine as any).greenFor = async () => { await sleep(1); return false; };
+    (engine as any).sleep = () => sleep(10);
+    await engine.start();
+    await waitFor(() => Boolean(store.getItem(f.id)!.file.frontmatter.blocked), 8000);
+    const fm = store.getItem(f.id)!.file.frontmatter;
+    expect(fm.blocked_reason).toBe('ci_disagree');
+    expect(activityOf(store, f.id)).toContain(`watchCi saw CI green for ${fm.ci_head_sha!.slice(0, 7)} but the merge step did not, 2 times`);
+    expect(world.prs.get(f.pr)!.state).toBe('OPEN');
+  });
+});
+
 describe('budget and unblock (p36, p12)', () => {
   const ok = { sessionId: 's', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '' };
   const setBudget = (store: DataStore, usd: number) => store.updateConfig((doc) => { doc.setIn(['budget_usd_per_item'], usd); }, 'config: budget');

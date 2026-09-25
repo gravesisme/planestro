@@ -32,6 +32,8 @@ NOT_YET_SUBMITTED → QUEUED → PLAN_IN_PROGRESS → PLAN_READY → IN_PROGRESS
   worktree and commits. It never pushes.
 - planestro pushes, opens the pull request, keeps the branch synced with its base, waits
   for CI, merges, proves the merge landed, and only then deletes the worktree and branch.
+  Merges happen one at a time, in merge order; CI waits run beside them, so a pull request
+  whose CI is green never queues behind another one's CI.
 - `ICEBOX` holds ideas. **Close as done** finishes an item whose work landed some other way.
 
 Which moves are legal, and for whom — you, the engine, the orchestrator — is one table:
@@ -81,7 +83,9 @@ An epic's children can be written by hand, or proposed by the planner: see
   branch is rebased if behind and pushed, so the PR shows the work; its CI is read about once
   a minute, a red run goes to the session like any other, and the card says `held · CI …`.
   None of this waits inside the serial merge chain. A PR branch that moved on its own is never
-  pushed over. Releasing it sends the item back through sync and CI before it merges.
+  pushed over. Releasing it sends the item back through sync and CI before it merges; a green
+  run for a head that is unchanged and still on the base tip is kept, so it merges without
+  running CI again.
   A held item whose CI is green, or whose PR is a draft until release, counts as **NEEDS YOU**:
   nothing automatic moves it, only you.
 - **Draft while held** (`ci.draft_while_held`, on by default) — a held item's pull request (a

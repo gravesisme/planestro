@@ -176,7 +176,8 @@ describe('sync with base (p29)', () => {
     expect(ctx.log.some((l) => /git merge origin\/trunk in /.test(l))).toBe(true);
     expect(ctx.log.some((l) => l.includes('git rebase') || l.includes('--force-with-lease'))).toBe(false);
     expect(ctx.log.some((l) => l.startsWith('Would git push -u origin feature/big-thing'))).toBe(true);
-    // the epic page's button goes the same way
+    // the epic page's button goes the same way, once the base has moved again
+    for (const cwd of ctx.world.worktrees.keys()) ctx.world.behind.set(cwd, 1);
     await ctx.engine.syncBase(epic.id);
     expect(ctx.log.filter((l) => /git merge origin\/trunk in /.test(l)).length).toBe(2);
   });

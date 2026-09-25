@@ -31,7 +31,7 @@ export class FakeWorld {
   seq = 0;
   ciMode: 'green' | 'red-once' | 'conflict-once' = (process.env.PLANESTRO_DRYRUN_CI as any) ?? 'green';
   conflictArmed = this.ciMode === 'conflict-once';
-  /** Commits a worktree is behind its base (default 1: the base is assumed to have moved, so every dry run exercises the sync). */
+  /** Commits a worktree is behind its base (default 1: the base is assumed to have moved, so every dry run exercises the sync). A sync puts it on the tip; a merge moves the tip under the others. */
   behind = new Map<string, number>();
   /** How many `gh pr view` polls after a push still report the replaced head — GitHub's real propagation lag. */
   headLagPolls = 0;
@@ -65,11 +65,14 @@ export class DryRunGitPort implements GitPort {
   async aheadBehind(cwd: string) { return { ahead: this.w.commits.get(cwd) ?? 0, behind: this.w.behind.get(cwd) ?? 1 }; }
   async rebase(cwd: string, onto: string): Promise<RebaseResult> {
     if (this.w.conflictArmed) { this.w.conflictArmed = false; this.say(`git rebase ${onto} in ${cwd} → CONFLICT (simulated)`); return { ok: false, conflicts: ['src/conflicted.ts'], head: this.w.worktrees.get(cwd)?.head ?? '' }; }
-    this.say(`git rebase ${onto} in ${cwd}`); const wt = this.w.worktrees.get(cwd); const head = this.w.sha(); if (wt) wt.head = head; return { ok: true, conflicts: [], head };
+    this.say(`git rebase ${onto} in ${cwd}`); const wt = this.w.worktrees.get(cwd); const head = this.w.sha(); if (wt) wt.head = head; this.w.behind.set(cwd, 0); return { ok: true, conflicts: [], head };
   }
   async merge(cwd: string, ref: string): Promise<RebaseResult> {
     if (this.w.conflictArmed) { this.w.conflictArmed = false; this.say(`git merge ${ref} in ${cwd} → CONFLICT (simulated)`); return { ok: false, conflicts: ['src/conflicted.ts'], head: this.w.worktrees.get(cwd)?.head ?? '' }; }
-    this.say(`git merge ${ref} in ${cwd}`); const wt = this.w.worktrees.get(cwd); const head = this.w.sha(); if (wt) wt.head = head; return { ok: true, conflicts: [], head };
+    this.say(`git merge ${ref} in ${cwd}`); const wt = this.w.worktrees.get(cwd); const head = this.w.sha(); if (wt) wt.head = head;
+    // Taking in the branch's own remote copy says nothing about the base; merging the base puts it on the tip.
+    if (ref !== `origin/${wt?.branch}`) this.w.behind.set(cwd, 0);
+    return { ok: true, conflicts: [], head };
   }
   async inProgressOp() { return null; }
   async abortInProgress() {}
@@ -128,6 +131,8 @@ export class DryRunGhPort implements GhPort {
     this.say(`gh pr merge ${number} --merge${opts.deleteBranch ? ' --delete-branch' : ''}`);
     const p = this.w.prs.get(number)!; p.state = 'MERGED'; p.mergedAt = new Date().toISOString(); p.mergeCommit = this.w.sha();
     if (opts.deleteBranch) this.w.remoteBranches.delete(p.headRefName);
+    // The base moved: every other branch is behind it now, and syncs again before it merges.
+    for (const [cwd, wt] of this.w.worktrees) if (wt.branch !== p.headRefName) this.w.behind.set(cwd, Math.max(1, this.w.behind.get(cwd) ?? 1));
   }
   async branchCi(): Promise<CiStatus> { return { state: 'success' }; }
 }

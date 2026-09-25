@@ -61,6 +61,10 @@ Between turns the same sync runs on demand (`Engine.syncWithBase`: the item's
 "Sync with base", the orchestrator's `sync_with_base` / `unblock_item` with
 `sync_first`, and `resume_after`): never while a turn or op is live, pushed only
 if the branch is already on the remote, and a conflict goes to the session.
+The serial merge chain only syncs and merges; no CI wait ever runs inside it. A head
+that is not green yet leaves the chain (`op: awaiting_ci`), is polled beside it
+(`watchCi`) and comes back once green, so one item's CI never delays another's merge.
+Releasing a hold keeps a green run whose head is unchanged and still on the base tip.
 A held item (`skip_merge`) skips only the merge: its new commits are pushed and its
 CI is polled from the tick, outside the merge chain (`driveHeld`).
 Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
