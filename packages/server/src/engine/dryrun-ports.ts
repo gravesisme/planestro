@@ -49,7 +49,7 @@ export class FakeWorld {
   /** ready_for_review events sent (`gh pr ready`). */
   readyEvents = 0;
   constructor(readonly log: (msg: string) => void, readonly baseBranches: Record<string, string> = {}) {}
-  sha(): string { return (0x100000 + ++this.seq).toString(16).padStart(40, '0'); }
+  sha(): string { return (0x100000 + ++this.seq).toString(16).padEnd(40, '0'); }  // unique in its first seven characters, as short shas in Activity lines are
 }
 
 export class DryRunGitPort implements GitPort {

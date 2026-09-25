@@ -12,6 +12,19 @@ import {
   type Config, type LocalConfig, type ServerEvent, type ActivityActor,
 } from '@planestro/shared';
 import { atomicWrite, cleanStaleTemps } from './atomicWrite.ts';
+
+/**
+ * p49: a polling loop wrote the same two app lines ("already on …; waiting for CI outside the merge
+ * queue", "same red run … re-observed") every ~40 s for hours, alternating. An app line identical to
+ * one of the last ACTIVITY_REPEAT_WINDOW entries says nothing new and is not appended; the journal
+ * still records the mutation. People's and the orchestrator's lines are always kept.
+ */
+const ACTIVITY_REPEAT_WINDOW = 2;
+function repeatsRecentAppLine(file: ItemFile, actor: ActivityActor, text: string): boolean {
+  if (actor !== 'app') return false;
+  const line = `[app] ${text.replace(/\s*\n\s*/g, ' ').trim()}`;
+  return getSection(file, 'Activity').split('\n').filter((l) => l.startsWith('- ')).slice(-ACTIVITY_REPEAT_WINDOW).some((l) => l.slice(l.indexOf(' ', 2) + 1) === line);
+}
 import { Journal } from './Journal.ts';
 import { GitCommitter } from './GitCommitter.ts';
 import { IdAllocator } from './IdAllocator.ts';
@@ -275,7 +288,7 @@ export class DataStore {
       if ('set' in op) Object.assign(file.frontmatter, op.set);
       else if ('unset' in op) for (const k of op.unset) delete (file.frontmatter as Record<string, unknown>)[k];
       else if ('section' in op) setSection(file, op.section, op.body);
-      else if ('activity' in op) appendActivity(file, op.activity.actor, op.activity.text, now);
+      else if ('activity' in op) { if (!repeatsRecentAppLine(file, op.activity.actor, op.activity.text)) appendActivity(file, op.activity.actor, op.activity.text, now); }
       else if ('transition' in op) {
         const next = applyTransition(file.frontmatter, op.transition.to, op.transition.actor, this.flavorOf(file.frontmatter), now);
         file.frontmatter = next;
