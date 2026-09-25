@@ -29,7 +29,8 @@ export interface GitPort {
   /** Every file (tracked, ignored or unknown to git) under the given relative directories or files of `cwd`, as relative paths. */
   filesUnder(cwd: string, paths: string[]): Promise<string[]>;
   /** Stage everything in the worktree and commit it; returns the new head. */
-  commitAll(cwd: string, message: string): Promise<string>;
+  /** `git add -A` and commit, leaving the untracked paths in `leave` out of it. */
+  commitAll(cwd: string, message: string, leave?: string[]): Promise<string>;
   aheadBehind(cwd: string, base: string, head: string): Promise<{ ahead: number; behind: number }>;
   /** Rebase `cwd`'s HEAD onto `onto`; on conflict the rebase is aborted and the files listed. */
   rebase(cwd: string, onto: string): Promise<RebaseResult>;

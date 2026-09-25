@@ -124,7 +124,10 @@ export class LiveGitPort implements GitPort {
       try { renameSync(join(cwd, p), to); } catch { copyFileSync(join(cwd, p), to); unlinkSync(join(cwd, p)); } // another volume
     }
   }
-  async commitAll(cwd: string, message: string) { await git(cwd, ['add', '-A']); await git(cwd, ['commit', '-q', '-m', message]); return this.revParse(cwd, 'HEAD'); }
+  async commitAll(cwd: string, message: string, leave: string[] = []) {
+    await git(cwd, ['add', '-A']);
+    for (let i = 0; i < leave.length; i += 200) await git(cwd, ['reset', '-q', '--', ...leave.slice(i, i + 200)]);
+    await git(cwd, ['commit', '-q', '-m', message]); return this.revParse(cwd, 'HEAD'); }
   async aheadBehind(cwd: string, base: string, head: string) {
     const [behind, ahead] = (await git(cwd, ['rev-list', '--left-right', '--count', `${base}...${head}`])).stdout.trim().split(/\s+/).map(Number);
     return { ahead, behind };

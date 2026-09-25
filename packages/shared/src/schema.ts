@@ -270,7 +270,9 @@ export const Config = z.object({
     dir_pattern: z.string().default('{{prefix_lower}}-{{number}}-{{slug}}'),
     /** Paths inside a worktree (relative, e.g. `tmp`) whose files are set aside, never deleted, when the worktree is removed: a worker's raw sources or scratch output that git ignores (dogfood p40). */
     keep_on_remove: z.array(z.string().min(1)).default([]),
-  }).default({ root: '.claude/worktrees', branch_pattern: '{{prefix_lower}}/{{number}}-{{slug}}', dir_pattern: '{{prefix_lower}}-{{number}}-{{slug}}', keep_on_remove: [] }),
+    /** Globs for untracked files the project's tools regenerate in any worktree (`*.import`): never a session's work, so no clean-tree check counts them, engine commits leave them out, and cleanup sets them aside. A pattern without `/` matches the file name at any depth (dogfood p52). */
+    byproducts: z.array(z.string().min(1)).default([]),
+  }).default({ root: '.claude/worktrees', branch_pattern: '{{prefix_lower}}/{{number}}-{{slug}}', dir_pattern: '{{prefix_lower}}-{{number}}-{{slug}}', keep_on_remove: [], byproducts: [] }),
   hooks: z.object({ after_worktree_create: z.array(z.string()).default([]) }).default({ after_worktree_create: [] }),
   models: z.array(ModelDef).min(1),
   defaults: z.object({
