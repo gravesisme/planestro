@@ -5,6 +5,9 @@ import { api, type State, type ItemView } from './api.ts';
 /** Journal entries the orchestrator chat shows (a wake's `done` only when it answered a message). */
 export const isChatEntry = (j: JournalEntry) => ['orchestrator.user_message', 'orchestrator.reply', 'orchestrator.question'].includes(j.type) || (j.type === 'orchestrator.done' && ((j.data?.events as string[] | undefined) ?? []).includes('user_message'));
 
+const NOTES_SEEN = 'planestro.notes.seen';
+const readSeen = () => { try { return localStorage.getItem(NOTES_SEEN) ?? ''; } catch { return ''; } };
+
 interface Store {
   state?: State; error?: string; connected: boolean; events: string[];
   /** A newer UI bundle is being served, but reloading now would lose what the user is typing. */
@@ -15,6 +18,9 @@ interface Store {
   /** The orchestrator chat: its thread (loaded when first opened, then kept live from the journal stream) and what it opens with. */
   chat: { open: boolean; entries?: JournalEntry[]; enabled?: boolean; item?: string; draft?: string };
   openChat(opts?: { item?: string; draft?: string }): void; closeChat(): void; loadChat(): Promise<void>;
+  /** The orchestrator's suggestions about planestro (f8), newest last, and the timestamp this viewer last marked read. */
+  notes: JournalEntry[]; notesSeen: string;
+  loadNotes(): Promise<void>; markNotesRead(): void;
 }
 
 let refreshTimer: ReturnType<typeof setTimeout> | undefined;
@@ -39,10 +45,12 @@ if (typeof window !== 'undefined') {
 }
 
 export const useStore = create<Store>((set, get) => ({
-  connected: false, events: [], consoles: {}, updateReady: false, chat: { open: false },
+  connected: false, events: [], consoles: {}, updateReady: false, chat: { open: false }, notes: [], notesSeen: readSeen(),
   openChat(opts = {}) { set({ chat: { ...get().chat, open: true, item: opts.item, draft: opts.draft } }); void get().loadChat(); },
   closeChat() { set({ chat: { ...get().chat, open: false } }); },
   async loadChat() { try { const r = await api.orchestratorChat(); set({ chat: { ...get().chat, entries: r.entries, enabled: r.enabled } }); } catch { /* the panel says it could not load */ } },
+  async loadNotes() { try { set({ notes: await api.orchestratorNotes() }); } catch { /* the Console says so when it loads */ } },
+  markNotesRead() { const last = get().notes.at(-1)?.ts ?? ''; try { localStorage.setItem(NOTES_SEEN, last); } catch { /* private window: the badge comes back */ } set({ notesSeen: last }); },
   seedConsole(id, lines) { set({ consoles: { ...get().consoles, [id]: lines } }); },
   async refresh() {
     try { set({ state: await api.state(), error: undefined }); } catch (e) { set({ error: (e as Error).message }); }
@@ -50,7 +58,7 @@ export const useStore = create<Store>((set, get) => ({
   connect() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const ws = new WebSocket(`${proto}://${location.host}/ws`);
-    ws.onopen = () => { set({ connected: true }); void get().refresh(); void checkForNewBundle(); };
+    ws.onopen = () => { set({ connected: true }); void get().refresh(); void get().loadNotes(); void checkForNewBundle(); };
     ws.onclose = () => { set({ connected: false }); setTimeout(() => get().connect(), 2000); };
     ws.onmessage = (m) => {
       const e = JSON.parse(m.data);
@@ -60,7 +68,11 @@ export const useStore = create<Store>((set, get) => ({
       if (e.type === 'session.ended') appendConsole(e.id, `── turn ended (${e.subtype ?? 'success'}) ──`);
       if (e.type === 'engine.log' && e.item) appendConsole(e.item, `[engine] ${e.message}`);
       if (e.type === 'engine.log') set({ events: [...get().events.slice(-199), `${e.level}: ${e.message}`] });
-      if (e.type === 'journal.appended') { const c = get().chat; if (c.entries && isChatEntry(e.entry) && !c.entries.some((x) => x.ts === e.entry.ts && x.type === e.entry.type)) set({ chat: { ...c, entries: [...c.entries.slice(-199), e.entry] } }); return; }
+      if (e.type === 'journal.appended') {
+        if (e.entry?.type === 'orchestrator.planestro_note') set({ notes: [...get().notes.slice(-199), e.entry] });
+        const c = get().chat; if (c.entries && isChatEntry(e.entry) && !c.entries.some((x) => x.ts === e.entry.ts && x.type === e.entry.type)) set({ chat: { ...c, entries: [...c.entries.slice(-199), e.entry] } });
+        return;
+      }
       clearTimeout(refreshTimer);
       refreshTimer = setTimeout(() => void get().refresh(), 120);
     };
