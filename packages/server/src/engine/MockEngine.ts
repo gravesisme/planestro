@@ -1,4 +1,4 @@
-import type { ServerEvent } from '@planestro/shared';
+import { isoLocal, type ServerEvent } from '@planestro/shared';
 import type { DataStore } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 
@@ -30,6 +30,12 @@ export class MockEngine implements Engine {
   async releaseHold(id: string): Promise<void> { this.store.mutateItem(id, [{ unset: ['review_hold', 'skip_merge'] }], 'user', { commit: `${id}: release hold` }); }
   async closeAsDone(id: string, reason?: string): Promise<void> {
     this.store.mutateItem(id, [{ transition: { to: 'FINISHED', actor: 'user' } }, { activity: { actor: 'user', text: `closed as done without a pull request${reason?.trim() ? `: ${reason.trim()}` : ''}` } }], 'user', { commit: `${id}: close as done` });
+  }
+  async takeOver(id: string, note?: string): Promise<void> {
+    this.store.mutateItem(id, [{ set: { taken_over: { since: isoLocal(), ...(note?.trim() ? { note: note.trim() } : {}) } } }, { activity: { actor: 'user', text: `took this item over by hand${note?.trim() ? `: ${note.trim()}` : ''}` } }], 'user', { commit: `${id}: take over` });
+  }
+  async handBack(id: string, note?: string): Promise<void> {
+    this.store.mutateItem(id, [{ unset: ['taken_over'] }, { activity: { actor: 'user', text: `handed back to planestro${note?.trim() ? `: ${note.trim()}` : ''}` } }], 'user', { commit: `${id}: hand back` });
   }
   sessions(): SessionView[] { return []; }
   private note(level: 'info' | 'warn' | 'error', message: string): void { const e: ServerEvent = { type: 'engine.log', level, message }; this.log.push(e); this.emit(e); }

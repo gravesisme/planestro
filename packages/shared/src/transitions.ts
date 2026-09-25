@@ -78,6 +78,8 @@ export function applyTransition(fm: ItemFrontmatter, to: Status, actor: Actor, f
   if (to === 'IN_PROGRESS' && fm.status === 'PLAN_READY') { delete next.awaiting; delete next.awaiting_data; }
   if (to === 'PLAN_IN_PROGRESS' && fm.status === 'PLAN_READY') { delete next.awaiting; delete next.awaiting_data; }
   if (to === 'FINISHED') { delete next.worktree; delete next.blocked; delete next.blocked_reason; }
+  // Off the board, nothing drives the item anyway; a take-over left on it would silently hold it back when it is queued again.
+  if (to === 'ICEBOX' || to === 'NOT_YET_SUBMITTED' || to === 'FINISHED') delete next.taken_over;
   return next;
 }
 
@@ -92,8 +94,9 @@ export function laneOf(status: Status): Lane {
 
 export const NEEDS_YOU_AWAITING = new Set(['plan_approval', 'breakdown_approval', 'permission', 'question', 'review', 'user']);
 /** A stop the orchestrator is still triaging is not yours yet: it resolves it, or comes back with one decision. */
-export function needsYou(fm: Pick<ItemFrontmatter, 'blocked' | 'awaiting' | 'triage'> & Partial<Pick<ItemFrontmatter, 'status' | 'skip_merge' | 'ci_result' | 'op_data'>>): boolean {
-  if (fm.triage) return false;
+export function needsYou(fm: Pick<ItemFrontmatter, 'blocked' | 'awaiting' | 'triage'> & Partial<Pick<ItemFrontmatter, 'status' | 'skip_merge' | 'ci_result' | 'op_data' | 'taken_over'>>): boolean {
+  // You took it over: you are already on it, and nothing on it waits for anyone else.
+  if (fm.triage || fm.taken_over) return false;
   if (fm.blocked || (fm.awaiting !== undefined && NEEDS_YOU_AWAITING.has(fm.awaiting))) return true;
   // A held pull request whose CI is green waits for exactly one thing, a person releasing the hold:
   // nothing automatic moves it, so it is yours (dogfood p44: HH-162 sat held and green at NEEDS YOU 0).

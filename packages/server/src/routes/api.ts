@@ -104,6 +104,8 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
       let stored = store.transition(id, to, 'user' as Actor);
       // Moved into review by hand with a pull request already attached: it enters the merge pipeline (p44).
       if (to === 'IN_REVIEW' && stored.file.frontmatter.pr && (stored.file.frontmatter.ci_result === undefined || stored.file.frontmatter.ci_result === 'unknown')) stored = store.mutateItem(id, [{ set: { ci_result: 'pending' } }, { activity: { actor: 'app', text: `PR #${stored.file.frontmatter.pr} attached by hand: entering the merge pipeline` } }], 'user');
+      // In review by hand, the session's work is over: its live turn and anything queued for it stop (p28).
+      if (to === 'IN_REVIEW') { (engine as Engine & { stopForReview?: (id: string) => void }).stopForReview?.(id); stored = store.requireItem(id); }
       if (to === 'QUEUED' || to === 'IN_REVIEW') engine.poke();
       return c.json(itemView(store, stored));
     } catch (e) { return fail(c, e); }
@@ -163,6 +165,9 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
     } catch (e) { return fail(c, e); }
   });
   api.delete('/items/:id/resume-after', (c) => { try { (engine as Engine & { cancelResumeAfter?: (id: string) => void }).cancelResumeAfter?.(c.req.param('id')); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
+  // Take over (p28): you finish the item by hand, and nothing automatic drives it until you hand it back.
+  api.post('/items/:id/take-over', async (c) => { try { const { note } = z.object({ note: z.string().optional() }).parse(await c.req.json().catch(() => ({}))); await engine.takeOver(c.req.param('id'), note); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
+  api.post('/items/:id/hand-back', async (c) => { try { const { note } = z.object({ note: z.string().optional() }).parse(await c.req.json().catch(() => ({}))); await engine.handBack(c.req.param('id'), note); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
   // Finish from here (f2): committed work that could not reach a pull request on its own goes to one now.
   api.post('/items/:id/finish', async (c) => {
     try {

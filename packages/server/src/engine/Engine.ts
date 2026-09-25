@@ -31,6 +31,10 @@ export interface Engine {
   releaseHold(id: string, note?: string): Promise<void>;
   /** Finish an item without a pull request: the work landed some other way. User-only. */
   closeAsDone(id: string, reason?: string): Promise<void>;
+  /** A person finishes the item by hand: its live turn is stopped, what was queued for it is dropped, and nothing automatic drives it until handBack. User-only. */
+  takeOver(id: string, note?: string): Promise<void>;
+  /** The person is done with it: planestro carries on from the item's persisted state. */
+  handBack(id: string, note?: string): Promise<void>;
   sessions(): SessionView[];
   /** Getting ready for a restart: nothing new starts until undrain (or the restart). Engines without automation leave these out. */
   drain?(): void;

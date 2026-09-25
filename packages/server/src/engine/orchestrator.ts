@@ -21,6 +21,17 @@ const CHAT_POLICY = [
 
 export interface WakeEvent { type: string; item?: string; data?: Record<string, unknown> }
 
+/**
+ * The tools that change an item, refused on one a person has taken over (dogfood p28): the
+ * orchestrator may read it, check its PR and annotate it, never act on it, until it is handed back.
+ */
+const HANDS_OFF = new Set([
+  'skip_merge', 'unskip_merge', 'message_session', 'submit_item', 'mark_blocked', 'approve_plan', 'amend_plan', 'request_plan_changes',
+  'hand_plan_to_user', 'decide_permission', 'hand_off_files', 'unblock_item', 'answer_question', 'set_item_fields', 'recreate_worktree',
+  'retry_op', 'ask_user_decision', 'withdraw_decision', 'finish_from_worktree', 'resume_after', 'set_merge_order', 'set_queue_order',
+  'sync_with_base',
+]);
+
 export interface OrchestratorHooks {
   message(id: string, text: string): Promise<void>;
   approvePlan(id: string, notes?: string): Promise<void>;
@@ -242,7 +253,8 @@ export class Orchestrator {
       if (item) {
         const fm = item.file.frontmatter;
         lines.push(`Item: ${fm.id} — "${fm.title}" (${fm.kind}, ${fm.category})`);
-        lines.push(`Status: ${fm.status}${fm.blocked ? ` · BLOCKED: ${fm.blocked_reason}` : ''}${fm.awaiting ? ` · awaiting ${fm.awaiting}` : ''}${fm.op ? ` · op ${fm.op}` : ''}`);
+        lines.push(`Status: ${fm.status}${fm.blocked ? ` · BLOCKED: ${fm.blocked_reason}` : ''}${fm.awaiting ? ` · awaiting ${fm.awaiting}` : ''}${fm.op ? ` · op ${fm.op}` : ''}${fm.taken_over ? ' · TAKEN OVER by the user' : ''}`);
+        if (fm.taken_over) lines.push(`Taken over: the user is finishing this item by hand (since ${fm.taken_over.since}${fm.taken_over.note ? `: ${fm.taken_over.note}` : ''}). Do not act on it (no messages, unblocks, retries, cards or merge order; those tools refuse it) until they hand it back. You may read it and annotate it.`);
         if (fm.pr) lines.push(`PR: #${fm.pr} · CI ${fm.ci_result ?? '—'} · red count ${fm.ci_failed_count ?? 0}`);
         // A fact the state machine knows (p29): what it depends on merged after its worktree was cut, so its branch lacks it until synced.
         const since = fm.worktree && fm.started_at && ['PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS'].includes(fm.status) ? fm.depends_on.map((d) => this.store.getItem(d)?.file.frontmatter).filter((d) => d?.merged_at && Date.parse(d.merged_at) > Date.parse(fm.started_at!)) : [];
@@ -353,10 +365,21 @@ export class Orchestrator {
    * create items, because only then has someone asked it to add work.
    */
   private tools(onDone: (summary: string) => void, chat = false): CustomToolDef[] {
+    const tools = this.allTools(onDone, chat);
+    // Every item a call names, whichever argument names it; the first one a person has taken over refuses the call.
+    const owned = (a: Record<string, unknown>) => [a.id, a.item, a.from, a.to, ...(Array.isArray(a.ids) ? a.ids : [])]
+      .filter((x): x is string => typeof x === 'string').find((x) => this.store.getItem(x)?.file.frontmatter.taken_over);
+    return tools.map((t) => !HANDS_OFF.has(t.name) ? t : { ...t, handler: async (a) => {
+      const x = owned(a);
+      return x ? `not permitted: the user has taken ${x} over and is finishing it by hand. Leave it alone until they hand it back (you may read and annotate it).` : t.handler(a);
+    } });
+  }
+
+  private allTools(onDone: (summary: string) => void, chat: boolean): CustomToolDef[] {
     const store = this.store;
     const idArg = { id: z.string() };
     return [
-      { name: 'list_items', description: 'List backlog items (id, status, flags), optionally filtered by status.', schema: { status: z.string().optional() }, handler: async (a) => store.listItems().filter((i) => !a.status || i.file.frontmatter.status === a.status).map((i) => { const f = i.file.frontmatter; return `${f.id} [${f.status}${f.blocked ? ' BLOCKED:' + f.blocked_reason : ''}${f.awaiting ? ' awaiting:' + f.awaiting : ''}] rank=${f.rank ?? '—'} pr=${f.pr ?? '—'} ${f.kind === 'epic' ? 'EPIC ' : ''}${f.title}`; }).join('\n') || '(no items)' },
+      { name: 'list_items', description: 'List backlog items (id, status, flags), optionally filtered by status.', schema: { status: z.string().optional() }, handler: async (a) => store.listItems().filter((i) => !a.status || i.file.frontmatter.status === a.status).map((i) => { const f = i.file.frontmatter; return `${f.id} [${f.status}${f.blocked ? ' BLOCKED:' + f.blocked_reason : ''}${f.awaiting ? ' awaiting:' + f.awaiting : ''}${f.taken_over ? ' TAKEN_OVER' : ''}] rank=${f.rank ?? '—'} pr=${f.pr ?? '—'} ${f.kind === 'epic' ? 'EPIC ' : ''}${f.title}`; }).join('\n') || '(no items)' },
       { name: 'read_item', description: 'Read one item file in full.', schema: idArg, handler: async (a) => serializeItemFile(store.requireItem(String(a.id)).file) },
       { name: 'pr_status', description: 'Pull request + CI status for an item.', schema: idArg, handler: async (a) => { const fm = store.requireItem(String(a.id)).file.frontmatter; if (!fm.pr) return 'no PR'; const gh = store.config.code_repo.github; if (!gh) return 'no github remote configured'; const pr = await this.ports.gh.prView(gh, fm.pr); return `#${pr.number} ${pr.state} base=${pr.baseRefName} head=${pr.headRefName}@${pr.headRefOid.slice(0, 7)} ci=${fm.ci_result ?? '—'} (${fm.ci_failed_count ?? 0} red)`; } },
       { name: 'set_merge_order', description: 'Override the merge order of the given IN_REVIEW items (first merges first). Items not listed keep rank order after these.', schema: { ids: z.array(z.string()) }, handler: async (a) => { (a.ids as string[]).forEach((id, i) => store.mutateItem(id, [{ set: { merge_order: i + 1 } }, { activity: { actor: 'orchestrator', text: `merge order ${i + 1}` } }], 'orchestrator', { commit: `${id}: merge order ${i + 1}` })); this.hooks.poke(); return 'merge order set'; } },

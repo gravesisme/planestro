@@ -86,6 +86,11 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   the base — otherwise it leaves them and says so in the Activity log.
 - An item that returns to QUEUED after an icebox/backlog round-trip reuses the
   worktree it already has; setup hooks are not re-run.
+- `taken_over` (**take over** / **hand back**, `Engine.takeOver` / `handBack`) is also
+  orthogonal: a person finishes the item by hand. It aborts the live turn, drops what
+  was queued for it, and every drive path (turns, wakes, triage, stalls, fix turns,
+  merge, cleanup) skips the item until it is handed back; CI is still read. Hand-back
+  resumes from persisted state. A manual move into IN_REVIEW also stops the session.
 - A session slot is held only while something drives the item (a turn, an engine step,
   an op), never by an epic. An active item that nothing drives for
   `concurrency.stall_after_min` is carried on once (`driveStalls`), then blocked `stalled`.
