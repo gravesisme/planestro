@@ -1401,7 +1401,12 @@ export class LiveEngine implements Engine {
   private async setAsideBeforeRemove(id: string, cwd: string): Promise<string | undefined> {
     const keep = this.store.config.worktrees.keep_on_remove;
     if (!keep.length) return undefined;
-    const files = await this.ports.git.filesUnder(cwd, keep).catch(() => [] as string[]);
+    // Only what git does not track: a tracked file (HH's tmp/.gdignore) moved away is a deletion,
+    // which leaves the worktree dirty and `git worktree remove` refuses it (dogfood p46). The
+    // branch is merged, so its tracked files are safe in history anyway.
+    const under = await this.ports.git.filesUnder(cwd, keep).catch(() => [] as string[]);
+    const tracked = new Set(under.length ? await this.ports.git.trackedAt(cwd, 'HEAD', under).catch(() => under) : []);
+    const files = under.filter((f) => !tracked.has(f));
     if (!files.length) return undefined;
     const dest = join(this.store.worktreesRoot(), '.displaced', `${id.toLowerCase()}-${this.now().replace(/[:+]/g, '-')}`);
     await this.ports.git.moveAside(cwd, files, dest);
