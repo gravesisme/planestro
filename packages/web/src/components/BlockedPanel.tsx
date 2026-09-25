@@ -1,6 +1,7 @@
 import { blockHelp } from '@planestro/shared';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
+import { FINISH_HINT, promptFinishFromWorktree } from './QuickActions.tsx';
 import { Markdown } from './Markdown.tsx';
 import { decisionOf } from '@planestro/shared';
 import { TriageNote } from './DecisionCard.tsx';
@@ -30,7 +31,7 @@ export function BlockedPanel({ item, compact = false }: { item: ItemView; compac
       <h2>Blocked: {reason.replace(/_/g, ' ')}{said && <span className="small muted"> since {said.at.slice(0, 16).replace('T', ' ')}</span>}</h2>
       {detail && <p className="blocked-said">{detail}</p>}
       {help && <div className="small"><Markdown text={`**What it means.** ${help.meaning}\n\n**What to do.** ${help.todo}`} /></div>}
-      {!compact && <div className="row"><button className="danger" onClick={unblock}>Unblock…</button><ResumeAfterButton item={item} /><button onClick={() => useStore.getState().openChat({ item: item.id, draft: `Why is ${item.id} blocked (${reason}), and what should I do? If an instruction to the worker would fix it, unblock it with one.` })}>Ask the orchestrator</button><span className="small muted">Unblocking retries from where it stopped; with a message, the session is resumed with it.</span></div>}
+      {!compact && <div className="row"><button className="danger" onClick={unblock}>Unblock…</button>{fm.status === 'IN_PROGRESS' && fm.worktree && <button title={FINISH_HINT} onClick={() => promptFinishFromWorktree(item.id)}>Finish from here…</button>}<ResumeAfterButton item={item} /><button onClick={() => useStore.getState().openChat({ item: item.id, draft: `Why is ${item.id} blocked (${reason}), and what should I do? If an instruction to the worker would fix it, unblock it with one.` })}>Ask the orchestrator</button><span className="small muted">Unblocking retries from where it stopped; with a message, the session is resumed with it.</span></div>}
     </div>
   );
 }

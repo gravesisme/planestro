@@ -94,6 +94,7 @@ export class LiveEngine implements Engine {
       recreateWorktree: (id, message) => this.recreateWorktree(id, message),
       retryOp: (id) => this.retryOp(id),
       resumeAfter: (id, items, message) => this.resumeAfter(id, items, message, 'orchestrator'),
+      finishFromWorktree: (id) => this.finishFromWorktree(id, 'orchestrator'),
       askUserDecision: (id, input) => this.askUserDecision(id, input),
       withdrawDecision: (id, reason) => this.withdrawDecision(id, reason),
       triageEnded: (id) => this.endTriage(id, 'the orchestrator looked at it without resolving it'),
@@ -1966,6 +1967,35 @@ export class LiveEngine implements Engine {
     this.store.mutateItem(id, [Object.keys(rest).length ? { set: { awaiting_data: rest } } : { unset: ['awaiting_data'] }, { activity: { actor: 'orchestrator', text: `withdrew the decision card (${String((decision as { question?: string }).question ?? '').slice(0, 80)}): ${reason}` } }], 'orchestrator', { commit: `${id}: decision withdrawn` });
     this.store.journal.append({ type: 'orchestrator.decision_withdrawn', item: id, actor: 'orchestrator', data: { question: (decision as { question?: string }).question, reason } });
     return 'withdrawn: the card is gone; the item is otherwise as it was (still stopped, if it was). Resolve it or file a new card in this wake, or it goes to the user as a plain block.';
+  }
+
+  /**
+   * "Finish from here" (dogfood f2): the work is committed on the worker branch and the item could
+   * not reach a pull request on its own (over budget, a size gate, a runner that could not commit,
+   * a block of any kind). One action runs planestro's own path from a clean, ahead worktree: any
+   * stop is cleared, and the deterministic done check opens the pull request. Refuses anything
+   * that is not that: a dirty tree, nothing ahead of the base, a running step, the wrong status.
+   */
+  async finishFromWorktree(id: string, by: 'user' | 'orchestrator' = 'user'): Promise<string> {
+    const item = this.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    if (fm.status !== 'IN_PROGRESS' || this.store.derived(item).flavor !== 'worker' || !fm.worktree) return `not possible: ${id} is ${fm.status}${fm.worktree ? '' : ' with no worktree'}; only a worker item in progress can be finished from its worktree`;
+    const busy = this.busyWith(id); if (busy) return `not now: ${busy}`;
+    const cwd = this.absWorktree(fm.worktree);
+    const base = this.store.derived(item).base_branch;
+    if (!base) return `not possible: ${id} has no base branch`;
+    const { clean, dirty } = await this.ports.git.status(cwd);
+    if (!clean) return `not possible: the worktree has uncommitted changes (${dirty.slice(0, 5).join(', ')}); commit or discard them first`;
+    await this.ports.git.fetch(this.repo);
+    const { ahead } = await this.ports.git.aheadBehind(cwd, `origin/${base}`, 'HEAD');
+    if (ahead === 0) return `not possible: the branch has nothing ahead of origin/${base}; if the work landed some other way, close the item as done`;
+    const stopped = fm.blocked ? ` (it was blocked: ${fm.blocked_reason})` : fm.awaiting ? ` (it was awaiting ${fm.awaiting})` : '';
+    this.store.mutateItem(id, [
+      { unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] },
+      { activity: { actor: by, text: `finish from here: ${ahead} commit${ahead === 1 ? '' : 's'} ahead of origin/${base}, tree clean; opening the pull request${stopped}` } },
+    ], by, { commit: `${id}: finish from worktree${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
+    this.runJob(id, () => this.afterWorkTurn(id, 'implement', { subtype: 'success', isError: false, costUsd: 0, numTurns: 0, text: '', done: String(fm.op_data?.done_summary ?? '') || undefined }));
+    return `finishing: ${ahead} commit${ahead === 1 ? '' : 's'} go to a pull request`;
   }
 
   /** The orchestrator's escalation: one plain decision, parked on an item that is already stopped. */

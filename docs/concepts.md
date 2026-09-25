@@ -221,3 +221,9 @@ A card is a product call you can answer in one tap, in player and product terms.
 to edit code or config or run a command: a fix that needs a capability no worker or tool has (a
 workflow file, SSH, a secret) is filed as a backlog item for whoever runs planestro
 (`file_for_maintainer`, never queued), and the stopped item waits on it.
+
+**Finish from here** (an item action, and the orchestrator's `finish_from_worktree`): the work is
+committed on the branch but the item stopped before its pull request (over budget after
+committing, a size gate, a commit a person made for a runner that could not). It clears the stop
+and opens the pull request from the worktree, through the same sync and CI as any item. It refuses
+a dirty tree or a branch with nothing ahead of its base.

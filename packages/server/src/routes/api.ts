@@ -163,6 +163,16 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
     } catch (e) { return fail(c, e); }
   });
   api.delete('/items/:id/resume-after', (c) => { try { (engine as Engine & { cancelResumeAfter?: (id: string) => void }).cancelResumeAfter?.(c.req.param('id')); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
+  // Finish from here (f2): committed work that could not reach a pull request on its own goes to one now.
+  api.post('/items/:id/finish', async (c) => {
+    try {
+      const e = engine as Engine & { finishFromWorktree?: (id: string) => Promise<string> };
+      if (!e.finishFromWorktree) throw new Error('finishing from a worktree needs the live engine');
+      const r = await e.finishFromWorktree(c.req.param('id'));
+      if (!r.startsWith('finishing')) throw new Error(r);
+      return c.json(itemView(store, store.requireItem(c.req.param('id'))));
+    } catch (e) { return fail(c, e); }
+  });
   api.post('/items/:id/unblock', async (c) => { try { const { message } = z.object({ message: z.string().optional() }).parse(await c.req.json().catch(() => ({}))); const e = engine as Engine & { unblock?: (id: string, m?: string) => Promise<void> }; if (e.unblock) await e.unblock(c.req.param('id'), message); else store.mutateItem(c.req.param('id'), [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data'] }], 'user', { commit: `${c.req.param('id')}: unblock` }); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
   // The answer to an orchestrator's decision card: an option's label, your own words, or both.
   api.post('/items/:id/decision', async (c) => {

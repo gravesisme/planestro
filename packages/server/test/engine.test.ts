@@ -1256,6 +1256,49 @@ describe('a pull request attached by hand (p44)', () => {
   });
 });
 
+describe('finish from here (f2)', () => {
+  async function stuck(extra: Record<string, unknown> = {}) {
+    const ctx = await setup();
+    const { store, engine, world } = ctx;
+    const item = store.createItem({ title: 'Done by hand', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    const cwd = (engine as any).absWorktree(store.getItem(item.id)!.file.frontmatter.worktree!);
+    store.mutateItem(item.id, [{ set: { status: 'IN_PROGRESS', blocked: true, blocked_reason: 'over_budget', awaiting: 'user', op_data: { done_summary: 'All eight rows drawn.' }, ...extra } }], 'engine');
+    return { ...ctx, id: item.id, cwd };
+  }
+
+  it('committed work on a clean worktree goes to a pull request, clearing the block, with the summary it reported', async () => {
+    const { store, engine, world, id, cwd } = await stuck();
+    world.commits.set(cwd, 2);
+    expect(await engine.finishFromWorktree(id)).toBe('finishing: 2 commits go to a pull request');
+    await waitFor(() => status(store, id) === 'FINISHED', 8000);
+    expect(activityOf(store, id)).toContain('finish from here: 2 commits ahead of origin/trunk, tree clean; opening the pull request (it was blocked: over_budget)');
+  });
+
+  it('refuses a dirty tree, nothing ahead, or the wrong status, and says which', async () => {
+    const { store, engine, world, id, cwd } = await stuck();
+    expect(await engine.finishFromWorktree(id)).toContain('nothing ahead of origin/trunk');
+    world.commits.set(cwd, 1); world.dirty.add(cwd);
+    expect(await engine.finishFromWorktree(id)).toContain('uncommitted changes');
+    world.dirty.delete(cwd);
+    store.mutateItem(id, [{ set: { status: 'PLAN_READY' } }], 'engine');
+    expect(await engine.finishFromWorktree(id)).toContain('is PLAN_READY');
+    expect(store.getItem(id)!.file.frontmatter.blocked).toBe(true);                 // nothing was cleared by a refusal
+  });
+
+  it('the route answers 400 with the reason, 200 when it starts', async () => {
+    const { store, engine, world, id, cwd } = await stuck();
+    const app = apiRoutes(store, engine);
+    const post = () => app.request(`/items/${id}/finish`, { method: 'POST' });
+    expect((await post()).status).toBe(400);
+    world.commits.set(cwd, 1);
+    expect((await post()).status).toBe(200);
+    await waitFor(() => status(store, id) === 'FINISHED', 8000);
+  });
+});
+
 describe('orchestrator', () => {
   it('wakes on plan_review with a context packet, uses tools, and rotates after the configured wakes', async () => {
     const wakes: { label: string; prompt: string; resume?: string }[] = [];
