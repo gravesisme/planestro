@@ -75,8 +75,11 @@ export class LiveEngine implements Engine {
   log: ServerEvent[] = [];
   private _paused: boolean;
   private jobs = new Map<string, Promise<void>>();
-  /** Turns this engine started. `waiting` names the runner whose slot (concurrency.runner_limits) the turn is still queued for: no process yet. */
+  /** Turns this engine started. `waiting` names the slot the turn is still queued for, a runner's (concurrency.runner_limits) or `session` (max_sessions): no process yet. */
   private turns = new Map<string, { model: string; phase: TurnPhase; startedAt: string; lastOutput: string; abort: AbortController; waiting?: string }>();
+  /** Agent turns holding one of `concurrency.max_sessions` slots, and the turns queued for one (withSessionSlot). */
+  private sessionTurns = 0;
+  private sessionWaiters: Array<() => void> = [];
   private mergeChain: Promise<void> = Promise.resolve();
   /** The machine's facts for every session's system prompt (hostNote), read once. */
   private readonly hostNote = hostNote();
@@ -800,7 +803,7 @@ export class LiveEngine implements Engine {
     const turnCap = phase === 'plan' ? Math.min(budgetLeft, this.store.config.budget_usd_per_plan_turn) : budgetLeft;
     let result: TurnResult;
     try {
-      result = await this.withRunnerSlot(runner, () => { if (abort.signal.aborted) return Promise.resolve<TurnResult>({ subtype: 'killed', isError: false, costUsd: 0, numTurns: 0, text: '' }); admitted(); return agent.runTurn({
+      result = await this.withRunnerSlot(runner, () => this.withSessionSlot(id, () => { if (abort.signal.aborted) return Promise.resolve<TurnResult>({ subtype: 'killed', isError: false, costUsd: 0, numTurns: 0, text: '' }); admitted(); return agent.runTurn({
         itemId: id, phase, cwd, model: model as string, permissionMode: phase === 'plan' ? 'plan' : 'acceptEdits', prompt, resume: resumeId, images,
         systemAppend: `${this.store.renderPrompt(metered ? 'worker-system' : `worker-system-${runner}`, item)}\n\n${this.hostNote}`,
         ...(pick.sdkFallback ? { fallbackModel: pick.sdkFallback } : {}),
@@ -841,7 +844,7 @@ export class LiveEngine implements Engine {
         },
         onOutput: (text) => { const t = this.turns.get(id); if (t) t.lastOutput = text.slice(-400); this.emit({ type: 'session.output', id, text }); },
         signal: abort.signal,
-      }); });
+      }); }));
     } finally {
       this.turns.delete(id);
     }
@@ -2764,6 +2767,22 @@ export class LiveEngine implements Engine {
       if (remote) await this.ports.git.deleteRemoteBranch(this.repo, branch);
     } catch (e) { return `removing the unused worktree ${cwd} / branch ${branch} stopped partway (${brief(e)}); finish it by hand`; }
     return `removed unused worktree and branch ${branch} (clean, nothing ahead of origin/${base})${kept ? `; ${kept}` : ''}`;
+  }
+
+  /**
+   * `concurrency.max_sessions` bounds agent turns actually running, whatever started them (p51). admit()
+   * counts it only when it starts a QUEUED item; a stall carry-on, an unblock, a plan approval or a review
+   * follow-up resumes an item that is already active and never passed through admit(): HH ran five
+   * implement turns against a cap of three. Every turn now wins a session slot before its agent starts,
+   * and waits (shown as waiting for a session slot) while all of them are taken.
+   */
+  private async withSessionSlot<T>(id: string, fn: () => Promise<T>): Promise<T> {
+    while (this.sessionTurns >= Math.max(1, this.store.config.concurrency.max_sessions)) {
+      const t = this.turns.get(id); if (t) t.waiting = 'session';
+      await new Promise<void>((r) => this.sessionWaiters.push(r));
+    }
+    this.sessionTurns += 1;
+    try { return await fn(); } finally { this.sessionTurns -= 1; this.sessionWaiters.shift()?.(); }
   }
 
   /** `concurrency.runner_limits`: a runner with its own rate limit takes its turns a few at a time; unlisted runners are not limited here. */

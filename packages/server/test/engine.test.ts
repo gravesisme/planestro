@@ -469,7 +469,8 @@ describe('LiveEngine lifecycle (dry-run ports)', () => {
     world2.worktrees.set(wtPath, { path: wtPath, head: 'a'.repeat(40), branch: fm.branch! });
     const engine2 = new LiveEngine(store, { mode: 'dry-run', git: new DryRunGitPort(world2), gh: new DryRunGhPort(world2), proc: new DryRunProcPort(world2), agents: { claude: new DryRunClaudePort(world2) } }, () => {}, { sleep: async () => {}, tickMs: 50 });
     await engine2.start();
-    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    // The op clears when the turn has fully ended, a few ticks after submit_plan moved it to PLAN_READY.
+    await waitFor(() => status(store, item.id) === 'PLAN_READY' && !store.getItem(item.id)!.file.frontmatter.op);
     fm = store.getItem(item.id)!.file.frontmatter;
     expect(fm.op).toBeUndefined();
     expect(activityOf(store, item.id)).toContain('interrupted by a restart; resuming');
@@ -1242,6 +1243,36 @@ describe('regenerated files that collide with the base (p17)', () => {
     await engine.start();
     await waitFor(() => store.getItem(id)!.file.frontmatter.blocked_reason === 'dirty_tree');
     expect(world.untracked.get(cwd)).toHaveLength(1);
+  });
+});
+
+describe('max_sessions holds for every turn, not only admission (p51)', () => {
+  it('two plans approved together never run more implement turns than max_sessions', async () => {
+    let running = 0; let peak = 0; let hold = false; const gates: Array<() => void> = [];
+    const claude = (world: FakeWorld) => { const inner = new DryRunClaudePort(world); return {
+      async runTurn(o: TurnOptions): Promise<TurnResult> {
+        running += 1; peak = Math.max(peak, running);
+        try { if (hold && o.phase === 'implement') await new Promise<void>((r) => gates.push(r)); return await inner.runTurn(o); } finally { running -= 1; }
+      },
+      runCustomTurn: inner.runCustomTurn.bind(inner),
+    }; };
+    const { store, engine } = await setup({ claude });
+    store.updateConfig((doc) => { doc.setIn(['concurrency', 'max_sessions'], 1); }, 'config: one session');
+    const a = store.createItem({ title: 'First', description: 'x' });
+    const b = store.createItem({ title: 'Second', description: 'x' });
+    store.transition(a.id, 'QUEUED', 'user'); store.transition(b.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, a.id) === 'PLAN_READY' && status(store, b.id) === 'PLAN_READY', 8000);
+    peak = 0; hold = true;
+    // Plan approval resumes an active item straight into its implement turn: it never passes through admit().
+    await Promise.all([engine.approvePlan(a.id), engine.approvePlan(b.id)]);
+    await waitFor(() => gates.length >= 1);
+    await sleep(200);
+    expect(peak).toBe(1);
+    expect(engine.sessions().some((x) => x.op === 'implement: waiting for a session slot')).toBe(true);
+    hold = false; while (gates.length) gates.shift()!();
+    await waitFor(() => gates.length >= 0 && status(store, a.id) !== 'IN_PROGRESS' && status(store, b.id) !== 'IN_PROGRESS', 8000).catch(() => undefined);
+    expect(peak).toBe(1);
   });
 });
 
