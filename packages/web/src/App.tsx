@@ -4,6 +4,7 @@ import { useStore, act } from './store.ts';
 import { api } from './api.ts';
 import { usageWindowLabel, usagePercent, localClock, type UsageGuardState } from '@planestro/shared';
 import { OrchestratorChat } from './components/OrchestratorChat.tsx';
+import { setTitle, setNeeds } from './tabBadge.ts';
 
 /** The phone's tab bar. Board, Icebox and Done are one tab: the board page switches between them itself. */
 const TABS: { to: string; label: string; icon: string }[] = [
@@ -26,9 +27,12 @@ export function App() {
   const { state, error, connected, connect, updateReady } = useStore();
   const nav = useNavigate();
   const { pathname } = useLocation();
-  useEffect(() => { if (!pathname.startsWith('/items/')) document.title = `${TABS.find((t) => t.to !== '/' && pathname.startsWith(t.to))?.label ?? (pathname === '/icebox' ? 'Icebox' : pathname === '/done' ? 'Done' : 'Board')} · ${state?.config.project.name ?? 'planestro'}`; }, [pathname, state?.config.project.name]);
+  useEffect(() => { if (!pathname.startsWith('/items/')) setTitle(`${TABS.find((t) => t.to !== '/' && pathname.startsWith(t.to))?.label ?? (pathname === '/icebox' ? 'Icebox' : pathname === '/done' ? 'Done' : 'Board')} · ${state?.config.project.name ?? 'planestro'}`); }, [pathname, state?.config.project.name]);
   useEffect(() => { connect(); }, [connect]);
   const needs = state?.items.filter((i) => i.derived.needs_you && i.derived.lane === 'board') ?? [];
+  const needsHot = needs.some((i) => i.frontmatter.blocked);
+  // A background tab shows it too: "(2) …" in its title and a dot on its icon.
+  useEffect(() => { setNeeds(needs.length, needsHot); }, [needs.length, needsHot]);
   const active = state?.items.filter((i) => ['PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW', 'MERGED'].includes(i.frontmatter.status)) ?? [];
   const inReview = state?.items.filter((i) => i.frontmatter.status === 'IN_REVIEW') ?? [];
   const paused = state?.engine.paused ?? false;
@@ -54,7 +58,7 @@ export function App() {
           <NavLink to="/settings">Settings</NavLink>
         </nav>
         <div className="status">
-          <button className={`needs ${needs.some((i) => i.frontmatter.blocked) ? 'hot' : needs.length ? 'wait' : ''}`} onClick={() => nav('/?needs=1')} title="Items waiting on you (red: one of them is blocked)"><span className="dot" /> <span className="desk-only">NEEDS YOU · </span>{needs.length}</button>
+          <button className={`needs ${needsHot ? 'hot' : needs.length ? 'wait' : ''}`} onClick={() => nav('/?needs=1')} title="Items waiting on you (red: one of them is blocked)"><span className="dot" /> <span className="desk-only">NEEDS YOU · </span>{needs.length}</button>
           {state?.engine.restart?.draining
             // Getting ready to restart takes the summary's place: it is the one thing that matters until the restart.
             ? <button className={`needs ${state.engine.restart.idle ? 'safe' : 'wait'}`} onClick={() => nav('/console')} title={state.engine.restart.idle ? 'Nothing is running: restarting planestro loses nothing' : `Still running: ${state.engine.restart.running.join(', ')}`}>{state.engine.restart.idle ? <>↻ <span className="desk-only">SAFE TO RESTART</span><span className="phone-only">OK</span></> : <>↻ <span className="desk-only">DRAINING · </span>{state.engine.restart.running.length}</>}</button>

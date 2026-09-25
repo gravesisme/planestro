@@ -17,6 +17,7 @@ import { AwaitingPanels } from '../components/AwaitingPanels.tsx';
 import { PartsStrip } from '../components/PartsStrip.tsx';
 import { DecisionCard } from '../components/DecisionCard.tsx';
 import { prepareUpload } from '../uploadImage.ts';
+import { setTitle as setTabTitle } from '../tabBadge.ts';
 
 function useAutosave(id: string, section: 'Description' | 'Notes' | 'Plan', initial: string) {
   const [text, setText] = useState(initial);
@@ -47,7 +48,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
   const plan = useAutosave(item.id, 'Plan', item.sections.Plan);
   const [title, setTitle] = useState(fm.title);
   // The tab (and an installed web app, which has no address bar) says which item this is.
-  useEffect(() => { document.title = `${item.id} · ${fm.title}`; return () => { document.title = 'planestro'; }; }, [item.id, fm.title]);
+  useEffect(() => { setTabTitle(`${item.id} · ${fm.title}`); return () => setTabTitle('planestro'); }, [item.id, fm.title]);
   // The title wraps instead of running off a narrow screen, so its box grows to fit what it holds.
   const titleBox = useRef<HTMLTextAreaElement>(null);
   useLayoutEffect(() => {

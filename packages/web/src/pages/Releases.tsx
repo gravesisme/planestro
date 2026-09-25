@@ -4,6 +4,7 @@ import { charCount, nextVersions, releaseMarkdown, RELEASE_STATUSES, type Releas
 import { api, type ReleaseFields, type ReleaseView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { statusLabel } from '../components/ItemCard.tsx';
+import { setTitle as setTabTitle } from '../tabBadge.ts';
 
 const STATUS_HINT: Record<ReleaseStatus, string> = {
   planned: 'being put together', submitted: 'with a store or a reviewer', released: 'out', cancelled: 'never shipped; places no items',
@@ -66,7 +67,7 @@ function ReleaseBody({ release }: { release: ReleaseView }) {
   const defs: ReleaseSectionDef[] = [...state.config.releases.sections, ...release.sections.filter((s) => !state.config.releases.sections.some((d) => d.title === s.title)).map((s) => ({ title: s.title, carry: false }))];
   const bodyOf = (title: string) => release.sections.find((s) => s.title === title)?.body ?? '';
   const [version, setVersion] = useState(release.version);
-  useEffect(() => { document.title = `${release.version}${fm.title ? ` · ${fm.title}` : ''} · releases`; }, [release.version, fm.title]);
+  useEffect(() => { setTabTitle(`${release.version}${fm.title ? ` · ${fm.title}` : ''} · releases`); }, [release.version, fm.title]);
   const rename = async () => { const v = version.trim(); if (!v || v === release.version) return setVersion(release.version); const r = await act(() => api.patchRelease(release.version, { fields: { version: v } })); if (r) nav(`/releases/${encodeURIComponent(r.version)}`, { replace: true }); else setVersion(release.version); };
   return (
     <div>
