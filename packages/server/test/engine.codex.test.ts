@@ -281,6 +281,69 @@ describe('mixed runners (dry-run ports)', () => {
     expect(activityOf(store, epic.id)).toMatch(/merged PR #/);
   }, 60000);
 
+  it('engine_commits: work left uncommitted after done is committed with the summary, and a git-refusal block is committed and resumed (p11)', async () => {
+    const prompts: string[] = [];
+    const sandboxed = (world: FakeWorld) => ({
+      async runTurn(o: AgentTurnOptions): Promise<TurnResult> {
+        prompts.push(o.prompt);
+        const sessionId = o.resume ?? `thread-${o.itemId}`;
+        if (/LOCKED/.test(o.prompt) && prompts.length === 1) {
+          world.dirty.add(o.cwd);
+          const why = "git add failed: fatal: Unable to create '/repo/.git/worktrees/x/index.lock': Operation not permitted";
+          await o.tools.report_blocked(why);
+          return { sessionId, subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', blocked: why };
+        }
+        if (!/committed now/.test(o.prompt)) world.dirty.add(o.cwd);  // generated the art, could not commit it
+        await o.tools.report_done('Frost wand icon, 512px');
+        return { sessionId, subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', done: 'Frost wand icon, 512px' };
+      },
+    });
+    const { store, engine, world } = await setup({ codex: sandboxed, config: (y) => y.replace('id: codex-free, label: Codex (no hold), runner: codex', 'id: codex-free, label: Codex (no hold), runner: codex, engine_commits: true') });
+    const item = store.createItem({ title: 'Wand icon', description: 'x', implementer: 'codex-free' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => fmOf(store, item.id).status === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => fmOf(store, item.id).status === 'FINISHED', 8000);
+    expect(prompts).toHaveLength(1);                                // no commit-dirty-tree reminder turn
+    expect(activityOf(store, item.id)).toMatch(/committed the session's work for it \([0-9a-f]{7}, 1 file\)/);
+    expect(world.dirty.size).toBe(0);
+
+    prompts.length = 0;
+    const locked = store.createItem({ title: 'LOCKED art', description: 'x', implementer: 'codex-free' });
+    store.transition(locked.id, 'QUEUED', 'user'); engine.poke();
+    await waitFor(() => fmOf(store, locked.id).status === 'PLAN_READY');
+    await engine.approvePlan(locked.id, 'LOCKED');
+    await waitFor(() => fmOf(store, locked.id).status === 'FINISHED', 8000);
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toMatch(/Your work is committed now \([0-9a-f]{7}\)/);
+    expect(activityOf(store, locked.id)).toMatch(/blocked on a git refusal; planestro committed its work/);
+    expect(fmOf(store, locked.id).blocked).toBeUndefined();
+  });
+
+  it('without engine_commits a dirty done turn is still asked to commit, and a git-refusal block stays blocked', async () => {
+    const prompts: string[] = [];
+    const sandboxed = (world: FakeWorld) => ({
+      async runTurn(o: AgentTurnOptions): Promise<TurnResult> {
+        prompts.push(o.prompt);
+        world.dirty.add(o.cwd);
+        const why = "fatal: Unable to create '/repo/.git/worktrees/x/index.lock': Operation not permitted";
+        await o.tools.report_blocked(why);
+        return { sessionId: 'thread-1', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', blocked: why };
+      },
+    });
+    const { store, engine } = await setup({ codex: sandboxed });
+    const item = store.createItem({ title: 'Wand icon', description: 'x', implementer: 'codex-free' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => fmOf(store, item.id).status === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => fmOf(store, item.id).blocked === true);
+    await sleep(200);
+    expect(fmOf(store, item.id).blocked_reason).toBe('agent_blocked');
+    expect(prompts).toHaveLength(1);
+  });
+
   it('an engine without the Codex runner says so instead of failing obscurely', async () => {
     const { store, engine } = await setup({ noCodex: true });
     const item = store.createItem({ title: 'No runner', description: 'x', implementer: 'codex-art' });

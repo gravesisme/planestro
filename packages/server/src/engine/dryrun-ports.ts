@@ -61,6 +61,7 @@ export class DryRunGitPort implements GitPort {
   async trackedAt(_cwd: string, _ref: string, paths: string[]) { return paths.filter((p) => this.w.baseFiles.has(p)); }
   async moveAside(cwd: string, paths: string[], dest: string) { this.say(`move ${paths.join(', ')} from ${cwd} to ${dest}`); this.w.untracked.set(cwd, (this.w.untracked.get(cwd) ?? []).filter((p) => !paths.includes(p))); this.w.ignored.set(cwd, (this.w.ignored.get(cwd) ?? []).filter((p) => !paths.includes(p))); }
   async filesUnder(cwd: string, paths: string[]) { const under = (f: string) => paths.some((p) => f === p || f.startsWith(`${p.replace(/\/+$/, '')}/`)); return [...(this.w.untracked.get(cwd) ?? []), ...(this.w.ignored.get(cwd) ?? [])].filter(under); }
+  async commitAll(cwd: string, message: string) { this.say(`git add -A && git commit -m "${message.split('\n')[0]}" (in ${cwd})`); this.w.dirty.delete(cwd); this.w.commits.set(cwd, (this.w.commits.get(cwd) ?? 0) + 1); const wt = this.w.worktrees.get(cwd); const head = this.w.sha(); if (wt) wt.head = head; return head; }
   async aheadBehind(cwd: string) { return { ahead: this.w.commits.get(cwd) ?? 0, behind: this.w.behind.get(cwd) ?? 1 }; }
   async rebase(cwd: string, onto: string): Promise<RebaseResult> {
     if (this.w.conflictArmed) { this.w.conflictArmed = false; this.say(`git rebase ${onto} in ${cwd} → CONFLICT (simulated)`); return { ok: false, conflicts: ['src/conflicted.ts'], head: this.w.worktrees.get(cwd)?.head ?? '' }; }

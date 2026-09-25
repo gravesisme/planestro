@@ -30,6 +30,8 @@ const ACTIONABLE_FAILURES = new Set(['auth_required', 'rate_limited', 'session_l
 const BUDGET_WARN_AT = 0.8;
 /** Below this many dollars left on an item's budget a Claude turn cannot do real work: it is not started. */
 const MIN_TURN_USD = 1;
+/** What a sandbox says when it refused git's own files (the worktree's index.lock lives outside the worktree). */
+const GIT_REFUSAL = /index\.lock|\.git\/worktrees|EPERM|Operation not permitted|Permission denied/i;
 /** How many stops of one item, in one status, the orchestrator triages before the rest go straight to the user (a fix that keeps failing is a conversation for a person). */
 const MAX_TRIAGE_ROUNDS = 4;
 /** What `set_item_fields` may touch: the item's own wiring, never its lifecycle, sessions or history. */
@@ -854,6 +856,17 @@ export class LiveEngine implements Engine {
       this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, { activity: { actor: 'app', text: 'cleared a stale agent_blocked flag (the resumed session reported done)' } }], 'engine');
       fm = this.store.requireItem(id).file.frontmatter;
     }
+    // A model whose sandbox sometimes cannot write git's lock (dogfood p11: 3 of 5 art items) blocked
+    // on exactly that: planestro commits what it made, clears the block, and resumes it to say so.
+    if (fm.blocked && fm.blocked_reason === 'agent_blocked' && result.blocked && GIT_REFUSAL.test(result.blocked) && phase !== 'plan' && this.commitsFor(fm) && fm.worktree) {
+      const head = await this.commitForWorker(id, `work committed by planestro: the session could not write git (${result.blocked.slice(0, 120)})`);
+      if (head) {
+        this.pendingWakes.delete(id);
+        this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, { activity: { actor: 'app', text: `the session blocked on a git refusal; planestro committed its work (${head.slice(0, 7)}) and resumes it` } }], 'engine', { commit: `${id}: committed for the session` });
+        await this.runTurnFor(id, phase, `${this.resumeNote(id, 'planestro')}\n\nYour work is committed now (${head.slice(0, 7)}): planestro commits for you when your sandbox cannot write git. Do not try git again. If the work is complete, report done; otherwise carry on and report done when it is.`);
+        return;
+      }
+    }
     if (fm.awaiting || fm.blocked) return;                       // parked or agent-blocked: nothing to drive
     // This turn parked and was answered before it had finished ending (the orchestrator can be
     // that quick): the answer's turn is queued behind this one, and it, not this, decides what is done.
@@ -888,13 +901,33 @@ export class LiveEngine implements Engine {
     await this.afterWorkTurn(id, phase, result);
   }
 
+  /** Whether planestro commits for this item's implementer (engine_commits on its model row). */
+  private commitsFor(fm: { implementer?: string }): boolean { return Boolean(this.store.config.models.find((m) => m.id === fm.implementer)?.engine_commits); }
+
+  /** Stage and commit the worktree with the worker's own words as the message. Undefined when there was nothing to commit or it failed (said in Activity). */
+  private async commitForWorker(id: string, summary: string): Promise<string | undefined> {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    const cwd = this.absWorktree(fm.worktree!);
+    if ((await this.ports.git.status(cwd)).clean) return undefined;
+    const label = this.store.config.models.find((m) => m.id === fm.implementer)?.label ?? fm.implementer;
+    const first = summary.split('\n')[0].slice(0, 72);
+    try { return await this.ports.git.commitAll(cwd, `${id}: ${first}\n\n${summary}\n\nCommitted by planestro for ${label} (engine_commits).`); }
+    catch (e) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `could not commit the session's work for it: ${(e as Error).message.slice(0, 200)}` } }], 'engine'); return undefined; }
+  }
+
   /** Deterministic "is it really done": clean tree + commits ahead of the base. */
   private async afterWorkTurn(id: string, phase: TurnPhase, result: TurnResult): Promise<void> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
     const cwd = this.absWorktree(fm.worktree!);
     const base = this.store.derived(item).base_branch!;
-    const { clean, dirty } = await this.ports.git.status(cwd);
+    let { clean, dirty } = await this.ports.git.status(cwd);
+    // It reported done and left the work uncommitted, and its model's commits are planestro's (p11).
+    const summary = result.done ?? (fm.op_data?.done_summary as string | undefined);
+    if (!clean && summary && this.commitsFor(fm)) {
+      const head = await this.commitForWorker(id, summary);
+      if (head) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `committed the session's work for it (${head.slice(0, 7)}, ${dirty.length} file${dirty.length === 1 ? '' : 's'}): its model's commits are planestro's (engine_commits)` } }], 'engine'); ({ clean, dirty } = await this.ports.git.status(cwd)); }
+    }
     if (!clean) {
       const tries = Number(fm.op_data?.dirty_tree_turns ?? 0) + 1;
       if (tries > 2) { this.block(id, 'dirty_tree', `the worktree still has uncommitted changes after ${tries - 1} reminders: ${dirty.slice(0, 5).join(', ')}`); return; }
