@@ -228,6 +228,27 @@ describe('needs-you triage', () => {
     expect(activityOf(s, id)).toContain('BLOCKED (engine_error): something else broke');
   });
 
+  it('an engineering fix is filed for the maintainer, not put on a card, and the packet says so (p38)', async () => {
+    let reply = '';
+    const a = agents({ firstTurn: blocksOnce, orchestrate: async (w) => {
+      if (w.label.startsWith('blocked_')) {
+        expect(w.prompt).toContain('never asks the user to edit code or config');
+        reply = await w.tools('file_for_maintainer').handler({ title: 'CI: the Mac runner\'s log upload step is broken', description: 'ci.yml uploads to a path with ..; upload-artifact rejects it. Fix the path and push.', from_item: 'TP-1' });
+        await w.tools('annotate_item').handler({ id: 'TP-1', text: 'waits on the maintainer item' });
+      }
+    } });
+    const { store: s, engine: e, id } = await setup(a.claude);
+    await e.start();
+    await waitFor(() => reply !== '');
+    expect(reply).toMatch(/^filed TP-2 \(NOT_YET_SUBMITTED, for the maintainer\)/);
+    const filed = fmOf(s, 'TP-2');
+    expect(filed.status).toBe('NOT_YET_SUBMITTED');
+    expect(filed.title).toBe("CI: the Mac runner's log upload step is broken");
+    expect(s.getItem('TP-2')!.file.sections.find((x) => x.title === 'Notes')!.body).toContain('Filed by the orchestrator while triaging TP-1');
+    expect(activityOf(s, id)).toContain('filed TP-2 for the maintainer: CI: the Mac runner');
+    expect((fmOf(s, id).awaiting_data as any)?.decision).toBeUndefined();
+  });
+
   it('ask_user_decision stores one structured decision, recommended first; your answer wakes the orchestrator to carry it out', async () => {
     const replies: string[] = [];
     const a = agents({ firstTurn: blocksOnce, orchestrate: async (w) => {

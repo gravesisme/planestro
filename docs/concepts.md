@@ -216,3 +216,8 @@ it to merge and keeps the board honest.
 A card never outlives the stop it asked about: a new block (the orchestrator's `mark_blocked`, or the
 engine's own) replaces it, a new card replaces it, and `withdraw_decision` takes it back when the
 situation changed, so you are never asked something that is already moot.
+
+A card is a product call you can answer in one tap, in player and product terms. It never asks you
+to edit code or config or run a command: a fix that needs a capability no worker or tool has (a
+workflow file, SSH, a secret) is filed as a backlog item for whoever runs planestro
+(`file_for_maintainer`, never queued), and the stopped item waits on it.
