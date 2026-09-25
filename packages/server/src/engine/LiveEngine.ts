@@ -1114,6 +1114,17 @@ export class LiveEngine implements Engine {
     if (inTheWay.length) { this.store.journal.end(opId, id, 'aborted', { reason: 'dirty' }); this.block(id, 'dirty_tree', `the worktree has uncommitted changes, so it cannot be synced: ${inTheWay.slice(0, 5).join(', ')}${inTheWay.length > 5 ? ` and ${inTheWay.length - 5} more` : ''}`); return; }
     const baseSha = await this.ports.git.revParse(this.repo, `origin/${base}`);
     const expected = await this.ports.git.remoteBranchSha(this.repo, fm.branch!);
+    // An integration branch moves on GitHub whenever a child merges into it: take that in before merging
+    // the base, or the push is refused as non-fast-forward, and a retry refuses the same way (dogfood p53, HH-172).
+    if (integration && expected && !(await this.ports.git.isAncestor(cwd, expected, 'HEAD'))) {
+      const own = await this.ports.git.merge(cwd, `origin/${fm.branch}`);
+      if (!own.ok) {
+        this.store.journal.end(opId, id, 'aborted', { reason: 'conflict', files: own.conflicts });
+        this.block(id, 'sync_conflict', `merging origin/${fm.branch} into its local copy in ${fm.worktree} conflicted in ${own.conflicts.join(', ')}; resolve by hand`);
+        return;
+      }
+      this.store.mutateItem(id, [{ activity: { actor: 'app', text: `took in origin/${fm.branch} (${expected.slice(0, 7)}) before syncing: it had moved on GitHub` } }], 'engine');
+    }
     const localHead = await this.ports.git.revParse(cwd, 'HEAD');
     const { behind } = await this.ports.git.aheadBehind(cwd, `origin/${base}`, 'HEAD');
     let headSha: string;

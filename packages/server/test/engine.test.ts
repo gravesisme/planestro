@@ -622,6 +622,27 @@ describe('epics and external watchers (dry-run ports)', () => {
   });
 });
 
+describe('an epic whose branch moved on GitHub (p53)', () => {
+  it('the merge pipeline takes in origin/<integration> before merging the base, so its push is a fast-forward', async () => {
+    const { store, engine, world } = await setup();
+    const epic = store.createItem({ title: 'Progress', description: 'x', kind: 'epic' });
+    const branch = 'feature/progress', dir = join((engine as any).store.worktreesRoot(), `merge-${epic.id.toLowerCase()}`);
+    const local = world.sha(), remote = world.sha();
+    world.worktrees.set(dir, { path: dir, head: local, branch }); world.remoteBranches.set(branch, remote);
+    world.unreachable.add(remote);             // a child merged on GitHub after the local copy was last synced
+    world.behind.set(dir, 1);
+    world.prs.set(300, { number: 300, url: 'u', state: 'OPEN', headRefOid: remote, headRefName: branch, baseRefName: 'trunk', polls: 0, failOnce: false });
+    store.mutateItem(epic.id, [{ set: { status: 'IN_REVIEW', branch, worktree: dir, pr: 300, ci_result: 'pending' } }], 'engine');
+    const merged: string[] = [];
+    const git = (engine as any).ports.git; const inner = git.merge.bind(git);
+    git.merge = async (c: string, ref: string) => { merged.push(ref); return inner(c, ref); };
+    await engine.start();
+    await waitFor(() => status(store, epic.id) === 'FINISHED', 10000);
+    expect(merged.slice(0, 2)).toEqual([`origin/${branch}`, 'origin/trunk']);
+    expect(activityOf(store, epic.id)).toMatch(/took in origin\/feature\/progress \(\w{7}\) before syncing/);
+  });
+});
+
 describe('held pull requests (skip_merge)', () => {
   const polls: ReturnType<typeof setInterval>[] = [];
   afterEach(() => { for (const p of polls.splice(0)) clearInterval(p); });

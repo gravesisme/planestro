@@ -52,7 +52,8 @@ Evaluate every change against these; they are the architecture.
    operates on the item's resolved `base_branch`; a test greps `engine/` for it.
 
 **Worker branches rebase. Integration branches merge.** An epic's
-`feature/<slug>` branch is synced by merging its base into it and is never
+`feature/<slug>` branch is synced by merging its base into it (after taking in
+`origin/feature/<slug>`, which moves whenever a child merges) and is never
 rewritten or force-pushed; worker branches rebase with `--force-with-lease`.
 Sync only when behind: a branch already on the base tip is neither rebased nor
 re-pushed, and the CI run for its head is reused. Right after a push GitHub still
