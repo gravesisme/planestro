@@ -22,7 +22,7 @@ export interface EngineOptions { sleep?: (ms: number) => Promise<void>; tickMs?:
 const RESUMABLE_TURN_OPS = new Set(['planning_turn', 'implement_turn']);
 /** How many of one item's permission requests the orchestrator may refuse before they go to the user instead. */
 const MAX_ORCHESTRATOR_DENIALS = 3;
-const JUDGMENT_BLOCKS = ['turn_error', 'no_plan', 'no_commits', 'dirty_tree', 'sync_conflict', 'ci_timeout', 'ci_blocked', 'base_red', 'pr_closed_externally', 'merge_unverified', 'agent_blocked', 'engine_error'] as const;
+const JUDGMENT_BLOCKS = ['turn_error', 'no_plan', 'no_commits', 'dirty_tree', 'sync_conflict', 'ci_timeout', 'ci_blocked', 'ci_disagree', 'base_red', 'pr_closed_externally', 'merge_unverified', 'agent_blocked', 'engine_error'] as const;
 const ACTIVE_FOR_SLOTS: Status[] = ['PLAN_IN_PROGRESS', 'IN_PROGRESS'];
 /** Turn failures with their own block reason, because the fix is the user's (log in, wait, start over) and not a judgment call. */
 const ACTIONABLE_FAILURES = new Set(['auth_required', 'rate_limited', 'session_lost', 'spawn_error', 'cli_too_old']);
@@ -456,11 +456,16 @@ export class LiveEngine implements Engine {
     return `sent back to be amended; you will review the revised plan${this.planDelegated(fm) ? '' : ' (its approval stays with the user)'}`;
   }
 
+  /**
+   * Every IN_REVIEW item the pipeline may move. One whose head is waiting for CI is watched outside
+   * the chain (watchCi); the rest enter the serial chain in merge order, where a head already green
+   * on the base tip merges without waiting again (a released hold's kept green, too).
+   */
   private driveInReview(): void {
     const candidates = this.store.listItems().filter((item) => {
       const fm = item.file.frontmatter;
       if (fm.status !== 'IN_REVIEW' || fm.blocked || fm.awaiting || fm.skip_merge || this.jobs.has(item.id) || this.turns.has(item.id)) return false;
-      if (fm.ci_result === 'green' || fm.ci_result === 'red' || fm.op_data?.needs_session_rebase) return false;
+      if (fm.ci_result === 'red' || fm.op_data?.needs_session_rebase) return false;
       const flavor = this.store.derived(item).flavor;
       if (flavor === 'external' && (fm.merge_policy ?? 'watch') === 'watch') return false; // watched: driveExternal observes it
       return true;
@@ -468,7 +473,8 @@ export class LiveEngine implements Engine {
       const fa = a.file.frontmatter, fb = b.file.frontmatter;
       return (fa.merge_order ?? Infinity) - (fb.merge_order ?? Infinity) || (fa.rank ?? Infinity) - (fb.rank ?? Infinity) || (fa.pr_created_at ?? '').localeCompare(fb.pr_created_at ?? '');
     });
-    for (const item of candidates) this.runJob(item.id, () => this.mergeJob(item.id)); // mergeChain keeps them strictly serial, in this order
+    // mergeChain keeps the syncs and merges strictly serial, in this order; CI waits run beside it.
+    for (const item of candidates) this.runJob(item.id, () => item.file.frontmatter.op === 'awaiting_ci' ? this.watchCi(item.id) : this.mergeJob(item.id));
   }
 
   /**
@@ -999,7 +1005,7 @@ export class LiveEngine implements Engine {
     void this.tick();
   }
 
-  // ---- merge pipeline (serial) ----
+  // ---- merge pipeline: the serial chain syncs and merges; CI is waited for outside it ----
   private mergeJob(id: string, opts: { hold?: boolean } = {}): Promise<void> {
     const run = this.mergeChain.then(() => this.mergeStep(id, opts));
     this.mergeChain = run.catch(() => undefined);
@@ -1007,8 +1013,13 @@ export class LiveEngine implements Engine {
   }
 
   /**
-   * One pass of the merge pipeline. With `hold`, for a held item whose session committed: sync and
-   * push only, then leave, so the PR shows the work and CI runs; driveHeld reads the verdict.
+   * One pass through the serial merge chain: sync with the base, then merge if CI is already green
+   * for the head that is there. Nothing in here waits on CI (dogfood p15: HH-117 sat in the chain
+   * for twenty minutes of CI, only to stop at its review hold, while three approved PRs whose CI
+   * was green queued behind it). A head that is not green yet leaves the chain as `op: awaiting_ci`;
+   * watchCi polls it outside and brings it back once it is green. With `hold`, for a held item whose
+   * session committed: sync and push only, then leave, so the PR shows the work and CI runs;
+   * driveHeld reads the verdict.
    */
   private async mergeStep(id: string, { hold = false }: { hold?: boolean } = {}): Promise<void> {
     if (this._paused || this.draining || this.stopping) return;
@@ -1053,6 +1064,8 @@ export class LiveEngine implements Engine {
     const localHead = await this.ports.git.revParse(cwd, 'HEAD');
     const { behind } = await this.ports.git.aheadBehind(cwd, `origin/${base}`, 'HEAD');
     let headSha: string;
+    let synced: string;
+    let pushed = false;
     if (hold && expected === localHead) {
       this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }], 'engine');
       this.store.journal.end(opId, id, 'aborted', { reason: 'nothing_to_push' });
@@ -1064,7 +1077,7 @@ export class LiveEngine implements Engine {
       // rebasing here whenever an item merely entered the pipeline is what made every open
       // PR re-run CI after every merge.
       headSha = localHead;
-      this.store.mutateItem(id, [{ set: { op: 'awaiting_ci', op_started_at: this.now(), ci_head_sha: headSha, ci_result: 'pending' } }, { activity: { actor: 'app', text: `already on ${base}@${baseSha.slice(0, 7)}; no sync needed, reusing CI for ${headSha.slice(0, 7)}; waiting for CI` } }], 'engine');
+      synced = `already on ${base}@${baseSha.slice(0, 7)}; no sync needed, reusing CI for ${headSha.slice(0, 7)}`;
     } else {
       const sync = integration ? await this.ports.git.merge(cwd, `origin/${base}`) : await this.ports.git.rebase(cwd, `origin/${base}`);
       if (!sync.ok) {
@@ -1084,35 +1097,86 @@ export class LiveEngine implements Engine {
       if (integration) await this.ports.git.pushSetUpstream(cwd, fm.branch!);
       else await this.ports.git.pushForceWithLease(cwd, fm.branch!, expected);
       headSha = sync.head;
+      pushed = true;
       if (hold) {
         this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { ci_head_sha: headSha, ci_result: 'pending' } }, { activity: { actor: 'app', text: `held: rebased onto ${base}@${baseSha.slice(0, 7)} and pushed ${headSha.slice(0, 7)} so the PR and CI show the session's commits; not merging` } }], 'engine');
         this.store.journal.end(opId, id, 'ok', { held: true, head: headSha });
         return;
       }
-      this.store.mutateItem(id, [{ set: { op: 'awaiting_ci', op_started_at: this.now(), ci_head_sha: headSha, ci_result: 'pending' } }, { activity: { actor: 'app', text: `rebased onto ${base}@${baseSha.slice(0, 7)} and pushed ${headSha.slice(0, 7)}; waiting for CI` } }], 'engine');
+      synced = `rebased onto ${base}@${baseSha.slice(0, 7)} and pushed ${headSha.slice(0, 7)}`;
     }
 
     // 2b. a draft PR: while it is held for review, the review comes first and CI waits; once
     // released, it is marked ready here, after the sync, so CI runs once, on the head that merges.
     const drafted = this.store.requireItem(id).file.frontmatter;
+    let readied = false;
     if (this.store.config.ci.draft_while_held && drafted.op_data?.pr_draft) {
       if (drafted.review_hold && !drafted.skip_merge) {
-        this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { awaiting: 'review' } }, { activity: { actor: 'app', text: `synced ${headSha.slice(0, 7)}; the PR is a draft, so CI runs once you approve it; waiting for your review before merging` } }], 'engine', { commit: `${id}: awaiting review` });
+        this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { awaiting: 'review', ci_head_sha: headSha, ci_result: 'pending' } }, { activity: { actor: 'app', text: `synced ${headSha.slice(0, 7)}; the PR is a draft, so CI runs once you approve it; waiting for your review before merging` } }], 'engine', { commit: `${id}: awaiting review` });
         this.store.journal.end(opId, id, 'aborted', { reason: 'awaiting_review' });
         return;
       }
       await this.ports.gh.setDraft(this.github, fm.pr!, false);
       this.store.mutateItem(id, [{ set: { op_data: { ...(drafted.op_data ?? {}), pr_draft: false } } }, { activity: { actor: 'app', text: `marked PR #${fm.pr} ready for review: CI runs on ${headSha.slice(0, 7)}` } }], 'engine');
+      readied = true;
     }
 
-    // 3. wait for CI. `expected` is the head the push replaced: GitHub keeps reporting it for a
-    // few seconds, and that must read as propagation lag, not as someone moving the branch.
-    let verdict = await this.waitForCi(id, fm.branch!, headSha, fm.pr!, expected);
-    // A known flake is re-run once, here, for this same head: leaving the pipeline would re-sync
-    // (and on a moved base, push a new head) before the re-run could answer.
+    // 3. CI. Green for this exact head merges now. Anything else (a fresh push, a run still going,
+    // a red, a head GitHub has not caught up with) leaves the chain for watchCi, so the next item
+    // is not held up by this one's CI. `expected` is the head the push replaced: GitHub keeps
+    // reporting it for a few seconds, and the watcher must read that as lag, not a moved head.
+    if (pushed || readied || !(await this.greenFor(id, fm.branch!, headSha, fm.pr!))) {
+      const cur = this.store.requireItem(id).file.frontmatter;
+      // watchCi saw this very head green and this look says otherwise (greenFor trusts that record,
+      // so only a PR head that moved gets here). Once goes back to the watcher, which reads the move;
+      // a second time for the same head is not bounced between the two again: it is a stop to judge.
+      const seen = cur.op_data?.ci_disagree as { sha?: string; count?: number } | undefined;
+      const disagree = !pushed && !readied && cur.op_data?.ci_green === headSha ? (seen?.sha === headSha ? seen.count ?? 0 : 0) + 1 : 0;
+      if (disagree >= 2) { this.store.journal.end(opId, id, 'aborted', { reason: 'ci_disagree', head: headSha }); this.block(id, 'ci_disagree', `watchCi saw CI green for ${headSha.slice(0, 7)} but the merge step did not, ${disagree} times; check the PR's head and its run, then unblock`); return; }
+      this.store.mutateItem(id, [{ set: { op: 'awaiting_ci', op_started_at: this.now(), ci_head_sha: headSha, ci_result: 'pending', op_data: { ...(cur.op_data ?? {}), ci_replaced: pushed ? expected : null, ...(disagree ? { ci_disagree: { sha: headSha, count: disagree } } : {}) } } }, { activity: { actor: 'app', text: `${synced}; waiting for CI outside the merge queue` } }], 'engine');
+      this.store.journal.end(opId, id, 'ok', { awaiting_ci: headSha });
+      this.queueFollowUp(id, () => this.watchCi(id));
+      return;
+    }
+    this.store.mutateItem(id, [{ set: { ci_head_sha: headSha, ci_result: 'green' } }, { activity: { actor: 'app', text: `${synced}; CI is green for it` } }], 'engine');
+    if (this.parkIfHeld(id, opId)) return;
+    await this.merge(id, opId, base);
+  }
+
+  /**
+   * One look, no waiting: is CI green for exactly this head, with the PR on that head? What watchCi
+   * or the local gate already found green for this sha is the answer, not a second poll: a status API
+   * that briefly says otherwise would bounce the item between the chain and the watcher.
+   */
+  private async greenFor(id: string, branch: string, sha: string, pr: number): Promise<boolean> {
+    const view = await this.ports.gh.prView(this.github, pr);
+    if (view.state === 'MERGED') return true;
+    if (view.headRefOid !== sha) return false;
+    const od = this.store.requireItem(id).file.frontmatter.op_data;
+    if (od?.ci_green === sha || od?.local_green === sha) return true;
+    return (await this.ports.gh.ciForSha(this.github, branch, sha, this.ciWorkflow)).state === 'success';
+  }
+
+  /**
+   * CI for a head the chain left waiting (`op: awaiting_ci`), polled outside the serial merge chain
+   * the way driveHeld polls a held item's, so one item's CI never holds up another's merge. Red,
+   * a timeout and a blocked Actions take the same paths as ever; green goes back into the chain,
+   * which merges it if the head is still on the base tip, and re-syncs it if another merge moved
+   * the base in the meantime.
+   */
+  private async watchCi(id: string): Promise<void> {
+    const item = this.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    if (fm.status !== 'IN_REVIEW' || fm.op !== 'awaiting_ci' || fm.blocked || fm.awaiting || !fm.ci_head_sha || !fm.pr || !fm.branch) return;
+    const headSha = fm.ci_head_sha;
+    const canFix = this.store.derived(item).flavor === 'worker';
+    const cfg = this.store.config.ci;
+    const opId = this.store.journal.begin('ci_wait', id, { pr: fm.pr, sha: headSha });
+    let verdict = await this.waitForCi(id, fm.branch, headSha, fm.pr, (fm.op_data?.ci_replaced as string | null | undefined) ?? null);
+    // A known flake is re-run once, for this same head, before anything else happens to it.
     if (verdict === 'red' && canFix) {
       const attempt = await this.rerunIfFlaky(id, headSha);
-      if (attempt) verdict = await this.waitForCi(id, fm.branch!, headSha, fm.pr!, null, attempt);
+      if (attempt) verdict = await this.waitForCi(id, fm.branch, headSha, fm.pr, null, attempt);
     }
     if (verdict === 'moved') { this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { ci_result: 'pending' } }], 'engine'); this.store.journal.end(opId, id, 'aborted', { reason: 'head_moved' }); void this.tick(); return; }
     // The engine is stopping, which says nothing about CI: leave `op: awaiting_ci` on the item, and the next start re-enters the pipeline.
@@ -1121,26 +1185,43 @@ export class LiveEngine implements Engine {
     if (verdict === 'blocked') {
       if (cfg.mode === 'github-or-local' && cfg.local_check_command) {
         this.store.mutateItem(id, [{ set: { op: 'running_local_checks', op_started_at: this.now() } }, { activity: { actor: 'app', text: `GitHub Actions is blocked; running local gate: ${cfg.local_check_command}` } }], 'engine');
-        const r = await this.withLocalJobSlot(() => this.ports.proc.run(cfg.local_check_command!, { cwd, timeoutMs: cfg.timeout_min * 60_000 }));
+        const r = await this.withLocalJobSlot(() => this.ports.proc.run(cfg.local_check_command!, { cwd: this.absWorktree(fm.worktree!), timeoutMs: cfg.timeout_min * 60_000 }));
         if (r.code !== 0) { await this.onCiRed(id, opId, headSha, `local checks exited ${r.code}\n${(r.stdout + r.stderr).split('\n').filter((l) => /FAIL|Error/i.test(l)).slice(-40).join('\n')}`, 'local'); return; }
-        this.store.mutateItem(id, [{ activity: { actor: 'app', text: 'local checks passed (used as the CI gate)' } }], 'engine');
+        // Remembered for this head, so the chain's own look at it counts the local gate as its green.
+        const cur = this.store.requireItem(id).file.frontmatter;
+        this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), local_green: headSha } } }, { activity: { actor: 'app', text: 'local checks passed (used as the CI gate)' } }], 'engine');
       } else { this.store.journal.end(opId, id, 'aborted', { reason: 'ci_blocked' }); this.block(id, 'ci_blocked', 'GitHub Actions did not run (billing blocked or workflow missing); set ci.mode to github-or-local with a local_check_command, or re-run by hand'); return; }
     }
     if (verdict === 'red') { await this.onCiRed(id, opId, headSha, undefined, 'github', canFix); return; }
+    // Green for this exact head, recorded as such: the chain's look at it reads this, never a fresh poll that could disagree.
+    const cur = this.store.requireItem(id).file.frontmatter;
+    this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { ci_result: 'green', op_data: { ...(cur.op_data ?? {}), ci_green: headSha } } }], 'engine');
+    if (this.parkIfHeld(id, opId)) return;
+    this.store.mutateItem(id, [{ activity: { actor: 'app', text: `CI is green for ${headSha.slice(0, 7)}; back in the merge queue` } }], 'engine');
+    this.store.journal.end(opId, id, 'ok', { green: headSha });
+    await this.mergeJob(id);
+  }
 
-    // 4. merge — re-check the holds: a skip_merge/block may have landed while we waited on CI
+  /** Green, but a hold, block or question landed while CI ran: the verdict is kept and nothing merges. Returns whether it parked. */
+  private parkIfHeld(id: string, opId: string): boolean {
     const latest = this.store.requireItem(id).file.frontmatter;
     if (latest.review_hold && !latest.skip_merge && !latest.blocked && !latest.awaiting) {
       // Synced and green: everything a machine can check has passed. What is left is a person's eye.
       this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { ci_result: 'green', awaiting: 'review' } }, { activity: { actor: 'app', text: 'CI is green; waiting for your review before merging' } }], 'engine', { commit: `${id}: awaiting review` });
       this.store.journal.end(opId, id, 'aborted', { reason: 'awaiting_review' });
-      return;
+      return true;
     }
     if (latest.skip_merge || latest.blocked || latest.awaiting) {
       this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { ci_result: 'green' } }, { activity: { actor: 'app', text: `CI is green but the item is held (${latest.skip_merge ? 'skip_merge' : latest.blocked ? 'blocked' : 'awaiting ' + latest.awaiting}); not merging` } }], 'engine');
       this.store.journal.end(opId, id, 'aborted', { reason: 'held_after_ci' });
-      return;
+      return true;
     }
+    return false;
+  }
+
+  /** 4. merge, inside the chain, on a head the chain has just seen green on the base tip. */
+  private async merge(id: string, opId: string, base: string): Promise<void> {
+    const fm = this.store.requireItem(id).file.frontmatter;
     // Record what this branch changed while it still exists: dependents are told from this, not from a summary.
     const delivered = await this.deliveredBy(id).catch(() => undefined);
     this.store.mutateItem(id, [{ set: { op: 'merging', op_started_at: this.now(), ci_result: 'green', ...(delivered ? { delivered } : {}) } }], 'engine');
@@ -2404,19 +2485,34 @@ export class LiveEngine implements Engine {
   /**
    * Let a held pull request merge: a review hold the user has now approved, or a plain `skip_merge`.
    * The item goes back through the merge pipeline rather than straight to the merge — the base may
-   * have moved while it waited — so a CI result from before the hold is asked for again.
+   * have moved while it waited. A green run is kept only on evidence that it still describes what
+   * would merge (dogfood p15: releases reset it to pending by reflex); anything else is asked again.
    */
   async releaseHold(id: string, note?: string): Promise<void> {
     const fm = this.store.requireItem(id).file.frontmatter;
     if (fm.status !== 'IN_REVIEW') throw new Error(`${id} is ${fm.status}; only an item in review can be released to merge`);
     if (!fm.review_hold && !fm.skip_merge) throw new Error(`${id} is not held`);
     if (fm.awaiting && fm.awaiting !== 'review') throw new Error(`${id} is awaiting ${fm.awaiting}; answer that first`);
+    const keep = fm.ci_result === 'green' && await this.greenStillCurrent(id).catch(() => false);
     this.store.mutateItem(id, [
       { unset: ['review_hold', 'skip_merge', ...(fm.awaiting === 'review' ? ['awaiting', 'awaiting_data'] : [])] },
-      { set: { ci_result: 'pending' } },
+      ...(keep ? [] : [{ set: { ci_result: 'pending' as const } }]),
       { activity: { actor: 'user', text: `approved for merge${note?.trim() ? `: ${note.trim()}` : ''}` } },
+      ...(keep ? [{ activity: { actor: 'app' as const, text: `CI stays green: ${fm.ci_head_sha!.slice(0, 7)} is still the PR's head and on its base's tip, so it merges without a new run` } }] : []),
     ], 'user', { commit: `${id}: release hold` });
     void this.tick();
+  }
+
+  /** Evidence, not memory: the green head is still the PR branch and the worktree, and it sits on the base tip after a fresh fetch. */
+  private async greenStillCurrent(id: string): Promise<boolean> {
+    const item = this.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    const base = this.store.derived(item).base_branch;
+    if (!fm.ci_head_sha || !fm.branch || !fm.worktree || !base) return false;
+    await this.ports.git.fetch(this.repo);
+    const cwd = this.absWorktree(fm.worktree);
+    const [remote, local, { behind }] = await Promise.all([this.ports.git.remoteBranchSha(this.repo, fm.branch), this.ports.git.revParse(cwd, 'HEAD'), this.ports.git.aheadBehind(cwd, `origin/${base}`, 'HEAD')]);
+    return remote === fm.ci_head_sha && local === remote && behind === 0;
   }
 
   /**

@@ -66,11 +66,21 @@ orthogonal to status, so needing a human never loses an item its phase.
 For each IN_REVIEW item, serialised: sync the branch with its base (worker branches rebase
 with `--force-with-lease`; integration branches merge, never rewritten — and a branch
 already on the base tip whose remote matches is left alone, its existing CI run reused,
-so entering the pipeline never re-pushes an identical commit) → wait for CI on
-that exact commit (GitHub, or the local check when Actions cannot run) → re-check holds →
-record what the branch delivered → merge → verify GitHub says MERGED → **cleanup**, which
-deletes the worktree and branches only after a fresh fetch proves the tip is reachable from
-the base. Red CI goes back to the item's session with the log; a second red blocks.
+so entering the pipeline never re-pushes an identical commit) → if CI is already green for
+that exact commit, re-check holds → record what the branch delivered → merge → verify
+GitHub says MERGED → **cleanup**, which deletes the worktree and branches only after a
+fresh fetch proves the tip is reachable from the base. Red CI goes back to the item's
+session with the log; a second red blocks.
+
+Only the sync and the merge are serial. A commit whose CI is not green yet leaves the chain
+as `op: awaiting_ci` and is waited for beside it (`watchCi`: GitHub, or the local check when
+Actions cannot run), so one item's slow CI never holds up another's merge (dogfood p15: a
+review-held item's twenty-minute CI wait kept three approved merges queued behind it). Green,
+it is either parked on its hold or goes back into the chain, which merges it if it is still on
+the base tip and syncs it again if another merge moved the base meanwhile. Merge order decides
+who goes first among the items ready to go; an item still waiting on CI holds no one back.
+Releasing a hold keeps a green run when a fresh fetch shows the same head, still on the base
+tip; otherwise its CI is asked for again.
 
 GitHub reports a just-replaced head for a few seconds after a push. `waitForCi` treats the
 pre-push sha as propagation lag (90 s grace) rather than as a moved head; before that, the
