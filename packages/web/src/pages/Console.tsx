@@ -15,7 +15,6 @@ export function ConsolePage() {
   const [journal, setJournal] = useState<JournalEntry[]>([]);
   const [questions, setQuestions] = useState<JournalEntry[]>([]);
   const [itemFilter, setItemFilter] = useState('');
-  const [msg, setMsg] = useState('');
   const [reconcileOut, setReconcileOut] = useState<string[] | null>(null);
   const refresh = () => { void api.journal({ item: itemFilter || undefined, limit: 120 }).then((j) => setJournal(j.reverse())); void api.orchestratorQuestions().then((q) => setQuestions(q.reverse())); };
   useEffect(() => { refresh(); const t = setInterval(refresh, 5000); return () => clearInterval(t); }, [itemFilter]);
@@ -32,8 +31,8 @@ export function ConsolePage() {
   return (
     <div>
       <div className="section"><h2>Orchestrator</h2>
-        <p className="muted small">The judgment layer: woken on plan submissions, merges, repeated CI failures and blocks. Message it with context or answers; it records decisions on the items.</p>
-        <form className="row" onSubmit={(e) => { e.preventDefault(); if (!msg.trim()) return; void act(() => api.orchestratorMessage(msg)); setMsg(''); }}><input className="grow" placeholder="Message the orchestrator (it wakes with your text + current state)" value={msg} onChange={(e) => setMsg(e.target.value)} /><button type="submit" disabled={!msg.trim()}>Send</button></form>
+        <p className="muted small">The judgment layer: woken on plan submissions, merges, repeated CI failures and blocks. Talk to it from any page with the <b>Orchestrator</b> button in the corner; it answers there, and records its decisions on the items.</p>
+        <div className="row"><button className="primary" onClick={() => useStore.getState().openChat()}>Open the chat</button></div>
         {questions.length > 0 && <>
           <h3 className="drawer-h">Its questions for you</h3>
           {questions.slice(0, 3).map((q, i) => <Question key={i} q={q} />)}

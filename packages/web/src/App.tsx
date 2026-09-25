@@ -3,6 +3,7 @@ import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router';
 import { useStore, act } from './store.ts';
 import { api } from './api.ts';
 import { usageWindowLabel, usagePercent, localClock, type UsageGuardState } from '@planestro/shared';
+import { OrchestratorChat } from './components/OrchestratorChat.tsx';
 
 /** The phone's tab bar. Board, Icebox and Done are one tab: the board page switches between them itself. */
 const TABS: { to: string; label: string; icon: string }[] = [
@@ -67,6 +68,7 @@ export function App() {
       <main>
         <Outlet />
       </main>
+      {state && <OrchestratorChat />}
       <nav className="tabbar">
         {TABS.map((t) => (
           <NavLink key={t.to} to={t.to} className={() => (t.to === '/' ? onBoardTab(pathname) : pathname.startsWith(t.to)) ? 'active' : ''}>

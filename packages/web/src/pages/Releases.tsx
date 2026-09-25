@@ -86,6 +86,8 @@ function ReleaseBody({ release }: { release: ReleaseView }) {
         </div>
       </div>
 
+      {defs.map((d) => <SectionEditor key={`${release.version}:${d.title}`} release={release.version} def={d} body={bodyOf(d.title)} />)}
+
       <div className="section"><h2>Backlog items in this release · {fm.items.length}</h2>
         {fm.items.length > 0 ? <table><tbody>{fm.items.map((id) => { const it = itemOf(id); return (
           <tr key={id}><td><Link to={`/items/${id}`}>{id}</Link></td><td>{it?.frontmatter.title ?? <span className="muted">unknown item</span>}</td><td className="muted small">{it ? statusLabel(it.frontmatter.status) : ''}</td>
@@ -99,8 +101,6 @@ function ReleaseBody({ release }: { release: ReleaseView }) {
               <td><button className="small" onClick={() => patch({ items: [...fm.items, id] })}>add</button></td></tr>); })}</tbody></table>
         </>}
       </div>
-
-      {defs.map((d) => <SectionEditor key={`${release.version}:${d.title}`} release={release.version} def={d} body={bodyOf(d.title)} />)}
     </div>
   );
 }
