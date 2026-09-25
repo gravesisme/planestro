@@ -688,6 +688,24 @@ describe('held pull requests (skip_merge)', () => {
     expect(activityOf(store, id)).toContain('marked PR #200 ready for review: CI runs on');
   });
 
+  it('a draft guard\'s skipped runs are never red, and a released draft is marked ready once GitHub shows the pushed head (HH-180)', async () => {
+    const { store, engine, world, id, stopPolling } = await held({ drafts: true });
+    world.draftGuard = true;
+    await engine.start();
+    await waitFor(() => world.prs.get(200)!.isDraft === true && world.ciPolledWhileDraft > 1);
+    stopPolling();
+    let fm = store.getItem(id)!.file.frontmatter;
+    expect(fm.ci_result).toBe('pending');               // only skipped runs: no verdict
+    expect(fm.ci_failed_count).toBeUndefined();
+    world.headLagPolls = 2;                              // the release's push shows up on GitHub a little late
+    await engine.releaseHold(id);
+    await waitFor(() => status(store, id) === 'FINISHED', 8000);
+    fm = store.getItem(id)!.file.frontmatter;
+    expect(fm.ci_failed_count).toBeUndefined();
+    expect(world.readyEvents).toBe(1);                   // ready_for_review landed on the pushed head the first time
+    expect(activityOf(store, id)).not.toContain('CI red');
+  });
+
   it('never pushes over a PR branch that moved on its own', async () => {
     const { store, engine, world, id, branch, stopPolling } = await held();
     const theirs = world.sha(); world.remoteBranches.set(branch, theirs);
@@ -782,6 +800,21 @@ describe('CI is waited for outside the serial merge chain (p15)', () => {
     const activity = activityOf(store, c.id);
     expect(activity).toContain(`CI is green for ${pushed.slice(0, 7)}; back in the merge queue`);
     expect(activity.match(/rebased onto/g)?.length).toBe(1);   // back on the same base tip: merged as it was, no second sync
+  });
+
+  it('a ready PR whose head has only skipped runs is sent ready_for_review again, once, and merges on the run that brings (HH-180)', async () => {
+    const { store, engine, world } = await setup();
+    world.draftGuard = true;                             // its ready_for_review ran on the head the push replaced
+    const h = inReview(store, engine, world, 7);
+    world.behind.set(h.cwd, 0);
+    (engine as any).sleep = () => sleep(1);             // a real wait between polls, so a missing re-fire fails instead of spinning
+    await engine.start();
+    await waitFor(() => status(store, h.id) === 'FINISHED', 8000);
+    expect(world.readyEvents).toBe(1);
+    expect(store.getItem(h.id)!.file.frontmatter.ci_failed_count).toBeUndefined();
+    const activity = activityOf(store, h.id);
+    expect(activity).toContain(`every CI run for ${h.head.slice(0, 7)} skipped its jobs`);
+    expect(activity).not.toContain('CI red');
   });
 
   it('a green the watcher saw is the green the chain merges on: a status API that disagrees on the next look does not bounce it', async () => {

@@ -172,6 +172,22 @@ export class LiveGitPort implements GitPort {
   async log(cwd: string, range: string, n: number) { return (await git(cwd, ['log', '--oneline', `-n${n}`, range], true)).stdout.trim(); }
 }
 
+/**
+ * The verdict of a head's runs, newest first. A run whose jobs were all skipped (conclusion
+ * `skipped`: a draft guard, a path filter) checked nothing, so it is never red: a real run for
+ * the same head wins over it, and a head with only skipped runs is `skipped`, which waits.
+ */
+export function ciFromRuns(runs: any[], sha: string): CiStatus {
+  const run = runs.find((r) => r.conclusion !== 'skipped') ?? runs[0];
+  if (!run) return { state: 'none', sha };
+  const base = { runId: run.databaseId, url: run.url, sha, startedAt: run.createdAt, ...(run.attempt ? { attempt: run.attempt } : {}) };
+  if (run.status !== 'completed') return { ...base, state: 'pending' };
+  if (run.conclusion === 'success') return { ...base, state: 'success' };
+  if (run.conclusion === 'cancelled') return { ...base, state: 'cancelled' };
+  if (run.conclusion === 'skipped') return { ...base, state: 'skipped' };
+  return { ...base, state: 'failure' };
+}
+
 const PR_FIELDS = 'number,url,state,mergedAt,headRefOid,headRefName,baseRefName,mergeCommit,title,isDraft,author,updatedAt';
 function toPr(p: any): PrInfo { return { number: p.number, url: p.url, state: p.state, mergedAt: p.mergedAt ?? undefined, headRefOid: p.headRefOid, headRefName: p.headRefName, baseRefName: p.baseRefName, mergeCommit: p.mergeCommit?.oid, title: p.title, isDraft: Boolean(p.isDraft), author: p.author?.login ?? undefined, updatedAt: p.updatedAt ?? undefined }; }
 
@@ -190,13 +206,7 @@ export class LiveGhPort implements GhPort {
   }
   async ciForSha(repo: string, branch: string, sha: string, workflow: string): Promise<CiStatus> {
     const runs = JSON.parse(await ghRead(['run', 'list', '--repo', repo, '--branch', branch, '--workflow', workflow, '--limit', '10', '--json', 'databaseId,status,conclusion,headSha,url,createdAt,attempt'])) as any[];
-    const run = runs.find((r) => r.headSha === sha);
-    if (!run) return { state: 'none', sha };
-    const base = { runId: run.databaseId, url: run.url, sha, startedAt: run.createdAt, attempt: run.attempt };
-    if (run.status !== 'completed') return { ...base, state: 'pending' };
-    if (run.conclusion === 'success') return { ...base, state: 'success' };
-    if (run.conclusion === 'cancelled') return { ...base, state: 'cancelled' };
-    return { ...base, state: 'failure' };
+    return ciFromRuns(runs.filter((r) => r.headSha === sha), sha);
   }
   async runFailedLog(repo: string, runId: number, maxLines: number) {
     const log = await ghRead(['run', 'view', String(runId), '--repo', repo, '--log-failed']).catch((e) => `(could not fetch log: ${e.message})`);
@@ -229,12 +239,9 @@ export class LiveGhPort implements GhPort {
     await gh(['pr', 'merge', String(number), '--repo', repo, '--merge', ...(opts.deleteBranch ? ['--delete-branch'] : [])]);
   }
   async branchCi(repo: string, branch: string, workflow: string): Promise<CiStatus> {
-    const runs = JSON.parse(await ghRead(['run', 'list', '--repo', repo, '--branch', branch, '--workflow', workflow, '--event', 'push', '--limit', '1', '--json', 'databaseId,status,conclusion,headSha,url,createdAt'])) as any[];
-    const run = runs[0];
-    if (!run) return { state: 'none' };
-    const base = { runId: run.databaseId, url: run.url, sha: run.headSha, startedAt: run.createdAt };
-    if (run.status !== 'completed') return { ...base, state: 'pending' };
-    return { ...base, state: run.conclusion === 'success' ? 'success' : run.conclusion === 'cancelled' ? 'cancelled' : 'failure' };
+    const runs = JSON.parse(await ghRead(['run', 'list', '--repo', repo, '--branch', branch, '--workflow', workflow, '--event', 'push', '--limit', '5', '--json', 'databaseId,status,conclusion,headSha,url,createdAt'])) as any[];
+    const latest = runs.find((r) => r.conclusion !== 'skipped') ?? runs[0];
+    return latest ? ciFromRuns([latest], latest.headSha) : { state: 'none' };
   }
 }
 

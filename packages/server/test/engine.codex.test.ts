@@ -317,8 +317,73 @@ describe('mixed runners (dry-run ports)', () => {
     await waitFor(() => fmOf(store, locked.id).status === 'FINISHED', 8000);
     expect(prompts).toHaveLength(2);
     expect(prompts[1]).toMatch(/Your work is committed now \([0-9a-f]{7}\)/);
-    expect(activityOf(store, locked.id)).toMatch(/blocked on a git refusal; planestro committed its work/);
+    expect(activityOf(store, locked.id)).toMatch(/blocked on committing its work; planestro committed it/);
     expect(fmOf(store, locked.id).blocked).toBeUndefined();
+  });
+
+  it('engine_commits: a block that only asks planestro to commit is committed and resumed; any other block keeps its stop with the work committed (#55)', async () => {
+    const prompts: string[] = [];
+    const sandboxed = (world: FakeWorld) => ({
+      async runTurn(o: AgentTurnOptions): Promise<TurnResult> {
+        prompts.push(o.prompt);
+        const sessionId = o.resume ?? `thread-${o.itemId}`;
+        const first = !/committed now|Resuming|resum/i.test(o.prompt);
+        if (first && /(ASKS|QUESTION)/.test(o.prompt)) {
+          world.dirty.add(o.cwd);
+          const why = /ASKS/.test(o.prompt)
+            ? 'Updated the deliverables doc. Planestro needs to commit this documentation update; I did not retry Git, as instructed.'
+            : 'The City reference image is not readable from the sandbox; which world capture should stand in for it?';
+          await o.tools.report_blocked(why);
+          return { sessionId, subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', blocked: why };
+        }
+        await o.tools.report_done('Deliverables doc updated');
+        return { sessionId, subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', done: 'Deliverables doc updated' };
+      },
+    });
+    const { store, engine, world } = await setup({ codex: sandboxed, config: (y) => y.replace('id: codex-free, label: Codex (no hold), runner: codex', 'id: codex-free, label: Codex (no hold), runner: codex, engine_commits: true') });
+    const asks = store.createItem({ title: 'Doc update', description: 'x', implementer: 'codex-free' });
+    store.transition(asks.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => fmOf(store, asks.id).status === 'PLAN_READY');
+    await engine.approvePlan(asks.id, 'ASKS');
+    await waitFor(() => fmOf(store, asks.id).status === 'FINISHED', 8000);
+    expect(prompts[1]).toMatch(/Your work is committed now \([0-9a-f]{7}\)/);
+    expect(activityOf(store, asks.id)).toMatch(/blocked on committing its work; planestro committed it/);
+
+    prompts.length = 0;
+    const question = store.createItem({ title: 'City thumb', description: 'x', implementer: 'codex-free' });
+    store.transition(question.id, 'QUEUED', 'user'); engine.poke();
+    await waitFor(() => fmOf(store, question.id).status === 'PLAN_READY');
+    await engine.approvePlan(question.id, 'QUESTION');
+    await waitFor(() => fmOf(store, question.id).blocked === true);
+    await waitFor(() => /before its block/.test(activityOf(store, question.id)));
+    await sleep(200);
+    expect(fmOf(store, question.id).blocked_reason).toBe('agent_blocked');   // a real question still waits for its answer
+    expect(prompts).toHaveLength(1);
+    expect(world.dirty.size).toBe(0);                                       // …with the work already committed
+  });
+
+  it('engine_commits: finish from here commits a dirty tree first instead of refusing it (#55)', async () => {
+    const sandboxed = (world: FakeWorld) => ({
+      async runTurn(o: AgentTurnOptions): Promise<TurnResult> {
+        world.dirty.add(o.cwd);
+        const why = 'Which of the two palettes should the icons use?';
+        await o.tools.report_blocked(why);
+        return { sessionId: `thread-${o.itemId}`, subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', blocked: why };
+      },
+    });
+    const { store, engine, world } = await setup({ codex: sandboxed, config: (y) => y.replace('id: codex-free, label: Codex (no hold), runner: codex', 'id: codex-free, label: Codex (no hold), runner: codex, engine_commits: true') });
+    const item = store.createItem({ title: 'Icons', description: 'x', implementer: 'codex-free' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => fmOf(store, item.id).status === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => /before its block/.test(activityOf(store, item.id)));
+    const cwd = [...world.worktrees.keys()][0];
+    world.dirty.add(cwd);                                                   // more left in the tree after the block
+    expect(await engine.finishFromWorktree(item.id)).toMatch(/^finishing/);
+    await waitFor(() => fmOf(store, item.id).status === 'FINISHED', 8000);
+    expect(activityOf(store, item.id)).toMatch(/finish from here: committed the session's work first/);
   });
 
   it('without engine_commits a dirty done turn is still asked to commit, and a git-refusal block stays blocked', async () => {

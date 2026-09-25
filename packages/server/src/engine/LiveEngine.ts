@@ -32,6 +32,8 @@ const BUDGET_WARN_AT = 0.8;
 const MIN_TURN_USD = 1;
 /** What a sandbox says when it refused git's own files (the worktree's index.lock lives outside the worktree). */
 const GIT_REFUSAL = /index\.lock|\.git\/worktrees|EPERM|Operation not permitted|Permission denied/i;
+/** A block that is about committing ("planestro needs to commit this", "complete but uncommitted", "nothing added to commit"). */
+const ASKS_COMMIT = /commit|\bstag(e|ing)\b/i;
 /** How many stops of one item, in one status, the orchestrator triages before the rest go straight to the user (a fix that keeps failing is a conversation for a person). */
 const MAX_TRIAGE_ROUNDS = 4;
 /** What `set_item_fields` may touch: the item's own wiring, never its lifecycle, sessions or history. */
@@ -46,6 +48,14 @@ const ORCHESTRATOR_FIELDS = ['parent', 'depends_on', 'base_branch_override', 'sk
 const HEAD_PROPAGATION_GRACE_MS = 90_000;
 /** How often a held (skip_merge) pull request's branch and CI are looked at: one `ls-remote` and one run listing per item. */
 const HELD_POLL_MS = 60_000;
+/**
+ * Polls in a row (10 s apart) that find only skipped runs for a ready PR's head before planestro
+ * sends ready_for_review again. GitHub starts the event's run within seconds; a minute of nothing
+ * but skipped runs means the event landed on another head, and no run is coming by itself.
+ */
+const SKIPPED_REFIRE_POLLS = 6;
+/** Looks (5 s apart) at a just-pushed PR's head before it is marked ready anyway. */
+const READY_AFTER_PUSH_POLLS = 6;
 /** A guard-made pause resumes this long after its window's reset, so the first turn lands in the fresh window. */
 const USAGE_RESUME_GRACE_MS = 60_000;
 /** Two readings of one window whose resets differ by less than this are the same crossing. */
@@ -904,16 +914,20 @@ export class LiveEngine implements Engine {
       this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, { activity: { actor: 'app', text: 'cleared a stale agent_blocked flag (the resumed session reported done)' } }], 'engine');
       fm = this.store.requireItem(id).file.frontmatter;
     }
-    // A model whose sandbox sometimes cannot write git's lock (dogfood p11: 3 of 5 art items) blocked
-    // on exactly that: planestro commits what it made, clears the block, and resumes it to say so.
-    if (fm.blocked && fm.blocked_reason === 'agent_blocked' && result.blocked && GIT_REFUSAL.test(result.blocked) && phase !== 'plan' && this.commitsFor(fm) && fm.worktree) {
-      const head = await this.commitForWorker(id, `work committed by planestro: the session could not write git (${result.blocked.slice(0, 120)})`);
-      if (head) {
+    // A model whose commits are planestro's (dogfood p11: its sandbox sometimes cannot write git's
+    // lock) blocked with work in the tree: planestro commits it, whatever the block says (#55). A
+    // block about git or committing is then answered, so it is cleared and the session resumed to
+    // say so; any other block stands, and whoever looks at it finds the work committed.
+    if (fm.blocked && fm.blocked_reason === 'agent_blocked' && result.blocked && phase !== 'plan' && this.commitsFor(fm) && fm.worktree) {
+      const aboutGit = GIT_REFUSAL.test(result.blocked) || ASKS_COMMIT.test(result.blocked);
+      const head = await this.commitForWorker(id, aboutGit ? `work committed by planestro: the session could not write git (${result.blocked.slice(0, 120)})` : result.blocked);
+      if (head && aboutGit) {
         this.pendingWakes.delete(id);
-        this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, { activity: { actor: 'app', text: `the session blocked on a git refusal; planestro committed its work (${head.slice(0, 7)}) and resumes it` } }], 'engine', { commit: `${id}: committed for the session` });
+        this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, { activity: { actor: 'app', text: `the session blocked on committing its work; planestro committed it (${head.slice(0, 7)}) and resumes it` } }], 'engine', { commit: `${id}: committed for the session` });
         await this.runTurnFor(id, phase, `${this.resumeNote(id, 'planestro')}\n\nYour work is committed now (${head.slice(0, 7)}): planestro commits for you when your sandbox cannot write git. Do not try git again. If the work is complete, report done; otherwise carry on and report done when it is.`);
         return;
       }
+      if (head) this.store.mutateItem(id, [{ activity: { actor: 'app', text: `committed the session's work (${head.slice(0, 7)}) before its block, so nothing is left only in the tree (engine_commits); the block stands` } }], 'engine', { commit: `${id}: committed for the session` });
     }
     if (fm.awaiting || fm.blocked) return;                       // parked or agent-blocked: nothing to drive
     // This turn parked and was answered before it had finished ending (the orchestrator can be
@@ -1151,6 +1165,10 @@ export class LiveEngine implements Engine {
         this.store.journal.end(opId, id, 'aborted', { reason: 'awaiting_review' });
         return;
       }
+      // ready_for_review runs CI on the head GitHub shows at that moment: right after a push that can
+      // still be the replaced one, whose run is then cancelled while the pushed head's was skipped as
+      // a draft's (HH-180). A few seconds' look first; refireReady covers a head that never shows.
+      if (pushed) for (let i = 0; i < READY_AFTER_PUSH_POLLS && (await this.ports.gh.prView(this.github, fm.pr!)).headRefOid !== headSha; i++) await this.sleep(5_000);
       await this.ports.gh.setDraft(this.github, fm.pr!, false);
       this.store.mutateItem(id, [{ set: { op_data: { ...(drafted.op_data ?? {}), pr_draft: false } } }, { activity: { actor: 'app', text: `marked PR #${fm.pr} ready for review: CI runs on ${headSha.slice(0, 7)}` } }], 'engine');
       readied = true;
@@ -1367,6 +1385,7 @@ export class LiveEngine implements Engine {
     const cfg = this.store.config.ci;
     const started = Date.now();
     let sawRun = false;
+    let skippedPolls = 0;
     while (true) {
       if (this.stopping) return 'stopping';
       // A person took the item over while its CI ran: the merge chain is not held for them.
@@ -1381,16 +1400,35 @@ export class LiveEngine implements Engine {
       }
       const ci = await this.ports.gh.ciForSha(this.github, branch, sha, this.ciWorkflow);
       const elapsedMin = (Date.now() - started) / 60_000;
-      if (ci.runId) { sawRun = true; const cur = this.store.requireItem(id).file.frontmatter; const seen = cur.op_data?.ci as { runId?: number; attempt?: number } | undefined; if (seen?.runId !== ci.runId || seen?.attempt !== ci.attempt) this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), ci: { runId: ci.runId, url: ci.url, ...(ci.attempt ? { attempt: ci.attempt } : {}) } } } }], 'engine'); }
+      if (ci.runId && ci.state !== 'skipped') { sawRun = true; const cur = this.store.requireItem(id).file.frontmatter; const seen = cur.op_data?.ci as { runId?: number; attempt?: number } | undefined; if (seen?.runId !== ci.runId || seen?.attempt !== ci.attempt) this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), ci: { runId: ci.runId, url: ci.url, ...(ci.attempt ? { attempt: ci.attempt } : {}) } } } }], 'engine'); }
       if (ci.state === 'success') return 'green';
       // A re-run keeps its run id: until its attempt shows up, the completed run is the old verdict.
       const stale = minAttempt > 0 && (ci.attempt ?? 0) < minAttempt;
       if (ci.state === 'failure' && !stale) return (ci.runId && await this.ports.gh.isBillingBlocked(this.github, ci.runId)) ? 'blocked' : 'red';
       if (ci.state === 'cancelled') { /* superseded; keep polling for the new run */ }
-      if (ci.state === 'none' && !sawRun && elapsedMin > cfg.start_timeout_min) return 'blocked';
+      // Only skipped runs (a draft guard skipped every job) checked nothing: not red, and on a ready PR
+      // not coming by itself either, when ready_for_review landed on the head the push replaced.
+      skippedPolls = ci.state === 'skipped' ? skippedPolls + 1 : 0;
+      if (skippedPolls >= SKIPPED_REFIRE_POLLS && !view.isDraft) { await this.refireReady(id, pr, sha); skippedPolls = 0; }
+      if ((ci.state === 'none' || ci.state === 'skipped') && !sawRun && elapsedMin > cfg.start_timeout_min) return 'blocked';
       if (elapsedMin > cfg.timeout_min) return 'timeout';
       await this.sleep(elapsedMin < 2 ? 10_000 : 30_000);
     }
+  }
+
+  /**
+   * Every run for this ready PR's head skipped its jobs: the ready_for_review event landed on another
+   * head (HH-180: marked ready while GitHub still showed the head the push replaced), so no run is
+   * coming. Draft and ready again sends the event for this head, once per head: a head that is still
+   * only skipped after that waits out ci.start_timeout_min like one with no run at all.
+   */
+  private async refireReady(id: string, pr: number, sha: string): Promise<void> {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    if (fm.op_data?.ci_refired === sha) return;
+    await this.ports.gh.setDraft(this.github, pr, true);
+    await this.ports.gh.setDraft(this.github, pr, false);
+    const cur = this.store.requireItem(id).file.frontmatter;
+    this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), ci_refired: sha } } }, { activity: { actor: 'app', text: `every CI run for ${sha.slice(0, 7)} skipped its jobs (the PR was a draft when they started) and no other run came; sent ready for review again so CI runs on it` } }], 'engine');
   }
 
   /**
@@ -2179,7 +2217,13 @@ export class LiveEngine implements Engine {
     const cwd = this.absWorktree(fm.worktree);
     const base = this.store.derived(item).base_branch;
     if (!base) return `not possible: ${id} has no base branch`;
-    const { clean, dirty } = await this.ports.git.status(cwd);
+    let { clean, dirty } = await this.ports.git.status(cwd);
+    // A model whose commits are planestro's leaves its work in the tree: committing it is this step's first half (#55).
+    if (!clean && this.commitsFor(fm)) {
+      const head = await this.commitForWorker(id, String(fm.op_data?.done_summary ?? '') || `work committed by planestro to finish ${id} from its worktree`);
+      if (head) this.store.mutateItem(id, [{ activity: { actor: by, text: `finish from here: committed the session's work first (${head.slice(0, 7)}, ${dirty.length} file${dirty.length === 1 ? '' : 's'}; engine_commits)` } }], by);
+      ({ clean, dirty } = await this.ports.git.status(cwd));
+    }
     if (!clean) return `not possible: the worktree has uncommitted changes (${dirty.slice(0, 5).join(', ')}); commit or discard them first`;
     await this.ports.git.fetch(this.repo);
     const { ahead } = await this.ports.git.aheadBehind(cwd, `origin/${base}`, 'HEAD');
