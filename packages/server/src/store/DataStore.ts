@@ -188,11 +188,30 @@ export class DataStore {
   flavorOf(fm: ItemFrontmatter): Flavor { return flavorOf(fm, this.config.models); }
   defaultBranch(): string { return this.config.code_repo.default_branch; }
 
+  /**
+   * A base that is the integration branch of an epic that has merged no longer exists (the merge
+   * deleted it): what it held is in that epic's own base, so that is the base now (dogfood p45:
+   * HH-163 was opened on feature/crystal-cavern, which HH-113's merge into develop deleted, and its
+   * PR could not be opened). Followed as far as it goes; a cycle stops where it started.
+   */
+  private liveBase(base: string): string {
+    const seen = new Set<string>();
+    for (let b = base; ; ) {
+      if (seen.has(b)) return base;
+      seen.add(b);
+      const epic = [...this.items.values()].find((i) => i.file.frontmatter.kind === 'epic' && i.file.frontmatter.branch === b);
+      if (!epic || !['MERGED', 'FINISHED'].includes(epic.file.frontmatter.status)) return b;
+      const efm = epic.file.frontmatter;
+      const eparent = efm.parent ? this.items.get(efm.parent)?.file.frontmatter : undefined;
+      b = baseBranchOf(efm, eparent, this.defaultBranch());
+    }
+  }
+
   derived(item: StoredItem): Derived {
     const fm = item.file.frontmatter;
     const parent = fm.parent ? this.items.get(fm.parent)?.file.frontmatter : undefined;
     let base_branch: string | undefined; let base_branch_error: string | undefined;
-    try { base_branch = baseBranchOf(fm, parent, this.defaultBranch()); } catch (e) { base_branch_error = (e as Error).message; }
+    try { base_branch = this.liveBase(baseBranchOf(fm, parent, this.defaultBranch())); } catch (e) { base_branch_error = (e as Error).message; }
     const flavor = this.flavorOf(fm);
     return {
       lane: laneOf(fm.status), needs_you: needsYou(fm), flavor, external: flavor === 'external', base_branch, base_branch_error,
