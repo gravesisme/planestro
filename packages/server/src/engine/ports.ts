@@ -54,7 +54,8 @@ export interface GitPort {
   readBlob(cwd: string, ref: string, path: string): Promise<Buffer | null>;
 }
 
-export type CiState = 'none' | 'pending' | 'success' | 'failure' | 'cancelled';
+/** `skipped`: every run for the head skipped all its jobs (a draft guard): no verdict, never red. */
+export type CiState = 'none' | 'pending' | 'success' | 'failure' | 'cancelled' | 'skipped';
 /** `attempt` is the run's attempt number: a re-run keeps its run id and counts up. */
 export interface CiStatus { state: CiState; runId?: number; url?: string; sha?: string; startedAt?: string; attempt?: number }
 export interface PrInfo { number: number; url: string; state: 'OPEN' | 'MERGED' | 'CLOSED'; mergedAt?: string; headRefOid: string; headRefName: string; baseRefName: string; mergeCommit?: string; title?: string; isDraft?: boolean; author?: string; updatedAt?: string }

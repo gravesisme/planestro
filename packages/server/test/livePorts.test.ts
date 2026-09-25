@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { LiveGitPort, refLocked, retrying, TRANSIENT } from '../src/engine/live-ports.ts';
+import { LiveGitPort, refLocked, retrying, TRANSIENT, ciFromRuns } from '../src/engine/live-ports.ts';
 import { git, sleep } from './helpers.ts';
 
 describe('transient git and gh failures (p30, p34)', () => {
@@ -61,4 +61,15 @@ describe('transient git and gh failures (p30, p34)', () => {
     const heads = await port.remoteHeads(repo);
     for (const [n, wt] of trees.entries()) expect(heads.get(`b${n}`)).toBe(await port.revParse(wt, 'HEAD'));
   }, 30_000);
+});
+
+describe('a head\'s CI verdict from its runs (HH-174, HH-180)', () => {
+  const run = (id: number, conclusion: string | null, status = 'completed') => ({ databaseId: id, status, conclusion, headSha: 'abc', url: `u/${id}`, createdAt: 't' });
+  it('a run whose jobs were all skipped is never red, and a real run for the same head wins over it', () => {
+    expect(ciFromRuns([run(2, 'skipped')], 'abc').state).toBe('skipped');
+    expect(ciFromRuns([run(3, 'skipped'), run(2, null, 'in_progress')], 'abc')).toMatchObject({ state: 'pending', runId: 2 });
+    expect(ciFromRuns([run(3, 'skipped'), run(2, 'success')], 'abc')).toMatchObject({ state: 'success', runId: 2 });
+    expect(ciFromRuns([run(3, 'failure'), run(2, 'skipped')], 'abc').state).toBe('failure');
+    expect(ciFromRuns([], 'abc').state).toBe('none');
+  });
 });

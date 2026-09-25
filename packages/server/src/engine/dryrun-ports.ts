@@ -38,6 +38,16 @@ export class FakeWorld {
   /** CI polls that found a draft PR (and so no run). */
   ciPolledWhileDraft = 0;
   staleHeads = new Map<string, { sha: string; polls: number }>();
+  /**
+   * A workflow with a draft guard, as GitHub runs it (HH-180): a push to a draft PR, or a
+   * ready_for_review that lands while `gh pr view` still shows the replaced head, leaves only
+   * skipped runs for the pushed head; a push to a ready PR, or ready_for_review on that head, runs it.
+   */
+  draftGuard = false;
+  /** With draftGuard: which heads have a real run (the rest have only skipped runs). */
+  realRuns = new Set<string>();
+  /** ready_for_review events sent (`gh pr ready`). */
+  readyEvents = 0;
   constructor(readonly log: (msg: string) => void, readonly baseBranches: Record<string, string> = {}) {}
   sha(): string { return (0x100000 + ++this.seq).toString(16).padStart(40, '0'); }
 }
@@ -80,6 +90,8 @@ export class DryRunGitPort implements GitPort {
     const previous = this.w.remoteBranches.get(branch);
     if (previous && previous !== sha && this.w.headLagPolls > 0) this.w.staleHeads.set(branch, { sha: previous, polls: this.w.headLagPolls });
     this.w.remoteBranches.set(branch, sha);
+    const pr = [...this.w.prs.values()].find((p) => p.headRefName === branch && p.state === 'OPEN');
+    if (pr && !pr.isDraft) this.w.realRuns.add(sha);
   }
   async pushForceWithLease(cwd: string, branch: string) { this.say(`git push --force-with-lease origin ${branch} (from ${cwd})`); this.setRemote(branch, this.w.worktrees.get(cwd)?.head ?? this.w.sha()); }
   async pushSetUpstream(cwd: string, branch: string) { this.say(`git push -u origin ${branch} (from ${cwd})`); this.setRemote(branch, this.w.worktrees.get(cwd)?.head ?? this.w.sha()); }
@@ -102,7 +114,15 @@ export class DryRunGhPort implements GhPort {
     this.w.prs.set(number, { number, url: `https://github.com/${repo}/pull/${number}`, state: 'OPEN', isDraft: Boolean(a.draft), headRefOid: this.w.remoteBranches.get(a.head) ?? this.w.sha(), headRefName: a.head, baseRefName: a.base, polls: 0, failOnce: this.w.ciMode === 'red-once' });
     return { number, url: `https://github.com/${repo}/pull/${number}` };
   }
-  async setDraft(_repo: string, number: number, draft: boolean) { this.say(`gh pr ready ${number}${draft ? ' --undo' : ''}`); const p = this.w.prs.get(number); if (p) p.isDraft = draft; }
+  async setDraft(_repo: string, number: number, draft: boolean) {
+    this.say(`gh pr ready ${number}${draft ? ' --undo' : ''}`); const p = this.w.prs.get(number); if (!p) return;
+    p.isDraft = draft;
+    if (draft) return;
+    this.w.readyEvents += 1;
+    // The event's run is for the head GitHub shows right now, which lags a push.
+    const stale = this.w.staleHeads.get(p.headRefName);
+    this.w.realRuns.add(stale && stale.polls > 0 ? stale.sha : this.w.remoteBranches.get(p.headRefName) ?? p.headRefOid);
+  }
   async prView(_repo: string, number: number) {
     const p = this.w.prs.get(number); if (!p) throw new Error(`no PR ${number}`);
     const stale = this.w.staleHeads.get(p.headRefName);
@@ -113,7 +133,8 @@ export class DryRunGhPort implements GhPort {
   async ciForSha(_repo: string, branch: string, sha: string): Promise<CiStatus> {
     const p = [...this.w.prs.values()].find((x) => x.headRefName === branch);
     if (!p) return { state: 'none', sha };
-    if (p.isDraft) { this.w.ciPolledWhileDraft += 1; return { state: 'none', sha }; } // CI skips drafts (dogfood f6)
+    if (this.w.draftGuard && !this.w.realRuns.has(sha)) { if (p.isDraft) this.w.ciPolledWhileDraft += 1; return { state: 'skipped', runId: 4, sha, url: 'https://example/run/4' }; }
+    if (p.isDraft && !this.w.draftGuard) { this.w.ciPolledWhileDraft += 1; return { state: 'none', sha }; } // CI skips drafts (dogfood f6)
     p.polls += 1;
     const attempt = p.attempt ?? 1;
     if (p.staleFailures) { p.staleFailures -= 1; return { state: 'failure', runId: 2, sha, url: 'https://example/run/2', attempt: attempt - 1 }; }
