@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
-import { getSection, partsSummary, serializeItemFile, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent, parseActivity } from '@planestro/shared';
+import { getSection, partsSummary, serializeItemFile, serializeQuestionFile, parseThread, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent, parseActivity } from '@planestro/shared';
 import { hostNote } from './hostNote.ts';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Ports, CustomToolDef, TurnResult } from './ports.ts';
@@ -19,7 +19,27 @@ const CHAT_POLICY = [
   'Ask one short question with reply_to_user when the request is ambiguous rather than guessing; their answer arrives as the next wake.',
 ].join('\n');
 
+/**
+ * The user wrote in one question's thread (#75): the same authority as the chat, but the answer
+ * belongs on that question's page, and the discussion can settle or change the question itself.
+ */
+const QUESTION_CHAT_POLICY = [
+  'The user is discussing one of your questions on its own page. They read only that page\'s thread: answer with reply_on_question (not reply_to_user) before done_with_wake.',
+  'You have the same authority as in the chat: act on what they ask with your tools (create_item for new backlog work, submit_item, unblock_item, retry_op, sync_with_base, message_session, annotate_item, the ordering tools), and say in the thread what you did.',
+  'When their answer settles the question, carry it out, then resolve_question with status resolved and the answer in a sentence. When it changes what you would recommend or what the question is, update_question so the page says it. Ask one short follow-up with reply_on_question when their answer is ambiguous; it arrives as the next wake.',
+].join('\n');
+
+/** The "Still relevant?" button (#75): judge the question against the item as it is now, and leave it better or gone. */
+const QUESTION_REVIEW_POLICY = [
+  'Relevance check: the user asked whether this question still stands. Compare it with the current state below (and read_item or pr_status if you need more). End with exactly one of:',
+  '- resolve_question with status withdrawn and the reason, when it is moot: answered elsewhere, overtaken by events, its item finished or went another way. Use status resolved when you can see how it was answered.',
+  '- update_question, when it still stands but the situation moved on: rewrite the summary (plain terms, 1–3 sentences, for someone who has not read the logs), the details and the recommendation to fit today.',
+  'If it still stands exactly as written, do neither: planestro notes "reviewed, no change" in its thread. Do not reply in the thread for this check; the change you make is the answer.',
+].join('\n');
+
 export interface WakeEvent { type: string; item?: string; data?: Record<string, unknown> }
+/** The question a wake is about: `question_message` and `question_review` carry its id in `data.question`. */
+const questionOf = (e: WakeEvent): string | undefined => (e.type.startsWith('question_') && typeof e.data?.question === 'string' ? e.data.question : undefined);
 
 /**
  * The tools that change an item, refused on one a person has taken over (dogfood p28): the
@@ -97,6 +117,13 @@ export class Orchestrator {
   private stopped = false;
   /** Items whose events are in the wake running now (the queue holds the ones still to come). */
   private inFlight = new Set<string>();
+  /** Questions in the wake running now, and those it changed (resolved or updated) or answered in their thread. */
+  private questionsInFlight = new Set<string>();
+  private reviewsInFlight = new Set<string>();
+  private questionsChanged = new Set<string>();
+  private questionsAnswered = new Set<string>();
+  /** How the last wake ended, for a question it did not answer. */
+  private lastOutcome = '';
   constructor(
     private readonly store: DataStore,
     private readonly ports: Ports,
@@ -119,13 +146,34 @@ export class Orchestrator {
   /** Queue an event; coalesced into one turn if more arrive while a wake is running. */
   wake(event: WakeEvent): void {
     if (!this.enabled || this.stopped) return;
+    // A second "Still relevant?" while the first is queued or running asks nothing new.
+    const q = questionOf(event);
+    if (q && event.type === 'question_review' && (this.queue.some((e) => e.type === 'question_review' && questionOf(e) === q) || this.reviewsInFlight.has(q))) return;
     this.queue.push(event);
+    if (q) this.emit({ type: 'question.updated', id: q });
     this.store.journal.append({ type: 'orchestrator.wake', item: event.item, actor: 'engine', data: { event: event.type } });
     void this.drain();
   }
 
   /** Whether a wake about this item is queued or running — so the engine re-wakes only what a restart dropped. */
   reviewing(id: string): boolean { return this.inFlight.has(id) || this.queue.some((e) => e.item === id); }
+  /** Whether a wake about this question is queued or running: its page shows it is being looked at. */
+  questionPending(id: string): boolean { return this.questionsInFlight.has(id) || this.queue.some((e) => questionOf(e) === id); }
+
+  /**
+   * A message posted in a question's thread whose wake a restart dropped (the queue is memory) is
+   * answered now: its thread ends with the user's words and nothing after them (invariant 3).
+   */
+  resumeQuestions(): string[] {
+    const woken: string[] = [];
+    for (const q of this.store.listQuestions()) {
+      const last = parseThread(q.file).at(-1);
+      if (last?.actor !== 'user' || this.questionPending(q.id)) continue;
+      this.wake({ type: 'question_message', data: { question: q.id, message: last.text } });
+      woken.push(q.id);
+    }
+    return woken;
+  }
   /** Serve what queued up while automation was paused. */
   kick(): void { void this.drain(); }
 
@@ -137,9 +185,14 @@ export class Orchestrator {
       while (this.queue.length && !this.stopped && !this.pausedRef()) {
         const batch = this.queue.splice(0, this.queue.length);
         this.inFlight = new Set(batch.flatMap((e) => (e.item ? [e.item] : [])));
-        try { await this.runWake(batch).catch((e) => this.log('error', `orchestrator wake failed: ${(e as Error).message}`)); }
+        this.questionsInFlight = new Set(batch.flatMap((e) => questionOf(e) ?? []));
+        this.reviewsInFlight = new Set(batch.flatMap((e) => (e.type === 'question_review' ? questionOf(e) ?? [] : [])));
+        this.questionsChanged = new Set(); this.questionsAnswered = new Set(); this.lastOutcome = '';
+        try { await this.runWake(batch).catch((e) => { this.lastOutcome = `the wake failed: ${(e as Error).message}`; this.log('error', `orchestrator wake failed: ${(e as Error).message}`); }); }
         finally {
           this.inFlight = new Set();
+          const asked = this.questionsInFlight; this.questionsInFlight = new Set(); this.reviewsInFlight = new Set();
+          this.questionEnded(batch, asked);
           // A delegated plan never waits on a wake that failed or decided nothing: the engine hands it to the user.
           // (Unless a revised plan already queued its own review: that one is still to come.)
           for (const e of batch) if (e.type === 'plan_review' && e.item && !this.queue.some((q) => q.type === 'plan_review' && q.item === e.item)) this.hooks.planReviewEnded(e.item);
@@ -149,6 +202,24 @@ export class Orchestrator {
         }
       }
     } finally { this.running = false; }
+  }
+
+  /**
+   * A question's wake always leaves a trace in its thread, so the page never waits on nothing: a
+   * relevance check that changed nothing says so, and a message nobody answered says how the wake ended.
+   */
+  private questionEnded(batch: WakeEvent[], asked: Set<string>): void {
+    for (const id of asked) {
+      if (this.queue.some((e) => questionOf(e) === id)) continue; // another wake about it is still to come
+      const q = this.store.getQuestion(id);
+      if (!q) continue;
+      const events = batch.filter((e) => questionOf(e) === id);
+      try {
+        if (events.some((e) => e.type === 'question_message') && !this.questionsAnswered.has(id)) this.store.postToQuestion(id, 'app', `the orchestrator did not answer here${this.lastOutcome ? ` (${this.lastOutcome.slice(0, 300)})` : ''}`);
+        else if (events.some((e) => e.type === 'question_review') && !this.questionsChanged.has(id)) this.store.postToQuestion(id, 'app', `reviewed, no change${this.lastOutcome.startsWith('the wake failed') ? ` (${this.lastOutcome.slice(0, 300)})` : ''}`);
+        else this.emit({ type: 'question.updated', id }); // no longer pending
+      } catch (e) { this.log('warn', `question ${id}: ${(e as Error).message}`); }
+    }
   }
 
   /**
@@ -190,7 +261,7 @@ export class Orchestrator {
       permissionMode: 'dontAsk', prompt, resume: state.session_id, maxTurns: 30,
       systemAppend: this.systemIntro(),
       allowedTools: ['Read', 'Grep', 'Glob', 'Bash(git log*)', 'Bash(git diff*)', 'Bash(git show*)', 'Bash(gh pr view*)', 'Bash(gh pr diff*)', 'Bash(gh run view*)'],
-      mcpTools: this.tools((s) => { doneSummary = s; }, events.some((e) => e.type === 'user_message')),
+      mcpTools: this.tools((s) => { doneSummary = s; }, events.some((e) => e.type === 'user_message' || e.type === 'question_message')),
       onOutput: (t) => this.emit({ type: 'engine.log', level: 'info', message: `[orchestrator] ${t.slice(0, 300)}` }),
     });
     this.hooks.usageSeen?.(result.rateLimit);
@@ -212,6 +283,7 @@ export class Orchestrator {
       this.log('warn', `orchestrator: the wake failed with ${result.subtype}: ${result.error ?? ''}${result.subtype === 'api_error' && !retried ? '; retrying once' : ''}`);
       if (result.subtype === 'api_error' && !retried) return this.runWake(events, true);
     }
+    this.lastOutcome = doneSummary ? `it ended with: ${doneSummary}` : result.isError ? `the wake failed: ${result.subtype}${result.error ? ` ${result.error}` : ''}` : '';
     this.writeState({ session_id: result.sessionId ?? state.session_id, started_at: state.started_at ?? isoLocal(), wakes_served: state.wakes_served + 1 });
     this.store.journal.append({ type: 'orchestrator.done', actor: 'orchestrator', data: { events: events.map((e) => e.type), summary: doneSummary || (result.isError ? `(failed: ${result.subtype}) ${result.error ?? ''}` : result.text.slice(-300)), cost: result.costUsd, subtype: result.subtype } });
     this.log('info', `orchestrator: ${doneSummary || result.subtype}`);
@@ -272,7 +344,33 @@ export class Orchestrator {
       }
     }
     if (e.type === 'user_message') lines.push(CHAT_POLICY);
+    const q = questionOf(e);
+    if (q) { lines.push(this.questionPacket(e, q)); return lines.join('\n'); }
     for (const [k, v] of Object.entries(e.data ?? {})) lines.push(`${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`.slice(0, 2000));
+    return lines.join('\n');
+  }
+
+  /**
+   * The whole question file (the files are the memory: the thread holds everything said so far),
+   * and for a relevance check its item as it is now. The item goes in the text, not as the event's
+   * item, so a question never ends a plan review or a triage that happens to be running.
+   */
+  private questionPacket(e: WakeEvent, id: string): string {
+    const q = this.store.getQuestion(id);
+    if (!q) return `Question ${id}: it no longer exists (nothing to do).`;
+    const fm = q.file.frontmatter;
+    const lines = [`Question ${id} (${fm.status}${fm.resolution ? `: ${fm.resolution}` : ''}), asked ${fm.asked_at}${fm.item ? ` about ${fm.item}` : ''}. The file in full:\n\`\`\`markdown\n${serializeQuestionFile(q.file).slice(-12_000)}\n\`\`\``];
+    if (e.type === 'question_message') lines.push(`The user just wrote in its thread:\n${String(e.data?.message ?? '').slice(0, 4000)}`, QUESTION_CHAT_POLICY);
+    if (e.type === 'question_review') {
+      const it = fm.item ? this.store.getItem(fm.item) : undefined;
+      if (it) {
+        const f = it.file.frontmatter;
+        lines.push(`Its item now: ${f.id} — "${f.title}" · ${f.status}${f.blocked ? ` · BLOCKED: ${f.blocked_reason}` : ''}${f.awaiting ? ` · awaiting ${f.awaiting}` : ''}${f.op ? ` · op ${f.op}` : ''}${f.pr ? ` · PR #${f.pr} (CI ${f.ci_result ?? '—'})` : ''}${f.taken_over ? ' · taken over by the user' : ''}`);
+        const activity = getSection(it.file, 'Activity').split('\n').slice(-12).join('\n'); if (activity) lines.push(`Its recent activity:\n${activity}`);
+      } else if (fm.item) lines.push(`Its item ${fm.item} no longer exists.`);
+      else lines.push('It is not about one item: judge it against the backlog (list_items) if you need to.');
+      lines.push(QUESTION_REVIEW_POLICY);
+    }
     return lines.join('\n');
   }
 
@@ -415,7 +513,20 @@ export class Orchestrator {
         } catch (e) { return `failed: ${(e as Error).message}`; }
       } },
       { name: 'finish_from_worktree', description: "The work is committed on the item's branch but the item could not reach a pull request (over budget, a size gate cleared, a runner that could not commit and a person committed for it): open the pull request from the worktree as planestro would have. Refuses a dirty tree, naming the files (untracked files worktrees.byproducts names do not count; except for a model whose commits are planestro's, engine_commits: its tree is committed first) or a branch with nothing ahead of its base.", schema: idArg, handler: async (a) => this.hooks.finishFromWorktree(String(a.id)) },
-      { name: 'ask_user', description: 'Ask the user something; the answer arrives as a later wake. Returns immediately.', schema: { question: z.string(), item: z.string().optional() }, handler: async (a) => { const entry = store.journal.append({ type: 'orchestrator.question', item: a.item ? String(a.item) : undefined, actor: 'orchestrator', data: { question: String(a.question) } }); if (a.item) store.mutateItem(String(a.item), [{ activity: { actor: 'orchestrator', text: `question for you: ${a.question}` } }], 'orchestrator'); this.emit({ type: 'engine.log', level: 'warn', message: `[orchestrator asks] ${a.question}` }); return `recorded at ${entry.ts}; the user will see it in the console`; } },
+      { name: 'ask_user', description: "Ask the user something that is theirs to decide and not tied to a stopped item's card: it becomes a question with its own page (Console → Its questions for you), where they read your summary and recommendation and discuss it with you. Returns its id (Q-<n>) at once; their answer arrives as a later wake (question_message). Before asking, check list_questions: refresh an open question with update_question rather than asking it again.", schema: { question: z.string().describe('The question in one line: its headline'), summary: z.string().describe('Required. The question in plain terms, 1–3 sentences, for someone who has not read the logs: what is being decided and why it matters. No ids, jargon or log excerpts.'), details: z.string().optional().describe('What you know that bears on it: the item, what happened, the options you see. Markdown.'), recommendation: z.string().optional().describe('What you would do and why, in a sentence or two. Always give one when you have a view; the user can accept it in one tap.'), item: z.string().optional().describe('The item it is about, if any: the question resolves by itself when that item is finished') }, handler: async (a) => {
+        const item = a.item && store.getItem(String(a.item)) ? String(a.item) : undefined;
+        const q = store.askQuestion({ headline: String(a.question), summary: String(a.summary ?? '').trim() || String(a.question), details: a.details ? String(a.details) : undefined, recommendation: a.recommendation ? String(a.recommendation) : undefined, item }, 'orchestrator');
+        // The chat and the journal keep showing questions as they always did, now with the id that opens the page.
+        const entry = store.journal.append({ type: 'orchestrator.question', item, actor: 'orchestrator', data: { question: String(a.question), id: q.id } });
+        if (item) store.mutateItem(item, [{ activity: { actor: 'orchestrator', text: `question for you (${q.id}): ${a.question}` } }], 'orchestrator');
+        this.emit({ type: 'engine.log', level: 'warn', message: `[orchestrator asks] ${q.id}: ${a.question}` });
+        return `asked as ${q.id} at ${entry.ts}; the user sees it in the console with its own page. Their answer arrives as a question_message wake.${a.item && !item ? ` (${a.item} is not an item here, so it is not linked to one.)` : ''}`;
+      } },
+      { name: 'list_questions', description: 'Your questions to the user: id, status, item, headline, when asked and how many messages its thread has. Open ones by default.', schema: { status: z.enum(['open', 'resolved', 'withdrawn', 'all']).optional() }, handler: async (a) => store.listQuestions(a.status === 'all' ? {} : { status: (a.status as 'open' | 'resolved' | 'withdrawn' | undefined) ?? 'open' }).map((q) => { const f = q.file.frontmatter; return `${f.id} [${f.status}] ${f.item ?? '—'} asked ${f.asked_at.slice(0, 16)} · ${parseThread(q.file).length} message(s) · ${f.headline}${f.resolution ? ` → ${f.resolution}` : ''}`; }).join('\n') || '(none)' },
+      { name: 'read_question', description: 'Read one question file in full: summary, details, recommendation and the whole thread.', schema: idArg, handler: async (a) => serializeQuestionFile(store.requireQuestion(String(a.id)).file) },
+      { name: 'reply_on_question', description: "Answer the user in one question's thread (its page). In a question_message wake this is the only thing they read: what you found, what you did, briefly.", schema: { ...idArg, text: z.string() }, handler: async (a) => { store.postToQuestion(String(a.id), 'orchestrator', String(a.text)); this.questionsAnswered.add(String(a.id)); return 'posted in the thread'; } },
+      { name: 'update_question', description: "Refresh a question that still stands but whose situation moved on: a new plain-language summary (1–3 sentences), details, recommendation, or headline. Only what you pass changes; the thread notes the update.", schema: { ...idArg, summary: z.string().optional(), details: z.string().optional(), recommendation: z.string().optional(), headline: z.string().optional() }, handler: async (a) => { store.updateQuestion(String(a.id), { summary: a.summary as string | undefined, details: a.details as string | undefined, recommendation: a.recommendation as string | undefined, headline: a.headline as string | undefined }, 'orchestrator'); this.questionsChanged.add(String(a.id)); return 'updated'; } },
+      { name: 'resolve_question', description: 'Close a question: resolved (it was answered: say the answer in a sentence) or withdrawn (it is moot: say why). The user can reopen it.', schema: { ...idArg, status: z.enum(['resolved', 'withdrawn']), resolution: z.string() }, handler: async (a) => { const q = store.requireQuestion(String(a.id)); if (q.file.frontmatter.status !== 'open') return `${a.id} is already ${q.file.frontmatter.status}`; store.resolveQuestion(String(a.id), a.status as 'resolved' | 'withdrawn', String(a.resolution), 'orchestrator'); this.questionsChanged.add(String(a.id)); this.questionsAnswered.add(String(a.id)); return a.status === 'resolved' ? 'resolved' : 'withdrawn'; } },
       { name: 'resume_after', description: "Park a stopped item until other items merge, then resume its session with `message`: for a worker that needs what another item delivers (a flag, an asset) before it can go on. It stops needing the user; planestro rebases its branch onto the base first. Use it instead of unblocking into a wait.", schema: { ...idArg, items: z.array(z.string()).min(1), message: z.string() }, handler: async (a) => this.hooks.resumeAfter(String(a.id), a.items as string[], String(a.message)) },
       { name: 'reply_to_user', description: 'Answer the user in the planestro chat. In a user_message wake this is the only thing they read: say what you found and what you did, briefly. Call it once, near the end of the wake.', schema: { text: z.string(), item: z.string().optional() }, handler: async (a) => { store.journal.append({ type: 'orchestrator.reply', item: a.item ? String(a.item) : undefined, actor: 'orchestrator', data: { text: String(a.text) } }); return 'sent to the chat'; } },
       { name: 'create_item', description: 'CHAT ONLY: create a backlog item the user asked for, as NOT_YET_SUBMITTED unless `submit` is true (then it is queued for planning at once). Write a complete brief: its worker sees only the title and description.', schema: { title: z.string(), description: z.string(), category: z.string().optional().describe('One of the project categories; default if omitted'), depends_on: z.array(z.string()).optional(), submit: z.boolean().optional().describe('Queue it for planning now (only if the user said so)') }, handler: async (a) => {

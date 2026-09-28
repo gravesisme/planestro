@@ -31,6 +31,7 @@ describe('planestro sample', () => {
       expect(store.listPrompts().filter((p) => p.file.frontmatter.favorite).map((p) => p.name).sort()).toEqual(['art-item', 'art-repaint', 'audit-recent-code', 'bug-fixes', 'feature']);
       expect(by('ICEBOX').length).toBe(2);
       expect(store.listReleases().map((r) => [r.version, r.file.frontmatter.status])).toEqual([['0.4.0', 'planned'], ['0.3.0', 'released']]);
+      expect(store.listQuestions().map((q) => [q.id, q.file.frontmatter.status])).toEqual([['Q-2', 'resolved'], ['Q-1', 'open']]);
       const next = store.getRelease('0.4.0')!;
       expect(next.file.sections.find((x) => x.title === 'Tagline')!.body).toBe('Tide times for the beach you are standing on.'); // carried from 0.3.0
       expect(releaseCandidates('0.4.0', store.listReleases().map((r) => r.file), store.listItems().map((i) => ({ id: i.id, fm: i.file.frontmatter }))).length).toBe(2);
