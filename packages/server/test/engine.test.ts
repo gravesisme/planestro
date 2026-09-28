@@ -2140,3 +2140,40 @@ describe('orchestrator chat', () => {
     expect(String(store.journal.read({ type: 'orchestrator.reply' })[0].data?.text)).toContain('what is blocked?');
   });
 });
+
+describe('starting an epic with no children (dogfood p56, LM-2)', () => {
+  const post = (body: unknown) => ({ method: 'POST' as const, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const offered = async (app: ReturnType<typeof apiRoutes>, id: string) => ((await (await app.request(`/items/${id}/transitions`)).json()) as { to: string }[]).map((t) => t.to);
+
+  it('"start" is not offered; started anyway it plans the breakdown and opens no branch; open refuses', async () => {
+    const { store, engine, world } = await setup();
+    const epic = store.createItem({ title: 'Lonely', description: 'x', kind: 'epic' });
+    await engine.start();
+    const app = apiRoutes(store, engine);
+    expect(await offered(app, epic.id)).toEqual(expect.arrayContaining(['PLAN_IN_PROGRESS']));
+    expect(await offered(app, epic.id)).not.toContain('IN_PROGRESS');
+    const opened = await app.request(`/items/${epic.id}/epic/open`, { method: 'POST' });
+    expect(opened.status).toBe(400);
+    expect((await opened.json()).error).toBe(`${epic.id} has no children yet: plan the breakdown, or add children first`);
+    const r = await app.request(`/items/${epic.id}/transition`, post({ to: 'IN_PROGRESS' }));
+    expect(r.status).toBe(200);
+    expect(['PLAN_IN_PROGRESS', 'PLAN_READY']).toContain(status(store, epic.id));   // the dry-run planner may already have handed its breakdown in
+    expect(activityOf(store, epic.id)).toContain('start: no children yet, so the planner breaks the epic down first: planning the breakdown');
+    expect(world.remoteBranches.has('feature/lonely')).toBe(false);
+    await waitFor(() => status(store, epic.id) === 'PLAN_READY');
+    expect(await offered(app, epic.id)).toContain('IN_PROGRESS');   // "approve breakdown": its children only exist once it is approved
+  });
+
+  it('an epic with a child still starts: its integration branch opens', async () => {
+    const { store, engine, world } = await setup();
+    const epic = store.createItem({ title: 'Crowded', description: 'x', kind: 'epic' });
+    store.createItem({ title: 'Kid', description: 'x', parent: epic.id });
+    await engine.start();
+    const app = apiRoutes(store, engine);
+    expect(await offered(app, epic.id)).toContain('IN_PROGRESS');
+    const r = await app.request(`/items/${epic.id}/transition`, post({ to: 'IN_PROGRESS' }));
+    expect(r.status).toBe(200);
+    expect(status(store, epic.id)).toBe('IN_PROGRESS');
+    expect(world.remoteBranches.has('feature/crowded')).toBe(true);
+  });
+});
