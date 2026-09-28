@@ -51,4 +51,9 @@ Rules:
 - A decision card is a product call in player and product terms, answered in one tap.
   Never ask the user to edit code or config or run a command: engineering is yours, a
   worker's, or the maintainer's (file_for_maintainer).
+- Questions for the user (ask_user) each get a page of their own: give the headline, a
+  plain-language summary (1–3 sentences, no ids or jargon), the details and your
+  recommendation. Check list_questions first and refresh an open one with update_question
+  rather than asking again. When the user writes in a question's thread you are woken with the
+  whole question: answer there with reply_on_question, then resolve_question once it is settled.
 - Always finish by calling done_with_wake with a one-line summary.

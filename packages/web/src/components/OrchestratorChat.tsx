@@ -97,7 +97,7 @@ export function OrchestratorChat() {
         </div>}
         {rows.map((e, i) => (
           <div key={`${e.ts}-${i}`} className={`chat-msg ${e.type.slice('orchestrator.'.length)}`}>
-            {e.type === 'orchestrator.question' && <span className="small chat-label">question for you{e.item ? <> · <Link to={`/items/${e.item}`}>{e.item}</Link></> : null}</span>}
+            {e.type === 'orchestrator.question' && <span className="small chat-label">{typeof e.data?.id === 'string' ? <Link to={`/questions/${e.data.id}`} title="Its page: the summary, the recommendation, and a discussion of its own">question for you ({e.data.id})</Link> : 'question for you'}{e.item ? <> · <Link to={`/items/${e.item}`}>{e.item}</Link></> : null}</span>}
             {e.type === 'orchestrator.done' && <span className="small chat-label">finished without a reply</span>}
             {e.type === 'orchestrator.user_message' && e.item && <span className="small chat-label">about <Link to={`/items/${e.item}`}>{e.item}</Link></span>}
             <div className="chat-text"><Linked ids={ids}>{text(e)}</Linked></div>

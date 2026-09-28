@@ -5,6 +5,7 @@ export type ServerEvent =
   | { type: 'item.deleted'; id: string }
   | { type: 'prompt.updated'; name: string }
   | { type: 'release.updated'; version: string }
+  | { type: 'question.updated'; id: string }
   | { type: 'config.updated' }
   | { type: 'journal.appended'; entry: JournalEntry }
   | { type: 'git.committed'; message: string }

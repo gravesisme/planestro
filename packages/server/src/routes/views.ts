@@ -1,5 +1,5 @@
-import { getSection, parseActivity, serializePromptFile, releaseCandidates, type Status } from '@planestro/shared';
-import type { DataStore, StoredItem, StoredPrompt, StoredRelease } from '../store/DataStore.ts';
+import { getSection, parseActivity, serializePromptFile, releaseCandidates, getQuestionSection, parseThread, type Status } from '@planestro/shared';
+import type { DataStore, StoredItem, StoredPrompt, StoredRelease, StoredQuestion } from '../store/DataStore.ts';
 
 /** JSON shape of an item as the UI sees it: frontmatter + sections + derived values. */
 export function itemView(store: DataStore, item: StoredItem) {
@@ -30,6 +30,24 @@ export function releaseView(store: DataStore, r: StoredRelease) {
   };
 }
 export type ReleaseView = ReturnType<typeof releaseView>;
+
+/**
+ * A question as its page shows it. `pending`: a wake about it is queued or running (the engine's
+ * memory, not the file's). The list leaves out the details and the thread, which only the page reads.
+ */
+export function questionView(store: DataStore, q: StoredQuestion, pending: boolean, full = true) {
+  const fm = q.file.frontmatter;
+  const thread = parseThread(q.file);
+  const item = fm.item ? store.getItem(fm.item)?.file.frontmatter : undefined;
+  return {
+    id: fm.id, path: q.path, frontmatter: fm, pending,
+    item_title: item?.title, item_status: item?.status,
+    summary: getQuestionSection(q.file, 'Summary'), recommendation: getQuestionSection(q.file, 'Recommendation'),
+    messages: thread.length, last_at: thread.at(-1)?.at ?? fm.updated_at,
+    ...(full ? { details: getQuestionSection(q.file, 'Details'), thread } : {}),
+  };
+}
+export type QuestionView = ReturnType<typeof questionView>;
 
 /** Who paused automation and, for a usage-guard pause, the window reading that did it. */
 export function guardView(store: DataStore, paused: boolean) {

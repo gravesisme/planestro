@@ -7,7 +7,7 @@ import { allowedTransitions, parsePromptFile, RenderError, STATUSES, PROMPT_KIND
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Engine } from '../engine/Engine.ts';
 import type { ConsoleBuffer } from '../store/ConsoleBuffer.ts';
-import { itemView, promptView, releaseView, stateView, guardView } from './views.ts';
+import { itemView, promptView, releaseView, questionView, stateView, guardView } from './views.ts';
 
 const EDITABLE_FIELDS = z.object({
   title: z.string().min(1).optional(), category: z.string().min(1).optional(), planner: z.string().optional(), implementer: z.string().optional(),
@@ -20,9 +20,15 @@ const EDITABLE_FIELDS = z.object({
 
 const CHAT_TYPES = new Set(['orchestrator.user_message', 'orchestrator.reply', 'orchestrator.question', 'orchestrator.done']);
 
+/** The orchestrator, when this engine has one (the live engine, in live or dry-run mode; never the mock). */
+type Orch = { wake: (ev: { type: string; item?: string; data?: Record<string, unknown> }) => void; enabled: boolean; questionPending?: (id: string) => boolean };
+const orchestratorOf = (engine: Engine): Orch | undefined => (engine as Engine & { orchestrator?: Orch }).orchestrator;
+
 export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBuffer): Hono {
   const api = new Hono();
   const fail = (c: any, e: unknown, status = 400) => c.json({ error: (e as Error).message ?? String(e) }, status);
+  const pending = (id: string) => Boolean(orchestratorOf(engine)?.questionPending?.(id));
+  const awake = (): Orch => { const o = orchestratorOf(engine); if (!o?.enabled) throw new Error('the orchestrator is not available with this engine'); return o; };
 
   api.get('/state', async (c) => c.json(stateView(store, engine, await store.git.status())));
   api.post('/reload', async (c) => { store.reload(); return c.json({ ok: true, invalid: store.invalid }); });
@@ -359,6 +365,48 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
     return c.json({ enabled: Boolean(e.orchestrator?.enabled), entries });
   });
   api.get('/orchestrator/questions', (c) => c.json(store.journal.read({ type: 'orchestrator.question', limit: 20 })));
+  // Questions (#75): files with a state and a thread. Posting in a thread wakes the orchestrator
+  // with the whole question; "Still relevant?" wakes it to withdraw, refresh, or leave it as it is.
+  api.get('/questions', (c) => { const status = c.req.query('status'); return c.json(store.listQuestions(status === 'open' || status === 'resolved' || status === 'withdrawn' ? { status } : {}).map((q) => questionView(store, q, pending(q.id), false))); });
+  api.get('/questions/:id', (c) => { const q = store.getQuestion(c.req.param('id')); return q ? c.json(questionView(store, q, pending(q.id))) : c.json({ error: 'not found' }, 404); });
+  api.post('/questions/review-all', (c) => {
+    try {
+      const o = awake();
+      const open = store.listQuestions({ status: 'open' });
+      // Oldest first: the stalest are the likeliest to be moot. They coalesce into one wake.
+      for (const q of [...open].reverse()) o.wake({ type: 'question_review', data: { question: q.id } });
+      return c.json({ reviewing: open.map((q) => q.id) });
+    } catch (e) { return fail(c, e); }
+  });
+  api.post('/questions/:id/messages', async (c) => {
+    try {
+      const id = c.req.param('id');
+      const { text } = z.object({ text: z.string().trim().min(1) }).parse(await c.req.json());
+      store.requireQuestion(id);
+      const o = awake();
+      const q = store.postToQuestion(id, 'user', text);
+      o.wake({ type: 'question_message', data: { question: id, message: text } });
+      return c.json(questionView(store, q, pending(id)));
+    } catch (e) { return fail(c, e); }
+  });
+  api.post('/questions/:id/review', (c) => {
+    try {
+      const q = store.requireQuestion(c.req.param('id'));
+      if (q.file.frontmatter.status !== 'open') throw new Error(`${q.id} is ${q.file.frontmatter.status}: reopen it first`);
+      awake().wake({ type: 'question_review', data: { question: q.id } });
+      return c.json(questionView(store, q, pending(q.id)));
+    } catch (e) { return fail(c, e); }
+  });
+  api.post('/questions/:id/resolve', async (c) => {
+    try {
+      const { status, resolution } = z.object({ status: z.enum(['resolved', 'withdrawn']).default('resolved'), resolution: z.string().optional() }).parse(await c.req.json().catch(() => ({})));
+      const cur = store.requireQuestion(c.req.param('id'));
+      if (cur.file.frontmatter.status !== 'open') throw new Error(`${cur.id} is already ${cur.file.frontmatter.status}`);
+      const q = store.resolveQuestion(cur.id, status, resolution?.trim() || (status === 'resolved' ? 'marked answered' : 'dismissed'), 'user');
+      return c.json(questionView(store, q, pending(q.id)));
+    } catch (e) { return fail(c, e); }
+  });
+  api.post('/questions/:id/reopen', (c) => { try { const q = store.reopenQuestion(c.req.param('id'), 'user'); return c.json(questionView(store, q, pending(q.id))); } catch (e) { return fail(c, e); } });
   api.get('/engine', (c) => c.json({ mode: engine.mode, paused: engine.paused, ...guardView(store, engine.paused), sessions: engine.sessions(), ...(engine.restartReadiness ? { restart: engine.restartReadiness() } : {}), log: engine.log.slice(-200) }));
   // The orchestrator's suggestions about planestro itself (dogfood f8): a list of their own, not buried in Activity.
   api.get('/orchestrator/notes', (c) => c.json(store.journal.read({ type: 'orchestrator.planestro_note', limit: 100 })));

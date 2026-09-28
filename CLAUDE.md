@@ -106,6 +106,13 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   sections named by the project's `releases.sections` (with `max_chars` / `carry`).
   They never drive the engine; which finished items belong to one is date
   arithmetic (`releaseCandidates`), offered to the user, never applied.
+- Orchestrator questions (`questions/Q-<n>.md`, schema 3) are a third file type: status
+  `open | resolved | withdrawn`, an optional `item`, and `# Summary`, `# Details`,
+  `# Recommendation`, `# Thread` (`- <ts> [user|orchestrator|app] text`). `ask_user` creates
+  one; a post in its thread wakes `question_message`, "Still relevant?" wakes `question_review`
+  (which ends in `resolve_question` / `update_question`, or planestro notes "reviewed, no
+  change"). An item reaching FINISHED or ICEBOX resolves its open questions in the store
+  (`settleQuestions`), never by asking the model.
 - Schema changes go through `packages/server/src/migrations` and bump
   `SCHEMA_VERSION`; a newer data dir opens read-only.
 - `planestro sample` (`packages/server/src/sample.ts`) is the no-credentials demo

@@ -148,6 +148,7 @@ export class LiveEngine implements Engine {
     this.note('info', `engine ${this.mode} starting${this._paused ? ' (paused)' : ''}`);
     await this.reconcile('startup').catch((e) => this.note('error', `reconcile: ${(e as Error).message}`));
     await this.resumeInterrupted();
+    for (const q of this.orchestrator.resumeQuestions()) this.note('info', `${q}: answering the message a restart left unanswered`);
     this.armGuardResume();
     this.timer = setInterval(() => void this.tick(), this.opts.tickMs ?? 10_000);
     this.timer.unref?.();

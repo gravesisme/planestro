@@ -171,6 +171,18 @@ export async function seedSample(out: string, opts: { reset?: boolean; log?: (m:
       fields: { items: [ids.get('json')!, ids.get('station-error')!] },
       sections: { 'Release notes': '- `--json` prints the predictions as data, for scripts.\n- An unknown station id says so and exits 2, instead of a stack trace.', Notes: '- [ ] Wait for the time-zone fix? It touches the `--json` path.\n- [ ] `npm publish`, then tag `v0.4.0`' },
     });
+    // Two orchestrator questions (Console → Its questions for you): one still open, with a discussion under way; one answered.
+    const hold = store.askQuestion({
+      item: ids.get('timezone'), headline: 'Hold 0.4.0 until the time-zone fix is in?',
+      summary: 'Version 0.4.0 is ready except for one bug: for a beach in another time zone, the new `--json` output shows the wrong times. Ship now and fix it in 0.4.1, or wait for the fix?',
+      details: `- The bug is ${ids.get('timezone')}; it touches only the \`--json\` path that 0.4.0 introduces.\n- Nothing else in 0.4.0 depends on it.\n- The fix is small but not started: it is still in the backlog.`,
+      recommendation: `Wait for ${ids.get('timezone')}. Shipping \`--json\` with wrong times means scripts written against 0.4.0 break when it is fixed.`,
+    });
+    store.postToQuestion(hold.id, 'user', 'How long would the fix take?');
+    store.postToQuestion(hold.id, 'orchestrator', `A day or two once it is queued: the plan is one function and a test. Queue ${ids.get('timezone')} and I will hold the release note until it merges.`);
+    const done = store.askQuestion({ item: ids.get('station-error'), headline: 'Exit code for an unknown station: 1 or 2?', summary: 'When the station id does not exist, should the command fail with the general error code (1) or the "bad input" code (2)?', recommendation: '2: it is the caller\'s mistake, and scripts can tell it apart from a network failure.' });
+    store.postToQuestion(done.id, 'user', 'Go with 2.');
+    store.resolveQuestion(done.id, 'resolved', 'exit 2 for an unknown station', 'orchestrator');
     // The picker and the Prompts page lead with what a person starts work from: one set per kind of agent.
     for (const name of ['feature', 'bug-fixes', 'audit-recent-code', 'art-item', 'art-repaint']) if (store.getPrompt(name)) store.setPromptFavorite(name, true);
     await store.flushCommits();

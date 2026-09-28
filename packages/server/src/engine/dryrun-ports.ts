@@ -204,6 +204,10 @@ export class DryRunClaudePort implements ClaudePort {
     const said = /^message: (.*)$/m.exec(o.prompt)?.[1];
     const reply = o.mcpTools.find((t) => t.name === 'reply_to_user');
     if (said !== undefined && /Event: user_message/.test(o.prompt) && reply) await reply.handler({ text: `(dry-run) I would read the backlog and answer: “${said.slice(0, 200)}”. Switch to live mode for a real reply.` });
+    // So is a question's thread: the demo's question page gets an answer where the user asked.
+    const onQuestion = /^Event: question_message\nQuestion (Q-\d+)/m.exec(o.prompt)?.[1];
+    const replyOn = o.mcpTools.find((t) => t.name === 'reply_on_question');
+    if (onQuestion && replyOn) await replyOn.handler({ id: onQuestion, text: '(dry-run) I would weigh your answer against the item and carry it out. Switch to live mode for a real reply.' });
     const done = o.mcpTools.find((t) => t.name === 'done_with_wake');
     if (done) await done.handler({ summary: approved.length ? `dry-run: approved ${approved.join(', ')}` : 'dry-run: reviewed the wake, no action needed' });
     return { sessionId: o.resume ?? `dryrun-orch-${this.w.sha().slice(-6)}`, subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: 'wake handled (dry-run)' };
