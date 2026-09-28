@@ -38,7 +38,7 @@ async function req<T>(method: string, url: string, body?: unknown, raw?: BodyIni
 
 export const api = {
   state: () => req<State>('GET', '/api/state'),
-  createItem: (body: { title: string; category?: string; description?: string; kind?: 'item' | 'epic'; parent?: string; implementer?: string; status?: 'NOT_YET_SUBMITTED' | 'ICEBOX'; auto_approve_plan?: boolean; allow_model_fallback?: boolean }) => req<ItemView>('POST', '/api/items', body),
+  createItem: (body: { title: string; category?: string; description?: string; kind?: 'item' | 'epic'; planner?: string; parent?: string; implementer?: string; status?: 'NOT_YET_SUBMITTED' | 'ICEBOX'; auto_approve_plan?: boolean; allow_model_fallback?: boolean }) => req<ItemView>('POST', '/api/items', body),
   patchItem: (id: string, body: { fields?: Record<string, unknown>; sections?: Record<string, string> }) => req<ItemView>('PATCH', `/api/items/${id}`, body),
   deleteItem: (id: string) => req<{ ok: true }>('DELETE', `/api/items/${id}`),
   move: (id: string, op: 'top' | 'bottom' | 'before' | 'after' | 'icebox' | 'backlog', ref?: string) => req<ItemView>('POST', `/api/items/${id}/move`, { op, ref }),
@@ -49,7 +49,8 @@ export const api = {
   requestReviewChanges: (id: string, note: string) => req<ItemView>('POST', `/api/items/${id}/review/changes`, { note }),
   releaseHold: (id: string, note?: string) => req<ItemView>('POST', `/api/items/${id}/hold/release`, { note }),
   approveBreakdown: (id: string, children: BreakdownChild[], queue: boolean) => req<{ created: string[]; item: ItemView }>('POST', `/api/items/${id}/breakdown/approve`, { children, queue }),
-  approvePlan: (id: string, notes?: string) => req<ItemView>('POST', `/api/items/${id}/plan/approve`, { notes }),
+  approvePlan: (id: string, notes?: string, asItem?: boolean) => req<ItemView>('POST', `/api/items/${id}/plan/approve`, { notes, ...(asItem ? { as_item: true } : {}) }),
+  convertKind: (id: string, to: 'item' | 'epic', reason?: string) => req<ItemView>('POST', `/api/items/${id}/convert`, { to, reason }),
   rejectPlan: (id: string, message: string) => req<ItemView>('POST', `/api/items/${id}/plan/reject`, { message }),
   message: (id: string, text: string) => req<{ ok: true }>('POST', `/api/items/${id}/message`, { text }),
   epicAction: (id: string, action: 'open' | 'submit' | 'sync') => req<ItemView>('POST', `/api/items/${id}/epic/${action}`, {}),

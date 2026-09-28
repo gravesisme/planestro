@@ -74,6 +74,14 @@ main { padding: 16px; flex: 1; }
 .column.drop-ok { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--panel)); } .column.drop-no { border-color: var(--hot); opacity: .7; }
 .quick-actions { flex-wrap: wrap; margin: 8px 0 10px; }
 .dialog form label.row code { color: var(--muted); }
+/* Item or epic, chosen in the open with what each means (#69) */
+.kind-choice { border: 0; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; min-width: 0; }
+.kind-choice label { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel2); cursor: pointer; min-width: 0; }
+.kind-choice label.on { border-color: var(--accent); } .kind-choice label:has(input[value="epic"]).on { border-color: var(--warn); }
+.kind-choice input { margin: 3px 0 0; flex: none; } .kind-choice label > span { display: grid; gap: 2px; min-width: 0; } .kind-choice .small { line-height: 1.35; }
+@media (max-width: 480px) { .kind-choice { grid-template-columns: minmax(0, 1fr); } }
+.epic-warning { border: 1px solid var(--warn); border-left-width: 4px; background: #2b2413; border-radius: var(--radius); padding: 10px 12px; margin: 0 0 10px; }
+.epic-warning p { margin: 4px 0; } .epic-warning .row { flex-wrap: wrap; }
 .deps { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; color: var(--muted); font-size: 12px; } .deps .tag { color: var(--text); } .deps select { max-width: 220px; padding: 3px 6px; }
 .parts-strip { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; } .parts-strip .part { min-width: 14px; height: 18px; padding: 0 6px; border-radius: 3px; font-size: 11px; line-height: 18px; background: var(--panel2); border: 1px solid var(--line); color: var(--muted); }
 .parts-strip .part.accepted { background: color-mix(in srgb, var(--ok) 25%, var(--panel2)); border-color: var(--ok); color: var(--text); } .parts-strip .part.rejected { background: color-mix(in srgb, var(--hot) 22%, var(--panel2)); border-color: var(--hot); color: var(--text); } .parts-strip .part.pending { border-style: dashed; }
@@ -250,7 +258,7 @@ html { -webkit-text-size-adjust: 100%; }
 }
 
 /* orchestrator questions (#75): a list on the Console, and a page per question with its discussion */
-a.button { display: inline-block; text-decoration: none; color: inherit; background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; white-space: nowrap; } a.button:hover { border-color: var(--accent); } a.button.small, button.small { padding: 4px 9px; font-size: 12px; }
+a.button { display: inline-block; text-decoration: none; color: inherit; background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; white-space: nowrap; } a.button:hover { border-color: var(--accent); } a.button.primary { background: var(--accent); color: #0b0d10; border-color: var(--accent); font-weight: 600; } a.button.small, button.small { padding: 4px 9px; font-size: 12px; }
 .q-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .q-list { display: grid; gap: 8px; }
 .q-row { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; align-items: center; padding: 8px 10px; background: var(--panel2); border: 1px solid var(--line); border-left: 3px solid var(--warn); border-radius: var(--radius); }
