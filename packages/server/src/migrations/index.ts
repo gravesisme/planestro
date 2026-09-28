@@ -1,8 +1,9 @@
-import { SCHEMA_VERSION } from '@planestro/shared';
+import { SCHEMA_VERSION, QUESTION_SECTIONS, canonicalTimestamp, isoLocal, parseItemFile, serializeQuestionFile, setQuestionSection, appendThread, type QuestionFile } from '@planestro/shared';
 import YAML from 'yaml';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { atomicWrite } from '../store/atomicWrite.ts';
+import { GitCommitter } from '../store/GitCommitter.ts';
 import { CONFIG_FILE, TOOL_VERSION } from '../config.ts';
 
 export interface Migration { version: number; describe: string; up(dataDir: string, log: (m: string) => void): Promise<void> | void }
@@ -24,7 +25,58 @@ export const MIGRATIONS: Migration[] = [
       log(`  concurrency.max_local_jobs: ${String(old)}`);
     },
   },
+  {
+    version: 3,
+    describe: 'orchestrator questions become files (questions/Q-<n>.md) with a state and a discussion',
+    up(dataDir, log) { const n = importJournalQuestions(dataDir); log(`  imported ${n.imported} question(s) from the journal${n.settled ? ` (${n.settled} already moot: their items are finished or iceboxed)` : ''}`); },
+  },
 ];
+
+/**
+ * Schema 3: every `orchestrator.question` journal line becomes a question file, so the Console
+ * lists them with a state instead of forever (#57). The old line had only one text: it is the
+ * headline and the summary. The same text asked again about the same item is one question (the
+ * orchestrator re-asked what nobody had answered), with each later ask in its thread. A question
+ * whose item is already finished or iceboxed is imported resolved, saying so. Files already
+ * there are left alone, so running it twice imports nothing twice.
+ */
+export function importJournalQuestions(dataDir: string): { imported: number; settled: number } {
+  const journal = join(dataDir, 'journal');
+  const qdir = join(dataDir, 'questions');
+  if (!existsSync(journal) || (existsSync(qdir) && readdirSync(qdir).some((f) => f.endsWith('.md')))) return { imported: 0, settled: 0 };
+  const entries: { ts: string; item?: string; text: string }[] = [];
+  for (const f of readdirSync(journal).filter((f) => f.endsWith('.ndjson')).sort()) {
+    for (const line of readFileSync(join(journal, f), 'utf8').split('\n')) {
+      if (!line.includes('"orchestrator.question"')) continue;
+      try { const e = JSON.parse(line); const text = String(e.data?.question ?? '').trim(); if (e.type === 'orchestrator.question' && text && e.ts) entries.push({ ts: canonicalTimestamp(e.ts), item: typeof e.item === 'string' ? e.item : undefined, text }); } catch { /* a torn line */ }
+    }
+  }
+  const status = (id?: string): string | undefined => {
+    if (!id || !existsSync(join(dataDir, 'items', `${id}.md`))) return undefined;
+    try { return parseItemFile(readFileSync(join(dataDir, 'items', `${id}.md`), 'utf8')).frontmatter.status; } catch { return undefined; }
+  };
+  const groups = new Map<string, typeof entries>();
+  for (const e of entries) { const k = `${e.item ?? ''}\n${e.text}`; groups.set(k, [...(groups.get(k) ?? []), e]); }
+  let n = 0; let settled = 0;
+  for (const [first, ...again] of [...groups.values()].sort((a, b) => a[0].ts.localeCompare(b[0].ts))) {
+    const id = `Q-${++n}`;
+    const itemStatus = status(first.item);
+    const item = itemStatus ? first.item : undefined; // an item since deleted is only named in the text
+    const moot = itemStatus === 'FINISHED' ? 'finished' : itemStatus === 'ICEBOX' ? 'moved to the icebox' : undefined;
+    const last = again.at(-1)?.ts ?? first.ts;
+    const now = isoLocal();
+    const file: QuestionFile = {
+      frontmatter: { schema: 1, id, status: moot ? 'resolved' : 'open', ...(item ? { item } : {}), asked_at: first.ts, updated_at: moot ? now : last, ...(moot ? { resolved_at: now, resolution: `${item} ${moot}` } : {}), headline: first.text.replace(/\s*\n\s*/g, ' ') },
+      sections: QUESTION_SECTIONS.map((title) => ({ title, body: '' })),
+    };
+    setQuestionSection(file, 'Summary', first.text + (first.item && !item ? ` (about ${first.item})` : ''));
+    for (const e of again) appendThread(file, 'app', 'the orchestrator asked this again', e.ts);
+    appendThread(file, 'app', 'imported from the journal: asked before questions had their own pages, so it has no separate summary or recommendation', now);
+    if (moot) { appendThread(file, 'app', `resolved by planestro: ${item} ${moot}`, now); settled++; }
+    atomicWrite(join(qdir, `${id}.md`), serializeQuestionFile(file));
+  }
+  return { imported: n, settled };
+}
 
 export function currentVersion(dataDir: string): number {
   const doc = YAML.parse(readFileSync(join(dataDir, CONFIG_FILE), 'utf8'));
@@ -43,6 +95,8 @@ export async function migrate(dataDir: string, log: (m: string) => void = () => 
     applied.push(m.version);
   }
   if (!applied.length) stampVersion(dataDir, from);
+  // One semantic commit for the whole migration, rather than a `manual: …` at the next start.
+  else new GitCommitter(dataDir, { autoCommit: YAML.parse(readFileSync(join(dataDir, CONFIG_FILE), 'utf8'))?.git?.auto_commit !== false, autoPush: false, toolVersion: TOOL_VERSION }).commit(`planestro: migrate schema ${from} → ${applied.at(-1)}`, applied.map((v) => `${v}: ${MIGRATIONS.find((m) => m.version === v)!.describe}`).join('\n'), [CONFIG_FILE, 'questions'].filter((p) => existsSync(join(dataDir, p))));
   return { from, to: SCHEMA_VERSION, applied };
 }
 

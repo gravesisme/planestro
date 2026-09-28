@@ -4,7 +4,7 @@
  */
 import { z } from 'zod';
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export const STATUSES = [
   'NOT_YET_SUBMITTED', 'QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY',
@@ -198,6 +198,34 @@ export const ReleaseFrontmatter = z.object({
 }).passthrough();
 export type ReleaseFrontmatter = z.infer<typeof ReleaseFrontmatter>;
 export const RELEASE_KEY_ORDER: readonly string[] = ['schema', 'version', 'title', 'status', 'date', 'tag', 'items', 'created_at', 'updated_at'];
+
+/**
+ * An orchestrator question for the user: one file per question under `questions/`, so it has an id,
+ * a state and a discussion that outlive the wake that asked it (issue #75). Written only by the
+ * DataStore; the orchestrator changes one through its tools, the user through the question page.
+ */
+export const QUESTION_STATUSES = ['open', 'resolved', 'withdrawn'] as const;
+export type QuestionStatus = (typeof QUESTION_STATUSES)[number];
+export const QUESTION_ID_RE = /^Q-\d+$/;
+/** Summary is what the user reads first, in plain terms; the Thread is the discussion, oldest first. */
+export const QUESTION_SECTIONS = ['Summary', 'Details', 'Recommendation', 'Thread'] as const;
+export type QuestionSection = (typeof QUESTION_SECTIONS)[number];
+export const QuestionFrontmatter = z.object({
+  schema: z.number().int().positive(),
+  id: z.string().regex(QUESTION_ID_RE, 'question id like Q-7'),
+  status: z.enum(QUESTION_STATUSES),
+  /** The item it is about, if any. It resolves by itself when that item is finished or iceboxed. */
+  item: id.optional(),
+  asked_at: ts,
+  updated_at: ts,
+  resolved_at: ts.optional(),
+  /** How it ended, in a sentence: the answer, why it was withdrawn, or "HH-7 finished". */
+  resolution: z.string().min(1).optional(),
+  /** The question in one line, as the orchestrator first asked it (`ask_user`'s `question`). */
+  headline: z.string().min(1),
+}).passthrough();
+export type QuestionFrontmatter = z.infer<typeof QuestionFrontmatter>;
+export const QUESTION_KEY_ORDER: readonly string[] = ['schema', 'id', 'status', 'item', 'asked_at', 'updated_at', 'resolved_at', 'resolution', 'headline'];
 
 export const ReleaseSectionDef = z.object({
   title: z.string().min(1).regex(/^[^\n#]+$/, 'a section title is one line without #'),

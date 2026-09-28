@@ -5,10 +5,11 @@ import {
   parseItemFile, serializeItemFile, setSection, appendActivity, getSection, idNumber, slugify,
   parsePromptFile, serializePromptFile, renderPrompt,
   parseReleaseFile, serializeReleaseFile, setReleaseSection, sortReleases, compareVersions, getReleaseSection, VERSION_RE, DATE_RE,
+  parseQuestionFile, serializeQuestionFile, setQuestionSection, appendThread, questionNumber, QUESTION_SECTIONS,
   applyTransition, flavorOf, laneOf, needsYou, baseBranchOf, depsSatisfied,
   rankForTop, rankForBottom, rankBefore, rankAfter, renormalize, sortByRank,
   isoLocal, SCHEMA_VERSION,
-  type ItemFile, type ItemFrontmatter, type PromptFile, type ReleaseFile, type ReleaseStatus, type Status, type Actor, type Flavor, type Lane,
+  type ItemFile, type ItemFrontmatter, type PromptFile, type ReleaseFile, type ReleaseStatus, type QuestionFile, type QuestionStatus, type ThreadActor, type Status, type Actor, type Flavor, type Lane,
   type Config, type LocalConfig, type ServerEvent, type ActivityActor,
 } from '@planestro/shared';
 import { atomicWrite, cleanStaleTemps } from './atomicWrite.ts';
@@ -34,6 +35,7 @@ function repeatsRecentAppLine(file: ItemFile, actor: ActivityActor, text: string
 export interface StoredItem { id: string; path: string; file: ItemFile }
 export interface StoredPrompt { name: string; path: string; file: PromptFile }
 export interface StoredRelease { version: string; path: string; file: ReleaseFile }
+export interface StoredQuestion { id: string; path: string; file: QuestionFile }
 export interface InvalidFile { path: string; error: string }
 
 export interface Derived { lane: Lane; needs_you: boolean; external: boolean; flavor: Flavor; base_branch?: string; base_branch_error?: string; deps_satisfied: boolean; children: string[] }
@@ -55,6 +57,12 @@ export interface CreateItemInput {
   allow_model_fallback?: boolean;
 }
 
+export interface AskInput { headline: string; summary: string; details?: string; recommendation?: string; item?: string }
+export interface QuestionEdit { headline?: string; summary?: string; details?: string; recommendation?: string }
+
+/** A finished or iceboxed item's open questions are moot: the state machine knows, so nobody is asked (invariant 4). */
+const SETTLES_QUESTIONS: Partial<Record<Status, string>> = { FINISHED: 'finished', ICEBOX: 'moved to the icebox' };
+
 export interface ReleaseFields { version?: string; title?: string | null; status?: ReleaseStatus; date?: string | null; tag?: string | null; items?: string[] }
 
 export interface DataStoreOptions { emit?: (e: ServerEvent) => void; log?: (level: 'info' | 'warn' | 'error', message: string) => void; lock?: boolean }
@@ -73,6 +81,7 @@ export class DataStore {
   readonly items = new Map<string, StoredItem>();
   readonly prompts = new Map<string, StoredPrompt>();
   readonly releases = new Map<string, StoredRelease>();
+  readonly questions = new Map<string, StoredQuestion>();
   readonly invalid: InvalidFile[] = [];
   readonly journal: Journal;
   readonly git: GitCommitter;
@@ -93,9 +102,10 @@ export class DataStore {
   static async open(dataDir: string, opts: DataStoreOptions = {}): Promise<DataStore> {
     const store = new DataStore(dataDir, opts);
     if (opts.lock !== false) store.acquireLock();
-    for (const d of ['items', 'prompts', 'releases']) for (const f of cleanStaleTemps(join(dataDir, d))) opts.log?.('warn', `removed stale temp file ${d}/${f}`);
+    for (const d of ['items', 'prompts', 'releases', 'questions']) for (const f of cleanStaleTemps(join(dataDir, d))) opts.log?.('warn', `removed stale temp file ${d}/${f}`);
     store.load();
     await store.commitHandEdits();
+    if (!store.readOnly) store.settleQuestions();
     return store;
   }
 
@@ -103,6 +113,7 @@ export class DataStore {
   get itemsDir(): string { return join(this.dataDir, 'items'); }
   get promptsDir(): string { return join(this.dataDir, 'prompts'); }
   get releasesDir(): string { return join(this.dataDir, 'releases'); }
+  get questionsDir(): string { return join(this.dataDir, 'questions'); }
   get attachmentsDir(): string { return join(this.dataDir, 'attachments'); }
   codeRepoPath(): string { return resolveCodeRepo(this.dataDir, this.config, this.local); }
   worktreesRoot(): string { return resolveWorktreesRoot(this.dataDir, this.config, this.local); }
@@ -135,7 +146,7 @@ export class DataStore {
 
   // ---- loading ----
   load(): void {
-    this.items.clear(); this.prompts.clear(); this.releases.clear(); this.invalid.length = 0;
+    this.items.clear(); this.prompts.clear(); this.releases.clear(); this.questions.clear(); this.invalid.length = 0;
     mkdirSync(this.itemsDir, { recursive: true }); mkdirSync(this.promptsDir, { recursive: true });
     for (const name of readdirSync(this.itemsDir).filter((f) => f.endsWith('.md')).sort()) {
       const path = join(this.itemsDir, name);
@@ -163,6 +174,15 @@ export class DataStore {
         this.releases.set(file.frontmatter.version, { version: file.frontmatter.version, path, file });
       } catch (e) { this.invalid.push({ path, error: String((e as Error).message ?? e) }); this.emit({ type: 'invalid_file', path, error: String((e as Error).message ?? e) }); }
     }
+    // Created on first use, like releases.
+    if (existsSync(this.questionsDir)) for (const name of readdirSync(this.questionsDir).filter((f) => f.endsWith('.md')).sort()) {
+      const path = join(this.questionsDir, name);
+      try {
+        const file = parseQuestionFile(readFileSync(path, 'utf8'));
+        if (`${file.frontmatter.id}.md` !== name) throw new Error(`question id ${file.frontmatter.id} does not match file name`);
+        this.questions.set(file.frontmatter.id, { id: file.frontmatter.id, path, file });
+      } catch (e) { this.invalid.push({ path, error: String((e as Error).message ?? e) }); this.emit({ type: 'invalid_file', path, error: String((e as Error).message ?? e) }); }
+    }
   }
 
   /** Re-read everything from disk, config included (hand edits, external tools). */
@@ -176,7 +196,7 @@ export class DataStore {
   /** Files edited while planestro was not running are versioned as-is (only when every dirty file parses). */
   private async commitHandEdits(): Promise<void> {
     const { dirty } = await this.git.status();
-    const edits = dirty.filter((p) => p.startsWith('items/') || p.startsWith('prompts/') || p.startsWith('releases/') || p === 'planestro.yml' || p.startsWith('attachments/'));
+    const edits = dirty.filter((p) => p.startsWith('items/') || p.startsWith('prompts/') || p.startsWith('releases/') || p.startsWith('questions/') || p === 'planestro.yml' || p.startsWith('attachments/'));
     if (!edits.length) return;
     if (this.invalid.length) { this.log('warn', `${edits.length} file(s) changed outside planestro but ${this.invalid.length} file(s) are invalid; leaving the tree uncommitted`); return; }
     this.git.commit(`manual: ${edits.length} file(s) edited outside planestro`, edits.join('\n'));
@@ -301,6 +321,8 @@ export class DataStore {
     this.journal.append({ type: 'item.updated', item: id, actor, data: { ops: ops.map(opName), from: before, to: stored.file.frontmatter.status } });
     this.emit({ type: 'item.updated', id, source: 'app' });
     if (options.commit) this.git.commit(options.commit, options.body, [this.rel(stored.path), ...(options.paths ?? [])]);
+    const after = stored.file.frontmatter.status;
+    if (after !== before && SETTLES_QUESTIONS[after]) this.settleQuestions(id);
     return stored;
   }
 
@@ -556,6 +578,116 @@ export class DataStore {
     this.git.commit(`releases: delete ${version}`, undefined, [this.rel(r.path)]);
   }
 
+  // ---- questions ----
+  getQuestion(id: string): StoredQuestion | undefined { return this.questions.get(id); }
+  requireQuestion(id: string): StoredQuestion { const q = this.questions.get(id); if (!q) throw new Error(`unknown question ${id}`); return q; }
+  /** Newest first. */
+  listQuestions(filter: { status?: QuestionStatus; item?: string } = {}): StoredQuestion[] {
+    return [...this.questions.values()].filter((q) => (!filter.status || q.file.frontmatter.status === filter.status) && (!filter.item || q.file.frontmatter.item === filter.item))
+      .sort((a, b) => questionNumber(b.id) - questionNumber(a.id));
+  }
+
+  private writeQuestion(file: QuestionFile): StoredQuestion {
+    const id = file.frontmatter.id;
+    const path = join(this.questionsDir, `${id}.md`);
+    atomicWrite(path, serializeQuestionFile(file));
+    const stored = { id, path, file: parseQuestionFile(readFileSync(path, 'utf8')) };
+    this.questions.set(id, stored);
+    return stored;
+  }
+
+  /** Numbers are never reused: planestro never deletes a question, and the highest file name is the counter. */
+  private nextQuestionId(): string {
+    let max = 0;
+    for (const id of this.questions.keys()) max = Math.max(max, questionNumber(id));
+    if (existsSync(this.questionsDir)) for (const f of readdirSync(this.questionsDir)) { const m = /^Q-(\d+)\.md$/.exec(f); if (m) max = Math.max(max, Number(m[1])); }
+    return `Q-${max + 1}`;
+  }
+
+  /** The orchestrator asks: a new open question with its plain-language summary, details and recommendation. */
+  askQuestion(input: AskInput, actor: Actor = 'orchestrator'): StoredQuestion {
+    this.assertWritable();
+    if (input.item) this.requireItem(input.item);
+    const now = isoLocal();
+    const id = this.nextQuestionId();
+    const file: QuestionFile = { frontmatter: { schema: 1, id, status: 'open', ...(input.item ? { item: input.item } : {}), asked_at: now, updated_at: now, headline: oneLine(input.headline) }, sections: QUESTION_SECTIONS.map((title) => ({ title, body: '' })) };
+    setQuestionSection(file, 'Summary', input.summary);
+    setQuestionSection(file, 'Details', input.details ?? '');
+    setQuestionSection(file, 'Recommendation', input.recommendation ?? '');
+    const stored = this.writeQuestion(file);
+    this.journal.append({ type: 'question.asked', item: input.item, actor, data: { id, headline: file.frontmatter.headline } });
+    this.emit({ type: 'question.updated', id });
+    this.git.commit(`${id}: ask`, file.frontmatter.headline, [this.rel(stored.path)]);
+    return stored;
+  }
+
+  /** Re-read → change → bump updated_at → write → journal → broadcast → commit (`Q-7: reply`), as for items. */
+  private mutateQuestion(id: string, verb: string, actor: Actor, change: (file: QuestionFile, now: string) => void): StoredQuestion {
+    this.assertWritable();
+    const current = this.requireQuestion(id);
+    const file = parseQuestionFile(readFileSync(current.path, 'utf8'));
+    const now = isoLocal();
+    change(file, now);
+    file.frontmatter.updated_at = now;
+    const stored = this.writeQuestion(file);
+    this.journal.append({ type: `question.${verb}`, item: file.frontmatter.item, actor, data: { id, status: file.frontmatter.status } });
+    this.emit({ type: 'question.updated', id });
+    this.git.commit(`${id}: ${verb}`, undefined, [this.rel(stored.path)]);
+    return stored;
+  }
+
+  /** A message in the question's thread, from the user, the orchestrator, or planestro itself. */
+  postToQuestion(id: string, from: ThreadActor, text: string): StoredQuestion {
+    if (!text.trim()) throw new Error('an empty message');
+    return this.mutateQuestion(id, from === 'user' ? 'message' : from === 'orchestrator' ? 'reply' : 'note', from === 'app' ? 'engine' : from, (f, now) => appendThread(f, from, text, now));
+  }
+
+  /** The orchestrator refreshes what it asked (the situation moved on); the thread says what changed. */
+  updateQuestion(id: string, edit: QuestionEdit, actor: Actor = 'orchestrator'): StoredQuestion {
+    const fields = (['headline', 'summary', 'details', 'recommendation'] as const).filter((k) => edit[k] !== undefined && edit[k]!.trim() !== '');
+    if (!fields.length) throw new Error('nothing to update: give a summary, details, recommendation or headline');
+    return this.mutateQuestion(id, 'update', actor, (f, now) => {
+      if (edit.headline?.trim()) f.frontmatter.headline = oneLine(edit.headline);
+      if (edit.summary?.trim()) setQuestionSection(f, 'Summary', edit.summary);
+      if (edit.details?.trim()) setQuestionSection(f, 'Details', edit.details);
+      if (edit.recommendation?.trim()) setQuestionSection(f, 'Recommendation', edit.recommendation);
+      appendThread(f, 'app', `${actor === 'user' ? 'you' : 'the orchestrator'} updated the ${fields.join(', ')}`, now);
+    });
+  }
+
+  resolveQuestion(id: string, status: 'resolved' | 'withdrawn', resolution: string, actor: Actor = 'user'): StoredQuestion {
+    const text = oneLine(resolution) || (status === 'resolved' ? 'answered' : 'withdrawn');
+    return this.mutateQuestion(id, status === 'resolved' ? 'resolve' : 'withdraw', actor, (f, now) => {
+      f.frontmatter.status = status; f.frontmatter.resolved_at = now; f.frontmatter.resolution = text;
+      appendThread(f, 'app', `${status} by ${actor === 'user' ? 'you' : actor === 'engine' ? 'planestro' : 'the orchestrator'}: ${text}`, now);
+    });
+  }
+
+  reopenQuestion(id: string, actor: Actor = 'user'): StoredQuestion {
+    return this.mutateQuestion(id, 'reopen', actor, (f, now) => {
+      if (f.frontmatter.status === 'open') throw new Error(`${id} is already open`);
+      f.frontmatter.status = 'open'; delete f.frontmatter.resolved_at; delete f.frontmatter.resolution;
+      appendThread(f, 'app', `reopened by ${actor === 'user' ? 'you' : 'the orchestrator'}`, now);
+    });
+  }
+
+  /**
+   * Open questions about an item that is finished or iceboxed resolve by themselves (#57: three
+   * rescue questions stayed at the top of the Console a day after their items finished). Called
+   * on every such transition, and at startup for one made while planestro was not running.
+   */
+  settleQuestions(item?: string): string[] {
+    const settled: string[] = [];
+    for (const q of this.listQuestions({ status: 'open', item })) {
+      const it = q.file.frontmatter.item ? this.items.get(q.file.frontmatter.item) : undefined;
+      const why = it && SETTLES_QUESTIONS[it.file.frontmatter.status];
+      if (!it || !why) continue;
+      this.resolveQuestion(q.id, 'resolved', `${it.id} ${why}`, 'engine');
+      settled.push(q.id);
+    }
+    return settled;
+  }
+
   /** Render a prompt with the standard context for an item (plus extras). Throws RenderError on gaps. */
   renderPrompt(name: string, item: StoredItem | undefined, extra: Record<string, unknown> = {}): string {
     const body = this.prompts.get(name)?.file.body ?? this.shippedPrompt(name);
@@ -654,13 +786,15 @@ export class DataStore {
   /** Path relative to the data dir (git pathspec). */
   private rel(abs: string): string { return relative(this.dataDir, abs); }
 
-  stats(): { items: number; prompts: number; releases: number; invalid: number; attachmentsBytes: number } {
+  stats(): { items: number; prompts: number; releases: number; questions: number; invalid: number; attachmentsBytes: number } {
     let attachmentsBytes = 0;
     const walk = (dir: string) => { if (!existsSync(dir)) return; for (const f of readdirSync(dir, { withFileTypes: true })) { const p = join(dir, f.name); if (f.isDirectory()) walk(p); else attachmentsBytes += statSync(p).size; } };
     walk(this.attachmentsDir);
-    return { items: this.items.size, prompts: this.prompts.size, releases: this.releases.size, invalid: this.invalid.length, attachmentsBytes };
+    return { items: this.items.size, prompts: this.prompts.size, releases: this.releases.size, questions: this.questions.size, invalid: this.invalid.length, attachmentsBytes };
   }
 }
 
+/** A headline is one line: whatever the model wrote, newlines fold into spaces. */
+function oneLine(text: string): string { return text.replace(/\s*\n\s*/g, ' ').trim(); }
 function actorToActivity(actor: Actor): ActivityActor { return actor === 'engine' ? 'app' : actor; }
 function opName(op: ItemOp): string { return Object.keys(op)[0]; }
