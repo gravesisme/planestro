@@ -1602,8 +1602,12 @@ export class LiveEngine implements Engine {
             correct(id, `branch tip moved (${pr.headRefOid.slice(0, 7)}); CI verdict discarded`, [{ set: { ci_result: 'pending' } }]);
           }
         }
-        // worktree truth (never recreate silently: local commits could be lost)
-        if (d.flavor === 'worker' && wtAbs && !wtEntry && ['PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW'].includes(fm.status) && !fm.blocked && !fm.taken_over) {
+        // worktree truth (never recreate silently: local commits could be lost). Not while a job owns the item or
+        // its worktree is being made, and only on a fresh read: the list and `fm` above can predate the
+        // `git worktree add` of startItem / recreateWorktree / planEpic (dogfood p55, LM-12).
+        const gone = d.flavor === 'worker' && wtAbs && !wtEntry && !this.jobs.has(id) && !(await this.ports.git.worktreeList(this.repo).catch(() => worktrees)).some((w) => w.path === wtAbs);
+        const cur = gone && !this.jobs.has(id) ? this.store.getItem(id)?.file.frontmatter : undefined;
+        if (cur && cur.worktree === fm.worktree && cur.op !== 'creating_worktree' && cur.op !== 'importing' && ['PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW'].includes(cur.status) && !cur.blocked && !cur.taken_over) {
           this.block(id, 'worktree_missing', `the worktree ${fm.worktree} no longer exists; status preserved, nothing recreated`);
           corrections.push(`${id}: worktree missing`);
         }

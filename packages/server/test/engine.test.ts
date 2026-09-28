@@ -1701,6 +1701,28 @@ describe('reconciler (chaos: crash markers left on disk)', () => {
   });
 });
 
+describe('reconcile never judges a worktree that is being made (dogfood p55, LM-12)', () => {
+  it('a pass that runs during `git worktree add` leaves the item unblocked; planning goes on', async () => {
+    const { store, engine } = await setup();
+    const git = (engine as any).ports.git as DryRunGitPort;
+    const add = git.worktreeAdd.bind(git);
+    let adding = false; let release!: () => void; const gate = new Promise<void>((r) => { release = r; });
+    git.worktreeAdd = async (...a: Parameters<DryRunGitPort['worktreeAdd']>) => { adding = true; await gate; return add(...a); };
+    const item = store.createItem({ title: 'Race the reconciler', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => adding);
+    expect(store.getItem(item.id)!.file.frontmatter.op).toBe('creating_worktree');
+    const corrections = await engine.reconcile('periodic');
+    expect(corrections.join('\n')).not.toContain('worktree missing');
+    expect(store.getItem(item.id)!.file.frontmatter.blocked).toBeFalsy();
+    release();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    expect(store.getItem(item.id)!.file.frontmatter.blocked).toBeFalsy();
+    expect(activityOf(store, item.id)).not.toContain('no longer exists');
+  });
+});
+
 describe('cleanup proves what it deletes (dogfood p39)', () => {
   it('ignores a stale ci_head_sha, finishes when the hand already cleaned up, and blocks when a real tip is not in the base', async () => {
     const { store, engine, world } = await setup();
