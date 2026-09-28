@@ -27,7 +27,7 @@ export function App() {
   const { state, error, connected, connect, updateReady } = useStore();
   const nav = useNavigate();
   const { pathname } = useLocation();
-  useEffect(() => { if (!pathname.startsWith('/items/')) setTitle(`${TABS.find((t) => t.to !== '/' && pathname.startsWith(t.to))?.label ?? (pathname === '/icebox' ? 'Icebox' : pathname === '/done' ? 'Done' : 'Board')} · ${state?.config.project.name ?? 'planestro'}`); }, [pathname, state?.config.project.name]);
+  useEffect(() => { if (!pathname.startsWith('/items/') && !pathname.startsWith('/questions/')) setTitle(`${TABS.find((t) => t.to !== '/' && pathname.startsWith(t.to))?.label ?? (pathname === '/icebox' ? 'Icebox' : pathname === '/done' ? 'Done' : 'Board')} · ${state?.config.project.name ?? 'planestro'}`); }, [pathname, state?.config.project.name]);
   useEffect(() => { connect(); }, [connect]);
   const needs = state?.items.filter((i) => i.derived.needs_you && i.derived.lane === 'board') ?? [];
   const needsHot = needs.some((i) => i.frontmatter.blocked);
@@ -54,7 +54,7 @@ export function App() {
           <NavLink to="/sessions">Sessions</NavLink>
           <NavLink to="/releases">Releases</NavLink>
           <NavLink to="/prompts">Prompts</NavLink>
-          <NavLink to="/console">Console{unreadNotes > 0 && <span className="badge-n" title="Suggestions about planestro from the orchestrator">{unreadNotes}</span>}</NavLink>
+          <NavLink to="/console" className={({ isActive }) => (isActive || pathname.startsWith('/questions/') ? 'active' : '')}>Console{unreadNotes > 0 && <span className="badge-n" title="Suggestions about planestro from the orchestrator">{unreadNotes}</span>}</NavLink>
           <NavLink to="/settings">Settings</NavLink>
         </nav>
         <div className="status">
@@ -77,7 +77,7 @@ export function App() {
       {state && <OrchestratorChat />}
       <nav className="tabbar">
         {TABS.map((t) => (
-          <NavLink key={t.to} to={t.to} className={() => (t.to === '/' ? onBoardTab(pathname) : pathname.startsWith(t.to)) ? 'active' : ''}>
+          <NavLink key={t.to} to={t.to} className={() => (t.to === '/' ? onBoardTab(pathname) : pathname.startsWith(t.to) || (t.to === '/console' && pathname.startsWith('/questions/'))) ? 'active' : ''}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={t.icon} /></svg>
             <span>{t.label}{t.to === '/console' && unreadNotes > 0 && <span className="badge-n">{unreadNotes}</span>}</span>
           </NavLink>

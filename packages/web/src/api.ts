@@ -1,4 +1,4 @@
-import type { ItemFrontmatter, PromptFrontmatter, ReleaseFrontmatter, ReleaseStatus, Config, LocalConfig, Status, JournalEntry, UsageGuardState } from '@planestro/shared';
+import type { ItemFrontmatter, PromptFrontmatter, ReleaseFrontmatter, ReleaseStatus, Config, LocalConfig, Status, JournalEntry, UsageGuardState, QuestionFrontmatter, ThreadEntry } from '@planestro/shared';
 import type { BreakdownChild } from '@planestro/shared';
 
 export interface ItemView {
@@ -10,6 +10,11 @@ export interface ItemView {
 export interface ReviewImage { path: string; change: 'added' | 'modified' | 'deleted'; bytes?: number; width?: number; height?: number; kind?: 'image' | 'audio' | 'model' }
 export interface PromptView { name: string; path: string; frontmatter: PromptFrontmatter; body: string; text?: string }
 export interface ReleaseView { version: string; path: string; frontmatter: ReleaseFrontmatter; sections: { title: string; body: string }[]; candidates: string[] }
+/** An orchestrator question (#75). The list leaves out `details` and `thread`; the question page has them. */
+export interface QuestionView {
+  id: string; path: string; frontmatter: QuestionFrontmatter; pending: boolean; item_title?: string; item_status?: Status;
+  summary: string; recommendation: string; messages: number; last_at: string; details?: string; thread?: ThreadEntry[];
+}
 export interface ReleaseFields { version?: string; title?: string | null; status?: ReleaseStatus; date?: string | null; tag?: string | null; items?: string[] }
 export interface SessionView { item: string; session_id?: string; model?: string; op?: string; started_at?: string; busy: boolean; last_output?: string }
 export interface State {
@@ -80,6 +85,13 @@ export const api = {
   orchestratorMessage: (text: string, item?: string) => req<{ ok: true }>('POST', '/api/orchestrator/message', { text, item }),
   orchestratorChat: () => req<{ enabled: boolean; entries: JournalEntry[] }>('GET', '/api/orchestrator/chat'),
   orchestratorQuestions: () => req<JournalEntry[]>('GET', '/api/orchestrator/questions'),
+  questions: (status?: 'open' | 'resolved' | 'withdrawn') => req<QuestionView[]>('GET', `/api/questions${status ? `?status=${status}` : ''}`),
+  question: (id: string) => req<QuestionView>('GET', `/api/questions/${encodeURIComponent(id)}`),
+  postToQuestion: (id: string, text: string) => req<QuestionView>('POST', `/api/questions/${encodeURIComponent(id)}/messages`, { text }),
+  reviewQuestion: (id: string) => req<QuestionView>('POST', `/api/questions/${encodeURIComponent(id)}/review`),
+  reviewAllQuestions: () => req<{ reviewing: string[] }>('POST', '/api/questions/review-all'),
+  resolveQuestion: (id: string, status: 'resolved' | 'withdrawn' = 'resolved', resolution?: string) => req<QuestionView>('POST', `/api/questions/${encodeURIComponent(id)}/resolve`, { status, resolution }),
+  reopenQuestion: (id: string) => req<QuestionView>('POST', `/api/questions/${encodeURIComponent(id)}/reopen`),
   orchestratorNotes: () => req<JournalEntry[]>('GET', '/api/orchestrator/notes'),
   gitCommit: () => req<{ committed: boolean }>('POST', '/api/git/commit'),
   gitPush: () => req<{ pushed: boolean }>('POST', '/api/git/push'),

@@ -4,7 +4,7 @@ import type { JournalEntry } from '@planestro/shared';
 import { DndContext, MouseSensor, TouchSensor, useSensor, useSensors, closestCenter, type DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { api } from '../api.ts';
+import { api, type QuestionView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { usePhone } from '../usePhone.ts';
 
@@ -13,10 +13,9 @@ export function ConsolePage() {
   const events = useStore((s) => s.events);
   const phone = usePhone();
   const [journal, setJournal] = useState<JournalEntry[]>([]);
-  const [questions, setQuestions] = useState<JournalEntry[]>([]);
   const [itemFilter, setItemFilter] = useState('');
   const [reconcileOut, setReconcileOut] = useState<string[] | null>(null);
-  const refresh = () => { void api.journal({ item: itemFilter || undefined, limit: 120 }).then((j) => setJournal(j.reverse())); void api.orchestratorQuestions().then((q) => setQuestions(q.reverse())); };
+  const refresh = () => { void api.journal({ item: itemFilter || undefined, limit: 120 }).then((j) => setJournal(j.reverse())); };
   useEffect(() => { refresh(); const t = setInterval(refresh, 5000); return () => clearInterval(t); }, [itemFilter]);
   const queue = (state?.items ?? []).filter((i) => i.frontmatter.status === 'IN_REVIEW').sort((a, b) => (a.frontmatter.merge_order ?? 1e9) - (b.frontmatter.merge_order ?? 1e9) || (a.frontmatter.rank ?? 0) - (b.frontmatter.rank ?? 0));
   // A finger that moves is scrolling the page; one that rests on a row first is picking it up.
@@ -33,11 +32,7 @@ export function ConsolePage() {
       <div className="section"><h2>Orchestrator</h2>
         <p className="muted small">The judgment layer: woken on plan submissions, merges, repeated CI failures and blocks. Talk to it from any page with the <b>Orchestrator</b> button in the corner; it answers there, and records its decisions on the items.</p>
         <div className="row"><button className="primary" onClick={() => useStore.getState().openChat()}>Open the chat</button></div>
-        {questions.length > 0 && <>
-          <h3 className="drawer-h">Its questions for you</h3>
-          {questions.slice(0, 3).map((q, i) => <Question key={i} q={q} />)}
-          {questions.length > 3 && <details className="small"><summary className="muted">{questions.length - 3} older</summary>{questions.slice(3).map((q, i) => <Question key={i} q={q} />)}</details>}
-        </>}
+        <Questions />
       </div>
       <PlanestroNotes />
       <div className="section"><h2>Merge queue ({phone ? 'hold, then drag' : 'drag'} to reorder)</h2>
@@ -70,8 +65,54 @@ function QueueRow({ n, id, title, base, ci, skip }: { n: number; id: string; tit
   );
 }
 
-function Question({ q }: { q: JournalEntry }) {
-  return <p>🟠 <b>{String((q.data as any)?.question)}</b> {q.item && <Link to={`/items/${q.item}`}>{q.item}</Link>} <span className="muted small">{q.ts.slice(0, 16).replace('T', ' ')}</span></p>;
+/**
+ * The orchestrator's questions (#75): the open ones, each with a way into its discussion and a way
+ * to ask whether it still stands; the answered ones folded away, so the list is only what is live.
+ */
+function Questions() {
+  const questions = useStore((s) => s.questions);
+  const paused = useStore((s) => s.state?.engine.paused ?? false);
+  const orchestrated = useStore((s) => s.chat.enabled !== false); // not the mock engine
+  if (!questions?.length) return null;
+  const open = questions.filter((q) => q.frontmatter.status === 'open');
+  const answered = questions.filter((q) => q.frontmatter.status !== 'open');
+  const checking = open.filter((q) => q.pending).length;
+  return <>
+    <h3 className="drawer-h q-head"><span>Its questions for you{open.length > 0 && <span className="badge-n">{open.length}</span>}</span>
+      {open.length > 1 && orchestrated && <button className="small" disabled={checking === open.length} title="The orchestrator looks at every open question against the backlog as it is now, and withdraws or refreshes the ones that moved on" onClick={() => act(() => api.reviewAllQuestions())}>Check all</button>}
+    </h3>
+    {paused && checking > 0 && <p className="muted small">Automation is paused: the orchestrator looks at these when you resume.</p>}
+    {!open.length && <p className="muted small">None open.</p>}
+    <div className="q-list">{open.map((q) => <QuestionRow key={q.id} q={q} canAsk={orchestrated} />)}</div>
+    {answered.length > 0 && <details className="small q-answered"><summary className="muted">Answered ({answered.length})</summary>
+      <ul className="q-done">{answered.map((q) => <li key={q.id}><Link to={`/questions/${q.id}`}>{q.frontmatter.headline}</Link> <span className="muted">{q.frontmatter.status === 'withdrawn' ? 'withdrawn' : 'resolved'}{q.frontmatter.resolution ? `: ${q.frontmatter.resolution}` : ''} · {ago(q.frontmatter.resolved_at ?? q.frontmatter.updated_at)}</span></li>)}</ul>
+    </details>}
+  </>;
+}
+
+function QuestionRow({ q, canAsk }: { q: QuestionView; canAsk: boolean }) {
+  const fm = q.frontmatter;
+  return (
+    <div className="q-row">
+      <Link className="q-headline" to={`/questions/${q.id}`}>{fm.headline}</Link>
+      <div className="q-meta small muted">
+        {fm.item && <Link to={`/items/${fm.item}`}>{fm.item}</Link>}
+        <span>asked {ago(fm.asked_at)}</span>
+        {q.messages > 0 && <span>{q.messages} message{q.messages === 1 ? '' : 's'}</span>}
+        {q.pending && <span className="tag triage">orchestrator looking</span>}
+      </div>
+      <div className="q-actions">
+        <Link className="button small" to={`/questions/${q.id}`}>Discuss</Link>
+        {canAsk && <button className="small" disabled={q.pending} title="Have the orchestrator check it against the current state: it withdraws a moot question or refreshes one that moved on" onClick={() => act(() => api.reviewQuestion(q.id))}>{q.pending ? 'Checking…' : 'Still relevant?'}</button>}
+      </div>
+    </div>
+  );
+}
+
+/** "3 h ago", "2 d ago": how stale a question is matters more than its clock time. */
+export function ago(iso: string, now = Date.now()): string {
+  const m = Math.max(0, Math.round((now - Date.parse(iso)) / 60_000));
+  return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 48 * 60 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`;
 }
 
 /** Getting ready to restart planestro: nothing new starts, what runs finishes, and this says when nothing is left. */
