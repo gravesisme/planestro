@@ -1,4 +1,5 @@
 import { Link } from 'react-router';
+import { dollarHint } from '@planestro/shared';
 import { useStore } from '../store.ts';
 import { statusLabel } from '../components/ItemCard.tsx';
 
@@ -20,8 +21,8 @@ export function SessionsPage() {
       <div className="section"><h2>Needs you ({awaiting.length})</h2>
         <table><tbody>{awaiting.map((i) => <tr key={i.id}><td><Link to={`/items/${i.id}`}>{i.id}</Link></td><td>{i.frontmatter.title}</td><td>{statusLabel(i.frontmatter.status)}</td><td>{i.frontmatter.blocked ? `blocked: ${i.frontmatter.blocked_reason}` : `awaiting ${i.frontmatter.awaiting}`}</td></tr>)}</tbody></table>
       </div>
-      <div className="section"><h2>Active items ({active.length})</h2>
-        <table><tbody>{active.map((i) => <tr key={i.id}><td><Link to={`/items/${i.id}`}>{i.id}</Link></td><td>{i.frontmatter.title}</td><td>{statusLabel(i.frontmatter.status)}</td><td>{i.frontmatter.op ?? ''}</td><td>{i.frontmatter.pr ? `PR #${i.frontmatter.pr}` : ''}</td></tr>)}</tbody></table>
+      <div className="section"><h2>Active items ({active.length}) <span className="small muted" style={{ textTransform: 'none', letterSpacing: 0, fontWeight: 400 }}>spent: {dollarHint(state.billing)}</span></h2>
+        <table><tbody>{active.map((i) => <tr key={i.id}><td><Link to={`/items/${i.id}`}>{i.id}</Link></td><td>{i.frontmatter.title}</td><td>{statusLabel(i.frontmatter.status)}</td><td>{i.frontmatter.op ?? ''}</td><td>{i.frontmatter.pr ? `PR #${i.frontmatter.pr}` : ''}</td><td className="small muted" title={dollarHint(state.billing)}>{i.frontmatter.cost_usd !== undefined ? `$${i.frontmatter.cost_usd.toFixed(2)}` : ''}</td></tr>)}</tbody></table>
       </div>
       <div className="section"><h2>Merge queue order</h2>
         <ol>{queue.map((i) => <li key={i.id}><Link to={`/items/${i.id}`}>{i.id}</Link> {i.frontmatter.title} → {i.derived.base_branch} {i.frontmatter.ci_result ? `· CI ${i.frontmatter.ci_result}` : ''}</li>)}</ol>
