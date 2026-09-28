@@ -85,7 +85,7 @@ export interface ProcPort {
 export type TurnPhase = 'plan' | 'implement' | 'fix';
 export interface TurnTools {
   submit_plan(plan: string): Promise<string>;
-  /** Epics only: the epic-level plan and its proposed children. A rejection is returned as text for the planner to fix. */
+  /** An epic's plan and its proposed children (a rejection is returned as text for the planner to fix); on a plain item, a flagged plan that says it is really an epic (#69). */
   submit_breakdown(plan: string, children: unknown): Promise<string>;
   add_note(markdown: string): Promise<string>;
   append_activity(text: string): Promise<string>;

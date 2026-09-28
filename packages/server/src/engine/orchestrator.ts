@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
-import { getSection, partsSummary, serializeItemFile, serializeQuestionFile, parseThread, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent, parseActivity } from '@planestro/shared';
+import { getSection, epicFlagOf, canPlan, partsSummary, serializeItemFile, serializeQuestionFile, parseThread, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent, parseActivity } from '@planestro/shared';
 import { hostNote } from './hostNote.ts';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Ports, CustomToolDef, TurnResult } from './ports.ts';
@@ -14,7 +14,7 @@ import type { DecisionInput, RateLimitSnapshot } from '@planestro/shared';
  */
 const CHAT_POLICY = [
   'The user is talking to you in the planestro chat. They see only what you send with reply_to_user, so always answer with it before done_with_wake.',
-  'In this wake you may act on what they ask: create_item for new backlog work (submit it only if they say to), submit_item, unblock_item or retry_op to get a stopped item moving, sync_with_base to bring a branch up to date with its base, message_session, annotate_item, and the ordering tools.',
+  'In this wake you may act on what they ask: create_item for new backlog work (submit it only if they say to; kind epic for several separately shippable pieces), convert_item to make an item an epic or back before it runs, submit_item, unblock_item or retry_op to get a stopped item moving, sync_with_base to bring a branch up to date with its base, message_session, annotate_item, and the ordering tools.',
   'For a blocked item, read_item first: the Activity log says why it stopped. Explain the cause in plain words; resolve it when the fix is an instruction you can give, and say plainly when the decision is theirs.',
   'Ask one short question with reply_to_user when the request is ambiguous rather than guessing; their answer arrives as the next wake.',
 ].join('\n');
@@ -49,12 +49,16 @@ const HANDS_OFF = new Set([
   'skip_merge', 'unskip_merge', 'message_session', 'submit_item', 'mark_blocked', 'approve_plan', 'amend_plan', 'request_plan_changes',
   'hand_plan_to_user', 'decide_permission', 'hand_off_files', 'unblock_item', 'answer_question', 'set_item_fields', 'recreate_worktree',
   'retry_op', 'ask_user_decision', 'withdraw_decision', 'finish_from_worktree', 'resume_after', 'set_merge_order', 'set_queue_order',
-  'sync_with_base',
+  'sync_with_base', 'convert_item',
 ]);
 
 export interface OrchestratorHooks {
   message(id: string, text: string): Promise<void>;
   approvePlan(id: string, notes?: string): Promise<void>;
+  /** Make an item an epic or back while nothing has run for implementation (LiveEngine.convertKind). Returns what happened, or why not. */
+  convertKind(id: string, to: 'item' | 'epic', why: string): Promise<string>;
+  /** Have an epic's planner propose its children (LiveEngine.planEpic). */
+  planEpic(id: string, why?: string): Promise<void>;
   /** Send a plan back for fixes, within the item's round limit. Returns what happened, for the tool result. */
   requestPlanChanges(id: string, message: string): Promise<string>;
   /** Approve WITH stipulations: they go to the planner as amendments (not a fix round) and the revised plan comes back for review. */
@@ -337,7 +341,8 @@ export class Orchestrator {
         if (fm.parts?.length) lines.push(`Parts, as the worker itself reports them (${partsSummary(fm.parts)}). Quote this; never summarise the state of the work from memory or prose:\n${fm.parts.map((p) => `- ${p.name}: ${p.state}${p.reason ? ` — ${p.reason}` : ''}`).join('\n')}`);
         if (e.type === 'plan_review') {
           if (fm.op_data?.plan_amended) lines.push(`Amended: you sent this plan back to be amended with: ${String(fm.op_data.plan_amended).slice(0, 1500)}\nThis is the revision. Check that it carries the amendment before deciding.`);
-          lines.push(this.planPolicy(fm.id, fm.plan_revisions ?? 0, this.priorReview(item.file, fm.plan_ready_at)));
+          const epic = epicFlagOf(fm);
+          lines.push(epic ? this.epicPlanPolicy(fm.id, epic.reason) : this.planPolicy(fm.id, fm.plan_revisions ?? 0, this.priorReview(item.file, fm.plan_ready_at)));
         }
         if (e.type === 'permission_request') lines.push(this.permissionPacket(fm));
         if (fm.triage) lines.push(e.type === 'decision_answered' ? this.decisionAnsweredPacket() : this.triagePacket(fm));
@@ -386,6 +391,22 @@ export class Orchestrator {
   private priorReview(file: Parameters<typeof parseActivity>[0], since?: string): string[] {
     if (!since) return [];
     return parseActivity(file).filter((a) => a.actor === 'orchestrator' && a.at >= since).map((a) => a.text);
+  }
+
+  /**
+   * A plan that reads as an epic breakdown (epicFlagOf: code decided it, invariant 4) is never approved as
+   * one item: approve_plan refuses it. HH-198 and HH-199 were, and each went to one implementer (#69).
+   */
+  private epicPlanPolicy(id: string, reason: string): string {
+    const head = `THIS IS AN EPIC, NOT ONE ITEM: ${reason}. approve_plan refuses it, whoever approves.`;
+    if (!this.hooks.planDelegated(id)) return `${head}\nPlan approval: the user's. Do not recommend approving it. Record with annotate_item whether it should become an epic (the item page offers the user **Convert to epic**: the plan becomes the breakdown request) or, if it truly is one piece of work, what the plan should say instead.`;
+    return [
+      `${head}\nPlan approval: DELEGATED TO YOU. Decide it in this wake, with exactly one of:`,
+      '- convert_item with to: "epic" — the usual answer. The plan moves into the epic\'s Notes, its breakdown is planned at once, and the user approves the children.',
+      '- request_plan_changes — only if it truly is one piece of work that one implementer finishes in one pull request, and only the plan\'s layout misled the check: ask for a plan without a child breakdown.',
+      '- hand_plan_to_user — you are not sure which it is.',
+      'Record your reasoning with annotate_item either way.',
+    ].join('\n');
   }
 
   private planPolicy(id: string, used: number, prior: string[] = []): string {
@@ -488,7 +509,16 @@ export class Orchestrator {
       { name: 'annotate_item', description: "Append an orchestrator note to an item's activity log.", schema: { ...idArg, text: z.string() }, handler: async (a) => { store.mutateItem(String(a.id), [{ activity: { actor: 'orchestrator', text: String(a.text) } }], 'orchestrator'); return 'noted'; } },
       { name: 'submit_item', description: 'Queue a NOT_YET_SUBMITTED worker item for planning.', schema: idArg, handler: async (a) => { store.transition(String(a.id), 'QUEUED', 'orchestrator'); this.hooks.poke(); return 'queued'; } },
       { name: 'mark_blocked', description: 'Block an item for the user with a reason.', schema: { ...idArg, reason: z.string() }, handler: async (a) => { const { decision: stale, ...rest } = store.requireItem(String(a.id)).file.frontmatter.awaiting_data ?? {}; store.mutateItem(String(a.id), [{ set: { blocked: true, blocked_reason: 'orchestrator', awaiting: 'user' } }, { unset: ['triage'] }, ...(stale ? [(Object.keys(rest).length ? { set: { awaiting_data: rest } } : { unset: ['awaiting_data'] }) as ItemOp] : []), { activity: { actor: 'orchestrator', text: `blocked for the user: ${a.reason}${stale ? ' (the decision card it had is withdrawn: this block replaces it)' : ''}` } }], 'orchestrator', { commit: `${a.id}: blocked (orchestrator)` }); return 'blocked'; } },
-      { name: 'approve_plan', description: 'Approve a PLAN_READY item (only allowed when the item opted into auto-approval and config permits).', schema: { ...idArg, notes: z.string().optional() }, handler: async (a) => { if (!this.hooks.planDelegated(String(a.id))) return 'not permitted: the user approves this plan (add review notes with annotate_item instead)'; await this.hooks.approvePlan(String(a.id), a.notes ? String(a.notes) : undefined); return 'approved'; } },
+      { name: 'approve_plan', description: 'Approve a PLAN_READY item (only allowed when the item opted into auto-approval and config permits). Refused for a plan that reads as an epic breakdown (the packet says THIS IS AN EPIC): convert it with convert_item instead.', schema: { ...idArg, notes: z.string().optional() }, handler: async (a) => {
+        if (!this.hooks.planDelegated(String(a.id))) return 'not permitted: the user approves this plan (add review notes with annotate_item instead)';
+        try { await this.hooks.approvePlan(String(a.id), a.notes ? String(a.notes) : undefined); } catch (e) { return `refused: ${(e as Error).message}`; }
+        return 'approved';
+      } },
+      { name: 'convert_item', description: 'Make a plain item an epic (to: "epic") or an epic back into an item (to: "item"), while nothing has run for implementation: not submitted yet, or planning with no approved plan. The description stays; its plan (or breakdown) moves into Notes for the new planner; its planning worktree is removed only if it holds no work (otherwise it is refused). A submitted item carries on as the new kind: an epic has its breakdown planned at once, an item is queued. An epic with children stays an epic. Use it when a plan reads as an epic (THIS IS AN EPIC in the packet) and the plan is yours to decide, or when the user asks in the chat.', schema: { ...idArg, to: z.enum(['item', 'epic']), reason: z.string().describe('Why, in a sentence: it goes in the Activity log') }, handler: async (a) => {
+        const id = String(a.id);
+        if (!chat && !this.hooks.planDelegated(id)) return 'not permitted: this item\'s plan is the user\'s to decide. Recommend the conversion with annotate_item; the item page offers them Convert to epic.';
+        return this.hooks.convertKind(id, a.to as 'item' | 'epic', String(a.reason));
+      } },
       { name: 'amend_plan', description: "Approve a PLAN_READY item's plan WITH stipulations: they go to the planner as amendments to fold in, the plan comes back for review, and whoever approves it approves a complete plan. Not one of the fix rounds. Use it instead of approving (or annotating) with a stipulation.", schema: { ...idArg, amendments: z.string() }, handler: async (a) => this.hooks.amendPlan(String(a.id), String(a.amendments)) },
       { name: 'request_plan_changes', description: 'Send a PLAN_READY item back to planning with specific fixes. Limited to a few rounds per item; past the limit the plan goes to the user instead.', schema: { ...idArg, message: z.string() }, handler: async (a) => this.hooks.requestPlanChanges(String(a.id), String(a.message)) },
       { name: 'hand_plan_to_user', description: 'Leave the approval of a plan that was delegated to you to the user, with the reason (a decision that is theirs, real risk, a large rework, low confidence).', schema: { ...idArg, reason: z.string() }, handler: async (a) => { this.hooks.handPlanToUser(String(a.id), String(a.reason)); return 'handed to the user'; } },
@@ -529,13 +559,17 @@ export class Orchestrator {
       { name: 'resolve_question', description: 'Close a question: resolved (it was answered: say the answer in a sentence) or withdrawn (it is moot: say why). The user can reopen it.', schema: { ...idArg, status: z.enum(['resolved', 'withdrawn']), resolution: z.string() }, handler: async (a) => { const q = store.requireQuestion(String(a.id)); if (q.file.frontmatter.status !== 'open') return `${a.id} is already ${q.file.frontmatter.status}`; store.resolveQuestion(String(a.id), a.status as 'resolved' | 'withdrawn', String(a.resolution), 'orchestrator'); this.questionsChanged.add(String(a.id)); this.questionsAnswered.add(String(a.id)); return a.status === 'resolved' ? 'resolved' : 'withdrawn'; } },
       { name: 'resume_after', description: "Park a stopped item until other items merge, then resume its session with `message`: for a worker that needs what another item delivers (a flag, an asset) before it can go on. It stops needing the user; planestro rebases its branch onto the base first. Use it instead of unblocking into a wait.", schema: { ...idArg, items: z.array(z.string()).min(1), message: z.string() }, handler: async (a) => this.hooks.resumeAfter(String(a.id), a.items as string[], String(a.message)) },
       { name: 'reply_to_user', description: 'Answer the user in the planestro chat. In a user_message wake this is the only thing they read: say what you found and what you did, briefly. Call it once, near the end of the wake.', schema: { text: z.string(), item: z.string().optional() }, handler: async (a) => { store.journal.append({ type: 'orchestrator.reply', item: a.item ? String(a.item) : undefined, actor: 'orchestrator', data: { text: String(a.text) } }); return 'sent to the chat'; } },
-      { name: 'create_item', description: 'CHAT ONLY: create a backlog item the user asked for, as NOT_YET_SUBMITTED unless `submit` is true (then it is queued for planning at once). Write a complete brief: its worker sees only the title and description.', schema: { title: z.string(), description: z.string(), category: z.string().optional().describe('One of the project categories; default if omitted'), depends_on: z.array(z.string()).optional(), submit: z.boolean().optional().describe('Queue it for planning now (only if the user said so)') }, handler: async (a) => {
+      { name: 'create_item', description: 'CHAT ONLY: create a backlog item the user asked for, as NOT_YET_SUBMITTED unless `submit` is true (then it is queued for planning at once; an epic has its breakdown planned). Write a complete brief: its worker sees only the title and description. Choose `kind` deliberately: "item" (the default) is one piece of work that one implementer finishes in one pull request; "epic" is several separately shippable pieces (art an image model makes plus the code that uses it, or parts that each deserve their own worker and pull request): its planner breaks it into child items, each with its own worker and pull request, merged through an integration branch. Never write "EPIC" into an item\'s description instead; if you are unsure which it is, ask.', schema: { title: z.string(), description: z.string(), kind: z.enum(['item', 'epic']).optional().describe('item (default) or epic'), planner: z.string().optional().describe('A Claude model id that plans it (for an epic, the breakdown and, by default, its children); the project default if omitted'), category: z.string().optional().describe('One of the project categories; default if omitted'), depends_on: z.array(z.string()).optional(), submit: z.boolean().optional().describe('Queue it for planning now (only if the user said so)') }, handler: async (a) => {
         if (!chat) return 'not permitted: only when the user asks you to in the chat (a user_message wake)';
         try {
-          const it = store.createItem({ title: String(a.title), description: String(a.description), ...(a.category ? { category: String(a.category) } : {}), ...(a.depends_on ? { depends_on: a.depends_on as string[] } : {}) }, 'orchestrator');
-          store.mutateItem(it.id, [{ activity: { actor: 'orchestrator', text: 'created from the chat' } }], 'orchestrator');
-          if (a.submit) { store.transition(it.id, 'QUEUED', 'orchestrator'); this.hooks.poke(); }
-          return `created ${it.id}${a.submit ? ' and queued it for planning' : ' (not submitted; the user or submit_item queues it)'}`;
+          const epic = a.kind === 'epic';
+          const planner = a.planner ? findModel(store.config, String(a.planner)) : undefined;
+          if (a.planner && (!planner || !canPlan(planner))) return `failed: planner "${a.planner}" is not a model that can plan: ${store.config.models.filter(canPlan).map((m) => m.id).join(', ')}`;
+          const it = store.createItem({ title: String(a.title), description: String(a.description), kind: epic ? 'epic' : 'item', ...(planner ? { planner: planner.id } : {}), ...(a.category ? { category: String(a.category) } : {}), ...(a.depends_on ? { depends_on: a.depends_on as string[] } : {}) }, 'orchestrator');
+          store.mutateItem(it.id, [{ activity: { actor: 'orchestrator', text: `created from the chat${epic ? ' as an epic' : ''}` } }], 'orchestrator');
+          if (a.submit && epic) await this.hooks.planEpic(it.id, 'created from the chat and submitted');
+          else if (a.submit) { store.transition(it.id, 'QUEUED', 'orchestrator'); this.hooks.poke(); }
+          return `created ${epic ? 'epic ' : ''}${it.id}${a.submit ? (epic ? ' and started planning its breakdown (the user approves the children)' : ' and queued it for planning') : (epic ? ' (not submitted; the user or the item page\'s "plan the breakdown" starts it)' : ' (not submitted; the user or submit_item queues it)')}`;
         } catch (e) { return `failed: ${(e as Error).message}`; }
       } },
       { name: 'done_with_wake', description: 'Finish this wake with a one-line summary of what you decided.', schema: { summary: z.string() }, handler: async (a) => { onDone(String(a.summary)); return 'Recorded. End your turn now.'; } },

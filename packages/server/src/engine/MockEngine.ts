@@ -1,4 +1,4 @@
-import { isoLocal, type ServerEvent } from '@planestro/shared';
+import { isoLocal, kindConversionRefusal, type ServerEvent } from '@planestro/shared';
 import type { DataStore } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 
@@ -23,6 +23,15 @@ export class MockEngine implements Engine {
   async message(id: string, text: string): Promise<void> { this.store.mutateItem(id, [{ activity: { actor: 'user', text: `message (no engine): ${text}` } }], 'user'); }
   async respond(): Promise<void> { throw new Error('no engine is running'); }
   async planEpic(): Promise<void> { throw new Error('no engine is running'); }
+  /** Without an engine only the bookkeeping half exists: a kind that never started planning (no checkout to judge) changes; anything else needs the engine. */
+  async convertKind(id: string, to: 'item' | 'epic', by: 'user' | 'orchestrator' = 'user', why?: string): Promise<string> {
+    const item = this.store.requireItem(id); const fm = item.file.frontmatter;
+    const refused = kindConversionRefusal(fm, to, this.store.derived(item).children.length);
+    if (refused) throw new Error(`not converted: ${refused}`);
+    if (fm.worktree || !['NOT_YET_SUBMITTED', 'ICEBOX'].includes(fm.status)) throw new Error('no engine is running');
+    this.store.mutateItem(id, [{ set: { kind: to } }, { activity: { actor: by, text: `converted to ${to === 'epic' ? 'an epic' : 'an item'}${why?.trim() ? `: ${why.trim()}` : ''}` } }], by, { commit: `${id}: convert to ${to}` });
+    return `${id} converted to ${to === 'epic' ? 'an epic' : 'an item'}`;
+  }
   async approveBreakdown(): Promise<string[]> { throw new Error('no engine is running'); }
   async reviewImages(): Promise<[]> { return []; }
   async reviewImage(): Promise<null> { return null; }

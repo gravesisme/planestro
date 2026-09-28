@@ -16,7 +16,10 @@ export interface Engine {
   resume(): void;
   /** Called after an item enters QUEUED; the engine admits it when a slot is free. */
   poke(): void;
-  approvePlan(id: string, notes?: string): Promise<void>;
+  /** `asItem`: the user approves, deliberately, a plan that reads as an epic breakdown (epicFlagOf), which is refused otherwise (#69). */
+  approvePlan(id: string, notes?: string, by?: 'user' | 'orchestrator', opts?: { asItem?: boolean }): Promise<void>;
+  /** Make an item an epic or back while nothing has run for implementation (kindConversionRefusal). Returns what happened; throws why not. */
+  convertKind(id: string, to: 'item' | 'epic', by?: 'user' | 'orchestrator', why?: string): Promise<string>;
   rejectPlan(id: string, message: string): Promise<void>;
   message(id: string, text: string): Promise<void>;
   respond(id: string, payload: Record<string, unknown>): Promise<void>;
