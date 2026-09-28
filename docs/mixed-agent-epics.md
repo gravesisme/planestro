@@ -33,7 +33,9 @@ sequenceDiagram
 ## 1. Write the epic
 
 Say what the feature is and put art direction in the notes: palette, sizes, what it sits
-next to. You do not list the children.
+next to. You do not list the children. Choose **Epic** in the New item dialog; an item that
+turns out to be one is caught when its plan comes in, and **Convert to epic** carries its
+description and plan over ([Item or epic](concepts.md#item-or-epic)).
 
 ## 2. Plan the breakdown
 
