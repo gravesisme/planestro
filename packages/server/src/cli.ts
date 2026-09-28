@@ -6,6 +6,7 @@ import { DataStore } from './store/DataStore.ts';
 import { initDataDir } from './init.ts';
 import { migrate } from './migrations/index.ts';
 import { locateDataDir, TOOL_VERSION } from './config.ts';
+import { exitCodeFor } from './exitCodes.ts';
 
 const USAGE = `planestro ${TOOL_VERSION}
 
@@ -95,7 +96,7 @@ try {
       const host = values.host ?? '127.0.0.1'; const port = values.port ? Number(values.port) : 4300;
       if (values.watch) {
         const { supervise } = await import('./supervise.ts');
-        await supervise({ serveArgs: [dir, ...(values.port ? ['--port', values.port] : []), ...(values.host ? ['--host', values.host] : []), ...(values.mock ? ['--mock'] : [])], host, port, open: values.open });
+        await supervise({ dataDir: dir, serveArgs: [dir, ...(values.port ? ['--port', values.port] : []), ...(values.host ? ['--host', values.host] : []), ...(values.mock ? ['--mock'] : [])], host, port, open: values.open });
         break;
       }
       if (values.open) void import('./supervise.ts').then((m) => m.openWhenUp(`http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`, log));
@@ -121,5 +122,6 @@ try {
   }
 } catch (e) {
   console.error(`error: ${(e as Error).message}`);
-  process.exit(1);
+  // A data dir or port someone else holds gets its own code: `serve --watch` stops on it (#85).
+  process.exit(exitCodeFor(e));
 }

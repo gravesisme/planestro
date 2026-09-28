@@ -16,6 +16,7 @@ import { makePorts } from './engine/makePorts.ts';
 import { VALIDATED_CLAUDE_VERSION, VALIDATED_CODEX_VERSION } from './compat.ts';
 import { TOOL_VERSION } from './config.ts';
 import { allowedHosts, requestGuard } from './guard.ts';
+import { PortInUseError } from './exitCodes.ts';
 
 export interface ServeOptions { dataDir: string; port?: number; host?: string; mock?: boolean; engineFactory?: (store: DataStore, emit: (e: ServerEvent) => void) => Engine; log?: (level: string, msg: string) => void }
 
@@ -57,6 +58,13 @@ export async function startServer(o: ServeOptions) {
 
   const server = serve({ fetch: app.fetch, port, hostname: host }, () => log('info', `planestro ${TOOL_VERSION} on http://${host}:${port} — data ${store.dataDir} (${store.schema}, ${store.items.size} items) — engine ${engine.mode}${engine.paused ? ' PAUSED' : ''}`));
   injectWebSocket(server);
+  // Own the port before the engine starts anything: a taken port used to surface as an uncaught
+  // 'error' after the engine was already up. Release the data-dir lock and say which it was, so
+  // `serve --watch` can stop instead of waiting for a source change (#85, LM 2026-09-28).
+  await new Promise<void>((listening, failed) => {
+    server.once('listening', () => listening());
+    server.once('error', (e: NodeJS.ErrnoException) => { store.close(); failed(e.code === 'EADDRINUSE' ? new PortInUseError(host, port) : e); });
+  });
   warnOnClaudeDrift(log);
   warnOnCodexDrift(store, log);
   await engine.start();

@@ -13,6 +13,7 @@ import {
   type Config, type LocalConfig, type ServerEvent, type ActivityActor,
 } from '@planestro/shared';
 import { atomicWrite, cleanStaleTemps } from './atomicWrite.ts';
+import { DataDirInUseError } from '../exitCodes.ts';
 import { Journal } from './Journal.ts';
 import { GitCommitter } from './GitCommitter.ts';
 import { IdAllocator } from './IdAllocator.ts';
@@ -129,9 +130,9 @@ export class DataStore {
     if (existsSync(lock)) {
       try {
         const { pid } = JSON.parse(readFileSync(lock, 'utf8'));
-        if (pid && pid !== process.pid) { process.kill(pid, 0); throw new Error(`data dir is in use by planestro pid ${pid} (${lock})`); }
+        if (pid && pid !== process.pid) { process.kill(pid, 0); throw new DataDirInUseError(pid, lock); }
       } catch (e) {
-        if (String(e).includes('in use')) throw e; // live process
+        if (e instanceof DataDirInUseError) throw e; // live process; typed so `serve` exits with its own code (#85)
         // ESRCH or unreadable: stale lock
       }
     }

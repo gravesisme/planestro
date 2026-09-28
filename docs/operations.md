@@ -31,6 +31,13 @@ next steps, long-press it for the move menu. Added to the home screen it opens f
   automation is paused so running turns finish and nothing new starts, the restart happens
   in that gap, and automation resumes if the supervisor was what paused it.
 - A server that dies on a syntax error is restarted by your next save, not in a loop.
+- **One supervisor per data dir.** It holds `<data_dir>/.planestro/supervisor` (`pid`, `port`,
+  `host`, `started_at`); a second `serve --watch` on the same data dir exits with the pid and
+  URL of the first. A lock whose pid is dead is replaced.
+- A server that cannot own the data dir (another planestro has it: `serve` exits 10) or the
+  port (EADDRINUSE: exits 11) **stops the supervisor** with that reason; no source change would
+  fix either. After every start the supervisor polls `/api/state` for 60 s and logs an ERROR
+  if the server never answers.
 
 ## The big red lever
 
