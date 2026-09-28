@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { decisionOf } from '@planestro/shared';
+import { decisionOf, dollarHint } from '@planestro/shared';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 
@@ -13,6 +13,7 @@ export function DecisionCard({ item }: { item: ItemView }) {
   const fm = item.frontmatter;
   const decision = decisionOf(fm);
   const projectBudget = useStore((s) => s.state?.config.budget_usd_per_item);
+  const billing = useStore((s) => s.state?.billing);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   if (!decision) return null;
@@ -35,7 +36,7 @@ export function DecisionCard({ item }: { item: ItemView }) {
           <button key={o.label} className={`decision-option ${o.recommended ? 'recommended' : ''}`} disabled={sending} onClick={() => void send({ choice: o.label, ...(text.trim() ? { text: text.trim() } : {}) })}>
             <span className="decision-label">{o.label}{o.recommended && <span className="decision-badge">Recommended</span>}</span>
             {o.description && <span className="decision-desc">{o.description}</span>}
-            {o.raise_budget_usd !== undefined && <span className="decision-desc">Tapping this sets the item's budget to ${(Math.max(fm.budget_usd ?? projectBudget ?? 0, fm.cost_usd ?? 0) + o.raise_budget_usd).toFixed(0)} (+${o.raise_budget_usd}) and resumes it.</span>}
+            {o.raise_budget_usd !== undefined && <span className="decision-desc">Tapping this sets the item's budget to ${(Math.max(fm.budget_usd ?? projectBudget ?? 0, fm.cost_usd ?? 0) + o.raise_budget_usd).toFixed(0)} (+${o.raise_budget_usd}) and resumes it. <span className="muted">Dollars here: {dollarHint(billing)}.</span></span>}
           </button>
         ))}
       </div>

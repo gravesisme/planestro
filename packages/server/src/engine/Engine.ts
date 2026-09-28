@@ -40,5 +40,7 @@ export interface Engine {
   drain?(): void;
   undrain?(): void;
   restartReadiness?(): { draining: boolean; idle: boolean; running: string[] };
+  /** Run a notification command now, as its event would (Settings → Notifications → Test). */
+  testNotification?(event: 'on_merge' | 'on_usage_pause'): Promise<{ code: number; output: string }>;
   log: ServerEvent[];
 }

@@ -1,4 +1,4 @@
-import type { ItemFrontmatter, PromptFrontmatter, ReleaseFrontmatter, ReleaseStatus, Config, LocalConfig, Status, JournalEntry, UsageGuardState, QuestionFrontmatter, ThreadEntry } from '@planestro/shared';
+import type { ItemFrontmatter, PromptFrontmatter, ReleaseFrontmatter, ReleaseStatus, Config, LocalConfig, BillingMode, ModelDef, Status, JournalEntry, UsageGuardState, QuestionFrontmatter, ThreadEntry } from '@planestro/shared';
 import type { BreakdownChild } from '@planestro/shared';
 
 export interface ItemView {
@@ -18,7 +18,11 @@ export interface QuestionView {
 export interface ReleaseFields { version?: string; title?: string | null; status?: ReleaseStatus; date?: string | null; tag?: string | null; items?: string[] }
 export interface SessionView { item: string; session_id?: string; model?: string; op?: string; started_at?: string; busy: boolean; last_output?: string }
 export interface State {
-  schema: string; readOnly: boolean; dataDir: string; codeRepo: string; config: Config; local: LocalConfig;
+  schema: string; readOnly: boolean; dataDir: string; codeRepo: string; config: Config;
+  /** planestro.local.yml without its secrets: the API key is never sent, only whether one is set (`api_key`). */
+  local: LocalConfig;
+  /** Whether budget dollars are an API-price yardstick on a Claude plan or real charges to an API account (#83). */
+  billing?: BillingMode; api_key?: 'local' | 'env' | 'none';
   items: ItemView[]; prompts: PromptView[]; releases?: ReleaseView[]; invalid: { path: string; error: string }[];
   engine: { mode: string; paused: boolean; paused_by?: 'user' | 'usage_guard'; usage_guard?: UsageGuardState; sessions: SessionView[]; restart?: { draining: boolean; idle: boolean; running: string[] } };
   git: { dirty: string[]; branch: string; head?: string; ahead?: number };
@@ -68,7 +72,10 @@ export const api = {
   patchRelease: (version: string, body: { fields?: ReleaseFields; sections?: Record<string, string> }) => req<ReleaseView>('PATCH', `/api/releases/${encodeURIComponent(version)}`, body),
   deleteRelease: (version: string) => req<{ ok: true }>('DELETE', `/api/releases/${encodeURIComponent(version)}`),
   putConfig: (body: Record<string, unknown>) => req<{ config: Config }>('PUT', '/api/config', body),
-  putLocal: (body: Record<string, string>) => req<{ local: LocalConfig }>('PUT', '/api/config/local', body),
+  putLocal: (body: Record<string, unknown>) => req<{ local: LocalConfig }>('PUT', '/api/config/local', body),
+  putModel: (id: string, model: Partial<ModelDef>) => req<{ config: Config }>('PUT', `/api/config/models/${encodeURIComponent(id)}`, model),
+  removeModel: (id: string) => req<{ config: Config }>('DELETE', `/api/config/models/${encodeURIComponent(id)}`),
+  testNotification: (event: 'on_merge' | 'on_usage_pause') => req<{ code: number; output: string }>('POST', '/api/config/notifications/test', { event }),
   markModelUnavailable: (id: string, until: string, reason?: string) => req<{ local: LocalConfig }>('PUT', `/api/models/${encodeURIComponent(id)}/unavailable`, { until, reason }),
   clearModelUnavailable: (id: string) => req<{ local: LocalConfig }>('DELETE', `/api/models/${encodeURIComponent(id)}/unavailable`),
   categories: (body: Record<string, string>) => req<{ config: Config; affected: number }>('POST', '/api/config/categories', body),

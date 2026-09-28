@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
-import { canPlan, decisionOf, type Status } from '@planestro/shared';
+import { canPlan, decisionOf, dollarHint, type Status } from '@planestro/shared';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { Markdown } from '../components/Markdown.tsx';
@@ -190,7 +190,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           <dt>session</dt><dd>{fm.session_id ?? '—'}{Object.entries(fm.agent_sessions ?? {}).map(([r, sid]) => <div key={r}>{r}: {sid}</div>)}</dd>
           <dt>CI</dt><dd>{fm.ci_result ?? '—'}{fm.ci_failed_count ? ` (${fm.ci_failed_count} red)` : ''}</dd>
           <dt>cost</dt><dd>
-            <div>{fm.cost_usd !== undefined ? `$${fm.cost_usd.toFixed(2)} · ${fm.turns ?? 0} turns` : '$0.00'}{(fm.cost_usd ?? 0) / budget.usd >= 0.8 && <> <span className={`tag ${(fm.cost_usd ?? 0) >= budget.usd ? 'hot' : 'wait'}`}>{Math.round((fm.cost_usd ?? 0) / budget.usd * 100)}% spent</span></>}</div>
+            <div title={dollarHint(state.billing)}>{fm.cost_usd !== undefined ? `$${fm.cost_usd.toFixed(2)} · ${fm.turns ?? 0} turns` : '$0.00'} <span className="muted small">{dollarHint(state.billing)}</span>{(fm.cost_usd ?? 0) / budget.usd >= 0.8 && <> <span className={`tag ${(fm.cost_usd ?? 0) >= budget.usd ? 'hot' : 'wait'}`}>{Math.round((fm.cost_usd ?? 0) / budget.usd * 100)}% spent</span></>}</div>
             <div className="row" style={{ gap: 6, marginTop: 4, flexWrap: 'wrap' }}><span className="muted small">budget</span><label title={fm.budget_usd !== undefined ? 'This item\'s own dollar budget; clear it for the project default' : `The project default ($${state.config.budget_usd_per_item}); type a number to give this item its own`}>$<input type="number" min={1} key={`bu${fm.budget_usd}`} defaultValue={fm.budget_usd ?? ''} placeholder={String(state.config.budget_usd_per_item)} onBlur={(e) => setBudget('budget_usd', e.target.value)} style={{ width: 70 }} /></label>{fm.budget_usd !== undefined && <span className="tag">this item</span>}</div>
             {implementerDef && implementerDef.runner && implementerDef.runner !== 'claude' && <>
               <div style={{ marginTop: 6 }}>{fm.agent_turns ?? 0} {implementerDef.runner} turns · {(fm.tokens ?? 0).toLocaleString()} tokens{(fm.tokens ?? 0) / budget.tokens >= 0.8 && <> <span className={`tag ${(fm.tokens ?? 0) >= budget.tokens ? 'hot' : 'wait'}`}>{Math.round((fm.tokens ?? 0) / budget.tokens * 100)}% used</span></>}</div>

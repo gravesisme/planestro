@@ -3,11 +3,12 @@ import { z } from 'zod';
 import { basename, join, normalize } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import YAML from 'yaml';
-import { allowedTransitions, parsePromptFile, RenderError, STATUSES, PROMPT_KINDS, RELEASE_STATUSES, findModel, canPlan, markUnavailable, type Status, type Actor } from '@planestro/shared';
+import { allowedTransitions, parsePromptFile, RenderError, STATUSES, PROMPT_KINDS, RELEASE_STATUSES, markUnavailable, type Status, type Actor } from '@planestro/shared';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Engine } from '../engine/Engine.ts';
 import type { ConsoleBuffer } from '../store/ConsoleBuffer.ts';
-import { itemView, promptView, releaseView, questionView, stateView, guardView } from './views.ts';
+import { itemView, promptView, releaseView, questionView, stateView, guardView, publicLocal } from './views.ts';
+import { applyConfigSettings, applyLocalSettings, putModel, removeModel } from '../settingsWrite.ts';
 
 const EDITABLE_FIELDS = z.object({
   title: z.string().min(1).optional(), category: z.string().min(1).optional(), planner: z.string().optional(), implementer: z.string().optional(),
@@ -284,25 +285,17 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   });
   api.delete('/releases/:version', (c) => { try { store.deleteRelease(c.req.param('version')); return c.json({ ok: true }); } catch (e) { return fail(c, e); } });
 
-  api.get('/config', (c) => c.json({ config: store.config, local: store.local, configText: readFileSync(join(store.dataDir, 'planestro.yml'), 'utf8') }));
-  api.put('/config', async (c) => {
+  api.get('/config', (c) => c.json({ config: store.config, local: publicLocal(store.local), configText: readFileSync(join(store.dataDir, 'planestro.yml'), 'utf8') }));
+  // Settings writes: only keys the shared registry marks editable, validated through the schema (settingsWrite.ts).
+  api.put('/config', async (c) => { try { return c.json({ config: applyConfigSettings(store, await c.req.json()) }); } catch (e) { return fail(c, e); } });
+  api.put('/config/models/:id', async (c) => { try { const config = putModel(store, c.req.param('id'), await c.req.json()); engine.poke(); return c.json({ config }); } catch (e) { return fail(c, e); } });
+  api.delete('/config/models/:id', (c) => { try { return c.json({ config: removeModel(store, c.req.param('id')) }); } catch (e) { return fail(c, e); } });
+  // Settings → Notifications → Test: the saved command, run the way its event runs it (dry-run only logs it).
+  api.post('/config/notifications/test', async (c) => {
     try {
-      const body = z.object({
-        defaults: z.object({ planner: z.string(), implementer: z.string(), category: z.string(), allow_model_fallback: z.boolean() }).partial().optional(),
-        concurrency: z.object({ max_sessions: z.number().int().positive(), max_local_jobs: z.number().int().positive() }).partial().optional(),
-        ci: z.object({ mode: z.enum(['github', 'github-or-local']), require_green_base: z.boolean(), local_check_command: z.string() }).partial().optional(),
-        engine: z.object({ mode: z.enum(['live', 'dry-run']) }).partial().optional(),
-        notifications: z.object({ on_merge: z.string(), on_usage_pause: z.string() }).partial().optional(),
-        budget_usd_per_item: z.number().positive().optional(), budget_turns_per_item: z.number().int().positive().optional(), budget_tokens_per_item: z.number().int().positive().optional(),
-        orchestrator: z.object({ model: z.string().min(1), allow_model_fallback: z.boolean(), may_approve_plans: z.boolean(), max_plan_revisions: z.number().int().nonnegative(), may_decide_permissions: z.boolean(), triage: z.boolean(), triage_timeout_min: z.number().positive() }).partial().optional(),
-      }).parse(await c.req.json());
-      if (body.orchestrator?.model) {
-        const m = findModel(store.config, body.orchestrator.model);
-        if (!m || !canPlan(m)) throw new Error(`orchestrator.model: ${body.orchestrator.model} is not a Claude model in models:`);
-        body.orchestrator.model = m.id;
-      }
-      const cfg = store.updateConfig((doc) => { for (const [section, values] of Object.entries(body)) { if (typeof values !== 'object' || values === null) { doc.setIn([section], values); continue; } for (const [k, v] of Object.entries(values)) if (v !== undefined) doc.setIn([section, k], v); } }, 'config: update settings');
-      return c.json({ config: cfg });
+      const { event } = z.object({ event: z.enum(['on_merge', 'on_usage_pause']) }).parse(await c.req.json());
+      if (!engine.testNotification) throw new Error('no engine is running to run it');
+      return c.json(await engine.testNotification(event));
     } catch (e) { return fail(c, e); }
   });
   // A model this machine's account cannot use: marked by hand (you know it is out until a reset) or cleared.
@@ -316,7 +309,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
       store.updateLocal({ model_unavailable: markUnavailable(store.local.model_unavailable, id, { until: new Date(until), reason: reason?.trim() || 'marked unavailable in Settings', manual: true }, now) });
       store.journal.append({ type: 'model.unavailable', actor: 'user', data: { model: id, until, reason: reason ?? '' } });
       engine.poke();
-      return c.json({ local: store.local });
+      return c.json({ local: publicLocal(store.local) });
     } catch (e) { return fail(c, e); }
   });
   api.delete('/models/:id/unavailable', (c) => {
@@ -325,12 +318,9 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
     store.updateLocal({ model_unavailable: rest });
     store.journal.append({ type: 'model.available', actor: 'user', data: { model: id } });
     engine.poke();
-    return c.json({ local: store.local });
+    return c.json({ local: publicLocal(store.local) });
   });
-  api.put('/config/local', async (c) => {
-    try { const body = z.object({ code_repo_path: z.string().optional(), worktrees_root: z.string().optional(), codex_bin: z.string().optional(), claude_bin: z.string().optional(), anthropic_api_key: z.string().optional() }).parse(await c.req.json()); return c.json({ local: store.updateLocal(body) }); }
-    catch (e) { return fail(c, e); }
-  });
+  api.put('/config/local', async (c) => { try { return c.json({ local: publicLocal(applyLocalSettings(store, await c.req.json())) }); } catch (e) { return fail(c, e); } });
   api.post('/config/categories', async (c) => {
     try {
       const body = z.discriminatedUnion('op', [

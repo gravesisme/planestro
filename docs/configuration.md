@@ -1,9 +1,48 @@
 # Configuration
 
 `planestro.yml` lives in the data dir and is versioned with it. `planestro.local.yml` sits
-beside it, is gitignored, and holds what is true of one machine only. Most keys can be
+beside it, is gitignored, and holds what is true of one machine only. Nearly every key can be
 changed in **Settings**; all of them can be edited by hand while planestro is not running.
-A test (`docs.test.ts`) fails if a key in the schema is missing from this page.
+A test (`docs.test.ts`) fails if a key in the schema is missing from this page, or from the
+Settings page's registry.
+
+## The Settings page
+
+Settings is organised by what you are deciding, not by file: **Project**, **Models**,
+**Budgets & limits**, **Orchestrator**, **Workers & permissions**, **CI & merging**,
+**Notifications**, **This machine** and **Data & releases** (a rail on the left; a dropdown on
+a phone; the last tab you opened is remembered by the browser). Each tab opens with what it is
+for and which file it writes. Every row shows a one-line summary, its default, a *changed* chip
+when yours differs, the key it writes, and *Learn more* with the long explanation from this
+page. The search box looks across every tab (label, key, summary, explanation, value); *Show
+only changed* lists what differs from planestro's defaults, and each tab shows how many of its
+settings do.
+
+Rows are rendered from one registry, `packages/shared/src/settings.ts`, which also decides what
+the server accepts: `PUT /api/config` and `PUT /api/config/local` take only the keys it marks
+editable, validate the whole result through the schema (plus what the schema cannot see: a
+planner that can plan, a default category that exists, an id prefix that is fixed once the
+project has items), and commit each change on its own (`config: permissions.allow +"Bash(npm test*)"`,
+`config: ci.timeout_min 30`). An empty value removes the key, so it falls back to its default.
+Lists (setup hooks, byproducts, the permission lists, flaky checks, allowed hosts) have add and
+remove editors; an allow-list entry that looks like a one-off command saved by *Always allow* is
+marked. Models are cards with **Edit**, **Add a model** and **Mark unavailable**; a model's id
+never changes (items store it), and a model still used by a default, a fallback, the
+orchestrator or an open item cannot be removed.
+
+What stays read-only: `project.id_prefix` once items exist, `mcp_servers` (its entries carry
+API keys: edit `planestro.local.yml`), and the stamps and runtime state (`schema_version`,
+`tool_version`, `engine.paused`, `engine.usage_guard*`, `model_unavailable`, which the model
+cards write). The Anthropic API key is never sent to the page: it shows *set here*, *set in the
+environment* or *not set*, and takes a replacement.
+
+**Budget dollars.** With a Claude login, the dollars planestro counts (budgets, an item's cost,
+a decision card's "+$15 and resume") are what the same work would cost at API prices, the SDK's
+`total_cost_usd`: a yardstick, not a charge; your plan's usage limits are what is spent. With an
+API key (`anthropic_api_key` below, or `ANTHROPIC_API_KEY` in the environment planestro started
+in) they are real charges to the API account. The server reports which (`billing:
+subscription | api_key` in `/api/state`); the Budgets tab opens with a note worded for it, and
+dollar figures elsewhere carry a short hint.
 
 ## planestro.yml
 
@@ -59,7 +98,7 @@ A test (`docs.test.ts`) fails if a key in the schema is missing from this page.
 |---|---|---|
 | `budget_usd_per_item` | `25` | Dollar ceiling across all of an item's Claude turns; each turn starts with what remains. An item's own `budget_usd` (item page, or a decision card's "+$N and resume" option) replaces it for that item. At 80% of any budget the Activity log warns once. |
 | `budget_turns_per_item` | `20` | Worker turns per item for runners that report tokens instead of dollars (Codex). Blocks as `turn_budget`. An item's own `budget_turns` replaces it. |
-| `budget_tokens_per_item` | `600000` | Uncached tokens per item for those runners. Blocks as `token_budget`. An item's own `budget_tokens` replaces it. All three are also in Settings → Budgets. |
+| `budget_tokens_per_item` | `600000` | Uncached tokens per item for those runners. Blocks as `token_budget`. An item's own `budget_tokens` replaces it. All three are also in Settings → Budgets & limits. |
 | `concurrency.max_sessions` | `3` | Items being worked on at once: a slot is taken by an item with a live turn, a running engine step or an operation in flight, never by an epic or by an item that is only waiting. |
 | `concurrency.stall_after_min` | `10` | An item planning or in progress that nothing has driven for this long (no turn, no step, no operation, not waiting on anyone) is stalled. planestro carries it on once, the way an unblock does; a second stall within the hour blocks it as `stalled`. `0` turns this off. |
 | `budget_usd_per_plan_turn` | `15` | What one planning turn may spend. Past it the turn ends and the planner is asked once, cheaply, for the plan it has (HH-162 spent $97 researching without handing one in); a second miss blocks as `no_plan`. |
