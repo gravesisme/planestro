@@ -70,7 +70,9 @@ then* — containing what it waited for — and its prompts list the files each 
 delivered, recorded from git at merge time.
 
 An epic's children can be written by hand, or proposed by the planner: see
-[Mixed-agent epics](mixed-agent-epics.md).
+[Mixed-agent epics](mixed-agent-epics.md). An epic opens its branch when a child queues, or
+when you **start** it; a childless epic is not offered **start**, and one started anyway
+(through the API) plans its breakdown instead, since nothing would ever drive it.
 
 ## Holds
 

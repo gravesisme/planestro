@@ -20,8 +20,8 @@ export interface Engine {
   rejectPlan(id: string, message: string): Promise<void>;
   message(id: string, text: string): Promise<void>;
   respond(id: string, payload: Record<string, unknown>): Promise<void>;
-  /** Have the planner propose an epic's children. */
-  planEpic(id: string): Promise<void>;
+  /** Have the planner propose an epic's children; `why` prefixes the Activity line (a "start" redirected here). */
+  planEpic(id: string, why?: string): Promise<void>;
   /** Create the children (as the user edited them), open the epic and queue what can start. Returns the new ids. */
   approveBreakdown(id: string, children?: BreakdownChild[], opts?: { queue?: boolean }): Promise<string[]>;
   reviewImages(id: string): Promise<ReviewImage[]>;

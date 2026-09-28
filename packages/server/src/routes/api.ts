@@ -86,7 +86,9 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   api.get('/items/:id/console', (c) => c.json({ lines: consoles?.get(c.req.param('id')) ?? [] }));
   api.get('/items/:id/transitions', (c) => {
     const it = store.requireItem(c.req.param('id'));
-    return c.json(allowedTransitions(it.file.frontmatter.status, 'user', store.flavorOf(it.file.frontmatter)).map((t) => ({ to: t.to, label: t.label })));
+    // A childless epic is not offered "start": nothing would ever drive it; "plan the breakdown" is (dogfood p56, LM-2).
+    const bare = it.file.frontmatter.kind === 'epic' && !store.derived(it).children.length;
+    return c.json(allowedTransitions(it.file.frontmatter.status, 'user', store.flavorOf(it.file.frontmatter)).filter((t) => !(bare && t.to === 'IN_PROGRESS')).map((t) => ({ to: t.to, label: t.label })));
   });
   api.post('/items/:id/transition', async (c) => {
     try {
@@ -100,7 +102,12 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
       if (to === 'QUEUED' && !d.deps_satisfied) throw new Error('dependencies are not merged yet');
       if (to === 'QUEUED' && d.base_branch_error) throw new Error(d.base_branch_error);
       const e = engine as Engine & { openEpic?: (id: string) => Promise<void> };
-      if (to === 'IN_PROGRESS' && it.file.frontmatter.kind === 'epic' && e.openEpic) { await e.openEpic(id); return c.json(itemView(store, store.requireItem(id))); }
+      if (to === 'IN_PROGRESS' && it.file.frontmatter.kind === 'epic' && e.openEpic) {
+        // Started with no children, an epic opens a branch nothing ever drives: its planner breaks it down instead (dogfood p56, LM-2).
+        if (!d.children.length && it.file.frontmatter.status === 'NOT_YET_SUBMITTED') await engine.planEpic(id, 'start: no children yet, so the planner breaks the epic down first');
+        else await e.openEpic(id);
+        return c.json(itemView(store, store.requireItem(id)));
+      }
       let stored = store.transition(id, to, 'user' as Actor);
       // Moved into review by hand with a pull request already attached: it enters the merge pipeline (p44).
       if (to === 'IN_REVIEW' && stored.file.frontmatter.pr && (stored.file.frontmatter.ci_result === undefined || stored.file.frontmatter.ci_result === 'unknown')) stored = store.mutateItem(id, [{ set: { ci_result: 'pending' } }, { activity: { actor: 'app', text: `PR #${stored.file.frontmatter.pr} attached by hand: entering the merge pipeline` } }], 'user');
@@ -147,7 +154,10 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
       const e = engine as Engine & { openEpic?: (id: string) => Promise<void>; submitEpic?: (id: string) => Promise<void>; syncBase?: (id: string) => Promise<void> };
       const action = c.req.param('action');
       const id = c.req.param('id');
-      if (action === 'open' && e.openEpic) await e.openEpic(id);
+      if (action === 'open' && e.openEpic) {
+        if (!store.derived(store.requireItem(id)).children.length) throw new Error(`${id} has no children yet: plan the breakdown, or add children first`);   // dogfood p56, LM-2
+        await e.openEpic(id);
+      }
       else if (action === 'submit' && e.submitEpic) await e.submitEpic(id);
       else if (action === 'sync' && e.syncBase) await e.syncBase(id);
       else throw new Error(`epic action ${action} is not available`);

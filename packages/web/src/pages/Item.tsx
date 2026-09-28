@@ -153,12 +153,12 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
         {fm.kind === 'epic' && (
           <div className="section"><h2>Children · {children.filter((c) => ['MERGED', 'FINISHED'].includes(c.frontmatter.status)).length}/{children.length} merged
             <span>
-              {fm.status === 'NOT_YET_SUBMITTED' && <button className="small" onClick={() => act(() => api.epicAction(item.id, 'open'))}>Open epic branch</button>}{' '}
+              {/* a childless epic's branch would sit idle (dogfood p56, LM-2) */}{fm.status === 'NOT_YET_SUBMITTED' && children.length > 0 && <button className="small" onClick={() => act(() => api.epicAction(item.id, 'open'))}>Open epic branch</button>}{' '}
               {fm.status === 'IN_PROGRESS' && <button className="small" onClick={() => act(() => api.epicAction(item.id, 'sync'))}>Sync with {d.base_branch}</button>}{' '}
               {fm.status === 'IN_PROGRESS' && children.length > 0 && children.every((c) => ['MERGED', 'FINISHED'].includes(c.frontmatter.status)) && <button className="small primary" onClick={() => act(() => api.epicAction(item.id, 'submit'))}>Submit epic PR</button>}
             </span></h2>
             <table><tbody>{children.map((c) => <tr key={c.id}><td><Link to={`/items/${c.id}`}>{c.id}</Link></td><td>{c.frontmatter.title}</td><td>{statusLabel(c.frontmatter.status)}</td><td>{c.frontmatter.pr ? `PR #${c.frontmatter.pr}` : ''}</td></tr>)}</tbody></table>
-            {!children.length && <p className="muted small">No children yet — create items with this epic as their parent.</p>}
+            {!children.length && <p className="muted small">No children yet — plan the breakdown, or create items with this epic as their parent.</p>}
           </div>
         )}
         <div className="section"><h2>Session</h2>

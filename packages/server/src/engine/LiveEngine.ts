@@ -1660,7 +1660,7 @@ export class LiveEngine implements Engine {
   // ---- epics planned by the planner: it proposes the children, the user approves, the engine creates them
   private epicPlanDir(id: string): string { return join(this.store.worktreesRoot(), `${this.store.config.project.id_prefix.toLowerCase()}-${idNumber(id)}-plan`); }
 
-  async planEpic(id: string): Promise<void> {
+  async planEpic(id: string, why?: string): Promise<void> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
     if (fm.kind !== 'epic') throw new Error(`${id} is not an epic`);
@@ -1673,7 +1673,7 @@ export class LiveEngine implements Engine {
       { transition: { to: 'PLAN_IN_PROGRESS', actor: 'user' } },
       // The integration branch gets its name now (the planner's rules speak of it); it is created on approval.
       { set: { worktree: worktreeRel, branch: fm.branch ?? `feature/${slugify(fm.title)}`, op: 'creating_worktree', op_started_at: this.now() } },
-      { activity: { actor: 'app', text: `planning the breakdown in a read-only checkout of origin/${base} (${worktreeRel})` } },
+      { activity: { actor: 'app', text: `${why ? `${why}: ` : ''}planning the breakdown in a read-only checkout of origin/${base} (${worktreeRel})` } },
     ], 'user', { commit: `${id}: plan the breakdown` });
     this.runJob(id, async () => {
       await this.ports.git.fetch(this.repo);
