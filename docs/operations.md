@@ -71,6 +71,13 @@ restarts the server: stop planestro, pull, migrate, start. New shipped prompts a
 from the tool until your project has its own copy; `init` on the existing data dir copies
 in any that are missing.
 
+Schema 3 moves the orchestrator's questions into `questions/Q-<n>.md`: `migrate` imports every
+question from the journal (the same text asked again about the same item becomes one question,
+with the repeats in its thread; one whose item is already finished or iceboxed arrives
+resolved) and commits it as `planestro: migrate schema 2 → 3`. The rules for the new question
+tools travel in each wake's packet, so a project's own copy of `orchestrator-system` keeps
+working without an edit.
+
 ## Recovery
 
 | Situation | What to do |

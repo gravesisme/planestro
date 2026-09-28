@@ -10,6 +10,7 @@ planestro.yml          versioned project config          planestro.local.yml   t
 items/MP-12.md         one item: YAML frontmatter + # Description, # Notes, # Plan, # Activity
 prompts/*.md           the prompt library
 releases/1.5.0.md      one release: notes, store copy, the items it shipped
+questions/Q-7.md       one orchestrator question: # Summary, # Details, # Recommendation, # Thread
 attachments/MP-12/     small files attached to an item
 journal/2026-09.ndjson every operation, begin and end
 ```
@@ -164,11 +165,35 @@ Console tab while any are unread, so they are never buried in an item's Activity
 
 The **Orchestrator** button in the corner of every page opens a chat. A message wakes it with
 your text and the current state, and it answers in the chat (its questions from other wakes
-show up there too). In a wake you started it may also add work for you: `create_item` adds a
+show up there too, each linking to its own page: see [Its questions for you](#its-questions-for-you)). In a wake you started it may also add work for you: `create_item` adds a
 backlog item (queued only if you say so), and it refuses in any wake you did not start, so the
 orchestrator never adds work unasked. It resolves stopped items with the same tools it uses in
 triage (`unblock_item`, `retry_op`, …). The **Ask the orchestrator** button on a blocked item
 opens the chat about that item. While automation is paused it answers when you resume.
+
+### Its questions for you
+
+When the orchestrator needs something from you that is not a stopped item's decision card, it
+asks with `ask_user`, and the question becomes a file of its own (`questions/Q-<n>.md`): a
+one-line headline, a **summary in plain terms** (one to three sentences, for someone who has
+not read the logs), the **details**, its **recommendation**, and a **thread**. The Console lists
+the open ones under *Its questions for you*, each with its item and age:
+
+- **Discuss** opens the question's page (`/questions/Q-7`): *In plain terms*, then *Details*
+  (folded), then the recommendation with **Accept recommendation**, then the discussion. What
+  you write there wakes the orchestrator with the whole question file (`question_message`),
+  with the same authority as the chat; it answers in that thread, carries out what you settle
+  on, and closes the question with `resolve_question`. The thread is the file's, so a
+  conversation picked up two days later still has everything said before it.
+- **Still relevant?** wakes it to check the question against the item as it is now
+  (`question_review`): it withdraws a question that is moot, rewrites one the situation has
+  moved past (`update_question`), or leaves it — and then planestro notes *reviewed, no
+  change* in the thread. **Check all** does this for every open question in one wake.
+
+A question about an item resolves by itself when that item is finished or iceboxed (no model is
+asked what the state machine knows); you can also mark one answered, or reopen it, by hand.
+Answered questions fold into an *Answered* list under the open ones. A message you sent that a
+restart left unanswered is answered when planestro starts again.
 
 ### Letting it approve a plan
 
