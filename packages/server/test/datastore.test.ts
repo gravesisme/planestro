@@ -5,6 +5,7 @@ import { DataStore } from '../src/store/DataStore.ts';
 import { makeFixture, git, sleep } from './helpers.ts';
 import { parseItemFile, getSection, getReleaseSection, isoLocal } from '@planestro/shared';
 import type { StoredRelease } from '../src/store/DataStore.ts';
+import { DataDirInUseError } from '../src/exitCodes.ts';
 
 const getReleaseSectionOf = (r: StoredRelease, title: string) => getReleaseSection(r.file, title);
 
@@ -208,6 +209,7 @@ describe('DataStore', () => {
     mkdirSync(join(dataDir, '.planestro'), { recursive: true });
     writeFileSync(lock, JSON.stringify({ pid: process.ppid })); // our parent is alive and is not us
     await expect(DataStore.open(dataDir)).rejects.toThrow(/in use/);
+    await expect(DataStore.open(dataDir)).rejects.toBeInstanceOf(DataDirInUseError); // its own exit code under serve --watch (#85)
     writeFileSync(lock, JSON.stringify({ pid: 2147483000 })); // nobody
     store = await DataStore.open(dataDir);
     expect(JSON.parse(readFileSync(lock, 'utf8')).pid).toBe(process.pid);
