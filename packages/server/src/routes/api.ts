@@ -87,7 +87,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   api.get('/items/:id/transitions', (c) => {
     const it = store.requireItem(c.req.param('id'));
     // A childless epic is not offered "start": nothing would ever drive it; "plan the breakdown" is (dogfood p56, LM-2).
-    const bare = it.file.frontmatter.kind === 'epic' && !store.derived(it).children.length;
+    const bare = it.file.frontmatter.kind === 'epic' && it.file.frontmatter.status === 'NOT_YET_SUBMITTED' && !store.derived(it).children.length;   // approving a breakdown is also → IN_PROGRESS, with no children yet
     return c.json(allowedTransitions(it.file.frontmatter.status, 'user', store.flavorOf(it.file.frontmatter)).filter((t) => !(bare && t.to === 'IN_PROGRESS')).map((t) => ({ to: t.to, label: t.label })));
   });
   api.post('/items/:id/transition', async (c) => {

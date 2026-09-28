@@ -2160,6 +2160,8 @@ describe('starting an epic with no children (dogfood p56, LM-2)', () => {
     expect(['PLAN_IN_PROGRESS', 'PLAN_READY']).toContain(status(store, epic.id));   // the dry-run planner may already have handed its breakdown in
     expect(activityOf(store, epic.id)).toContain('start: no children yet, so the planner breaks the epic down first: planning the breakdown');
     expect(world.remoteBranches.has('feature/lonely')).toBe(false);
+    await waitFor(() => status(store, epic.id) === 'PLAN_READY');
+    expect(await offered(app, epic.id)).toContain('IN_PROGRESS');   // "approve breakdown": its children only exist once it is approved
   });
 
   it('an epic with a child still starts: its integration branch opens', async () => {
