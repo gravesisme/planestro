@@ -1,4 +1,4 @@
-import { getSection, parseActivity, serializePromptFile, releaseCandidates, getQuestionSection, parseThread, type Status } from '@planestro/shared';
+import { getSection, parseActivity, serializePromptFile, releaseCandidates, getQuestionSection, parseThread, billingMode, type Status, type LocalConfig } from '@planestro/shared';
 import type { DataStore, StoredItem, StoredPrompt, StoredRelease, StoredQuestion } from '../store/DataStore.ts';
 
 /** JSON shape of an item as the UI sees it: frontmatter + sections + derived values. */
@@ -55,14 +55,31 @@ export function guardView(store: DataStore, paused: boolean) {
   return paused ? { paused_by: e.paused_by, ...(e.paused_by === 'usage_guard' && e.usage_guard ? { usage_guard: e.usage_guard } : {}) } : {};
 }
 
-export function stateView(store: DataStore, engine: { mode: string; paused: boolean; sessions(): unknown[]; restartReadiness?(): { draining: boolean; idle: boolean; running: string[] } }, git: unknown) {
+/** ANTHROPIC_API_KEY as the server started with it: the sessions it starts inherit this, not a later shell's. */
+const STARTUP_API_KEY = process.env.ANTHROPIC_API_KEY;
+
+/**
+ * planestro.local.yml as the web sees it: the API key and MCP servers' keys are secrets, so the page
+ * learns only whether they are set (`api_key` in the state) and never gets a value back.
+ */
+export function publicLocal(local: LocalConfig): LocalConfig {
+  const { anthropic_api_key: _secret, ...rest } = local;
+  const hide = (m: Record<string, string>) => Object.fromEntries(Object.keys(m).map((k) => [k, '(set)']));
+  return { ...rest, mcp_servers: Object.fromEntries(Object.entries(local.mcp_servers ?? {}).map(([name, s]) => [name, { ...s, env: hide(s.env ?? {}), headers: hide(s.headers ?? {}) }])) };
+}
+
+export function stateView(store: DataStore, engine: { mode: string; paused: boolean; sessions(): unknown[]; restartReadiness?(): { draining: boolean; idle: boolean; running: string[] } }, git: unknown, envApiKey = STARTUP_API_KEY) {
+  const localKey = store.local.anthropic_api_key?.trim();
   return {
     schema: store.schema,
     readOnly: store.readOnly,
     dataDir: store.dataDir,
     codeRepo: store.codeRepoPath(),
     config: store.config,
-    local: store.local,
+    local: publicLocal(store.local),
+    /** Whether the dollars planestro counts are an API-price yardstick on a Claude plan, or real charges to an API account (#83). */
+    billing: billingMode(localKey, envApiKey),
+    api_key: localKey ? 'local' as const : envApiKey?.trim() ? 'env' as const : 'none' as const,
     items: store.listItems().map((i) => itemView(store, i)),
     prompts: store.listPrompts().map(promptView),
     releases: store.listReleases().map((r) => releaseView(store, r)),

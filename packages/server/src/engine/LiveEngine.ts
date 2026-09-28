@@ -193,6 +193,13 @@ export class LiveEngine implements Engine {
     this.armGuardResume();
   }
 
+  async testNotification(event: 'on_merge' | 'on_usage_pause'): Promise<{ code: number; output: string }> {
+    const cmd = this.store.config.notifications[event];
+    if (!cmd) throw new Error(`notifications.${event} is not set`);
+    const r = await this.ports.proc.run(cmd, { cwd: this.repo, timeoutMs: 30_000 });
+    return { code: r.code, output: `${r.stdout}${r.stderr}`.trim().slice(0, 2000) };
+  }
+
   /** (Re)arm the guard's resume from local config — at trip and at startup; one already due resumes now. */
   private armGuardResume(): void {
     this.cancelGuardResume?.(); this.cancelGuardResume = undefined;
