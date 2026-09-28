@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
-import { canPlan, decisionOf, dollarHint, type Status } from '@planestro/shared';
+import { canPlan, decisionOf, dollarHint, epicFlagOf, kindConversionRefusal, type Status } from '@planestro/shared';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { Markdown } from '../components/Markdown.tsx';
@@ -8,7 +8,7 @@ import { statusLabel } from '../components/ItemCard.tsx';
 import { ItemConsole } from '../components/ItemConsole.tsx';
 import { CLOSE_HINT, SYNC_HINT, canSyncWithBase, confirmMove, promptCloseAsDone, promptSyncWithBase } from '../components/QuickActions.tsx';
 import { ReviewPanel } from '../components/ReviewPanel.tsx';
-import { fallbackHint } from '../components/NewItemDialog.tsx';
+import { fallbackHint, KIND_HINT } from '../components/NewItemDialog.tsx';
 import { BreakdownPanel } from '../components/BreakdownPanel.tsx';
 import { BlockedPanel } from '../components/BlockedPanel.tsx';
 import { WaitingPanel } from '../components/ResumeAfter.tsx';
@@ -77,6 +77,15 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
   const upload = (files: File[]) => { for (const f of files) void act(async () => api.uploadAttachment(item.id, await prepareUpload(f, maxBytes))); };
   const onPaste = (e: React.ClipboardEvent) => { const f = [...e.clipboardData.files][0]; if (f) { e.preventDefault(); upload([f]); } };
   const picker = useRef<HTMLInputElement>(null);
+  // Item ↔ epic while nothing has run for implementation (#69, HH-198); the rule is the server's, shared.
+  const other = fm.kind === 'epic' ? 'item' : 'epic';
+  const convertible = !session && !kindConversionRefusal(fm, other, d.children.length);
+  const epicShaped = fm.status === 'PLAN_READY' ? epicFlagOf(fm) : undefined;
+  const convert = (to: 'item' | 'epic') => {
+    const carries = item.sections.Plan.trim() ? ` Its ${fm.kind === 'epic' ? 'breakdown' : 'plan'} moves into Notes for the new planner.` : '';
+    const next = ['QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY'].includes(fm.status) ? (to === 'epic' ? ' Its breakdown is planned at once.' : ' It is queued to be planned as one item.') : '';
+    if (confirm(`Convert ${item.id} to ${to === 'epic' ? 'an epic' : 'an item'}?\n\n${KIND_HINT[to]}\n\nThe description stays.${carries}${next}`)) void act(() => api.convertKind(item.id, to));
+  };
 
   return (
     <div className="item-page" onPaste={onPaste}>
@@ -98,6 +107,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
               : <button key={t.to} disabled={t.to === 'QUEUED' && (!d.deps_satisfied || !!d.base_branch_error)} title={d.base_branch_error ?? (!d.deps_satisfied ? 'dependencies not merged' : '')} onClick={() => { if (confirmMove(item, t.to, t.label)) void act(() => api.transition(item.id, t.to)); }}>{t.label}</button>
           ))}
           {canSyncWithBase(item, !!session) && <button title={SYNC_HINT} onClick={() => promptSyncWithBase(item)}>Sync with {d.base_branch ?? 'base'}…</button>}
+          {convertible && !epicShaped && <button title={KIND_HINT[other]} onClick={() => convert(other)}>Convert to {other}…</button>}
         </div>
         <div className="controls">
           <label>category <select value={fm.category} onChange={(e) => field({ category: e.target.value })}>{state.config.categories.map((c) => <option key={c}>{c}</option>)}</select></label>
@@ -117,7 +127,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
         </div>
         {(d.external || fm.kind === 'epic') && (
           <div className="controls">
-            <label>branch <input value={fm.branch ?? ''} placeholder={fm.kind === 'epic' ? 'feature/<slug>' : 'external branch name'} onBlur={(e) => e.target.value !== (fm.branch ?? '') && field({ branch: e.target.value || null })} onChange={() => {}} readOnly={false} key={fm.branch} defaultValue={fm.branch ?? ''} /></label>
+            <label>branch <input placeholder={fm.kind === 'epic' ? 'feature/<slug>' : 'external branch name'} onBlur={(e) => e.target.value !== (fm.branch ?? '') && field({ branch: e.target.value || null })} key={fm.branch} defaultValue={fm.branch ?? ''} /></label>
             <label>PR # <input type="number" key={fm.pr} defaultValue={fm.pr ?? ''} onBlur={(e) => Number(e.target.value) !== (fm.pr ?? 0) && field({ pr: e.target.value ? Number(e.target.value) : null })} /></label>
           </div>
         )}
@@ -132,8 +142,19 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
             {fm.awaiting === 'orchestrator' && <p className="small" style={{ marginTop: 0 }}>You asked it to decide: it approves, sends the plan back with fixes ({fm.plan_revisions ?? 0} of {orch.max_plan_revisions} rounds used), or leaves it to you. You can still decide yourself below.</p>}
             {fm.op_data?.plan_amended ? <p className="small"><span className="tag ok">amended by the orchestrator</span> it sent the plan back to fold this in, so what you approve is complete: <i>{String(fm.op_data.plan_amended)}</i></p> : null}
             {item.activity.filter((a) => a.actor === 'orchestrator').slice(-3).map((a, i) => <p key={i} className="small"><b>orchestrator:</b> {a.text}</p>)}
+            {epicShaped && (
+              <div className="epic-warning" role="alert">
+                <b>This plan is an epic, not one item.</b>
+                <p className="small">{epicShaped.reason[0].toUpperCase() + epicShaped.reason.slice(1)}. Approved as an item, all of it would go to one implementer in one pull request, so approval is refused. Convert it: the plan becomes the request its epic planner breaks into child items, each with its own worker and pull request.</p>
+                {epicShaped.children?.length ? <p className="small muted">Proposed: {epicShaped.children.map((c) => c.title).join(' · ')}</p> : null}
+                <div className="row">
+                  {convertible && <button className="primary" onClick={() => convert('epic')}>Convert to epic…</button>}
+                  <button className="small" title="Only if it truly is one piece of work and the plan's layout misled the check" onClick={() => { if (confirm(`Approve ${item.id} as ONE item anyway?\n\nOne implementer does all of it in one pull request.`)) void act(() => api.approvePlan(item.id, approval || undefined, true)); }}>It is one item: approve anyway…</button>
+                </div>
+              </div>
+            )}
             <textarea placeholder="Optional notes to pass to the implementer" value={approval} onChange={(e) => setApproval(e.target.value)} style={{ minHeight: 60 }} />
-            <div className="row"><button className="primary" onClick={() => act(() => api.approvePlan(item.id, approval || undefined))}>Approve &amp; implement</button>{canClose && <button title={CLOSE_HINT} onClick={closeAsDone}>Already done — close…</button>}<span className="grow" /><input className="grow" placeholder="What should change?" value={reject} onChange={(e) => setReject(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && reject.trim()) { e.preventDefault(); void act(() => api.rejectPlan(item.id, reject)); } }} /><button className="danger" disabled={!reject.trim()} onClick={() => act(() => api.rejectPlan(item.id, reject))}>Request changes</button></div>
+            <div className="row">{!epicShaped && <button className="primary" onClick={() => act(() => api.approvePlan(item.id, approval || undefined))}>Approve &amp; implement</button>}{canClose && <button title={CLOSE_HINT} onClick={closeAsDone}>Already done — close…</button>}<span className="grow" /><input className="grow" placeholder="What should change?" value={reject} onChange={(e) => setReject(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && reject.trim()) { e.preventDefault(); void act(() => api.rejectPlan(item.id, reject)); } }} /><button className="danger" disabled={!reject.trim()} onClick={() => act(() => api.rejectPlan(item.id, reject))}>Request changes</button></div>
           </div>
         )}
         {fm.parts?.length ? <PartsStrip parts={fm.parts} /> : null}

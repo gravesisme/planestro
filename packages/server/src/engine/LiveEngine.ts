@@ -1,6 +1,6 @@
 import { join, relative, isAbsolute, extname, basename, matchesGlob } from 'node:path';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
-import { validateParts, partsSummary, type Part, serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, type BreakdownChild, type DecisionInput, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1 } from '@planestro/shared';
+import { validateParts, partsSummary, type Part, serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, epicFlagOf, epicShapeOf, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1 } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import type { Ports, TurnPhase, TurnResult, TurnTools, PermissionRequest, McpServerSpec } from './ports.ts';
@@ -106,6 +106,8 @@ export class LiveEngine implements Engine {
     this.orchestrator = new Orchestrator(store, ports, {
       message: (id, text) => this.message(id, text),
       approvePlan: (id, notes) => this.approvePlan(id, notes, 'orchestrator'),
+      convertKind: (id, to, why) => this.convertKind(id, to, 'orchestrator', why).catch((e) => (e as Error).message),
+      planEpic: (id, why) => this.planEpic(id, why),
       requestPlanChanges: (id, m) => this.orchestratorRequestsPlanChanges(id, m),
       amendPlan: (id, m) => this.orchestratorAmendsPlan(id, m),
       planDelegated: (id) => this.planDelegated(this.store.requireItem(id).file.frontmatter),
@@ -627,17 +629,25 @@ export class LiveEngine implements Engine {
     else if (!(await this.runSetupHooks(id, dir, opId))) return;
     this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }], 'engine');
     this.store.journal.end(opId, id, 'ok');
-    await this.runTurnFor(id, 'plan', this.withImplementer(id, this.withDelivered(id, 'plan-item', this.store.renderPrompt('plan-item', this.store.requireItem(id)))), [], [], { opener: true });
+    await this.runTurnFor(id, 'plan', this.withEpicCheck(id, this.withImplementer(id, this.withDelivered(id, 'plan-item', this.store.renderPrompt('plan-item', this.store.requireItem(id))))), [], [], { opener: true });
   }
 
-  async approvePlan(id: string, notes?: string, by: 'user' | 'orchestrator' = 'user'): Promise<void> {
+  /**
+   * `asItem`: the user read a plan that reads as an epic breakdown (epicFlagOf) and approves it as one
+   * item anyway, deliberately. Nobody else can: the orchestrator converts it or leaves it to the user.
+   */
+  async approvePlan(id: string, notes?: string, by: 'user' | 'orchestrator' = 'user', { asItem = false }: { asItem?: boolean } = {}): Promise<void> {
     const item = this.store.requireItem(id);
     if (item.file.frontmatter.kind === 'epic') { if (by !== 'user') throw new Error(`${id} is an epic: its breakdown is the user's to approve`); await this.approveBreakdown(id); return; }
     if (item.file.frontmatter.status !== 'PLAN_READY') throw new Error(`${id} is ${item.file.frontmatter.status}, not PLAN_READY`);
-    const { plan_handed_back: _spent, plan_amended: _folded, ...opData } = item.file.frontmatter.op_data ?? {};
+    // An epic approved as an item goes to one implementer, who has to stop and ask (#69, HH-198).
+    const epicShaped = epicFlagOf(item.file.frontmatter);
+    if (epicShaped && !(asItem && by === 'user')) throw new Error(`${id} is not approved: ${epicShaped.reason}, so it is an epic, not one item. Convert it to an epic (its plan becomes the breakdown request)${by === 'user' ? ', request plan changes, or approve it as one item deliberately' : ' or leave it to the user'}.`);
+    const { plan_handed_back: _spent, plan_amended: _folded, looks_like_epic: _overruled, ...opData } = item.file.frontmatter.op_data ?? {};
     this.store.mutateItem(id, [
       { transition: { to: 'IN_PROGRESS', actor: by } },
       { set: { op_data: { ...opData, approval_notes: notes ?? '' } } },
+      ...(epicShaped ? [{ activity: { actor: by, text: `approved as one item although ${epicShaped.reason}` } }] : []),
       ...(by === 'orchestrator' ? [{ activity: { actor: by, text: `approved the plan on your behalf${notes ? `: ${notes}` : ''}` } }] : notes ? [{ activity: { actor: by, text: `approval notes: ${notes}` } }] : []),
     ], by, { commit: `${id}: approve plan${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
     // queued, not dropped: the orchestrator can decide while the planner's turn is still ending
@@ -1689,6 +1699,11 @@ export class LiveEngine implements Engine {
   private epicPlanDir(id: string): string { return join(this.store.worktreesRoot(), `${this.store.config.project.id_prefix.toLowerCase()}-${idNumber(id)}-plan`); }
 
   async planEpic(id: string, why?: string): Promise<void> {
+    this.runJob(id, this.beginEpicPlan(id, why));
+  }
+
+  /** planEpic's persisted half; returns its planning turn, for whoever holds the item's job slot (a conversion already does: #69). */
+  private beginEpicPlan(id: string, why?: string): () => Promise<void> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
     if (fm.kind !== 'epic') throw new Error(`${id} is not an epic`);
@@ -1703,13 +1718,12 @@ export class LiveEngine implements Engine {
       { set: { worktree: worktreeRel, branch: fm.branch ?? `feature/${slugify(fm.title)}`, op: 'creating_worktree', op_started_at: this.now() } },
       { activity: { actor: 'app', text: `${why ? `${why}: ` : ''}planning the breakdown in a read-only checkout of origin/${base} (${worktreeRel})` } },
     ], 'user', { commit: `${id}: plan the breakdown` });
-    this.runJob(id, async () => {
+    return async () => {
       await this.ports.git.fetch(this.repo);
       if (!(await this.ports.git.worktreeList(this.repo)).some((w) => w.path === dir && !w.prunable)) await this.ports.git.worktreeAddDetached(this.repo, dir, `origin/${base}`);
       this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }], 'engine');
-      const implementers = this.store.config.models.filter((m) => !m.external).map((m) => `- \`${m.id}\` — ${m.label} (runner ${m.runner ?? 'claude'}): ${m.description ?? (canPlan(m) ? 'general software work: code, tests, docs. Cannot generate images.' : 'no description configured')}`).join('\n');
-      await this.runTurnFor(id, 'plan', this.store.renderPrompt('plan-epic', this.store.requireItem(id), { implementers, categories: this.store.config.categories.join(', ') }), [], [], { opener: true });
-    });
+      await this.runTurnFor(id, 'plan', this.store.renderPrompt('plan-epic', this.store.requireItem(id), { implementers: this.implementersList(), categories: this.store.config.categories.join(', ') }), [], [], { opener: true });
+    };
   }
 
   /** Create the approved children (as edited by the user), drop the planning checkout, open the epic, and queue what can start. */
@@ -1860,10 +1874,41 @@ export class LiveEngine implements Engine {
   // ---- helpers ----
   private makeTools(id: string): TurnTools {
     const s = this.store;
+    /** A plain item's plan, recorded; `epic` says it reads as an epic breakdown, which approval then refuses (#69, HH-198). */
+    const handIn = (plan: string, epic?: EpicFlag): string => {
+      const cur = s.requireItem(id).file.frontmatter;
+      const ops: ItemOp[] = [{ section: 'Plan', body: plan }];
+      // The planner went on without the permission it had asked for: that request is moot, and must not be mistaken for the plan's own wait.
+      if (cur.awaiting === 'permission' || cur.awaiting_data?.kind === 'permission') ops.push({ unset: ['awaiting', 'awaiting_data'] });
+      // A late submit cures a no_plan block (e.g. after an MCP transport failure ate the first attempt).
+      if (cur.blocked && cur.blocked_reason === 'no_plan') ops.push({ unset: ['blocked', 'blocked_reason', 'triage'] });
+      const delegated = cur.status === 'PLAN_IN_PROGRESS' && this.planDelegated(cur);
+      if (cur.status === 'PLAN_IN_PROGRESS') ops.push({ transition: { to: 'PLAN_READY', actor: 'engine' } });
+      // A new plan is a new decision: whoever had it last time, it starts with the orchestrator again if delegated,
+      // and whether it reads as an epic is judged again from this plan alone.
+      const { plan_handed_back: _spent, plan_retry_turns: _retried, looks_like_epic: _earlier, ...opData } = cur.op_data ?? {};
+      if (cur.op_data?.plan_handed_back || cur.op_data?.plan_retry_turns || cur.op_data?.looks_like_epic || epic) ops.push({ set: { op_data: { ...opData, ...(epic ? { looks_like_epic: epic } : {}) } } });
+      if (delegated) ops.push({ set: { awaiting: 'orchestrator' } });
+      if (epic) ops.push({ activity: { actor: 'app', text: `this reads as an epic, not one item: ${epic.reason}. Approval is refused; convert it to an epic` } });
+      s.mutateItem(id, ops, 'engine', { commit: `${id}: submit plan` });
+      this.note(epic ? 'warn' : 'info', `${id}: plan submitted — ${epic ? `it reads as an epic (${epic.reason}): convert it rather than approve it` : delegated ? 'the orchestrator decides (you asked it to)' : 'needs your approval'}`);
+      this.wakeOrchestrator('plan_review', id);
+      return epic?.source === 'breakdown'
+        ? 'Breakdown recorded by planestro as this item\'s plan, flagged as an epic: the user decides whether to convert it. End your turn now.'
+        : 'Plan recorded by planestro. End your turn now; you will be resumed once it is approved.';
+    };
     return {
       submit_breakdown: async (plan, children) => {
         const cur = s.requireItem(id).file.frontmatter;
-        if (cur.kind !== 'epic') return 'Rejected: this item is not an epic. Hand in your plan with submit_plan.';
+        // A plain item's planner that finds an epic says so with the breakdown itself: the plan is recorded and
+        // flagged, so nobody approves it as one item, and the user converts it (#69, HH-198).
+        if (cur.kind !== 'epic') {
+          if (cur.parent) return `Rejected: this item is a child of epic ${cur.parent}, and epics do not nest. Plan it as one item with submit_plan, or report_blocked if it cannot be one.`;
+          const list = (Array.isArray(children) ? children : []).filter((c): c is ProposedChild => typeof c?.title === 'string' && c.title.trim() !== '');
+          if (list.length < 2) return 'Rejected: a breakdown needs at least two children, each with a title. If this is one piece of work, hand in your plan with submit_plan.';
+          const proposed = list.map((c) => ({ title: c.title.trim(), ...(typeof c.description === 'string' ? { description: c.description.trim() } : {}), ...(typeof c.implementer === 'string' && c.implementer ? { implementer: c.implementer } : {}), ...(Array.isArray(c.depends_on) && c.depends_on.length ? { depends_on: c.depends_on } : {}) }));
+          return handIn(plan, { reason: `its planner handed in a breakdown of ${list.length} child items instead of one plan`, source: 'breakdown', children: proposed });
+        }
         const problem = validateBreakdown(children, s.config.models, s.config.categories);
         if (problem) { s.mutateItem(id, [{ activity: { actor: 'app', text: `breakdown rejected back to the planner: ${problem}` } }], 'engine'); return `Rejected: ${problem}. Fix that and call submit_breakdown again.`; }
         const ops: ItemOp[] = [{ section: 'Plan', body: plan }];
@@ -1879,21 +1924,8 @@ export class LiveEngine implements Engine {
         if (cur.kind === 'epic') return 'Rejected: this is an epic. Hand in its children with submit_breakdown.';
         // A retry of a hand-in that did land (the transport failed on the way back): no second commit or review wake.
         if (cur.status === 'PLAN_READY' && getSection(s.requireItem(id).file, 'Plan').trim() === demoteH1(plan).trim()) return 'Plan already recorded by planestro. End your turn now; you will be resumed once it is approved.';
-        const ops: ItemOp[] = [{ section: 'Plan', body: plan }];
-        // The planner went on without the permission it had asked for: that request is moot, and must not be mistaken for the plan's own wait.
-        if (cur.awaiting === 'permission' || cur.awaiting_data?.kind === 'permission') ops.push({ unset: ['awaiting', 'awaiting_data'] });
-        // A late submit cures a no_plan block (e.g. after an MCP transport failure ate the first attempt).
-        if (cur.blocked && cur.blocked_reason === 'no_plan') ops.push({ unset: ['blocked', 'blocked_reason', 'triage'] });
-        const delegated = cur.status === 'PLAN_IN_PROGRESS' && this.planDelegated(cur);
-        if (cur.status === 'PLAN_IN_PROGRESS') ops.push({ transition: { to: 'PLAN_READY', actor: 'engine' } });
-        // A new plan is a new decision: whoever had it last time, it starts with the orchestrator again if delegated.
-        const { plan_handed_back: _spent, plan_retry_turns: _retried, ...opData } = cur.op_data ?? {};
-        if (cur.op_data?.plan_handed_back || cur.op_data?.plan_retry_turns) ops.push({ set: { op_data: opData } });
-        if (delegated) ops.push({ set: { awaiting: 'orchestrator' } });
-        s.mutateItem(id, ops, 'engine', { commit: `${id}: submit plan` });
-        this.note('info', `${id}: plan submitted — ${delegated ? 'the orchestrator decides (you asked it to)' : 'needs your approval'}`);
-        this.wakeOrchestrator('plan_review', id);
-        return 'Plan recorded by planestro. End your turn now; you will be resumed once it is approved.';
+        const shape = epicShapeOf(plan);
+        return handIn(plan, shape ? { reason: shape, source: 'plan' } : undefined);
       },
       add_note: async (markdown) => { const cur = getSection(s.requireItem(id).file, 'Notes'); s.mutateItem(id, [{ section: 'Notes', body: cur ? `${cur}\n\n${markdown}` : markdown }], 'engine', { commit: `${id}: worker note` }); return 'Note recorded.'; },
       append_activity: async (text) => { s.mutateItem(id, [{ activity: { actor: 'worker', text } }], 'engine'); return 'Recorded.'; },
@@ -2607,6 +2639,22 @@ export class LiveEngine implements Engine {
     return `${rendered}\n\n${lines.join('\n')}`;
   }
 
+  /**
+   * How a plain item's planner says "this is an epic", in code rather than in plan-item (data dirs keep
+   * their own copies of it): HH-198 and HH-199 were planned as full breakdowns and handed in as plans,
+   * approved as items, and each went to one implementer (#69). A child of an epic is not told: epics do not nest.
+   */
+  private withEpicCheck(id: string, rendered: string): string {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    if (fm.kind === 'epic' || fm.parent) return rendered;
+    return `${rendered}\n\n## If this is really an epic\n\nOne item is one piece of work that one implementer finishes in one pull request. If the request is really several separately shippable pieces (for example images an image model makes plus the code that uses them, or parts that each deserve their own worker and pull request), do not plan it as one item: call \`submit_breakdown\` instead of \`submit_plan\`, with \`plan\` (the approach and the seams between the pieces) and \`children\` (each \`{ "title", "description", "implementer", "depends_on": [indexes] }\`). Implementers:\n${this.implementersList()}\n\nplanestro records it as this item's plan, marked as an epic, and the user converts the item to an epic; your breakdown becomes the request its epic planner starts from. Then end your turn.`;
+  }
+
+  /** The models a breakdown can route children to, with what each is for. */
+  private implementersList(): string {
+    return this.store.config.models.filter((m) => !m.external).map((m) => `- \`${m.id}\` — ${m.label} (runner ${m.runner ?? 'claude'}): ${m.description ?? (canPlan(m) ? 'general software work: code, tests, docs. Cannot generate images.' : 'no description configured')}`).join('\n');
+  }
+
   /** A project whose copy of a template predates `{{dependencies.delivered}}` still gets the facts, appended. */
   private withDelivered(id: string, template: string, rendered: string): string {
     const fm = this.store.requireItem(id).file.frontmatter;
@@ -2723,6 +2771,102 @@ export class LiveEngine implements Engine {
     void this.tick();
   }
 
+  // ---- item ↔ epic (#69, HH-198) ----
+  /**
+   * Change an item's kind while nothing has run for implementation (kindConversionRefusal says where).
+   * Its description stays; its plan (or an epic's breakdown) moves to Notes, which the other kind's
+   * planner reads; its planning checkout is removed only on positive evidence that it holds nothing
+   * (invariant 7), and work in it refuses the conversion. What was not yet submitted stays in the
+   * backlog; what was, carries on as the new kind: an epic has its breakdown planned (planEpic), an
+   * item is queued. Returns what happened, in words.
+   */
+  async convertKind(id: string, to: 'item' | 'epic', by: 'user' | 'orchestrator' = 'user', why?: string): Promise<string> {
+    const item = this.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    const busy = this.turns.has(id) || this.jobs.has(id);
+    // A plan review is decided while the planner's turn is still ending (as approvePlan): the conversion waits for that turn.
+    const winding = busy && fm.status === 'PLAN_READY';
+    const refused = kindConversionRefusal(winding ? { ...fm, op: undefined } : fm, to, this.store.derived(item).children.length);
+    if (refused) throw new Error(`not converted: ${refused}`);
+    const as = to === 'epic' ? 'an epic' : 'an item';
+    if (winding) {
+      this.queueFollowUp(id, async () => {
+        try { const out = await this.convertHeld(id, to, by, why); if (out.plan) await out.plan(); else this.poke(); }
+        catch (e) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: (e as Error).message } }], 'engine'); }
+      });
+      return `${id} converts to ${as} as soon as its planning turn has ended`;
+    }
+    if (busy) throw new Error(`not converted: ${id} has a turn or step running; convert it once it has parked`);
+    // Held as the item's job while its checkout is checked and removed, so no admission, turn or wake starts on it meanwhile.
+    let release!: () => void;
+    this.jobs.set(id, new Promise<void>((r) => { release = r; }));
+    let out: { said: string; plan?: () => Promise<void> };
+    try { out = await this.convertHeld(id, to, by, why); } finally { this.jobs.delete(id); this.followUps.delete(id); this.pendingWakes.delete(id); release(); }
+    if (out.plan) this.runJob(id, out.plan); else this.poke();
+    return out.said;
+  }
+
+  /** The conversion itself, by whoever holds the item's job slot; `plan` is an epic's breakdown turn, to run in that slot. */
+  private async convertHeld(id: string, to: 'item' | 'epic', by: 'user' | 'orchestrator', why?: string): Promise<{ said: string; plan?: () => Promise<void> }> {
+    const item = this.store.requireItem(id);
+    const refused = kindConversionRefusal(item.file.frontmatter, to, this.store.derived(item).children.length);
+    if (refused) throw new Error(`not converted: ${refused}`);
+    const out = await this.convertNow(id, to, by, why);
+    const plan = out.next === 'plan' ? this.beginEpicPlan(id, 'converted to an epic, so its planner breaks it down') : undefined;
+    if (out.next === 'queue') this.store.transition(id, 'QUEUED', by);
+    const said = `${out.said}${plan ? '; its breakdown is being planned' : out.next === 'queue' ? '; queued to be planned as one item' : ''}`;
+    this.note('info', said);
+    return { said, plan };
+  }
+
+  private async convertNow(id: string, to: 'item' | 'epic', by: 'user' | 'orchestrator', why?: string): Promise<{ said: string; next?: 'plan' | 'queue' }> {
+    const item = this.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    const was = fm.kind ?? 'item';
+    let released: string | undefined;
+    if (fm.worktree) {
+      const cwd = this.absWorktree(fm.worktree);
+      if (was === 'epic') {
+        // An epic's planning checkout is detached and was only ever read: a clean tree is the whole proof (as approveBreakdown).
+        const st = await this.ports.git.status(cwd).catch(() => undefined);
+        if (st && !st.clean) throw new Error(`not converted: the breakdown's planning checkout ${fm.worktree} has uncommitted changes`);
+        if (st) { await this.ports.git.worktreeRemove(this.repo, cwd, false); await this.ports.git.worktreePrune(this.repo); released = `removed the breakdown's read-only planning checkout ${fm.worktree}`; }
+      } else if (fm.branch) {
+        const unused = await this.unusedWorktree(cwd, fm.branch, this.store.derived(item).base_branch);
+        if ('keep' in unused) throw new Error(`not converted: ${id}'s worktree ${fm.worktree} may hold work (${unused.keep}), and nothing with work in it is removed. Clear it by hand first, or keep it as an item`);
+        released = await this.removeUnusedWorktree(cwd, fm.branch, this.store.derived(item).base_branch!, unused.remote);
+      }
+    }
+    // The text crosses over: the new kind's planner reads Notes (plan-item and plan-epic both quote them).
+    const plan = getSection(item.file, 'Plan').trim();
+    const proposed = (was === 'epic' ? fm.awaiting_data?.children : epicFlagOf(fm)?.children) as ProposedChild[] | undefined;
+    const carried = plan || proposed?.length ? [
+      `### ${was === 'epic' ? 'Breakdown proposed while this was an epic' : 'Plan written while this was one item'} (converted ${this.now().slice(0, 10)})`, '',
+      to === 'epic' ? 'Its planner planned this request as one item. Start the breakdown from it: keep what holds, and split the work into children.' : 'The epic planner proposed this before it became one item. Plan it as one piece of work; the children only show how the work divides.',
+      ...(plan ? ['', plan] : []),
+      ...(proposed?.length ? ['', 'Children proposed:', ...proposed.map((c, i) => `- ${i}: **${c.title}**${c.implementer ? ` (${c.implementer})` : ''}${c.depends_on?.length ? `, after ${c.depends_on.join(', ')}` : ''}${c.description ? ` — ${c.description}` : ''}`)] : []),
+    ].join('\n') : '';
+    const notes = getSection(item.file, 'Notes').trim();
+    const reset = fm.status !== 'NOT_YET_SUBMITTED' && fm.status !== 'ICEBOX';
+    const a = (text: string, actor: 'user' | 'orchestrator' | 'app' = by): ItemOp => ({ activity: { actor, text } });
+    this.store.mutateItem(id, [
+      // Not a lifecycle transition: the item starts over as the other kind, from the backlog (or stays in the icebox).
+      { set: { kind: to, ...(reset ? { status: 'NOT_YET_SUBMITTED' as const } : {}) } },
+      // What belonged to the other kind's planning goes with it; the new planner starts a conversation of its own.
+      { unset: ['worktree', 'branch', 'session_id', 'agent_sessions', 'op', 'op_started_at', 'op_data', 'awaiting', 'awaiting_data', 'triage', 'blocked', 'blocked_reason', 'resume_after', 'plan_revisions'] },
+      ...(carried ? [{ section: 'Notes', body: notes ? `${notes}\n\n${carried}` : carried }, { section: 'Plan', body: '' }] : []),
+      ...(reset ? [a(`status ${fm.status} → NOT_YET_SUBMITTED`)] : []),
+      a(`converted to ${to === 'epic' ? 'an epic' : 'an item'}${why?.trim() ? `: ${why.trim()}` : ''}${carried ? `. The ${was === 'epic' ? 'breakdown' : 'plan'} is kept in Notes for its new planner` : ''}`),
+      ...(released ? [a(released, 'app')] : []),
+    ], by, { commit: `${id}: convert to ${to}` });
+    const said = `${id} converted to ${to === 'epic' ? 'an epic' : 'an item'}${released ? ` (${released})` : ''}`;
+    if (!reset) return { said };
+    if (to === 'epic') return { said, next: 'plan' };
+    const d = this.store.derived(this.store.requireItem(id));
+    if (d.flavor === 'worker' && d.deps_satisfied && !d.base_branch_error) return { said, next: 'queue' };
+    return { said: `${said}; left in the backlog (${d.flavor !== 'worker' ? 'an external item is not planned' : d.base_branch_error ?? 'its dependencies are not merged yet'})` };
+  }
+
   // ---- take-over: a person finishes the item by hand (dogfood p28) ----
   /**
    * Everything that would drive this item's session, stopped: the live turn is aborted through its
@@ -2822,19 +2966,27 @@ export class LiveEngine implements Engine {
 
   /** Returns the Activity line describing what was removed, or what was left in place and why. */
   private async releaseUnusedWorktree(cwd: string, branch: string, base: string | undefined): Promise<string> {
-    const keep = (why: string) => `left worktree ${cwd} and branch ${branch} in place: ${why}`;
-    if (!base) return keep('the base branch could not be resolved');
-    const brief = (e: unknown) => (e as Error).message.replace(/\s+/g, ' ').slice(0, 200);
-    let remote: string | null;
+    const unused = await this.unusedWorktree(cwd, branch, base);
+    return 'keep' in unused ? `left worktree ${cwd} and branch ${branch} in place: ${unused.keep}` : this.removeUnusedWorktree(cwd, branch, base!, unused.remote);
+  }
+
+  /** Positive evidence that a worktree and its branch hold no work (invariant 7): a clean tree and nothing ahead of a freshly fetched base. Otherwise why not. */
+  private async unusedWorktree(cwd: string, branch: string, base: string | undefined): Promise<{ keep: string } | { remote: string | null }> {
+    if (!base) return { keep: 'the base branch could not be resolved' };
     try {
       const { clean, dirty } = await this.worktreeDirt(cwd);
-      if (!clean) return keep(`uncommitted changes (${dirty.slice(0, 5).join(', ')})`);
+      if (!clean) return { keep: `uncommitted changes (${dirty.slice(0, 5).join(', ')})` };
       await this.ports.git.fetch(this.repo);
       const { ahead } = await this.ports.git.aheadBehind(cwd, `origin/${base}`, 'HEAD');
-      if (ahead > 0) return keep(`${ahead} commit(s) are not on origin/${base}`);
-      remote = await this.ports.git.remoteBranchSha(this.repo, branch);
-      if (remote && !await this.ports.git.isAncestor(this.repo, remote, `origin/${base}`)) return keep(`the pushed branch has commits that are not on origin/${base}`);
-    } catch (e) { return keep(`could not verify it is unused (${brief(e)})`); }
+      if (ahead > 0) return { keep: `${ahead} commit(s) are not on origin/${base}` };
+      const remote = await this.ports.git.remoteBranchSha(this.repo, branch);
+      if (remote && !await this.ports.git.isAncestor(this.repo, remote, `origin/${base}`)) return { keep: `the pushed branch has commits that are not on origin/${base}` };
+      return { remote };
+    } catch (e) { return { keep: `could not verify it is unused (${(e as Error).message.replace(/\s+/g, ' ').slice(0, 200)})` }; }
+  }
+
+  private async removeUnusedWorktree(cwd: string, branch: string, base: string, remote: string | null): Promise<string> {
+    const brief = (e: unknown) => (e as Error).message.replace(/\s+/g, ' ').slice(0, 200);
     let kept: string | undefined;
     try {
       kept = await this.setAsideBeforeRemove(branch.replace(/[\/\\]/g, '-'), cwd);

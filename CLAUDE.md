@@ -86,6 +86,12 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   The second is user-only, stops at IN_REVIEW (a PR decides from there), and
   removes the worktree/branch only when they are clean with nothing ahead of
   the base — otherwise it leaves them and says so in the Activity log.
+- `kind` (item | epic) changes only through `Engine.convertKind` (the page's **Convert to
+  epic / to item**, the orchestrator's `convert_item`), while nothing has run for
+  implementation (`kindConversionRefusal`): the plan moves to Notes, the planning worktree
+  goes only on positive evidence. A plain item's plan that reads as an epic (`submit_breakdown`
+  on an item, or `epicShapeOf` on the text) is flagged in `op_data.looks_like_epic`, and
+  approval refuses it for everyone but a user approving it as one item on purpose (#69).
 - An item that returns to QUEUED after an icebox/backlog round-trip reuses the
   worktree it already has; setup hooks are not re-run.
 - `taken_over` (**take over** / **hand back**, `Engine.takeOver` / `handBack`) is also

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
-import { placeholdersIn, renderPrompt, fallbackChain, findModel, type Config, type ModelDef } from '@planestro/shared';
+import { placeholdersIn, renderPrompt, fallbackChain, findModel, canPlan, type Config, type ModelDef } from '@planestro/shared';
 import { api, type PromptView, type State } from '../api.ts';
 import { act, useStore } from '../store.ts';
 
@@ -14,6 +14,28 @@ export function itemPrompts(prompts: PromptView[]): PromptView[] {
 function projectContext(state: State): Record<string, unknown> {
   const repo = state.config.code_repo;
   return { project: state.config.project, data_dir: state.dataDir, repo: { path: state.codeRepo, default_branch: repo.default_branch, release_branch: repo.release_branch ?? '(none)', github: repo.github ?? '(none)' } };
+}
+
+/**
+ * What each kind means, said where it is chosen: an epic made by mistake as an item went to one
+ * implementer who had to stop and ask (#69, HH-198), and the kind used to hide in a select.
+ */
+export const KIND_HINT = {
+  item: 'One piece of work: one worker plans it, implements it and opens one pull request.',
+  epic: 'Several shippable pieces: its planner breaks it into child items, each with its own worker and pull request, merged through an integration branch.',
+} as const;
+
+export function KindChoice({ kind, onChange }: { kind: 'item' | 'epic'; onChange: (k: 'item' | 'epic') => void }) {
+  return (
+    <fieldset className="kind-choice" aria-label="Kind">
+      {(['item', 'epic'] as const).map((k) => (
+        <label key={k} className={kind === k ? 'on' : ''}>
+          <input type="radio" name="kind" value={k} checked={kind === k} onChange={() => onChange(k)} />
+          <span><b>{k === 'item' ? 'Item' : 'Epic'}</b><span className="small muted">{KIND_HINT[k]}</span></span>
+        </label>
+      ))}
+    </fieldset>
+  );
 }
 
 function withValue(ctx: Record<string, unknown>, path: string, value: string): Record<string, unknown> {
@@ -32,6 +54,7 @@ export function NewItemDialog({ onClose, icebox, from }: { onClose: () => void; 
   const [title, setTitle] = useState(start?.frontmatter.title ?? '');
   const [category, setCategory] = useState(state?.config.defaults.category ?? '');
   const [kind, setKind] = useState<'item' | 'epic'>('item');
+  const [planner, setPlanner] = useState(state?.config.defaults.planner ?? '');
   // A template may name the model its work is for (`model:` in its frontmatter): an art brief belongs with the art model.
   const modelOf = (p?: PromptView) => state?.config.models.find((m) => m.id === p?.frontmatter.model && !m.external)?.id;
   const [implementer, setImplementer] = useState(modelOf(start) ?? state?.config.defaults.implementer ?? '');
@@ -64,15 +87,16 @@ export function NewItemDialog({ onClose, icebox, from }: { onClose: () => void; 
         e.preventDefault();
         let text: string;
         try { text = render(); } catch (err) { useStore.setState({ error: (err as Error).message }); return; }
-        const r = await act(() => api.createItem({ title, category, description: text, kind, parent: parent || undefined, implementer: kind === 'item' ? implementer || undefined : undefined, auto_approve_plan: kind === 'item' && delegate ? true : undefined, allow_model_fallback: allowFallback, status: icebox ? 'ICEBOX' : undefined }));
+        const r = await act(() => api.createItem({ title, category, description: text, kind, planner: kind === 'epic' && planner ? planner : undefined, parent: parent || undefined, implementer: kind === 'item' ? implementer || undefined : undefined, auto_approve_plan: kind === 'item' && delegate ? true : undefined, allow_model_fallback: allowFallback, status: icebox ? 'ICEBOX' : undefined }));
         if (r) { onClose(); nav(`/items/${r.id}`); }
       }}>
-        <h2 style={{ margin: 0 }}>New {icebox ? 'icebox ' : ''}item</h2>
+        <h2 style={{ margin: 0 }}>New {icebox ? 'icebox ' : ''}{kind === 'epic' ? 'epic' : 'item'}</h2>
         {library.length > 0 && <select value={template} onChange={(e) => pick(e.target.value)} title="Start from a prompt in the library"><option value="">blank — or start from a prompt…</option>{library.map((p) => <option key={p.name} value={p.name}>{p.frontmatter.favorite === true ? '★ ' : ''}{p.frontmatter.title} ({p.name})</option>)}</select>}
         <input autoFocus placeholder="Title" value={title} onChange={(e) => setTitle(e.target.value)} required />
+        <KindChoice kind={kind} onChange={setKind} />
         <div className="row">
-          <select value={category} onChange={(e) => setCategory(e.target.value)}>{state?.config.categories.map((c) => <option key={c}>{c}</option>)}</select>
-          <select value={kind} onChange={(e) => setKind(e.target.value as 'item' | 'epic')}><option value="item">item</option><option value="epic">epic (integration branch)</option></select>
+          <select value={category} onChange={(e) => setCategory(e.target.value)} title="Category">{state?.config.categories.map((c) => <option key={c}>{c}</option>)}</select>
+          {kind === 'epic' && <select value={planner} onChange={(e) => setPlanner(e.target.value)} title="Who breaks it down (and, unless the breakdown says otherwise, plans its children)">{state?.config.models.filter(canPlan).map((m) => <option key={m.id} value={m.id}>planned by {m.label}</option>)}</select>}
           {kind === 'item' && <select value={implementer} onChange={(e) => setImplementer(e.target.value)} title="Who implements it (the planner stays the project default)">{state?.config.models.filter((m) => !m.external).map((m) => <option key={m.id} value={m.id}>{m.label}{(m.runner ?? 'claude') !== 'claude' ? ` (${m.runner})` : ''}</option>)}</select>}
           {kind === 'item' && epics.length > 0 && <select value={parent} onChange={(e) => setParent(e.target.value)}><option value="">no parent epic</option>{epics.map((e) => <option key={e.id} value={e.id}>{e.id} {e.frontmatter.title}</option>)}</select>}
         </div>

@@ -32,7 +32,7 @@ favorite: true
 | Role | Prompt | Sent when |
 |---|---|---|
 | `worker_system` | `worker-system`, `worker-system-codex` | Every worker turn: git scope, how to report. The engine picks by the model's runner. |
-| `plan` | `plan-item`, `plan-epic` | An item is planned; an epic's breakdown is planned. |
+| `plan` | `plan-item`, `plan-epic` | An item is planned; an epic's breakdown is planned. A plain item's planner is also told, in code (so a data dir's older copy of `plan-item` gets it too), to hand in a breakdown with `submit_breakdown` if the request is really an epic ([Item or epic](concepts.md#item-or-epic)). |
 | `implement` | `implement-plan` | The plan is approved. |
 | `ci_failed`, `rebase_conflict`, `commit_dirty_tree` | same names | CI is red; a sync conflicted; a turn ended with uncommitted changes. |
 | `resume_context` | `resume-context` | Prefixed to a turn that resumes a parked session. |

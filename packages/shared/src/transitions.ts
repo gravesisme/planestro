@@ -83,6 +83,31 @@ export function applyTransition(fm: ItemFrontmatter, to: Status, actor: Actor, f
   return next;
 }
 
+// ---- item ↔ epic (#69, HH-198) ----
+
+/**
+ * Where a kind can still change: nothing has run for implementation, so nothing is lost. An item can
+ * become an epic up to its plan's approval (it goes back to be broken down instead); an epic can become
+ * an item until its breakdown is approved, which is when its children and integration branch appear.
+ */
+export const CONVERTIBLE_FROM: Record<'item' | 'epic', readonly Status[]> = {
+  epic: ['NOT_YET_SUBMITTED', 'ICEBOX', 'QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY'],
+  item: ['NOT_YET_SUBMITTED', 'ICEBOX', 'PLAN_IN_PROGRESS', 'PLAN_READY'],
+};
+
+/** Why this item cannot be converted to `to` (an item to an epic or back), or null when it can. The page shows the button from the same answer. */
+export function kindConversionRefusal(fm: Pick<ItemFrontmatter, 'id' | 'kind' | 'status' | 'parent' | 'pr' | 'plan_approved_at' | 'taken_over' | 'op'>, to: 'item' | 'epic', children: number): string | null {
+  if ((fm.kind ?? 'item') === to) return `${fm.id} is already ${to === 'epic' ? 'an epic' : 'an item'}`;
+  if (fm.taken_over) return `${fm.id} is yours (taken over): hand it back first`;
+  if (to === 'item' && children) return `${fm.id} has ${children} child item${children === 1 ? '' : 's'}: an epic with children stays an epic`;
+  if (to === 'epic' && fm.parent) return `${fm.id} is a child of ${fm.parent}, and epics do not nest`;
+  if (fm.pr) return `${fm.id} has pull request #${fm.pr}: its work has run`;
+  if (fm.plan_approved_at) return `${fm.id}'s ${fm.kind === 'epic' ? 'breakdown' : 'plan'} was approved (${fm.plan_approved_at.slice(0, 16).replace('T', ' ')}): ${fm.kind === 'epic' ? 'its children and branch exist' : 'implementation has run'}`;
+  if (!CONVERTIBLE_FROM[to].includes(fm.status)) return `${fm.id} is ${fm.status}: only ${CONVERTIBLE_FROM[to].join(', ')} can become ${to === 'epic' ? 'an epic' : 'an item'}`;
+  if (fm.op) return `${fm.id} has a step running (${fm.op.replace(/_/g, ' ')}): convert it once that is done`;
+  return null;
+}
+
 // ---- derived values (never persisted) ----
 
 export type Lane = 'board' | 'icebox' | 'done';

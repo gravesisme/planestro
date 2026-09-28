@@ -75,6 +75,32 @@ An epic's children can be written by hand, or proposed by the planner: see
 when you **start** it; a childless epic is not offered **start**, and one started anyway
 (through the API) plans its breakdown instead, since nothing would ever drive it.
 
+### Item or epic
+
+The kind is chosen in the open: **New item** asks *Item* (one piece of work: one worker plans
+it, implements it and opens one pull request) or *Epic* (several shippable pieces: its planner
+breaks it into child items, each with its own worker and pull request, merged through an
+integration branch), and an epic can name who plans its breakdown.
+
+An epic created as an item by mistake is caught at plan review, by code rather than by a
+model: a plan on a plain item **reads as an epic** when its planner hands in children with
+`submit_breakdown` (a plain item's planner is told to, when the request is really several
+pieces) or when the plan itself lays out child items (a section headed as the children listing
+at least two, or a table with a *Child* column). The plan is flagged
+(`op_data.looks_like_epic`, with the reason), **Approve** is refused for you and for the
+orchestrator alike, and the item page shows the reason with **Convert to epic**. If it truly is
+one piece of work, request changes, or approve it as one item deliberately (**It is one item:
+approve anyway…**, yours only; the Activity log says so). A revised plan is judged again.
+
+**Convert to epic / to item** is on the item page while nothing has run for implementation:
+not submitted yet, queued, or planning with no approved plan (an epic: until its breakdown is
+approved and while it has no children). The description stays; the plan, or the breakdown and
+its proposed children, moves into **Notes**, which the new kind's planner reads. The planning
+worktree and branch are removed only on positive evidence that they hold nothing (a clean tree,
+nothing ahead of a freshly fetched base); work in them refuses the conversion. What was not
+submitted stays in the backlog; what was carries on as the new kind: an epic has its breakdown
+planned at once, an item is queued. It is committed as `HH-198: convert to epic`.
+
 ## Holds
 
 - **Review hold** — a model marked `hold_for_review` (art, typically) gets its pull request
@@ -167,7 +193,10 @@ The **Orchestrator** button in the corner of every page opens a chat. A message 
 your text and the current state, and it answers in the chat (its questions from other wakes
 show up there too, each linking to its own page: see [Its questions for you](#its-questions-for-you)). In a wake you started it may also add work for you: `create_item` adds a
 backlog item (queued only if you say so), and it refuses in any wake you did not start, so the
-orchestrator never adds work unasked. It resolves stopped items with the same tools it uses in
+orchestrator never adds work unasked. It chooses the `kind` (an **epic**, with its planner if you
+name one, for several separately shippable pieces; a submitted epic has its breakdown planned),
+and `convert_item` turns an item into an epic or back under the same rules as the button
+(see [Item or epic](#item-or-epic)). It resolves stopped items with the same tools it uses in
 triage (`unblock_item`, `retry_op`, …). The **Ask the orchestrator** button on a blocked item
 opens the chat about that item. While automation is paused it answers when you resume.
 
@@ -209,6 +238,12 @@ the orchestrator instead of on you, and the orchestrator does exactly one of thr
 - **leaves it to you** — a decision that is yours, real risk, a large rework, or it still
   wants changes after its fix rounds. The item turns into an ordinary `plan_approval`, with
   its reasons in the Activity log.
+
+A plan that [reads as an epic](#item-or-epic) is never approved by it: its wake says *this is
+an epic, not one item*, `approve_plan` refuses, and it converts the item (`convert_item`: the
+plan becomes the breakdown request, and you approve the children), asks for a plan without a
+child breakdown if it truly is one item, or leaves it to you. Without the delegation it only
+recommends the conversion in the Activity log.
 
 A review that fails, or ends without deciding, also lands on you; so does unticking the box
 while it is looking. You can approve or send back the plan yourself at any point. Leave the

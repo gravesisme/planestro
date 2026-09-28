@@ -195,10 +195,14 @@ export class DryRunClaudePort implements ClaudePort {
     this.w.log(`Would run an orchestrator wake (${o.label}) with ${o.model}${o.resume ? `, resuming ${o.resume.slice(0, 8)}` : ''}`);
     o.onOutput(`(dry-run) wake: ${o.prompt.slice(0, 120).replace(/\n/g, ' ')}…`);
     const approve = o.mcpTools.find((t) => t.name === 'approve_plan');
+    const convert = o.mcpTools.find((t) => t.name === 'convert_item');
     const approved: string[] = [];
     for (const packet of o.prompt.split('\n\n---\n\n')) {
       const id = /^Item: (\S+)/m.exec(packet)?.[1];
-      if (id && approve && packet.includes('Plan approval: DELEGATED TO YOU') && String(await approve.handler({ id, notes: 'dry-run: approved without reading' })) === 'approved') approved.push(id);
+      if (!id || !packet.includes('Plan approval: DELEGATED TO YOU')) continue;
+      // A plan that reads as an epic is converted, never approved (#69, HH-198).
+      if (packet.includes('THIS IS AN EPIC') && convert) { await convert.handler({ id, to: 'epic', reason: 'dry-run: the plan is an epic breakdown' }); continue; }
+      if (approve && String(await approve.handler({ id, notes: 'dry-run: approved without reading' })) === 'approved') approved.push(id);
     }
     // A chat message gets an answer, so the demo's chat is not a dead end.
     const said = /^message: (.*)$/m.exec(o.prompt)?.[1];
