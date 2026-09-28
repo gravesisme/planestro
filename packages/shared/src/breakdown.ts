@@ -58,3 +58,59 @@ export function dependencyOrder(children: readonly BreakdownChild[]): number[] {
   children.forEach((_c, i) => visit(i));
   return out;
 }
+
+// ---- a plan on a plain item that is really an epic's breakdown (#69, HH-198) ----
+
+/** A child the planner of a plain item proposed: carried to the epic planner as a starting point, never created from. */
+export interface ProposedChild { title: string; description?: string; implementer?: string; depends_on?: number[] }
+
+/**
+ * Why this plain item's plan must not be approved as one item: `breakdown` when its planner handed in
+ * children with submit_breakdown (the structural signal), `plan` when the plan's text lays out child
+ * items. Kept in `op_data.looks_like_epic` until the next plan replaces it.
+ */
+export interface EpicFlag { reason: string; source: 'breakdown' | 'plan'; children?: ProposedChild[] }
+
+export function epicFlagOf(fm: { kind?: string; op_data?: Record<string, unknown> }): EpicFlag | undefined {
+  const f = fm.op_data?.looks_like_epic as EpicFlag | undefined;
+  return fm.kind !== 'epic' && f && typeof f.reason === 'string' ? f : undefined;
+}
+
+/** A heading that names the child items themselves ("Children", "Child items", "Proposed sub-items", "Epic breakdown"), not one that merely mentions a child. */
+const CHILD_HEADING = /^(?:\d+[.)]\s*)?(?:(?:the|proposed|suggested)\s+)?(?:children|child\s+(?:items|issues|tickets|tasks)|sub-?items|epic\s+breakdown|breakdown\s+into\s+(?:child\s+)?items)\b/i;
+/** A table column that holds child items. */
+const CHILD_COLUMN = /^(?:#\s*)?(?:child|children|child\s+item|sub-?item)s?$/i;
+const cells = (row: string) => row.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.replace(/[*_`]/g, '').trim());
+const isSeparator = (row: string) => /^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/.test(row.trim());
+const plain = (s: string) => s.replace(/[*_`]/g, '').trim();
+
+/**
+ * Whether a plan handed in for a plain item reads as an epic's breakdown, and why; null when it does
+ * not. Code decides this, not a model (invariant 4). HH-198 and HH-199 were approved as items though
+ * their plans were whole breakdowns with Codex art children, and went to one implementer each. The
+ * check is narrow on purpose: a section headed as the children listing at least two, or a table with
+ * a child column and at least two rows. A plan that merely has steps is one item.
+ */
+export function epicShapeOf(plan: string): string | null {
+  const lines = plan.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const h = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(lines[i]);
+    if (h && CHILD_HEADING.test(plain(h[2]))) {
+      let entries = 0; let tableRows = 0;
+      for (let j = i + 1; j < lines.length; j++) {
+        const next = /^(#{1,6})\s/.exec(lines[j]);
+        if (next && next[1].length <= h[1].length) break;
+        if (/^(?:[-*+]|\d+[.)])\s+\S/.test(lines[j])) entries++;               // top-level entries only: a child's own sub-bullets are indented
+        else if (/^\s*\|/.test(lines[j]) && !isSeparator(lines[j])) tableRows++;
+      }
+      const n = Math.max(entries, tableRows - 1);                               // a table's first row is its header
+      if (n >= 2) return `its plan has a "${plain(h[2])}" section listing ${n} child items`;
+    }
+    if (/^\s*\|/.test(lines[i]) && i + 1 < lines.length && isSeparator(lines[i + 1]) && cells(lines[i]).some((c) => CHILD_COLUMN.test(c))) {
+      let rows = 0;
+      for (let j = i + 2; j < lines.length && /^\s*\|/.test(lines[j]); j++) rows++;
+      if (rows >= 2) return `its plan has a table of ${rows} child items`;
+    }
+  }
+  return null;
+}

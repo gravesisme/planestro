@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { applyTransition, findTransition, flavorOf, laneOf, needsYou, baseBranchOf, depsSatisfied, TRANSITIONS, allowedTransitions } from '../src/transitions.ts';
+import { applyTransition, findTransition, flavorOf, laneOf, needsYou, baseBranchOf, depsSatisfied, TRANSITIONS, allowedTransitions, kindConversionRefusal } from '../src/transitions.ts';
 import { STATUSES, type ItemFrontmatter } from '../src/schema.ts';
 
 const base: ItemFrontmatter = { schema: 1, id: 'HH-1', kind: 'item', title: 't', category: 'c', status: 'NOT_YET_SUBMITTED', depends_on: [], attachments: [], created_at: '2026-01-01T00:00:00+00:00', updated_at: '2026-01-01T00:00:00+00:00' };
@@ -65,5 +65,24 @@ describe('transitions', () => {
     expect(depsSatisfied({ depends_on: ['A'] }, lookup)).toBe(true);
     expect(depsSatisfied({ depends_on: ['A', 'B'] }, lookup)).toBe(false);
     expect(depsSatisfied({ depends_on: ['Z'] }, lookup)).toBe(false);
+  });
+});
+
+describe('item ↔ epic conversion (#69, HH-198)', () => {
+  const at = (over: Partial<ItemFrontmatter>) => ({ ...base, ...over });
+  it('is allowed while nothing has run for implementation', () => {
+    for (const status of ['NOT_YET_SUBMITTED', 'ICEBOX', 'QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY'] as const) expect(kindConversionRefusal(at({ status }), 'epic', 0), status).toBeNull();
+    for (const status of ['NOT_YET_SUBMITTED', 'ICEBOX', 'PLAN_IN_PROGRESS', 'PLAN_READY'] as const) expect(kindConversionRefusal(at({ kind: 'epic', status }), 'item', 0), status).toBeNull();
+  });
+  it('is refused, with the reason, once work or structure exists', () => {
+    expect(kindConversionRefusal(at({ status: 'IN_PROGRESS' }), 'epic', 0)).toMatch(/HH-1 is IN_PROGRESS: only NOT_YET_SUBMITTED, ICEBOX, QUEUED/);
+    expect(kindConversionRefusal(at({ status: 'ICEBOX', plan_approved_at: '2026-01-02T10:00:00+00:00' }), 'epic', 0)).toBe("HH-1's plan was approved (2026-01-02 10:00): implementation has run");
+    expect(kindConversionRefusal(at({ pr: 7 }), 'epic', 0)).toMatch(/pull request #7/);
+    expect(kindConversionRefusal(at({ kind: 'epic' }), 'item', 2)).toBe('HH-1 has 2 child items: an epic with children stays an epic');
+    expect(kindConversionRefusal(at({ kind: 'epic', status: 'IN_PROGRESS' }), 'item', 0)).toMatch(/is IN_PROGRESS/);
+    expect(kindConversionRefusal(at({ parent: 'HH-9' }), 'epic', 0)).toBe('HH-1 is a child of HH-9, and epics do not nest');
+    expect(kindConversionRefusal(at({ taken_over: { since: 'x' } }), 'epic', 0)).toMatch(/taken over/);
+    expect(kindConversionRefusal(at({ status: 'PLAN_IN_PROGRESS', op: 'creating_worktree' }), 'epic', 0)).toMatch(/step running \(creating worktree\)/);
+    expect(kindConversionRefusal(at({}), 'item', 0)).toBe('HH-1 is already an item');
   });
 });

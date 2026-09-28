@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateBreakdown, dependencyOrder, type BreakdownChild } from '../src/breakdown.ts';
+import { validateBreakdown, dependencyOrder, epicShapeOf, epicFlagOf, type BreakdownChild } from '../src/breakdown.ts';
 import { findTransition, applyTransition } from '../src/transitions.ts';
 import type { ItemFrontmatter } from '../src/schema.ts';
 
@@ -38,5 +38,28 @@ describe('epic breakdowns', () => {
     const base: ItemFrontmatter = { schema: 1, id: 'TP-1', kind: 'epic', title: 't', category: 'c', status: 'PLAN_IN_PROGRESS', depends_on: [], attachments: [], created_at: 'x', updated_at: 'x' };
     expect(applyTransition(base, 'PLAN_READY', 'engine', 'epic', 't1').awaiting).toBe('breakdown_approval');
     expect(applyTransition({ ...base, kind: 'item' }, 'PLAN_READY', 'engine', 'worker', 't1').awaiting).toBe('plan_approval');
+  });
+});
+
+describe('a plan on a plain item that is an epic breakdown (#69, HH-198)', () => {
+  it('is recognised by a section of children or a table with a child column, with the reason in words', () => {
+    expect(epicShapeOf('# Plan\n\n## Children\n\n- Wand icon (codex-art)\n  - 256px\n- Wand logic (fable-5)\n')).toBe('its plan has a "Children" section listing 2 child items');
+    expect(epicShapeOf('## Proposed child items\n1. Icon\n2. Header\n3. Logic\n')).toBe('its plan has a "Proposed child items" section listing 3 child items');
+    expect(epicShapeOf('### **Epic breakdown**\n| # | Piece | Who |\n|---|---|---|\n| 0 | Icon | art |\n| 1 | Code | claude |\n')).toBe('its plan has a "Epic breakdown" section listing 2 child items');
+    expect(epicShapeOf('Intro.\n\n| # | Child | Implementer | Depends on |\n|:--|---|---|---|\n| 0 | Icon | codex-art | — |\n| 1 | Logic | fable-5 | 0 |\n')).toBe('its plan has a table of 2 child items');
+    expect(epicShapeOf('| **Sub-item** | Owner |\n| --- | --- |\n| a | x |\n| b | y |\n')).toBe('its plan has a table of 2 child items');
+  });
+  it('is not fooled by an ordinary plan: steps, one child, a child mentioned in passing, a section that lists nothing', () => {
+    expect(epicShapeOf('# Plan\n\n## Steps\n1. a\n2. b\n3. c\n\n## Files\n| File | Change |\n|---|---|\n| a.ts | x |\n| b.ts | y |\n')).toBeNull();
+    expect(epicShapeOf('## Children\n- only one\n')).toBeNull();
+    expect(epicShapeOf('## Child process handling\n- spawn\n- kill\n')).toBeNull();
+    expect(epicShapeOf('## Children\nThe tree renders its children lazily.\n## Steps\n- a\n- b\n')).toBeNull();
+    expect(epicShapeOf('| Child | x |\n|---|---|\n| only | one |\n')).toBeNull();
+  });
+  it('is read from op_data, and never on an epic', () => {
+    const flag = { reason: 'r', source: 'plan' as const };
+    expect(epicFlagOf({ kind: 'item', op_data: { looks_like_epic: flag } })).toEqual(flag);
+    expect(epicFlagOf({ kind: 'epic', op_data: { looks_like_epic: flag } })).toBeUndefined();
+    expect(epicFlagOf({ kind: 'item', op_data: {} })).toBeUndefined();
   });
 });
