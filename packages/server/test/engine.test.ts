@@ -2177,3 +2177,84 @@ describe('starting an epic with no children (dogfood p56, LM-2)', () => {
     expect(world.remoteBranches.has('feature/crowded')).toBe(true);
   });
 });
+
+describe('dirty-tree reminders (dogfood p54, HH-215/HH-222)', () => {
+  /** An item whose implement turns run `turn(n, o, world)` (n counts implement turns from 1), planned and dirty, ahead of its base. */
+  async function dirtyWorld(turn: (n: number, o: TurnOptions, world: FakeWorld) => Promise<Partial<TurnResult>>) {
+    let n = 0;
+    const ctx = await setup({ claude: (world) => ({
+      async runTurn(o: TurnOptions): Promise<TurnResult> {
+        const ok = { sessionId: 's', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '' };
+        if (o.phase === 'plan') { await o.tools.submit_plan('# p'); return { ...ok, planSubmitted: '# p' }; }
+        n += 1;
+        return { ...ok, ...(await turn(n, o, world)) };
+      },
+    }) as unknown as Ports['agents']['claude'] });
+    const item = ctx.store.createItem({ title: 'D', description: 'x' });
+    ctx.store.transition(item.id, 'QUEUED', 'user');
+    await ctx.engine.start();
+    await waitFor(() => status(ctx.store, item.id) === 'PLAN_READY');
+    const cwd = (ctx.engine as any).absWorktree(ctx.store.getItem(item.id)!.file.frontmatter.worktree!);
+    ctx.world.commits.set(cwd, 1); ctx.world.dirty.add(cwd);
+    return { ...ctx, id: item.id, cwd, turns: () => n };
+  }
+  const reminders = (s: DataStore, id: string) => activityOf(s, id).match(/worktree dirty after turn/g)?.length ?? 0;
+  const done = async (o: TurnOptions) => { await o.tools.report_done('did it'); return { done: 'did it' }; };
+
+  it('an unblock starts the reminder count again: the resumed session is reminded before another block', async () => {
+    const ctx = await dirtyWorld(async (n, o, world) => { if (n === 5) world.dirty.delete(o.cwd); return done(o); });
+    await ctx.engine.approvePlan(ctx.id);
+    await waitFor(() => ctx.store.getItem(ctx.id)!.file.frontmatter.blocked_reason === 'dirty_tree');
+    expect(ctx.turns()).toBe(3); // the turn and its two reminders
+    await ctx.engine.unblock(ctx.id, 'commit or remove the stray files', 'orchestrator');
+    await waitFor(() => status(ctx.store, ctx.id) === 'FINISHED' || ctx.store.getItem(ctx.id)!.file.frontmatter.blocked === true, 8000);
+    expect(ctx.store.getItem(ctx.id)!.file.frontmatter.blocked).toBeUndefined();
+    expect(status(ctx.store, ctx.id)).toBe('FINISHED');
+    expect(ctx.turns()).toBe(5); // the resumed turn was reminded, not re-blocked at once
+    expect(activityOf(ctx.store, ctx.id).split('unblocked: commit or remove')[1]).toMatch(/worktree dirty after turn/);
+  });
+
+  it('a clean turn ends the count', async () => {
+    const ctx = await dirtyWorld(async (n, o, world) => { if (n === 2) world.dirty.delete(o.cwd); return done(o); });
+    ctx.store.mutateItem(ctx.id, [{ set: { skip_merge: true } }], 'user'); // held: it stays in review, op_data and all
+    await ctx.engine.approvePlan(ctx.id);
+    await waitFor(() => status(ctx.store, ctx.id) === 'IN_REVIEW', 8000);
+    expect(reminders(ctx.store, ctx.id)).toBe(1);
+    expect(ctx.store.getItem(ctx.id)!.file.frontmatter.op_data?.dirty_tree_turns).toBeUndefined();
+  });
+
+  it('a reminder turn that parks on its `rm` and reports done keeps the request: its approval cleans the tree', async () => {
+    const ctx = await dirtyWorld(async (n, o, world) => {
+      if (n === 2) { expect((await o.onPermission({ tool: 'Bash', input: { command: 'rm stray.txt' } })).action).toBe('park'); return { ...(await done(o)), parked: 'permission' }; }
+      if (n === 3) world.dirty.delete(o.cwd);
+      return done(o);
+    });
+    await ctx.engine.approvePlan(ctx.id);
+    await waitFor(() => ctx.turns() >= 2 && !ctx.engine.sessions().length);
+    await sleep(150);
+    const fm = ctx.store.getItem(ctx.id)!.file.frontmatter;
+    expect(fm.blocked).toBeUndefined();
+    expect(fm.awaiting).toBe('permission');
+    expect(fm.op_data?.dirty_tree_turns).toBe(1); // the parked turn spent no reminder
+    await ctx.engine.respond(ctx.id, { kind: 'permission', decision: 'allow' });
+    await waitFor(() => status(ctx.store, ctx.id) === 'FINISHED', 8000);
+    expect(ctx.turns()).toBe(3);
+    expect(reminders(ctx.store, ctx.id)).toBe(1);
+  });
+
+  it('a turn that parked and was answered before it ended is not judged: the answer\'s turn is', async () => {
+    const ctx = await dirtyWorld(async (n, o, world) => {
+      if (n === 2) {
+        expect((await o.onPermission({ tool: 'Bash', input: { command: 'rm stray.txt' } })).action).toBe('park');
+        await engine!.respond(o.itemId, { kind: 'permission', decision: 'allow' }, 'orchestrator');
+        return { ...(await done(o)), parked: 'permission' };
+      }
+      if (n === 3) world.dirty.delete(o.cwd);
+      return done(o);
+    });
+    await ctx.engine.approvePlan(ctx.id);
+    await waitFor(() => status(ctx.store, ctx.id) === 'FINISHED', 8000);
+    expect(ctx.turns()).toBe(3);
+    expect(reminders(ctx.store, ctx.id)).toBe(1);
+  });
+});
