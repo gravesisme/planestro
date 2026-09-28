@@ -906,8 +906,12 @@ export class LiveEngine implements Engine {
   private async afterTurn(id: string, phase: TurnPhase, result: TurnResult): Promise<void> {
     let fm = this.store.requireItem(id).file.frontmatter;
     // A permission request followed by report_done/submit_plan in the same turn is stale:
-    // the worker proceeded without it. Clear it instead of stalling on a moot prompt.
-    if ((fm.awaiting === 'permission' || (fm.awaiting === 'orchestrator' && fm.awaiting_data?.kind === 'permission')) && (result.done || result.planSubmitted)) {
+    // the worker proceeded without it. Clear it instead of stalling on a moot prompt. Not while the
+    // tree is dirty and nobody commits for it: then the request (often the `rm` of stray files) is
+    // what cleans it, and clearing it judged the tree before it could run (dogfood p54, HH-222).
+    const pendingPermission = fm.awaiting === 'permission' || (fm.awaiting === 'orchestrator' && fm.awaiting_data?.kind === 'permission');
+    const neededToClean = pendingPermission && result.done && phase !== 'plan' && fm.worktree && !this.commitsFor(fm) && !(await this.worktreeDirt(this.absWorktree(fm.worktree))).clean;
+    if (pendingPermission && (result.done || result.planSubmitted) && !neededToClean) {
       this.store.mutateItem(id, [{ unset: ['awaiting', 'awaiting_data'] }, { activity: { actor: 'app', text: 'cleared a stale permission request (the turn finished its work without it)' } }], 'engine');
       fm = this.store.requireItem(id).file.frontmatter;
     }
@@ -981,6 +985,17 @@ export class LiveEngine implements Engine {
     catch (e) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `could not commit the session's work for it: ${(e as Error).message.slice(0, 200)}` } }], 'engine'); return undefined; }
   }
 
+  /**
+   * op_data without the dirty-tree reminder count (the same object when there is none). The count is
+   * spent per stretch of dirty turns: a clean turn, an unblock, a retry or a hand-back starts it again,
+   * or one more turn end re-blocked an item seconds after it was unblocked (dogfood p54, HH-215).
+   */
+  private static withoutDirtyCount<T extends Record<string, unknown> | undefined>(opData: T): T {
+    if (opData?.dirty_tree_turns === undefined) return opData;
+    const { dirty_tree_turns: _spent, ...rest } = opData;
+    return rest as T;
+  }
+
   /** Deterministic "is it really done": clean tree + commits ahead of the base. */
   private async afterWorkTurn(id: string, phase: TurnPhase, result: TurnResult): Promise<void> {
     const item = this.store.requireItem(id);
@@ -995,6 +1010,9 @@ export class LiveEngine implements Engine {
       const head = await this.commitForWorker(id, summary);
       if (head) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `committed the session's work for it (${head.slice(0, 7)}, ${dirty.length} file${dirty.length === 1 ? '' : 's'}): its model's commits are planestro's (engine_commits)` } }], 'engine'); ({ clean, dirty } = await this.worktreeDirt(cwd)); }
     }
+    // A turn that parked on a permission or question is not judged: its answer's turn, queued
+    // behind it, is the one that can clean the tree, so no reminder is spent on it (dogfood p54, HH-222).
+    if (!clean && result.parked) return;
     if (!clean) {
       const tries = Number(fm.op_data?.dirty_tree_turns ?? 0) + 1;
       if (tries > 2) { this.block(id, 'dirty_tree', `the worktree still has uncommitted changes after ${tries - 1} reminders: ${dirty.slice(0, 5).join(', ')}`); return; }
@@ -1002,6 +1020,8 @@ export class LiveEngine implements Engine {
       await this.runTurnFor(id, phase, this.store.renderPrompt('commit-dirty-tree', item, { dirty_files: dirty.join('\n') }));
       return;
     }
+    const opData = LiveEngine.withoutDirtyCount(fm.op_data);
+    if (opData !== fm.op_data) this.store.mutateItem(id, [{ set: { op_data: opData } }], 'engine'); // clean: the next dirty turn gets its reminders afresh
     await this.ports.git.fetch(this.repo);
     const { ahead } = await this.ports.git.aheadBehind(cwd, `origin/${base}`, 'HEAD');
     if (fm.status === 'IN_PROGRESS') {
@@ -1017,7 +1037,7 @@ export class LiveEngine implements Engine {
       const moved = head !== fm.ci_head_sha;
       const held = Boolean(fm.skip_merge);
       this.store.mutateItem(id, [
-        { set: { ci_result: 'pending', op_data: { ...(fm.op_data ?? {}), needs_session_rebase: false } } },
+        { set: { ci_result: 'pending', op_data: { ...(opData ?? {}), needs_session_rebase: false } } },
         { activity: { actor: 'app', text: moved ? `session updated the branch (${head.slice(0, 7)}); ${held ? 'held, so it is pushed for CI and review but not merged' : 're-entering the merge pipeline'}` : 'session finished without changing the branch; re-checking' } },
       ], 'engine');
       this.heldPolledAt.delete(id);
@@ -2164,12 +2184,13 @@ export class LiveEngine implements Engine {
     if (fm.awaiting && fm.awaiting !== 'user') return `not now: ${id} is awaiting ${fm.awaiting}; answer that instead`;
     const busy = this.busyWith(id); if (busy) return `not now: ${busy}`;
     const reason = fm.blocked_reason ?? 'blocked';
-    const clear = (text: string, extra: ItemOp[] = []): void => { this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, ...extra, { activity: { actor: by, text } }], by, { commit: `${id}: retry${by === 'orchestrator' ? ' (orchestrator)' : ''}` }); };
+    const opData = LiveEngine.withoutDirtyCount(fm.op_data);
+    const clear = (text: string, extra: ItemOp[] = []): void => { this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, ...(opData !== fm.op_data ? [{ set: { op_data: opData } } as ItemOp] : []), ...extra, { activity: { actor: by, text } }], by, { commit: `${id}: retry${by === 'orchestrator' ? ' (orchestrator)' : ''}` }); };
     const resume = by === 'orchestrator'
       ? `The last step stopped on a transient failure (${reason}), which has been retried. Nothing of yours was lost: check your worktree and continue where you left off.`
       : `The user unblocked this item (it had stopped: ${reason}). Nothing of yours was lost: check your worktree and continue where you left off.`;
     // A conflict once handed to a session that never finished it is the pipeline's again: it re-syncs, and a conflict comes back to a session.
-    if (fm.status === 'IN_REVIEW') { clear(`retrying the merge pipeline after ${reason}`, [{ set: { ci_result: 'pending', op_data: { ...(fm.op_data ?? {}), needs_session_rebase: false } } }]); this.poke(); return 'retrying: it re-enters the merge pipeline'; }
+    if (fm.status === 'IN_REVIEW') { clear(`retrying the merge pipeline after ${reason}`, [{ set: { ci_result: 'pending', op_data: { ...(opData ?? {}), needs_session_rebase: false } } }]); this.poke(); return 'retrying: it re-enters the merge pipeline'; }
     if (fm.status === 'MERGED') { clear(`retrying cleanup after ${reason}`); this.runJob(id, () => this.cleanup(id)); return 'retrying the cleanup (it still needs positive evidence before deleting anything)'; }
     if (this.store.derived(item).flavor !== 'worker' || !fm.worktree) return `not possible: nothing in ${fm.status} to retry for ${id}; use unblock_item`;
     const dir = this.absWorktree(fm.worktree);
@@ -2546,7 +2567,8 @@ export class LiveEngine implements Engine {
       const r = await this.retryOp(id, by);
       if (!/^(not possible|nothing to retry|not now)/.test(r)) return;
     }
-    this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, { activity: { actor: by, text: `unblocked${message ? `: ${message}` : ''}` } }], by, { commit: `${id}: unblock${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
+    const opData = LiveEngine.withoutDirtyCount(fm.op_data);
+    this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, ...(opData !== fm.op_data ? [{ set: { op_data: opData } } as ItemOp] : []), { activity: { actor: by, text: `unblocked${message ? `: ${message}` : ''}` } }], by, { commit: `${id}: unblock${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
     const phase = this.phaseFor(fm.status);
     if (message && phase) this.queueFollowUp(id, () => this.runTurnFor(id, phase, `${this.resumeNote(id, by === 'orchestrator' ? 'the orchestrator' : 'a decision from the user')}\n\n${message}`));
     // p50: a merged item that stopped in cleanup (a worktree removal failed) retries it now, the path reconcile takes
@@ -2765,9 +2787,11 @@ export class LiveEngine implements Engine {
     const inReview = fm.status === 'IN_REVIEW' && Boolean(fm.pr);
     const carryOn = ['PLAN_IN_PROGRESS', 'IN_PROGRESS'].includes(fm.status) && Boolean(fm.worktree);
     const next = inReview ? 'it re-enters the merge pipeline' : carryOn ? 'planestro carries on from where the work stands' : fm.status === 'MERGED' ? 'its merged branch is cleaned up' : 'planestro drives it again';
+    const opData = LiveEngine.withoutDirtyCount(fm.op_data);
     this.store.mutateItem(id, [
       { unset: ['taken_over'] },
-      ...(inReview ? [{ set: { ci_result: 'pending', op_data: { ...(fm.op_data ?? {}), needs_session_rebase: false } } } as ItemOp] : []),
+      ...(opData !== fm.op_data ? [{ set: { op_data: opData } } as ItemOp] : []),
+      ...(inReview ? [{ set: { ci_result: 'pending', op_data: { ...(opData ?? {}), needs_session_rebase: false } } } as ItemOp] : []),
       { activity: { actor: 'user', text: `handed back to planestro${said}; ${next}` } },
     ], 'user', { commit: `${id}: hand back` });
     // queued, not dropped: the turn the take-over stopped may still be winding down
