@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { Config, LocalConfig, AWAITING, blockHelp } from '@planestro/shared';
+import { Config, LocalConfig, AWAITING, blockHelp, SETTINGS, NOT_USER_FACING } from '@planestro/shared';
 
 const ROOT = resolve(import.meta.dirname, '..', '..', '..');
 const doc = (name: string) => readFileSync(join(ROOT, 'docs', name), 'utf8');
@@ -20,6 +20,18 @@ describe('the manual cannot drift from the code', () => {
     const page = doc('configuration.md');
     const missing = [...keysOf(Config), ...keysOf(LocalConfig)].filter((k) => !page.includes(`\`${k}\``));
     expect(missing).toEqual([]);
+  });
+
+  it('every configuration key is on the Settings page, or deliberately left off it', () => {
+    // A registry row covers its own key and everything under it (the model editor covers models.*).
+    for (const [file, schema] of [['config', Config], ['local', LocalConfig]] as const) {
+      const rows = SETTINGS.filter((s) => s.file === file);
+      const covered = (k: string) => rows.some((s) => s.key === k || k.startsWith(`${s.key}.`) || s.covers?.includes(k)) || NOT_USER_FACING[file].some((n) => n === k || k.startsWith(`${n}.`));
+      const keys = keysOf(schema);
+      expect(keys.filter((k) => !covered(k)), `${file}: keys with no Settings row`).toEqual([]);
+      // …and no row names a key the schema no longer has.
+      expect(rows.filter((s) => !keys.some((k) => k === s.key || k.startsWith(`${s.key}.`))).map((s) => s.key), `${file}: rows for keys that are gone`).toEqual([]);
+    }
   });
 
   it('every blocked_reason the engine can raise, and every awaiting value, is explained', () => {
