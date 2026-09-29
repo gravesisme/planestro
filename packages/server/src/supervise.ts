@@ -3,6 +3,7 @@ import { watch, existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync }
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EXIT_DATA_DIR_IN_USE, EXIT_PORT_IN_USE } from './exitCodes.ts';
+import { checkForUpdate, readUpdateSettings } from './autoUpdate.ts';
 
 export interface SuperviseOptions { dataDir: string; serveArgs: string[]; host: string; port: number; open?: boolean; log?: (m: string) => void }
 
@@ -152,8 +153,10 @@ export async function supervise(o: SuperviseOptions): Promise<void> {
   const pending = new Set<string>();
   let timer: NodeJS.Timeout | undefined;
   let working = false;
+  // An update (#103) moves the checkout under the watcher: its changes wait until npm ci is done, then restart as one.
+  let updating = false;
   const work = async () => {
-    if (working || stopping) return;
+    if (working || stopping || updating) return;
     working = true;
     try {
       while (pending.size && !stopping) {
@@ -189,9 +192,24 @@ export async function supervise(o: SuperviseOptions): Promise<void> {
     watch(abs, { recursive: true }, (_event, file) => changed(file && !rel.endsWith('.html') ? `${rel}/${String(file).replace(/\\/g, '/')}` : rel));
   }
 
-  const shutdown = async () => { if (stopping) return; stopping = true; clearTimeout(timer); await stop(); releaseSupervisorLock(o.dataDir); process.exit(0); };
+  const shutdown = async () => { if (stopping) return; stopping = true; clearTimeout(timer); clearTimeout(updateTimer); await stop(); releaseSupervisorLock(o.dataDir); process.exit(0); };
   process.once('SIGINT', () => void shutdown());
   process.once('SIGTERM', () => void shutdown());
+
+  // Keep this checkout current (#103), re-reading planestro.local.yml each time so a change in Settings needs no restart.
+  const poll = async () => {
+    if (stopping) return;
+    const settings = readUpdateSettings(o.dataDir);
+    if (settings.channel !== 'off' && !working) {
+      updating = true;
+      try {
+        const s = await checkForUpdate({ root: ROOT, dataDir: o.dataDir, log });
+        if (s.state === 'refused' || s.state === 'error') log(`update: ${s.detail}`);
+      } finally { updating = false; if (pending.size) void work(); }
+    } else if (settings.channel === 'off') await checkForUpdate({ root: ROOT, dataDir: o.dataDir }).catch(() => undefined);
+    if (!stopping) updateTimer = setTimeout(() => void poll(), (settings.channel === 'off' ? 5 : settings.poll_min) * 60_000);
+  };
+  let updateTimer: NodeJS.Timeout | undefined = setTimeout(() => void poll(), 30_000);
 
   start();
   void confirmUp();

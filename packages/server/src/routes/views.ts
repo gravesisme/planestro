@@ -1,4 +1,5 @@
 import { getSection, parseActivity, serializePromptFile, releaseCandidates, getQuestionSection, parseThread, billingMode, type Status, type LocalConfig } from '@planestro/shared';
+import { readUpdateStatus } from '../autoUpdate.ts';
 import type { DataStore, StoredItem, StoredPrompt, StoredRelease, StoredQuestion } from '../store/DataStore.ts';
 
 /** JSON shape of an item as the UI sees it: frontmatter + sections + derived values. */
@@ -84,6 +85,8 @@ export function stateView(store: DataStore, engine: { mode: string; paused: bool
     prompts: store.listPrompts().map(promptView),
     releases: store.listReleases().map((r) => releaseView(store, r)),
     invalid: store.invalid,
+    /** What serve --watch last found when it looked for a newer planestro (#103); absent when it never has. */
+    update: readUpdateStatus(store.dataDir) ?? null,
     engine: { mode: engine.mode, paused: engine.paused, ...guardView(store, engine.paused), sessions: engine.sessions(), ...(engine.restartReadiness ? { restart: engine.restartReadiness() } : {}) },
     git,
     statuses: ['NOT_YET_SUBMITTED', 'QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW', 'MERGED', 'FINISHED', 'ICEBOX'] satisfies Status[],

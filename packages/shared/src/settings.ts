@@ -191,6 +191,11 @@ export const SETTINGS: readonly SettingDef[] = [
   // ---- This machine
   L({ key: 'code_repo_path', group: 'Paths', label: 'Code repository', summary: 'Where the repository is on this computer, if not where planestro.yml says.', control: 'text', mono: true, restart: true }),
   L({ key: 'worktrees_root', group: 'Paths', label: 'Worktrees folder', summary: 'Where worktrees go on this computer.', control: 'text', mono: true, restart: true }),
+  L({ key: 'update.channel', group: 'Updates', label: 'Keep planestro up to date', summary: "With serve --watch: move this machine's planestro checkout to the newest main commit whose CI passed, then restart between turns.", control: 'select',
+    options: [{ value: 'off', label: 'Off (update it by hand)' }, { value: 'main-green', label: 'Newest main that passed CI' }],
+    detail: ['Only the planestro checkout moves (the folder serve --watch runs from), never your data. It is refused when that checkout has local changes or is not behind origin/main, so a development tree is never touched.', 'Dependencies are reinstalled when the lockfile changed; the restart waits for running turns, as for any update. The Console shows what it is running and what it is waiting for.'] }),
+  L({ key: 'update.poll_min', group: 'Updates', label: 'Check every', summary: 'How often to look for a newer commit.', control: 'number', unit: 'min', min: 1 }),
+  L({ key: 'update.min_age_hours', group: 'Updates', label: 'Soak time', summary: 'Take a commit only after its CI has been green this long. Give one project a few hours so it trails the other.', control: 'number', unit: 'h', min: 0 }),
   L({ key: 'claude_bin', group: 'Programs', label: 'Claude Code', summary: 'Which claude the sessions run. Empty: the newer of the one on PATH and the one the SDK bundles.', control: 'text', mono: true, placeholder: 'claude (on PATH)', restart: true,
     detail: ['A path uses that executable; bundled forces the SDK\'s own. A new model can need a newer CLI; startup logs which one is used.'] }),
   L({ key: 'codex_bin', group: 'Programs', label: 'Codex', summary: 'Only used by models with runner codex.', control: 'text', mono: true, placeholder: 'codex (on PATH)', restart: true }),

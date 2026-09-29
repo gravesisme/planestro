@@ -45,6 +45,7 @@ export function ConsolePage() {
       </div>
       <div className="section"><h2>Maintenance</h2>
         <RestartPrep />
+        <UpdateLine />
         <div className="row"><button onClick={async () => { const r = await act(() => api.reconcile()); if (r) setReconcileOut(r.corrections); }}>Reconcile now</button><span className="muted small">Cross-checks items against git, worktrees, GitHub and CI.</span></div>
         {reconcileOut && <pre className="events">{reconcileOut.length ? reconcileOut.join('\n') : 'everything matches'}</pre>}
       </div>
@@ -113,6 +114,18 @@ function QuestionRow({ q, canAsk }: { q: QuestionView; canAsk: boolean }) {
 export function ago(iso: string, now = Date.now()): string {
   const m = Math.max(0, Math.round((now - Date.parse(iso)) / 60_000));
   return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 48 * 60 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`;
+}
+
+/** What planestro this server runs and what serve --watch last found when it looked for a newer one (#103). */
+function UpdateLine() {
+  const u = useStore((s) => s.state?.update);
+  if (!u) return null;
+  const at = new Date(u.checked_at);
+  return (
+    <p className="small muted" style={{ margin: '0 0 10px' }} title={`Settings → This machine → Updates. Last checked ${at.toLocaleString()}.`}>
+      planestro <code>{u.running.slice(0, 7)}</code> · updates {u.channel === 'off' ? 'off' : 'on (newest main that passed CI)'}{u.channel !== 'off' ? <> · {u.detail} <span>({at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})</span></> : null}
+    </p>
+  );
 }
 
 /** Getting ready to restart planestro: nothing new starts, what runs finishes, and this says when nothing is left. */
