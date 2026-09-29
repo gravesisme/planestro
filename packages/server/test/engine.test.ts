@@ -1709,6 +1709,30 @@ describe('orchestrator', () => {
   });
 });
 
+describe('reconcile and the merge queue in the same second (LM-22)', () => {
+  it('a PR the merge queue is merging is not "merged outside planestro"; a status that moved during the check is left alone', async () => {
+    const { store, engine, world } = await setup();
+    const it1 = store.createItem({ title: 'Trees' });
+    store.mutateItem(it1.id, [{ set: { status: 'IN_REVIEW' } }, { set: { pr: 51, branch: 'tp/1-trees', ci_result: 'green' } }], 'engine');
+    world.prs.set(51, { number: 51, url: 'u', state: 'MERGED', headRefOid: world.sha(), headRefName: 'tp/1-trees', baseRefName: 'trunk', polls: 9, failOnce: false } as any);
+    // the merge job is in flight for it
+    let release!: () => void;
+    (engine as any).jobs.set(it1.id, new Promise<void>((r) => { release = r; }));
+    let out = await engine.reconcile('manual');
+    expect(out.some((c) => c.startsWith(`${it1.id}:`))).toBe(false);
+    expect(status(store, it1.id)).toBe('IN_REVIEW');
+    release(); (engine as any).jobs.delete(it1.id);
+    // the merge job moves it to MERGED while reconcile waits on GitHub
+    const gh = (engine as any).ports.gh; const inner = gh.prView.bind(gh);
+    gh.prView = async (...a: unknown[]) => { const pr = await inner(...a); store.mutateItem(it1.id, [{ transition: { to: 'MERGED', actor: 'engine' } }], 'engine'); return pr; };
+    out = await engine.reconcile('manual');
+    expect(out.some((c) => c.includes('merged outside planestro') || c.includes('reconcile error'))).toBe(false);
+    const fm = store.getItem(it1.id)!.file.frontmatter;
+    expect(fm.status).toBe('MERGED');
+    expect(fm.blocked).toBeUndefined();
+  });
+});
+
 describe('reconciler (chaos: crash markers left on disk)', () => {
   it('converges stale ops, adopts pre-crash PRs, observes external merges, blocks on missing worktrees, reports orphans', async () => {
     const { store, engine, world } = await setup();

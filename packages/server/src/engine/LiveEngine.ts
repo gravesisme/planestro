@@ -1681,8 +1681,13 @@ export class LiveEngine implements Engine {
           }
         }
         // pull request truth
-        if (fm.pr && github && (fm.status === 'IN_REVIEW' || fm.status === 'MERGED' || fm.status === 'IN_PROGRESS')) {
+        // Not while a job or turn drives the item: the merge queue merging it is not "merged outside planestro".
+        if (fm.pr && github && (fm.status === 'IN_REVIEW' || fm.status === 'MERGED' || fm.status === 'IN_PROGRESS') && !this.jobs.has(id) && !this.turns.has(id)) {
           const pr = await this.ports.gh.prView(github, fm.pr).catch(() => undefined);
+          // The item as it is after that wait, not as it was read before it: LM-22's merge job moved it to MERGED in the
+          // same second, and the stale IN_REVIEW read tried MERGED → MERGED and blocked a finished item as engine_error.
+          const now = this.store.getItem(id)?.file.frontmatter;
+          if (!now || now.status !== fm.status || this.jobs.has(id) || this.turns.has(id)) continue;
           if (pr?.state === 'MERGED' && (fm.status === 'IN_REVIEW' || fm.status === 'IN_PROGRESS')) {
             if (fm.status === 'IN_PROGRESS') this.store.mutateItem(id, [{ transition: { to: 'IN_REVIEW', actor: 'engine' } }], 'engine');
             correct(id, `PR #${fm.pr} was merged outside planestro`, [{ transition: { to: 'MERGED', actor: 'engine' } }, { set: { merged_at: pr.mergedAt ? isoLocal(new Date(pr.mergedAt)) : this.now(), ci_result: 'green' } }]);
