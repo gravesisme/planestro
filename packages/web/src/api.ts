@@ -1,10 +1,14 @@
 import type { ItemFrontmatter, PromptFrontmatter, ReleaseFrontmatter, ReleaseStatus, Config, LocalConfig, BillingMode, ModelDef, Status, JournalEntry, UsageGuardState, QuestionFrontmatter, ThreadEntry } from '@planestro/shared';
 import type { BreakdownChild } from '@planestro/shared';
 
+export interface ParkSummary { item: string; parks: number; waited_ms: number; resume_cost: number; open: number; shapes: { shape: string; parks: number; rule?: string }[] }
+
 export interface ItemView {
   id: string; path: string; frontmatter: ItemFrontmatter;
   sections: { Description: string; Notes: string; Plan: string; Activity: string };
   activity: { at: string; actor: string; text: string }[];
+  /** A parked Bash request whose kind of command this item has parked on before: the allow rule that would have let it run (#108). */
+  park_hint?: { shape: string; parks: number; rule: string } | null;
   derived: { lane: 'board' | 'icebox' | 'done'; needs_you: boolean; external: boolean; flavor: 'worker' | 'epic' | 'external'; base_branch?: string; base_branch_error?: string; deps_satisfied: boolean; children: string[] };
 }
 export interface ReviewImage { path: string; change: 'added' | 'modified' | 'deleted'; bytes?: number; width?: number; height?: number; kind?: 'image' | 'audio' | 'model' }
@@ -88,6 +92,7 @@ export const api = {
   drain: () => req<{ draining: boolean; idle: boolean; running: string[] }>('POST', '/api/engine/drain'),
   undrain: () => req<{ draining: boolean; idle: boolean; running: string[] }>('DELETE', '/api/engine/drain'),
   resume: () => req<{ paused: boolean }>('POST', '/api/engine/resume'),
+  parks: () => req<ParkSummary[]>('GET', '/api/parks'),
   journal: (q: { item?: string; limit?: number }) => req<JournalEntry[]>('GET', `/api/journal?${new URLSearchParams(Object.entries(q).filter(([, v]) => v !== undefined).map(([k, v]) => [k, String(v)]))}`),
   reload: () => req<{ ok: true }>('POST', '/api/reload'),
   reconcile: () => req<{ corrections: string[] }>('POST', '/api/reconcile'),

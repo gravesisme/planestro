@@ -5,6 +5,7 @@ import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote } from './ports.ts';
 import { makePolicy, ruleFor, allowedByRules, sdkRules, BASE_ALLOWED } from './policy.ts';
+import { commandShape } from './parks.ts';
 import { hostNote, keptPathsNote, cwdNote } from './hostNote.ts';
 import { Orchestrator } from './orchestrator.ts';
 import { pngSize } from './placeholderPng.ts';
@@ -766,6 +767,7 @@ export class LiveEngine implements Engine {
       if (fm.awaiting !== 'question') throw new Error(`${id} is not awaiting a question`);
       const answers = payload.answers as Record<string, string>;
       const text = Object.entries(answers).map(([q, a]) => `- Q: ${q}\n  A: ${a}`).join('\n');
+      this.recordAnswer(id, fm, by, 'answered');
       this.store.mutateItem(id, [{ unset: ['awaiting', 'awaiting_data', 'triage'] }, { activity: { actor: by, text: `answered: ${Object.values(answers).join(' / ')}` } }], by, { commit: `${id}: answer questions${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
       this.queueFollowUp(id, () => this.runTurnFor(id, phase, `${this.resumeNote(id, 'your questions')}\n\nAnswers to your questions:\n\n${text}\n\nContinue.`));
       return;
@@ -785,6 +787,7 @@ export class LiveEngine implements Engine {
       else if (decision !== 'deny' && Number(fm.op_data?.orchestrator_denials ?? 0) > 0) ops.push({ set: { op_data: { ...(fm.op_data ?? {}), orchestrator_denials: 0 } } });
       if (decision === 'always' && !this.store.config.permissions.allow.includes(rule)) this.store.updateConfig((doc) => { doc.setIn(['permissions', 'allow'], [...this.store.config.permissions.allow, rule]); }, `config: always allow ${rule.slice(0, 60)}`);
       this.store.mutateItem(id, ops, by, { commit: `${id}: permission ${decision}${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
+      this.recordAnswer(id, fm, by, decision);   // after: those ops write op_data from the snapshot, which would drop the resume tag
       const desc = req.tool === 'Bash' ? `\`${String(req.input.command)}\`` : `${req.tool} ${JSON.stringify(req.input).slice(0, 200)}`;
       const msg = decision === 'deny'
         ? `${this.resumeNote(id, 'a permission decision')}\n\n${who} denied ${desc}${payload.reason ? `: ${payload.reason}` : ''}. Continue without it, or call report_blocked if you cannot.`
@@ -798,6 +801,23 @@ export class LiveEngine implements Engine {
       return;
     }
     throw new Error(`unknown response kind ${String(payload.kind)}`);
+  }
+
+  /** A park begins (#108): journaled with what was asked, its kind of command and who it went to. Returns its id. */
+  private recordPark(id: string, kind: 'permission' | 'question', what: string, asked: 'user' | 'orchestrator'): string {
+    const park = `park-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const shape = kind === 'permission' ? commandShape(what) : undefined;
+    this.store.journal.append({ type: 'permission.parked', item: id, actor: 'engine', data: { park, kind, what: what.slice(0, 300), ...(shape ? { shape } : {}), asked } });
+    return park;
+  }
+
+  /** A park is answered (#108): who, how, after how long; the turn it resumes is tagged with it (runTurnFor). */
+  private recordAnswer(id: string, fm: ItemFrontmatter, by: string, decision: string): void {
+    const park = typeof fm.awaiting_data?.park === 'string' ? fm.awaiting_data.park : undefined;
+    if (!park) return;
+    const since = Date.parse(String(fm.awaiting_data?.requested_at ?? ''));
+    this.store.journal.append({ type: 'permission.answered', item: id, actor: by, data: { park, by, decision, waited_ms: Number.isFinite(since) ? Math.max(0, Date.now() - since) : 0 } });
+    this.store.mutateItem(id, [{ set: { op_data: { ...(this.store.requireItem(id).file.frontmatter.op_data ?? {}), resume_park: park } } }], 'engine');
   }
 
   private phaseFor(status: Status): TurnPhase | null {
@@ -936,7 +956,10 @@ export class LiveEngine implements Engine {
     // Where the branch stood, so a turn that fails after committing is still checked (below).
     const headBefore = phase === 'plan' ? undefined : await this.ports.git.revParse(cwd, 'HEAD').catch(() => undefined);
     const abort = new AbortController();
-    const opId = this.store.journal.begin(op, id, { phase, model: model ?? def.label, runner, ...(pick.fellBackFrom ? { fell_back_from: pick.fellBackFrom.id } : {}) });
+    // The turn that answers a park carries it, so its cost is that park's cost (#108).
+    const resumesPark = typeof this.store.requireItem(id).file.frontmatter.op_data?.resume_park === 'string' ? String(this.store.requireItem(id).file.frontmatter.op_data!.resume_park) : undefined;
+    const opId = this.store.journal.begin(op, id, { phase, model: model ?? def.label, runner, ...(pick.fellBackFrom ? { fell_back_from: pick.fellBackFrom.id } : {}), ...(resumesPark ? { resumes_park: resumesPark } : {}) });
+    if (resumesPark) { const { resume_park: _done, ...rest } = this.store.requireItem(id).file.frontmatter.op_data ?? {}; this.store.mutateItem(id, [{ set: { op_data: rest } }], 'engine'); }
     this.store.mutateItem(id, [{ set: { op, op_started_at: this.now() } }], 'engine');
     // Registered before the runner slot is won (it owns the item from here), but not a running agent until then.
     const waiting = this.store.config.concurrency.runner_limits?.[runner] !== undefined ? runner : undefined;
@@ -992,14 +1015,16 @@ export class LiveEngine implements Engine {
           const ask = this.permissionsDelegated() && this.mayAskOrchestrator(this.store.requireItem(id).file.frontmatter);
           // The safety valve tripped: say so on the card, or the stream of requests reaching the user is a mystery (#95).
           const tripped = !ask && this.permissionsDelegated();
-          this.store.mutateItem(id, [{ set: { awaiting: ask ? 'orchestrator' : 'permission', awaiting_data: { ...(ask ? { kind: 'permission' } : {}), ...(tripped ? { escalated: 'orchestrator_denials' } : {}), tool: req.tool, input: req.input, requested_at: this.now() } } }, { activity: { actor: 'app', text: `parked: permission for ${req.tool} ${String(req.input.command ?? req.input.file_path ?? '').slice(0, 80)}${ask ? ' (asking the orchestrator)' : tripped ? ` (to you: the orchestrator denied its last ${MAX_ORCHESTRATOR_DENIALS} requests)` : ''}` } }], 'engine', { commit: `${id}: awaiting permission` });
+          const park = this.recordPark(id, 'permission', req.tool === 'Bash' ? String(req.input.command ?? '') : req.tool, ask ? 'orchestrator' : 'user');
+          this.store.mutateItem(id, [{ set: { awaiting: ask ? 'orchestrator' : 'permission', awaiting_data: { ...(ask ? { kind: 'permission' } : {}), ...(tripped ? { escalated: 'orchestrator_denials' } : {}), tool: req.tool, input: req.input, requested_at: this.now(), park } } }, { activity: { actor: 'app', text: `parked: permission for ${req.tool} ${String(req.input.command ?? req.input.file_path ?? '').slice(0, 80)}${ask ? ' (asking the orchestrator)' : tripped ? ` (to you: the orchestrator denied its last ${MAX_ORCHESTRATOR_DENIALS} requests)` : ''}` } }], 'engine', { commit: `${id}: awaiting permission` });
           if (ask) this.wakeOrchestrator('permission_request', id);
           return { action: 'park' };
         },
         onQuestion: async (questions) => {
           if (this.store.requireItem(id).file.frontmatter.taken_over) return;
           const triage = this.triageOps(this.store.requireItem(id).file.frontmatter, 'question');
-          this.store.mutateItem(id, [{ set: { awaiting: 'question', awaiting_data: { questions, requested_at: this.now() } } }, { activity: { actor: 'app', text: `parked: agent asked ${questions.length} question(s)` } }, ...triage.ops], 'engine', { commit: `${id}: awaiting answers` });
+          const park = this.recordPark(id, 'question', String((questions as { question?: string }[])[0]?.question ?? 'a question'), triage.on ? 'orchestrator' : 'user');
+          this.store.mutateItem(id, [{ set: { awaiting: 'question', awaiting_data: { questions, requested_at: this.now(), park } } }, { activity: { actor: 'app', text: `parked: agent asked ${questions.length} question(s)` } }, ...triage.ops], 'engine', { commit: `${id}: awaiting answers` });
           if (triage.on) this.wakeWhenIdle(id, 'worker_question');
         },
         onOutput: (text) => { const t = this.turns.get(id); if (t) t.lastOutput = text.slice(-400); this.emit({ type: 'session.output', id, text }); },

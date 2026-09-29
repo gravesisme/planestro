@@ -33,6 +33,7 @@ export function AwaitingPanels({ item }: { item: ItemView }) {
         {!orchestrating && data.escalated === 'orchestrator_denials' && <p className="small" style={{ marginTop: 0 }}>This comes to you because the orchestrator denied this item's last three requests. Allowing it hands the item's next requests back to the orchestrator.</p>}
         {why && <p className="small" style={{ margin: '0 0 6px' }}>{why}</p>}
         <pre className="events">{command ?? JSON.stringify(data.input, null, 2)}</pre>
+        {item.park_hint && <ParkHint hint={item.park_hint} />}
         <div className="row">
           <button className="primary" onClick={() => act(() => api.respond(item.id, { kind: 'permission', decision: 'allow' }))}>Allow once</button>
           <button title="Adds this exact command to permissions.allow" onClick={() => act(() => api.respond(item.id, { kind: 'permission', decision: 'always' }))}>Always allow</button>
@@ -56,6 +57,16 @@ function QuestionForm({ questions, onSubmit }: { questions: Question[]; onSubmit
         </div>
       ))}
       <button className="primary" disabled={questions.some((q) => !answers[q.question])} onClick={() => onSubmit(answers)}>Send answers</button>
+    </div>
+  );
+}
+
+/** The second park on one kind of command (#108): each costs a resume, and one worktree-scoped rule would have spared them. */
+function ParkHint({ hint }: { hint: { shape: string; parks: number; rule: string } }) {
+  return (
+    <div className="small" style={{ margin: '6px 0 10px' }}>
+      <p style={{ margin: '0 0 6px' }}>This item has waited on <code>{hint.shape} …</code> {hint.parks} times, and each wait costs a resume. <code>{hint.rule}</code> lets such commands run without asking, as long as they stay inside the worktree.</p>
+      <button className="small" title="Adds the rule to permissions.allow for this project (Settings → Workers & permissions). This request still needs your answer below." onClick={() => void act(async () => { const s = (await api.state()).config.permissions.allow; if (!s.includes(hint.rule)) await api.putConfig({ permissions: { allow: [...s, hint.rule] } }); })}>Allow from now on</button>
     </div>
   );
 }

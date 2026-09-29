@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { getSection, parseActivity, serializePromptFile, releaseCandidates, getQuestionSection, parseThread, billingMode, TOOLCHAINS, type Status, type LocalConfig } from '@planestro/shared';
 import { readUpdateStatus } from '../autoUpdate.ts';
+import { parkHint } from '../engine/parks.ts';
 import type { DataStore, StoredItem, StoredPrompt, StoredRelease, StoredQuestion } from '../store/DataStore.ts';
 
 /** JSON shape of an item as the UI sees it: frontmatter + sections + derived values. */
@@ -14,7 +15,18 @@ export function itemView(store: DataStore, item: StoredItem) {
     sections: { Description: getSection(item.file, 'Description'), Notes: getSection(item.file, 'Notes'), Plan: getSection(item.file, 'Plan'), Activity: getSection(item.file, 'Activity') },
     activity: parseActivity(item.file),
     derived: store.derived(item),
+    park_hint: parkHintOf(store, item),
   };
+}
+
+/** A parked Bash request on an item that has parked on the same kind of command before: the rule that would have allowed it (#108). */
+function parkHintOf(store: DataStore, item: StoredItem) {
+  const fm = item.file.frontmatter;
+  const d = fm.awaiting_data;
+  const permission = fm.awaiting === 'permission' || (fm.awaiting === 'orchestrator' && d?.kind === 'permission');
+  if (!permission || d?.tool !== 'Bash') return null;
+  const command = String((d.input as { command?: unknown } | undefined)?.command ?? '');
+  return parkHint(store.journal.read({ item: fm.id, type: 'permission.parked' }), command, store.config.permissions.allow) ?? null;
 }
 export type ItemView = ReturnType<typeof itemView>;
 
