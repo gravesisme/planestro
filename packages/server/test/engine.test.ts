@@ -1780,6 +1780,20 @@ describe('reconciler (chaos: crash markers left on disk)', () => {
     const again = await engine.reconcile('manual');
     expect(again.filter((x) => !x.includes('orphan') && !x.includes('resuming cleanup'))).toEqual([]);
     expect(wakes.filter((w) => w === 'orphans_found')).toHaveLength(1);
+    // #100: a worktree a tool made inside an item's worktree is that item's; one that comes and goes never re-asks about the rest
+    const nested = join(store.codeRepoPath(), '.claude/worktrees/tp-4-d/tools/cache/.baseline/7618f38');
+    world.worktrees.set(nested, { path: nested, head: world.sha() });
+    expect((await engine.reconcile('manual')).join('\n')).not.toContain('7618f38');
+    world.worktrees.delete(nested);
+    const second = join(store.worktreesRoot(), 'tp-98-other');
+    world.worktrees.set(second, { path: second, head: world.sha(), branch: 'tp/98-other' });
+    await engine.reconcile('manual');
+    expect(wakes.filter((w) => w === 'orphans_found')).toHaveLength(2);   // a new one: told
+    world.worktrees.delete(second);
+    await engine.reconcile('manual');
+    world.worktrees.set(second, { path: second, head: world.sha(), branch: 'tp/98-other' });
+    await engine.reconcile('manual');
+    expect(wakes.filter((w) => w === 'orphans_found')).toHaveLength(2);   // gone and back, or fewer: nothing new to tell
   });
 });
 
@@ -2087,6 +2101,12 @@ describe('permission requests delegated to the orchestrator', () => {
     expect(denials).toBe(3);
     expect(w.seen.implementPrompts[1]).toContain('The orchestrator denied `node -e 1`: use the project check script instead');
     expect(fmOf(ctx.store, ctx.id).op_data?.orchestrator_denials).toBe(3);
+    // #95: the card says why it came to you, and your approval hands the item's next requests back to the orchestrator
+    expect(fmOf(ctx.store, ctx.id).awaiting_data?.escalated).toBe('orchestrator_denials');
+    expect(activityOf(ctx.store, ctx.id)).toContain('(to you: the orchestrator denied its last 3 requests)');
+    await ctx.engine.respond(ctx.id, { kind: 'permission', decision: 'allow' });
+    expect(fmOf(ctx.store, ctx.id).op_data?.orchestrator_denials).toBe(0);
+    expect((ctx.engine as any).mayAskOrchestrator(fmOf(ctx.store, ctx.id))).toBe(true);
   });
 
   it('is off by default: the request parks on you and the orchestrator is never asked', async () => {
