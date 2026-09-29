@@ -405,7 +405,13 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   api.get('/orchestrator/notes', (c) => c.json(store.journal.read({ type: 'orchestrator.planestro_note', limit: 100 })));
   api.post('/engine/pause', (c) => { engine.pause(); return c.json({ paused: true }); });
   // Restart preparation (f3): POST drain, then poll GET /engine until restart.idle is true; DELETE cancels it.
-  api.post('/engine/drain', (c) => { if (!engine.drain) return c.json({ error: 'this engine has nothing to drain' }, 400); engine.drain(); return c.json(engine.restartReadiness!()); });
+  // `{ by: 'update' }` is serve --watch restarting onto new planestro code (#90): the page says so and offers no cancel.
+  api.post('/engine/drain', async (c) => {
+    if (!engine.drain) return c.json({ error: 'this engine has nothing to drain' }, 400);
+    const body = await c.req.json().catch(() => ({})) as { by?: unknown };
+    engine.drain(body?.by === 'update' ? 'update' : 'user');
+    return c.json(engine.restartReadiness!());
+  });
   api.delete('/engine/drain', (c) => { engine.undrain?.(); return c.json(engine.restartReadiness?.() ?? { draining: false, idle: true, running: [] }); });
   api.post('/engine/resume', (c) => { engine.resume(); return c.json({ paused: false }); });
   api.get('/journal', (c) => c.json(store.journal.read({ item: c.req.query('item') ?? undefined, since: c.req.query('since') ?? undefined, type: c.req.query('type') ?? undefined, limit: Number(c.req.query('limit') ?? 200) })));

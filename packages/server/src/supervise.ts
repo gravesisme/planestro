@@ -25,6 +25,15 @@ export function busyTurns(state: unknown): number {
   return Array.isArray(sessions) ? sessions.filter((s) => s?.busy).length : 0;
 }
 
+/**
+ * Whether a restart loses nothing now: the engine's own readiness (turns, engine steps, ops, a wake; not a
+ * wait for CI), or, from a server too old to report it, no busy turn.
+ */
+export function restartIdle(state: unknown): boolean {
+  const restart = (state as { engine?: { restart?: { idle?: unknown } } } | null)?.engine?.restart;
+  return typeof restart?.idle === 'boolean' ? restart.idle : busyTurns(state) === 0;
+}
+
 // ---- one supervisor per data dir (#85, LM 2026-09-28) ----
 // Four supervisors on one data dir each restarted their child on every merge pulled into the
 // checkout; the children raced for the data-dir lock and the port until none was left. The
@@ -91,8 +100,10 @@ export async function waitUntilUp(probe: () => Promise<unknown>, o: { alive: () 
 
 /**
  * `planestro serve --watch`: keep one server child alive and current. Server or shared source
- * changes restart it — but never under a running agent turn: automation is paused until the
- * running turns finish, the restart happens in that gap, and automation resumes. Web source changes rebuild the UI, and open pages reload themselves when they see the
+ * changes restart it — but never under a running agent turn: the server drains for an update
+ * (nothing new starts, what runs finishes), restarts in that gap, and comes back running. The drain
+ * is not the PAUSE lever (#90): it is never persisted, the page says what it waits for, and a pause
+ * the user set stays set. Web source changes rebuild the UI, and open pages reload themselves when they see the
  * new bundle. A child that dies on a syntax error is restarted by the next change, not in a loop.
  */
 export async function supervise(o: SuperviseOptions): Promise<void> {
@@ -130,10 +141,10 @@ export async function supervise(o: SuperviseOptions): Promise<void> {
     c.once('exit', () => done());
     c.kill('SIGTERM');
   });
-  const peek = async (): Promise<{ busy: number; paused: boolean } | undefined> => {
-    try { const r = await fetch(`${base}/api/state`, { signal: AbortSignal.timeout(4000) }); if (!r.ok) return undefined; const s = await r.json(); return { busy: busyTurns(s), paused: Boolean(s?.engine?.paused) }; } catch { return undefined; }
+  const peek = async (): Promise<{ idle: boolean; running: string[] } | undefined> => {
+    try { const r = await fetch(`${base}/api/state`, { signal: AbortSignal.timeout(4000) }); if (!r.ok) return undefined; const s = await r.json(); return { idle: restartIdle(s), running: Array.isArray(s?.engine?.restart?.running) ? s.engine.restart.running : [] }; } catch { return undefined; }
   };
-  const lever = (to: 'pause' | 'resume') => fetch(`${base}/api/engine/${to}`, { method: 'POST', signal: AbortSignal.timeout(4000) }).then((r) => r.ok, () => false);
+  const drainForUpdate = () => fetch(`${base}/api/engine/drain`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ by: 'update' }), signal: AbortSignal.timeout(4000) }).then((r) => r.ok, () => false);
   const nap = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const run = (cmd: string, args: string[]) => new Promise<number>((done) => { spawn(cmd, args, { cwd: ROOT, stdio: 'inherit' }).once('exit', (code) => done(code ?? 1)); });
 
@@ -149,12 +160,12 @@ export async function supervise(o: SuperviseOptions): Promise<void> {
         const plan = planFor([...pending]); pending.clear();
         if (plan.rebuild) { log('web source changed: rebuilding the UI'); if (await run('npm', ['run', '--silent', 'build'])) log('web build failed; the previous UI stays in place'); }
         if (!plan.restart) continue;
-        // Drain rather than interrupt: agents run most of the day, so an idle gap has to be made.
-        // Pausing automation lets running turns finish and starts nothing new; undo it afterwards
-        // only if this supervisor was the one that paused.
-        let drained = false;
-        for (let s = await peek(); s && s.busy > 0 && !stopping; s = await peek()) {
-          if (!drained && !s.paused) { drained = await lever('pause'); log(`server source changed: automation paused so ${s.busy} running turn${s.busy === 1 ? '' : 's'} can finish; restarting after that (Ctrl-C and rerun to restart now)`); }
+        // Drain rather than interrupt: agents run most of the day, so an idle gap has to be made. The
+        // drain dies with the old process, so there is nothing to undo afterwards (#90: a PAUSE here
+        // looked like the user's, was resumed by hand, and could outlive a failed restart).
+        const drained = await drainForUpdate();
+        for (let s = await peek(), told = false; s && !s.idle && !stopping; s = await peek()) {
+          if (!told) { told = true; log(`server source changed: ${drained ? 'draining for the update' : 'could not drain; waiting'}, then restarting once this finishes: ${s.running.length ? s.running.join(', ') : 'the running turns'} (Ctrl-C and rerun to restart now)`); }
           await nap(BUSY_POLL_MS);
         }
         if (stopping) break;
@@ -162,8 +173,7 @@ export async function supervise(o: SuperviseOptions): Promise<void> {
         await stop();
         if (stopping) break;
         start();
-        const up = await confirmUp();
-        if (drained) log(up && await lever('resume') ? 'automation resumed' : 'automation is still PAUSED from the restart drain: resume it in the UI once the server is up');
+        if (await confirmUp()) log('restarted on the new planestro code');
       }
     } finally { working = false; }
   };

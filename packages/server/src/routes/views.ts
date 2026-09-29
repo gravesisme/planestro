@@ -68,7 +68,7 @@ export function publicLocal(local: LocalConfig): LocalConfig {
   return { ...rest, mcp_servers: Object.fromEntries(Object.entries(local.mcp_servers ?? {}).map(([name, s]) => [name, { ...s, env: hide(s.env ?? {}), headers: hide(s.headers ?? {}) }])) };
 }
 
-export function stateView(store: DataStore, engine: { mode: string; paused: boolean; sessions(): unknown[]; restartReadiness?(): { draining: boolean; idle: boolean; running: string[] } }, git: unknown, envApiKey = STARTUP_API_KEY) {
+export function stateView(store: DataStore, engine: { mode: string; paused: boolean; sessions(): unknown[]; restartReadiness?(): { draining: boolean; by?: 'user' | 'update'; idle: boolean; running: string[] } }, git: unknown, envApiKey = STARTUP_API_KEY) {
   const localKey = store.local.anthropic_api_key?.trim();
   return {
     schema: store.schema,

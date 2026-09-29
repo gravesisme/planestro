@@ -231,17 +231,29 @@ export class LiveEngine implements Engine {
    * picks them up). restartReadiness says when nothing is left running.
    */
   private draining = false;
-  drain(): void { this.draining = true; this.emit({ type: 'engine.paused', paused: this._paused }); this.note('warn', 'preparing to restart: running steps finish, nothing new starts'); }
-  undrain(): void { this.draining = false; this.emit({ type: 'engine.paused', paused: this._paused }); this.note('info', 'restart preparation cancelled; carrying on'); this.orchestrator.kick(); void this.tick(); }
-  /** What still runs (turns, engine steps, ops in flight, an orchestrator wake): empty means a restart loses nothing. */
-  restartReadiness(): { draining: boolean; idle: boolean; running: string[] } {
+  /** Who asked: the Console's button (`user`), or `serve --watch` restarting onto new planestro code (`update`, #90). */
+  private drainedBy: 'user' | 'update' = 'user';
+  drain(by: 'user' | 'update' = 'user'): void {
+    this.draining = true; this.drainedBy = by;
+    this.emit({ type: 'engine.paused', paused: this._paused });
+    this.note('warn', by === 'update' ? 'updating planestro: running steps finish, nothing new starts, then it restarts and carries on' : 'preparing to restart: running steps finish, nothing new starts');
+  }
+  undrain(): void { this.draining = false; this.drainedBy = 'user'; this.emit({ type: 'engine.paused', paused: this._paused }); this.note('info', 'restart preparation cancelled; carrying on'); this.orchestrator.kick(); void this.tick(); }
+  /**
+   * What still runs (turns, engine steps, ops in flight, an orchestrator wake): empty means a restart loses nothing.
+   * A wait for CI (`op: awaiting_ci`) is not counted: it is GitHub's to finish, and the next start picks the wait
+   * up where it was (watchCi leaves the op for exactly that). Counting it held every restart for a whole CI run,
+   * and a drain starts no poll, so an item waiting when the drain began kept it from ever being idle (#90).
+   */
+  restartReadiness(): { draining: boolean; by?: 'user' | 'update'; idle: boolean; running: string[] } {
+    const waitingCi = (id: string) => this.store.getItem(id)?.file.frontmatter.op === 'awaiting_ci';
     const running = [
       ...[...this.turns.entries()].map(([id, t]) => `${id}: ${t.phase} turn`),
-      ...[...this.jobs.keys()].filter((id) => !this.turns.has(id)).map((id) => `${id}: engine step`),
-      ...this.store.listItems().filter((i) => i.file.frontmatter.op && !this.jobs.has(i.id) && !this.turns.has(i.id)).map((i) => `${i.id}: ${i.file.frontmatter.op}`),
+      ...[...this.jobs.keys()].filter((id) => !this.turns.has(id) && !waitingCi(id)).map((id) => `${id}: engine step`),
+      ...this.store.listItems().filter((i) => i.file.frontmatter.op && i.file.frontmatter.op !== 'awaiting_ci' && !this.jobs.has(i.id) && !this.turns.has(i.id)).map((i) => `${i.id}: ${i.file.frontmatter.op}`),
       ...(this.orchestrator.busy ? ['orchestrator: a wake'] : []),
     ];
-    return { draining: this.draining, idle: running.length === 0, running };
+    return { draining: this.draining, ...(this.draining ? { by: this.drainedBy } : {}), idle: running.length === 0, running };
   }
   poke(): void { void this.tick(); }
   sessions(): SessionView[] {
