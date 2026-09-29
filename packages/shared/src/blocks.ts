@@ -22,7 +22,7 @@ export const BLOCK_HELP: Record<string, { meaning: string; todo: string }> = {
   hook_failed: { meaning: "An `after_worktree_create` command exited non-zero.", todo: "Fix the hook or the environment; unblock re-runs setup." },
   worktree_missing: { meaning: "The item's worktree no longer exists. Nothing is recreated automatically: local commits could be lost.", todo: "Restore it, or close / re-create the item." },
   worktree_taken: { meaning: "The path planestro would use already holds a worktree on a different branch.", todo: "Move it aside or remove it." },
-  sync_conflict: { meaning: "Syncing with the base conflicted and there is no session to hand the conflict to (an epic branch, an external item).", todo: "Resolve by hand in the directory named in the log, then unblock." },
+  sync_conflict: { meaning: "Syncing with the base conflicted and nothing could resolve it: an external item has no session, and on an epic's branch the one-shot conflict session (epics.conflict_budget_usd) could not, or is turned off. The log says why.", todo: "Resolve by hand in the directory named in the log, then unblock; or, for an epic, let the orchestrator retry it with resolve_epic_conflict and a hint." },
   asset_too_large: { meaning: "A changed file exceeds `review.max_file_bytes`. No pull request was opened.", todo: "Shrink it (or raise the limit), commit, unblock." },
   ci_red: { meaning: "CI failed and there is no session to hand the failure to.", todo: "Fix the branch by hand." },
   ci_red_twice: { meaning: "CI failed again after the session's fix.", todo: "Read both logs; message the session with what it is missing, or take over." },

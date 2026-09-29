@@ -119,6 +119,7 @@ export class LiveEngine implements Engine {
       handOff: (from, to, paths, note) => this.handOff(from, to, paths, note, 'orchestrator'),
       unblock: (id, message, syncFirst) => this.orchestratorUnblocks(id, message, syncFirst),
       syncWithBase: (id) => this.syncWithBase(id, { by: 'orchestrator' }),
+      resolveEpicConflict: (id, hint) => this.retryEpicConflict(id, hint, 'orchestrator'),
       answerQuestion: (id, answers) => this.orchestratorAnswers(id, answers),
       setItemFields: (id, fields) => this.orchestratorSetsFields(id, fields),
       recreateWorktree: (id, message) => this.recreateWorktree(id, message),
@@ -1202,6 +1203,15 @@ export class LiveEngine implements Engine {
         ], 'engine', { commit: `${id}: ${integration ? 'merge' : 'rebase'} conflict` });
         this.store.journal.end(opId, id, 'aborted', { reason: 'conflict', files: sync.conflicts });
         if (canFix) this.queueFollowUp(id, () => this.runTurnFor(id, 'fix', this.store.renderPrompt('rebase-conflict', this.store.requireItem(id), { conflict_files: sync.conflicts.join('\n'), base_sha: baseSha.slice(0, 12) })));
+        else if (integration && this.store.config.epics.conflict_budget_usd > 0) {
+          // An epic has no session of its own: a one-shot one resolves the merge (#71), as the item's next job, outside the
+          // serial merge chain (a session inside it would hold every other merge). Resolved, it is pushed and the chain picks the epic up again.
+          const conflicts = sync.conflicts;
+          this.queueFollowUp(id, async () => {
+            const r = await this.resolveEpicConflict(id, cwd, base, baseSha, conflicts);
+            if (r !== 'resolved') this.block(id, 'sync_conflict', `merging ${base} into ${fm.branch} conflicted in ${conflicts.join(', ')}: ${r}; resolve it by hand in ${cwd}, or have the orchestrator retry with resolve_epic_conflict and a hint`);
+          });
+        }
         else this.block(id, 'sync_conflict', `conflicts with ${base} in ${sync.conflicts.join(', ')} and no session to hand them to; resolve by hand`);
         return;
       }
@@ -2551,6 +2561,14 @@ export class LiveEngine implements Engine {
       const where = `${r.integration ? `merging origin/${r.base} into ${fm.branch}` : `rebasing ${fm.branch} onto origin/${r.base}`} conflicted in ${r.files.join(', ')}; it was aborted, so the branch is as it was`;
       const cur = this.store.requireItem(id).file.frontmatter;
       const phase = this.phaseFor(cur.status);
+      if (r.integration && this.store.config.epics.conflict_budget_usd > 0) {
+        const baseSha = r.baseSha;
+        this.runJob(id, async () => {
+          const out = await this.resolveEpicConflict(id, r.cwd!, r.base, baseSha, r.files);
+          if (out !== 'resolved') this.block(id, 'sync_conflict', `${where}: ${out}; resolve it by hand in ${r.cwd}, or have the orchestrator retry with resolve_epic_conflict and a hint`);
+        });
+        return `conflict: ${where}. A one-shot session is resolving it in ${r.cwd}; the Activity log says how it went`;
+      }
       if (r.integration || !phase || !cur.session_id) { this.block(id, 'sync_conflict', `${where}, and ${r.integration ? 'an integration branch has' : 'it has'} no session to hand it to; resolve it by hand${r.integration ? ` in ${r.cwd}` : ''}`); return `conflict: ${where}; blocked for a person to resolve`; }
       if (cur.blocked && !opts.unblock) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `${where}; ${id} stays blocked (${cur.blocked_reason}), so the conflict waits for it to be unblocked with a sync first` } }], 'engine'); return `conflict: ${where}. ${id} stays blocked (${cur.blocked_reason}); unblock it with sync_first to hand the conflict to its session`; }
       const then = opts.unblock?.message?.trim() ? `Then continue with this:\n\n${opts.unblock.message.trim()}` : 'Once the rebase is done, carry on with your work on this item where you left off.';
@@ -2601,6 +2619,137 @@ export class LiveEngine implements Engine {
     if (other.length) return undo(`regenerating also changed ${other.slice(0, 5).join(', ')}, which worktrees.generated does not list`);
     const head = tracked.length ? await this.ports.git.commitPaths(cwd, tracked, `${id}: regenerate ${tracked.map((f) => basename(f)).join(', ')}`) : sync.head;
     return { ...sync, head, note: `took ${base}'s copy of ${took.join(', ')} in the conflict and regenerated it (${commands.map((c) => `\`${c}\``).join(', ')})${tracked.length ? `; committed ${tracked.join(', ')}` : '; nothing changed'}` };
+  }
+
+  /**
+   * Resolve a merge conflict on an epic's integration branch with a one-shot session (#71). Worker items
+   * hand a conflict to their own session; an epic has none, so HH-205 (append-only LICENSES.md rows) and
+   * LM-1 (main.ts split while LM-3 changed it) could only be resolved by a person at a terminal. The
+   * session runs in the epic's merge worktree on its implementer, from a prompt rendered from persisted
+   * state (invariant 3), under its own cap (epics.conflict_budget_usd); it merges and commits, never
+   * pushes. planestro then checks the merge (finished, clean, contains origin/<base> and what GitHub has
+   * of the branch: merges only, never rewritten) and pushes it plainly. Anything short of that puts the
+   * worktree back where it was and says why; the session's attempt stays findable by its sha.
+   * Returns 'resolved', or why not.
+   */
+  private async resolveEpicConflict(id: string, cwd: string, base: string, baseSha: string, files: string[], hint?: string): Promise<string> {
+    const cap = this.store.config.epics.conflict_budget_usd;
+    if (!(cap > 0)) return 'conflict sessions are off (epics.conflict_budget_usd is 0)';
+    const item = this.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    if (fm.taken_over) return 'you have taken this epic over';
+    const branch = fm.branch!;
+    const requested = this.store.config.models.find((m) => m.id === (fm.implementer ?? this.store.config.defaults.implementer));
+    if (!requested) return `its implementer ${fm.implementer ?? this.store.config.defaults.implementer} is not a model row`;
+    const pick = resolveTurnModel(this.store.config, requested, { allow: fm.allow_model_fallback === true, unavailable: this.store.local.model_unavailable, now: new Date(Date.now()) });
+    if (pick.exhaustedUntil) return `${requested.label} is out of usage until ${pick.exhaustedUntil}`;
+    const def = pick.def;
+    const runner = def.runner ?? 'claude';
+    const agent = this.ports.agents[runner];
+    if (!agent) return `${def.label} needs the ${runner} runner, which is not available here`;
+    const model = runner === 'claude' ? def.claude_model : def[`${runner}_model`];
+    const before = await this.ports.git.revParse(cwd, 'HEAD');
+    const remote = await this.ports.git.remoteBranchSha(this.repo, branch);
+    const desc = getSection(item.file, 'Description').trim();
+    const prompt = [
+      `You are resolving one merge conflict for planestro, in one session, and nothing else.`,
+      `Epic ${id} — "${fm.title}". Its integration branch ${branch} is checked out in this worktree (${cwd}). Merging origin/${base} (${baseSha.slice(0, 12)}, already fetched) into it conflicts in:\n${files.map((f) => `- ${f}`).join('\n')}`,
+      ...(desc ? [`What the epic is for:\n${desc.slice(0, 1200)}`] : []),
+      ...(hint?.trim() ? [`The orchestrator's hint for this conflict:\n${hint.trim()}`] : []),
+      [
+        'Do exactly this:',
+        `1. \`git merge --no-edit origin/${base}\`, then resolve every conflict so both sides' intent survives: what the epic's children built, and what landed on ${base}. An append-only file (licences, lists, changelogs, docs rows) keeps both sides' lines.`,
+        '2. Check only as far as the conflict needs; the full checks run on the pull request after the push.',
+        '3. `git add` what you resolved and `git commit --no-edit` to finish the merge.',
+        '4. report_done with one line on how you resolved it, and end your turn.',
+      ].join('\n'),
+      `Never rebase, reset, push or force: ${branch} is shared, and planestro pushes it after checking your merge. If a conflict needs a decision the code cannot settle (two changes that truly contradict), run \`git merge --abort\` and report_blocked with that decision in one or two sentences.`,
+    ].join('\n\n');
+    const opId = this.store.journal.begin('conflict_session', id, { base, base_sha: baseSha, files, model: model ?? def.label });
+    this.store.mutateItem(id, [{ set: { op: 'syncing_base', op_started_at: this.now() } }, { activity: { actor: 'app', text: `merging origin/${base} (${baseSha.slice(0, 7)}) into ${branch} conflicted in ${files.join(', ')}; a one-shot ${def.label} session resolves it in ${cwd} (up to $${cap}, epics.conflict_budget_usd)${hint?.trim() ? ` with the hint: ${hint.trim().slice(0, 200)}` : ''}` } }], 'engine', { commit: `${id}: conflict session` });
+    const reported: { done?: string; blocked?: string } = {};
+    const none = async () => 'not available in a conflict session: resolve the merge, then report_done or report_blocked';
+    const tools: TurnTools = {
+      submit_plan: none, submit_breakdown: none, add_note: none, report_progress: none, hand_off: none,
+      append_activity: async (t) => { this.store.mutateItem(id, [{ activity: { actor: 'worker', text: `[conflict session] ${String(t).slice(0, 500)}` } }], 'engine'); return 'appended'; },
+      report_done: async (s) => { reported.done = String(s); return 'recorded: planestro checks your merge and pushes it. End your turn now.'; },
+      report_blocked: async (r) => { reported.blocked = String(r); return 'recorded. End your turn now.'; },
+      get_item: async () => `${id} "${fm.title}" (epic) — integration branch ${branch}, base ${base}`,
+    };
+    const allowed = [...BASE_ALLOWED.fix, 'Bash(git merge *)', ...this.store.config.permissions.allow];
+    const policy = makePolicy(this.store.config, base, cwd);
+    const abort = new AbortController();
+    this.turns.set(id, { model: model ?? def.label, phase: 'fix', startedAt: this.now(), lastOutput: '', abort });
+    let result: TurnResult;
+    try {
+      result = await this.withRunnerSlot(runner, () => this.withSessionSlot(id, () => agent.runTurn({
+        itemId: id, phase: 'fix', cwd, model: model as string, permissionMode: 'acceptEdits', prompt,
+        systemAppend: `${this.store.renderPrompt(runner === 'claude' ? 'worker-system' : `worker-system-${runner}`, item)}\n\n${this.hostNote}`,
+        ...(pick.sdkFallback ? { fallbackModel: pick.sdkFallback } : {}),
+        allowedTools: allowed, extraDirs: [this.store.dataDir], maxBudgetUsd: cap, tools,
+        // One shot, so nothing parks: what the rules do not allow is refused with a way forward.
+        onPermission: async (req) => {
+          const why = policy.deny(req);
+          if (why) return { action: 'deny', message: `Not allowed: ${why}` };
+          if (allowedByRules(req, allowed, cwd)) return { action: 'allow' };
+          return { action: 'deny', message: 'Not allowed in a conflict session: resolve the merge with git and file edits. If you need something else, git merge --abort and report_blocked saying what.' };
+        },
+        onQuestion: async () => undefined,
+        onOutput: (text) => { const t = this.turns.get(id); if (t) t.lastOutput = text.slice(-400); this.emit({ type: 'session.output', id, text }); },
+        signal: abort.signal,
+      })));
+    } finally { this.turns.delete(id); }
+    const after = this.store.requireItem(id).file.frontmatter;
+    this.store.mutateItem(id, [{ set: { cost_usd: Math.round(((after.cost_usd ?? 0) + result.costUsd) * 10000) / 10000, turns: (after.turns ?? 0) + result.numTurns } }, { unset: ['op', 'op_started_at'] }], 'engine');
+    this.usageSeen(result.rateLimit);
+    const fail = async (why: string): Promise<string> => {
+      await this.ports.git.abortInProgress(cwd).catch(() => undefined);
+      const attempt = await this.ports.git.revParse(cwd, 'HEAD').catch(() => before);
+      if (attempt !== before) await this.ports.git.resetHard(cwd, before);
+      this.store.journal.end(opId, id, 'failed', { reason: why, attempt });
+      this.store.mutateItem(id, [{ activity: { actor: 'app', text: `the conflict session did not resolve it: ${why}${attempt !== before ? `; its attempt is ${attempt.slice(0, 12)} (git show it), the worktree is back on ${before.slice(0, 7)}` : ''} ($${result.costUsd.toFixed(2)})` } }], 'engine', { commit: `${id}: conflict session failed` });
+      return why;
+    };
+    if (result.subtype === 'killed') return fail('the session was stopped');
+    const blocked = reported.blocked ?? result.blocked;
+    if (blocked) return fail(`it needs a decision: ${blocked}`);
+    const done = reported.done ?? result.done;
+    if (!done) return fail(`it ended without reporting done (${result.subtype}${result.error ? `: ${result.error.slice(0, 160)}` : ''})`);
+    // Positive evidence before the push (invariant 7's spirit): a finished merge, nothing left over, both histories in it.
+    if (await this.ports.git.inProgressOp(cwd)) return fail('it reported done with the merge unfinished');
+    const { clean, dirty } = await this.worktreeDirt(cwd);
+    if (!clean) return fail(`it left uncommitted changes (${dirty.slice(0, 5).join(', ')})`);
+    if (!(await this.ports.git.isAncestor(cwd, `origin/${base}`, 'HEAD'))) return fail(`the result does not contain origin/${base}`);
+    if (remote && !(await this.ports.git.isAncestor(cwd, remote, 'HEAD'))) return fail(`the result does not contain origin/${branch} (${remote.slice(0, 7)}): the branch was rewritten`);
+    try { await this.ports.git.pushSetUpstream(cwd, branch); } catch (e) { return fail(`the push was refused (${(e as Error).message.replace(/\s+/g, ' ').slice(0, 200)})`); }
+    const head = await this.ports.git.revParse(cwd, 'HEAD');
+    this.store.journal.end(opId, id, 'ok', { head, cost: result.costUsd });
+    this.store.mutateItem(id, [{ activity: { actor: 'app', text: `the conflict session resolved the merge ("${done.slice(0, 300)}"); checked it (finished, clean, contains origin/${base} and origin/${branch}) and pushed ${head.slice(0, 7)} ($${result.costUsd.toFixed(2)})` } }], 'engine', { commit: `${id}: conflict resolved` });
+    return 'resolved';
+  }
+
+  /**
+   * The orchestrator's resolve_epic_conflict (#71): an epic that stopped on a sync conflict, tried again
+   * with a fresh merge and, if it still conflicts, a conflict session carrying the hint. Returns at once;
+   * the Activity log and the next wake say how it went.
+   */
+  async retryEpicConflict(id: string, hint: string | undefined, by: 'user' | 'orchestrator' = 'orchestrator'): Promise<string> {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    if (fm.kind !== 'epic') return `not possible: ${id} is not an epic (a worker item's session resolves its own conflicts)`;
+    if (!['IN_PROGRESS', 'IN_REVIEW'].includes(fm.status) || !fm.branch) return `not possible: ${id} is ${fm.status}; only an open epic's branch is merged with its base`;
+    if (!(this.store.config.epics.conflict_budget_usd > 0)) return 'not possible: conflict sessions are off (epics.conflict_budget_usd is 0)';
+    if (this._paused || this.draining || this.stopping) return 'not now: automation is paused';
+    const busy = this.busyWith(id); if (busy) return `not now: ${busy}`;
+    if (fm.op) return `not now: ${id} is ${fm.op.replace(/_/g, ' ')}`;
+    if (fm.blocked && fm.blocked_reason !== 'sync_conflict') return `not possible: ${id} is blocked for ${fm.blocked_reason}, not a sync conflict`;
+    this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, { activity: { actor: by, text: `resolving the sync conflict with a conflict session${hint?.trim() ? `: ${hint.trim().slice(0, 300)}` : ''}` } }], by, { commit: `${id}: resolve conflict` });
+    this.runJob(id, async () => {
+      const r = await this.syncBranch(id, by === 'orchestrator' ? 'for the orchestrator' : '');
+      if (r.kind !== 'conflict') return;   // the base merged cleanly this time, or there was nothing to do: the chain carries on
+      const out = await this.resolveEpicConflict(id, r.cwd!, r.base, r.baseSha, r.files, hint);
+      if (out !== 'resolved') this.block(id, 'sync_conflict', `merging ${r.base} into ${fm.branch} conflicted in ${r.files.join(', ')}: ${out}; resolve it by hand in ${r.cwd}`);
+    });
+    return `started: ${id}'s branch is merged with its base again, and a conflict goes to a one-shot session${hint?.trim() ? ' with your hint' : ''}; its Activity log says how it went`;
   }
 
   /** The rebase-conflict prompt for a sync that stopped on a conflict. */

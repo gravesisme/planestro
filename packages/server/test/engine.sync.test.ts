@@ -17,7 +17,7 @@ type Tool = (name: string) => { handler(a: Record<string, unknown>): Promise<str
  * Sync with base (dogfood p29): a worker branch is brought up to date between turns, deterministically.
  * `hold` makes worker turns wait until released, so a live turn can be observed.
  */
-async function setup(opts: { orchestrate?: (tools: Tool) => Promise<void>; hold?: Promise<void> } = {}) {
+async function setup(opts: { orchestrate?: (tools: Tool) => Promise<void>; hold?: Promise<void>; conflictSession?: (o: TurnOptions) => Promise<Partial<TurnResult>> } = {}) {
   const { dataDir, codeRepo } = makeFixture();
   mkdirSync(join(codeRepo, '.git', 'info'), { recursive: true });
   const cfg = join(dataDir, 'planestro.yml');
@@ -29,7 +29,11 @@ async function setup(opts: { orchestrate?: (tools: Tool) => Promise<void>; hold?
   const prompts: { phase: string; prompt: string }[] = [];
   const inner = new DryRunClaudePort(world);
   const claude: Ports['agents']['claude'] = {
-    async runTurn(o: TurnOptions): Promise<TurnResult> { prompts.push({ phase: o.phase, prompt: o.prompt }); if (opts.hold) await opts.hold; return inner.runTurn(o); },
+    async runTurn(o: TurnOptions): Promise<TurnResult> {
+      prompts.push({ phase: o.phase, prompt: o.prompt });
+      if (opts.conflictSession && o.prompt.startsWith('You are resolving one merge conflict')) return { sessionId: 'conflict', subtype: 'success', isError: false, costUsd: 1.25, numTurns: 3, text: '', ...(await opts.conflictSession(o)) };
+      if (opts.hold) await opts.hold; return inner.runTurn(o);
+    },
     async runCustomTurn(o: CustomTurnOptions): Promise<TurnResult> {
       await opts.orchestrate?.(((n: string) => o.mcpTools.find((t) => t.name === n)!) as Tool);
       return { sessionId: 'orch', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '' };
@@ -208,6 +212,88 @@ describe('sync with base (p29)', () => {
     expect(await ctx.engine.syncWithBase(stopped.id)).toContain('stays blocked (agent_blocked)');
     expect(ctx.store.getItem(stopped.id)!.file.frontmatter.blocked_reason).toBe('agent_blocked');
     expect(ctx.prompts).toHaveLength(0);
+  });
+
+  describe("an epic's conflict goes to a one-shot conflict session (#71)", () => {
+    /** An open epic whose integration branch is pushed and conflicts with its base on the next merge. */
+    async function epicConflict(session: (o: TurnOptions) => Promise<Partial<TurnResult>>, files = ['LICENSES.md']) {
+      const ctx = await setup({ conflictSession: session });
+      const epic = ctx.store.createItem({ title: 'Animate Jungle enemies', description: 'Six sheets and their wiring.', kind: 'epic' } as any);
+      ctx.store.mutateItem(epic.id, [{ set: { status: 'IN_PROGRESS', branch: 'feature/animate-jungle' } }], 'engine');
+      ctx.world.remoteBranches.set('feature/animate-jungle', ctx.world.sha());
+      ctx.world.conflictFiles = files; ctx.world.conflictArmed = true;
+      await ctx.engine.start();
+      return { ...ctx, id: epic.id };
+    }
+    const settled = (ctx: { engine: LiveEngine }, id: string) => waitFor(() => !(ctx.engine as any).jobs.has(id) && !(ctx.engine as any).turns.has(id));
+
+    it('resolved and checked, the merge is pushed plainly and the epic carries on', async () => {
+      const ctx = await epicConflict(async (o) => { expect(o.cwd).toContain('merge-'); await o.tools.report_done('kept both sides of LICENSES.md'); return { done: 'kept both sides of LICENSES.md' }; });
+      const r = await ctx.engine.syncWithBase(ctx.id);
+      expect(r).toMatch(/^conflict: merging origin\/trunk into feature\/animate-jungle conflicted in LICENSES\.md; .*A one-shot session is resolving it/);
+      await settled(ctx, ctx.id);
+      const p = ctx.prompts.find((x) => x.prompt.startsWith('You are resolving one merge conflict'))!;
+      expect(p.prompt).toContain('- LICENSES.md');
+      expect(p.prompt).toContain('`git merge --no-edit origin/trunk`');
+      expect(p.prompt).toContain('Never rebase, reset, push or force');
+      expect(p.prompt).toContain('Six sheets and their wiring.');
+      const log = activityOf(ctx.store, ctx.id);
+      expect(log).toMatch(/a one-shot .* session resolves it in \S+merge-\S+ \(up to \$10, epics\.conflict_budget_usd\)/);
+      expect(log).toMatch(/the conflict session resolved the merge \("kept both sides of LICENSES\.md"\); checked it \(finished, clean, contains origin\/trunk and origin\/feature\/animate-jungle\) and pushed \w{7} \(\$1\.25\)/);
+      expect(ctx.log.some((l) => l.startsWith('Would git push -u origin feature/animate-jungle'))).toBe(true);
+      const fm = ctx.store.getItem(ctx.id)!.file.frontmatter;
+      expect(fm.blocked).toBeUndefined();
+      expect(fm.cost_usd).toBe(1.25);
+    });
+
+    it('a conflict that needs a decision comes back blocked with it, and the worktree goes back to where it was', async () => {
+      const ctx = await epicConflict(async (o) => { await o.tools.report_blocked('the epic renames Frog while trunk deletes it: keep or drop?'); return { blocked: 'the epic renames Frog while trunk deletes it: keep or drop?' }; });
+      await ctx.engine.syncWithBase(ctx.id);
+      await settled(ctx, ctx.id);
+      const fm = ctx.store.getItem(ctx.id)!.file.frontmatter;
+      expect(fm.blocked_reason).toBe('sync_conflict');
+      expect(activityOf(ctx.store, ctx.id)).toContain('the conflict session did not resolve it: it needs a decision: the epic renames Frog while trunk deletes it: keep or drop?');
+      expect(ctx.log.some((l) => l.startsWith('Would git push -u origin feature/animate-jungle'))).toBe(false);
+    });
+
+    it('a merge that does not contain the base, or a session that never reports done, is not pushed', async () => {
+      const ctx = await epicConflict(async () => { ctx.world.unreachable.add('origin/trunk'); return { done: 'merged' }; });
+      await ctx.engine.syncWithBase(ctx.id);
+      await settled(ctx, ctx.id);
+      expect(activityOf(ctx.store, ctx.id)).toContain('the conflict session did not resolve it: the result does not contain origin/trunk');
+      expect(ctx.store.getItem(ctx.id)!.file.frontmatter.blocked_reason).toBe('sync_conflict');
+      expect(ctx.log.some((l) => l.startsWith('Would git push -u origin feature/animate-jungle'))).toBe(false);
+    });
+
+    it("in the merge chain, an epic PR's conflict is resolved as the epic's next job, outside the chain, then merges", async () => {
+      const ctx = await epicConflict(async (o) => { await o.tools.report_done('kept both'); return { done: 'kept both' }; });
+      ctx.world.prs.set(420, { number: 420, url: 'u', state: 'OPEN', headRefOid: ctx.world.remoteBranches.get('feature/animate-jungle')!, headRefName: 'feature/animate-jungle', baseRefName: 'trunk', polls: 0, failOnce: false });
+      ctx.store.mutateItem(ctx.id, [{ set: { status: 'IN_REVIEW', pr: 420 } }], 'engine');
+      await waitFor(() => ['MERGED', 'FINISHED'].includes(ctx.store.getItem(ctx.id)!.file.frontmatter.status), 8000);
+      const log = activityOf(ctx.store, ctx.id);
+      expect(log).toMatch(/merge of origin\/trunk \(f{7}\) conflicted in LICENSES\.md/);
+      expect(log).toMatch(/the conflict session resolved the merge \("kept both"\)/);
+    });
+
+    it('the orchestrator retries a blocked one with resolve_epic_conflict and a hint; with the budget at 0 it blocks as before', async () => {
+      let hinted = '';
+      let second = false;
+      const ctx = await epicConflict(async (o) => { if (!second) return { subtype: 'success' }; hinted = o.prompt; return { done: 'union-merged' }; });
+      await ctx.engine.syncWithBase(ctx.id);
+      await settled(ctx, ctx.id);
+      expect(ctx.store.getItem(ctx.id)!.file.frontmatter.blocked_reason).toBe('sync_conflict');   // ended without reporting done
+      second = true; ctx.world.conflictArmed = true;
+      const r = await ctx.engine.retryEpicConflict(ctx.id, 'LICENSES.md is append-only: keep both sides\' rows');
+      expect(r).toMatch(/^started: /);
+      await settled(ctx, ctx.id);
+      expect(hinted).toContain("The orchestrator's hint for this conflict:\nLICENSES.md is append-only: keep both sides' rows");
+      expect(ctx.store.getItem(ctx.id)!.file.frontmatter.blocked).toBeUndefined();
+      // off: a person resolves it, as before #71
+      ctx.store.updateConfig((doc) => { doc.setIn(['epics', 'conflict_budget_usd'], 0); }, 'config: off');
+      ctx.world.conflictArmed = true;
+      expect(await ctx.engine.syncWithBase(ctx.id)).toMatch(/blocked for a person to resolve$/);
+      expect(await ctx.engine.retryEpicConflict(ctx.id, undefined)).toMatch(/conflict sessions are off/);
+    });
   });
 
   it("an epic's integration branch has the base merged in and is pushed plainly, never rebased", async () => {
