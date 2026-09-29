@@ -40,9 +40,9 @@ export interface Engine {
   handBack(id: string, note?: string): Promise<void>;
   sessions(): SessionView[];
   /** Getting ready for a restart: nothing new starts until undrain (or the restart). Engines without automation leave these out. */
-  drain?(): void;
+  drain?(by?: 'user' | 'update'): void;
   undrain?(): void;
-  restartReadiness?(): { draining: boolean; idle: boolean; running: string[] };
+  restartReadiness?(): { draining: boolean; by?: 'user' | 'update'; idle: boolean; running: string[] };
   /** Run a notification command now, as its event would (Settings → Notifications → Test). */
   testNotification?(event: 'on_merge' | 'on_usage_pause'): Promise<{ code: number; output: string }>;
   log: ServerEvent[];

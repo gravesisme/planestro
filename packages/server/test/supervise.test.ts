@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { planFor, busyTurns, acquireSupervisorLock, releaseSupervisorLock, supervisorLockPath, childExitVerdict, waitUntilUp } from '../src/supervise.ts';
+import { planFor, busyTurns, restartIdle, acquireSupervisorLock, releaseSupervisorLock, supervisorLockPath, childExitVerdict, waitUntilUp } from '../src/supervise.ts';
 import { createServer } from 'node:net';
 import { makeFixture } from './helpers.ts';
 import { startServer } from '../src/server.ts';
@@ -18,6 +18,13 @@ describe('serve --watch policy', () => {
     expect(planFor(['packages/server/src/engine/LiveEngine.ts'])).toEqual({ restart: true, rebuild: false });
     expect(planFor(['packages/shared/src/transitions.ts'])).toEqual({ restart: true, rebuild: true });
     expect(planFor(['README.md', 'packages/server/srcs/x.ts'])).toEqual({ restart: false, rebuild: false });
+  });
+  it('restarts when the engine says nothing is left to lose; a server without that report falls back to busy turns (#90)', () => {
+    expect(restartIdle({ engine: { restart: { idle: false, running: ['LM-24: plan turn'] }, sessions: [] } })).toBe(false);
+    expect(restartIdle({ engine: { restart: { idle: true, running: [] }, sessions: [{ busy: true }] } })).toBe(true);
+    expect(restartIdle({ engine: { sessions: [{ busy: true }] } })).toBe(false);
+    expect(restartIdle({ engine: { sessions: [] } })).toBe(true);
+    expect(restartIdle(null)).toBe(true);
   });
   it('only a running turn counts as busy: a parked session costs nothing to restart under', () => {
     expect(busyTurns({ engine: { sessions: [{ busy: true }, { busy: false }, { busy: true }] } })).toBe(2);

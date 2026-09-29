@@ -24,7 +24,7 @@ export interface State {
   /** Whether budget dollars are an API-price yardstick on a Claude plan or real charges to an API account (#83). */
   billing?: BillingMode; api_key?: 'local' | 'env' | 'none';
   items: ItemView[]; prompts: PromptView[]; releases?: ReleaseView[]; invalid: { path: string; error: string }[];
-  engine: { mode: string; paused: boolean; paused_by?: 'user' | 'usage_guard'; usage_guard?: UsageGuardState; sessions: SessionView[]; restart?: { draining: boolean; idle: boolean; running: string[] } };
+  engine: { mode: string; paused: boolean; paused_by?: 'user' | 'usage_guard'; usage_guard?: UsageGuardState; sessions: SessionView[]; restart?: { draining: boolean; by?: 'user' | 'update'; idle: boolean; running: string[] } };
   git: { dirty: string[]; branch: string; head?: string; ahead?: number };
   statuses: Status[];
 }

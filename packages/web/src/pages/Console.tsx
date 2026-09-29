@@ -119,6 +119,14 @@ export function ago(iso: string, now = Date.now()): string {
 function RestartPrep() {
   const restart = useStore((s) => s.state?.engine.restart);
   if (!restart) return null;
+  // serve --watch restarting onto new planestro code (#90): no cancel, no restart-now. The wait is one turn at most,
+  // a restart now would cost that turn's resume, and a cancel could leave the update waiting forever.
+  if (restart.draining && restart.by === 'update') return (
+    <div style={{ marginBottom: 10 }}>
+      <span className="muted small"><b>Updating planestro.</b> {restart.idle ? 'Restarting now.' : `Waiting for ${restart.running.length === 1 ? 'this' : `these ${restart.running.length}`} to finish; nothing new starts meanwhile.`} Automation carries on by itself after the restart.</span>
+      {!restart.idle && <ul className="small muted" style={{ margin: '6px 0 0' }}>{restart.running.map((r) => <li key={r}>{r}</li>)}</ul>}
+    </div>
+  );
   return (
     <div style={{ marginBottom: 10 }}>
       <div className="row">

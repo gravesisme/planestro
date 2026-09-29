@@ -1224,6 +1224,22 @@ describe('preparing to restart (f3)', () => {
   });
 });
 
+describe('draining for a planestro update (#90)', () => {
+  it('says it is an update, is not a pause, and a wait for CI does not hold the restart', async () => {
+    const { store, engine } = await setup();
+    const waiting = store.createItem({ title: 'Waiting on CI' });
+    store.mutateItem(waiting.id, [{ set: { status: 'IN_REVIEW' } }, { set: { pr: 400, op: 'awaiting_ci', op_started_at: '2026-01-01T00:00:00+00:00', branch: 'tp/1-w', ci_result: 'pending' } }], 'engine');
+    const app = apiRoutes(store, engine);
+    const r = await (await app.request('/engine/drain', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ by: 'update' }) })).json();
+    expect(r).toMatchObject({ draining: true, by: 'update', idle: true, running: [] });   // GitHub finishes the CI; the next start resumes the wait
+    expect(engine.paused).toBe(false);
+    expect(store.local.engine.paused_by).toBeUndefined();                                  // nothing a person would have to resume
+    expect((await (await app.request('/engine/drain', { method: 'POST' })).json()).by).toBe('user');  // the Console's button, no body
+    engine.undrain();
+    expect(engine.restartReadiness()).toEqual({ draining: false, idle: true, running: [] });
+  });
+});
+
 describe('regenerated files that collide with the base (p17)', () => {
   /** An item IN_REVIEW with an open PR, its worktree carrying `untracked` files, ready for the merge pipeline. */
   async function inReview(untracked: string[], opts: { trackedChange?: boolean } = {}) {
