@@ -35,4 +35,16 @@ describe('setting regenerated files aside (p17)', () => {
     expect((await port.filesUnder(repo, ['tmp', './assets/'])).sort()).toEqual(['assets/a.png', 'tmp/note.txt', 'tmp/src/raw.png']);
     expect(await port.filesUnder(repo, ['../', 'missing'])).toEqual([]);
   });
+
+  it('copyInto copies to the same paths, leaves the source, and never overwrites a different file (#72)', async () => {
+    const wt = mkdtempSync(join(tmpdir(), 'planestro-copy-wt-')); const checkout = mkdtempSync(join(tmpdir(), 'planestro-copy-co-'));
+    mkdirSync(join(wt, 'tmp/raws'), { recursive: true }); mkdirSync(join(checkout, 'tmp/raws'), { recursive: true });
+    writeFileSync(join(wt, 'tmp/raws/new.png'), 'new'); writeFileSync(join(wt, 'tmp/raws/same.png'), 'same'); writeFileSync(join(wt, 'tmp/raws/diff.png'), 'mine');
+    writeFileSync(join(checkout, 'tmp/raws/same.png'), 'same'); writeFileSync(join(checkout, 'tmp/raws/diff.png'), 'theirs');
+    const out = await new LiveGitPort().copyInto(wt, ['tmp/raws/new.png', 'tmp/raws/same.png', 'tmp/raws/diff.png'], checkout);
+    expect(out).toEqual({ copied: ['tmp/raws/new.png'], identical: ['tmp/raws/same.png'], collided: ['tmp/raws/diff.png'] });
+    expect(readFileSync(join(checkout, 'tmp/raws/new.png'), 'utf8')).toBe('new');
+    expect(readFileSync(join(checkout, 'tmp/raws/diff.png'), 'utf8')).toBe('theirs');
+    expect(existsSync(join(wt, 'tmp/raws/new.png'))).toBe(true);
+  });
 });

@@ -18,3 +18,18 @@ export function hostNote(os: string = platform(), has: (cmd: string) => boolean 
   lines.push('- "command not found" (exit code 127) means the tool is missing. It does not mean the command hung or failed: check with `command -v <name>` before retrying.');
   return lines.join('\n');
 }
+
+/**
+ * What planestro copies into the main checkout on merge (worktrees.copy_to_checkout, #72), said to
+ * every session: art briefs asked sandboxed Codex workers to copy their raws into the main checkout's
+ * tmp/, which they cannot write, and the orchestrator flagged each such "rescue blocked" as a merge blocker.
+ */
+export function keptPathsNote(paths: string[], checkout: string, orchestrator = false): string {
+  if (!paths.length) return '';
+  const where = paths.map((p) => `\`${p.replace(/\/+$/, '')}/\``).join(', ');
+  const lines = ['', '', '## Files copied on merge', '', `- Files a worker leaves under ${where} in its worktree are copied by planestro into the same folder of the main checkout (${checkout}) when the item merges, and kept in .displaced/ as well.`];
+  lines.push(orchestrator
+    ? '- So a worker never copies them there itself, and a worker that reports it could not copy them there is not blocked: it is not a merge blocker. Do not write that step into a plan or instruction.'
+    : '- Leave them there; do not copy them into the main checkout yourself, even if a brief says to.');
+  return lines.join('\n');
+}

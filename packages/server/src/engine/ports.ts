@@ -26,6 +26,8 @@ export interface GitPort {
   trackedAt(cwd: string, ref: string, paths: string[]): Promise<string[]>;
   /** Move files (relative to cwd) into `dest`, keeping their relative paths: set aside, never deleted. */
   moveAside(cwd: string, paths: string[], dest: string): Promise<void>;
+  /** Copy files (relative to cwd) to the same relative paths under `destRoot`, never over a file with other content. Each copy is checked by size. */
+  copyInto(cwd: string, paths: string[], destRoot: string): Promise<{ copied: string[]; identical: string[]; collided: string[] }>;
   /** Every file (tracked, ignored or unknown to git) under the given relative directories or files of `cwd`, as relative paths. */
   filesUnder(cwd: string, paths: string[]): Promise<string[]>;
   /** Stage everything in the worktree and commit it; returns the new head. */

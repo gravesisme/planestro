@@ -27,6 +27,8 @@ export class FakeWorld {
   baseFiles = new Set<string>();
   /** Files git ignores, by worktree: invisible to status, gone with the worktree unless set aside (p40). */
   ignored = new Map<string, string[]>();
+  /** Files present in a main checkout, by its path: what copy_to_checkout copied there (#72), or a test put there. */
+  checkout = new Map<string, Set<string>>();
   nextPr = 100;
   seq = 0;
   ciMode: 'green' | 'red-once' | 'conflict-once' = (process.env.PLANESTRO_DRYRUN_CI as any) ?? 'green';
@@ -70,6 +72,13 @@ export class DryRunGitPort implements GitPort {
   async dirtyDetail(cwd: string) { return { tracked: this.w.dirty.has(cwd) ? ['src/fake.ts'] : [], untracked: [...(this.w.untracked.get(cwd) ?? [])] }; }
   async trackedAt(_cwd: string, _ref: string, paths: string[]) { return paths.filter((p) => this.w.baseFiles.has(p)); }
   async moveAside(cwd: string, paths: string[], dest: string) { this.say(`move ${paths.join(', ')} from ${cwd} to ${dest}`); this.w.untracked.set(cwd, (this.w.untracked.get(cwd) ?? []).filter((p) => !paths.includes(p))); this.w.ignored.set(cwd, (this.w.ignored.get(cwd) ?? []).filter((p) => !paths.includes(p))); }
+  async copyInto(cwd: string, paths: string[], destRoot: string) {
+    this.say(`copy ${paths.join(', ')} from ${cwd} into ${destRoot}`);
+    const have = this.w.checkout.get(destRoot) ?? new Set<string>(); this.w.checkout.set(destRoot, have);
+    const collided = paths.filter((p) => have.has(p)); const copied = paths.filter((p) => !have.has(p));
+    for (const p of copied) have.add(p);
+    return { copied, identical: [], collided };
+  }
   async filesUnder(cwd: string, paths: string[]) { const under = (f: string) => paths.some((p) => f === p || f.startsWith(`${p.replace(/\/+$/, '')}/`)); return [...this.w.baseFiles, ...(this.w.untracked.get(cwd) ?? []), ...(this.w.ignored.get(cwd) ?? [])].filter(under); }
   async commitAll(cwd: string, message: string, _leave: string[] = []) { this.say(`git add -A && git commit -m "${message.split('\n')[0]}" (in ${cwd})`); this.w.dirty.delete(cwd); this.w.commits.set(cwd, (this.w.commits.get(cwd) ?? 0) + 1); const wt = this.w.worktrees.get(cwd); const head = this.w.sha(); if (wt) wt.head = head; return head; }
   async aheadBehind(cwd: string) { return { ahead: this.w.commits.get(cwd) ?? 0, behind: this.w.behind.get(cwd) ?? 1 }; }

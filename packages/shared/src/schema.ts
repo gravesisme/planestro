@@ -300,7 +300,9 @@ export const Config = z.object({
     keep_on_remove: z.array(z.string().min(1)).default([]),
     /** Globs for untracked files the project's tools regenerate in any worktree (`*.import`): never a session's work, so no clean-tree check counts them, engine commits leave them out, and cleanup sets them aside. A pattern without `/` matches the file name at any depth (dogfood p52). */
     byproducts: z.array(z.string().min(1)).default([]),
-  }).default({ root: '.claude/worktrees', branch_pattern: '{{prefix_lower}}/{{number}}-{{slug}}', dir_pattern: '{{prefix_lower}}-{{number}}-{{slug}}', keep_on_remove: [], byproducts: [] }),
+    /** Paths inside a worktree (relative, e.g. `tmp`) whose untracked files are copied into the same path of the main checkout when the item merges, before the worktree goes: a sandboxed worker cannot write there itself (#72). Never overwrites; they are kept (keep_on_remove) as well. */
+    copy_to_checkout: z.array(z.string().min(1)).default([]),
+  }).default({ root: '.claude/worktrees', branch_pattern: '{{prefix_lower}}/{{number}}-{{slug}}', dir_pattern: '{{prefix_lower}}-{{number}}-{{slug}}', keep_on_remove: [], byproducts: [], copy_to_checkout: [] }),
   hooks: z.object({ after_worktree_create: z.array(z.string()).default([]) }).default({ after_worktree_create: [] }),
   models: z.array(ModelDef).min(1),
   defaults: z.object({
