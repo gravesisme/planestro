@@ -1,4 +1,5 @@
 import { parkSummary } from '../engine/parks.ts';
+import { orchestratorSpend } from '../engine/orchestratorSpend.ts';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { basename, join, normalize } from 'node:path';
@@ -404,6 +405,8 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   });
   api.post('/questions/:id/reopen', (c) => { try { const q = store.reopenQuestion(c.req.param('id'), 'user'); return c.json(questionView(store, q, pending(q.id))); } catch (e) { return fail(c, e); } });
   // What waiting on a person cost, per item (#108): parks, time waited, what their resumes cost, the commands that park most.
+  // The orchestrator's cost per wake, today and in its current conversation (#49).
+  api.get('/orchestrator/spend', (c) => c.json(orchestratorSpend(store.journal.read({ type: 'orchestrator.done' }))));
   api.get('/parks', (c) => c.json(parkSummary(store.journal.read().filter((e) => e.type.startsWith('permission.') || e.type === 'op.begin' || e.type === 'op.end'))));
   api.get('/engine', (c) => c.json({ mode: engine.mode, paused: engine.paused, ...guardView(store, engine.paused), sessions: engine.sessions(), ...(engine.restartReadiness ? { restart: engine.restartReadiness() } : {}), log: engine.log.slice(-200) }));
   // The orchestrator's suggestions about planestro itself (dogfood f8): a list of their own, not buried in Activity.

@@ -110,9 +110,9 @@ Making the repo public publishes every commit, not just `main`'s tip.
       the network can still drive it. Jupyter's shape fits: a random token,
       printed once, exchanged for an HttpOnly cookie, required whenever the bind
       address isn't loopback.
-- [ ] **Model ids are hardcoded in the init template** (`claude-fable-5`,
-      `claude-opus-5`). They age; `init` could ask `claude` what exists, or the
-      README should say where to edit them.
+- [x] **Model ids are hardcoded in the init template.** Still true (now Opus 5.5 and
+      Fable 5.1, #49), but the template says where to change them (planestro.yml or
+      Settings → Models). `init` asking `claude` what exists is still an option.
 - [ ] **The dry-run planner's plans are stubs** (the dry-run *art* is now a real generated picture, and the epic breakdown is a plausible canned one) ("1. Inspect the code…"). For the
       demo, a handful of canned, item-aware plans — or a recorded real session
       replayed — would make the sample far more convincing.

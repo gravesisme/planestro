@@ -71,3 +71,5 @@ Rules:
   rather than asking again. When the user writes in a question's thread you are woken with the
   whole question: answer there with reply_on_question, then resolve_question once it is settled.
 - Always finish by calling done_with_wake with a one-line summary.
+
+{{> standing-decisions}}

@@ -354,7 +354,7 @@ export const Config = z.object({
     flaky_checks: z.array(z.string().min(1)).default([]),
   }).default({ mode: 'github', require_green_base: true, start_timeout_min: 10, timeout_min: 45, draft_while_held: true, flaky_checks: [] }),
   orchestrator: z.object({
-    model: z.string().default('claude-fable-5'),
+    model: z.string().default('claude-opus-5-5'),
     /** When the orchestrator's model is out of usage, wake on its model row's `fallback` instead. */
     allow_model_fallback: z.boolean().default(false),
     may_approve_plans: z.boolean().default(false),
@@ -364,9 +364,9 @@ export const Config = z.object({
     triage: z.boolean().default(true),
     /** How long an item may sit in triage before it comes to you as it is. */
     triage_timeout_min: z.number().positive().default(10),
-    rotate_after_wakes: z.number().int().positive().default(40),
+    rotate_after_wakes: z.number().int().positive().default(10),
     rotate_after_days: z.number().positive().default(3),
-  }).default({ model: 'claude-fable-5', allow_model_fallback: false, may_approve_plans: false, max_plan_revisions: 2, may_decide_permissions: false, triage: true, triage_timeout_min: 10, rotate_after_wakes: 40, rotate_after_days: 3 }),
+  }).default({ model: 'claude-opus-5-5', allow_model_fallback: false, may_approve_plans: false, max_plan_revisions: 2, may_decide_permissions: false, triage: true, triage_timeout_min: 10, rotate_after_wakes: 10, rotate_after_days: 3 }),
   engine: z.object({ mode: z.enum(['live', 'dry-run']).default('dry-run') }).default({ mode: 'dry-run' }),
   epics: z.object({
     auto_submit: z.boolean().default(true),

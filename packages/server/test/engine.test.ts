@@ -1814,6 +1814,9 @@ describe('orchestrator', () => {
     say('again');
     await waitFor(() => wakes.length >= 3);
     expect(wakes[2].resume).toBeUndefined(); // rotated: files are the memory
+    // #49: each wake says which conversation it was in, its place in it, and whether it began one
+    await waitFor(() => store.journal.read({ type: 'orchestrator.done' }).length >= 3);
+    expect(store.journal.read({ type: 'orchestrator.done' }).map((e) => [e.data?.session, e.data?.wake, e.data?.fresh ?? false])).toEqual([['orch-1', 1, true], ['orch-1', 2, false], ['orch-1', 1, true]]);
     // #59: the instruction given to the rotated-away conversation is carried into the fresh one
     expect(wakes[2].prompt).toContain('What the user said to you lately');
     expect(wakes[2].prompt).toContain(`user (on ${item.id}): as each child of the epic merges, submit its dependents yourself`);

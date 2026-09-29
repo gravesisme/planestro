@@ -1,6 +1,12 @@
 import type { ItemFrontmatter, PromptFrontmatter, ReleaseFrontmatter, ReleaseStatus, Config, LocalConfig, BillingMode, ModelDef, Status, JournalEntry, UsageGuardState, QuestionFrontmatter, ThreadEntry } from '@planestro/shared';
 import type { BreakdownChild } from '@planestro/shared';
 
+export interface OrchestratorSpend {
+  wakes: { at: string; events: string[]; items: string[]; cost: number; context_tokens?: number; model?: string; session?: string; wake?: number; fresh: boolean; summary: string; failed: boolean }[];
+  today: { wakes: number; cost: number };
+  conversation: { wakes: number; cost: number; context_tokens?: number } | null;
+}
+
 export interface ParkSummary { item: string; parks: number; waited_ms: number; resume_cost: number; open: number; shapes: { shape: string; parks: number; rule?: string }[] }
 
 export interface ItemView {
@@ -92,6 +98,7 @@ export const api = {
   drain: () => req<{ draining: boolean; idle: boolean; running: string[] }>('POST', '/api/engine/drain'),
   undrain: () => req<{ draining: boolean; idle: boolean; running: string[] }>('DELETE', '/api/engine/drain'),
   resume: () => req<{ paused: boolean }>('POST', '/api/engine/resume'),
+  orchestratorSpend: () => req<OrchestratorSpend>('GET', '/api/orchestrator/spend'),
   parks: () => req<ParkSummary[]>('GET', '/api/parks'),
   journal: (q: { item?: string; limit?: number }) => req<JournalEntry[]>('GET', `/api/journal?${new URLSearchParams(Object.entries(q).filter(([, v]) => v !== undefined).map(([k, v]) => [k, String(v)]))}`),
   reload: () => req<{ ok: true }>('POST', '/api/reload'),

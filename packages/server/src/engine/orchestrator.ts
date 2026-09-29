@@ -320,7 +320,13 @@ export class Orchestrator {
     const session = result.sessionId ?? state.session_id;
     const total = result.sessionTotalUsd ?? (session === state.session_id ? state.total_usd : undefined);
     this.writeState({ session_id: session, started_at: state.started_at ?? isoLocal(), wakes_served: state.wakes_served + 1, ...(total !== undefined ? { total_usd: total } : {}) });
-    this.store.journal.append({ type: 'orchestrator.done', actor: 'orchestrator', data: { events: events.map((e) => e.type), summary: doneSummary || (result.isError ? `(failed: ${result.subtype}) ${result.error ?? ''}` : result.text.slice(-300)), cost: result.costUsd, subtype: result.subtype } });
+    // What the Console's spend panel reads (#49): which items, which conversation (it resets on rotation), how big it has grown.
+    const items = [...new Set(events.map((e) => e.item).filter((i): i is string => Boolean(i)))];
+    this.store.journal.append({ type: 'orchestrator.done', actor: 'orchestrator', data: {
+      events: events.map((e) => e.type), summary: doneSummary || (result.isError ? `(failed: ${result.subtype}) ${result.error ?? ''}` : result.text.slice(-300)), cost: result.costUsd, subtype: result.subtype,
+      ...(items.length ? { items } : {}), ...(session ? { session } : {}), wake: state.wakes_served + 1, ...(state.session_id ? {} : { fresh: true }), model: pick.label,
+      ...(result.contextTokens !== undefined ? { context_tokens: result.contextTokens } : {}),
+    } });
     this.log('info', `orchestrator: ${doneSummary || result.subtype}`);
   }
 
