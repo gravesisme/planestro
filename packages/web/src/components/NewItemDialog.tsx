@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
-import { placeholdersIn, renderPrompt, fallbackChain, findModel, canPlan, type Config, type ModelDef } from '@planestro/shared';
+import { planReviewByDefault, placeholdersIn, renderPrompt, fallbackChain, findModel, canPlan, type Config, type ModelDef } from '@planestro/shared';
 import { api, type PromptView, type State } from '../api.ts';
 import { act, useStore } from '../store.ts';
 
@@ -59,7 +59,9 @@ export function NewItemDialog({ onClose, icebox, from }: { onClose: () => void; 
   const modelOf = (p?: PromptView) => state?.config.models.find((m) => m.id === p?.frontmatter.model && !m.external)?.id;
   const [implementer, setImplementer] = useState(modelOf(start) ?? state?.config.defaults.implementer ?? '');
   const [parent, setParent] = useState('');
-  const [delegate, setDelegate] = useState(false);
+  // Ticked from defaults.auto_approve_plan for the chosen implementer, until you tick or untick it yourself.
+  const [delegateChoice, setDelegate] = useState<boolean | undefined>(undefined);
+  const delegate = delegateChoice ?? (state ? planReviewByDefault(state.config, implementer, kind) : false);
   const [allowFallback, setAllowFallback] = useState(state?.config.defaults.allow_model_fallback ?? false);
   const orch = state?.config.orchestrator;
   const [description, setDescription] = useState(start?.body ?? '');
@@ -87,7 +89,7 @@ export function NewItemDialog({ onClose, icebox, from }: { onClose: () => void; 
         e.preventDefault();
         let text: string;
         try { text = render(); } catch (err) { useStore.setState({ error: (err as Error).message }); return; }
-        const r = await act(() => api.createItem({ title, category, description: text, kind, planner: kind === 'epic' && planner ? planner : undefined, parent: parent || undefined, implementer: kind === 'item' ? implementer || undefined : undefined, auto_approve_plan: kind === 'item' && delegate ? true : undefined, allow_model_fallback: allowFallback, status: icebox ? 'ICEBOX' : undefined }));
+        const r = await act(() => api.createItem({ title, category, description: text, kind, planner: kind === 'epic' && planner ? planner : undefined, parent: parent || undefined, implementer: kind === 'item' ? implementer || undefined : undefined, auto_approve_plan: kind === 'item' && orch?.may_approve_plans ? delegate : undefined, allow_model_fallback: allowFallback, status: icebox ? 'ICEBOX' : undefined }));
         if (r) { onClose(); nav(`/items/${r.id}`); }
       }}>
         <h2 style={{ margin: 0 }}>New {icebox ? 'icebox ' : ''}{kind === 'epic' ? 'epic' : 'item'}</h2>

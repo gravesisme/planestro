@@ -311,6 +311,8 @@ export const Config = z.object({
     planner: z.string(), implementer: z.string(), category: z.string(),
     /** New items (and an epic's children, unless the epic says otherwise) start with fallback allowed. */
     allow_model_fallback: z.boolean().default(false),
+    /** New items start with "let the orchestrator approve the plan" ticked, unless their implementer runs outside Claude (art, reviewed by a person): see planReviewByDefault. */
+    auto_approve_plan: z.boolean().default(false),
   }),
   categories: z.array(z.string().min(1)).min(1),
   /** Per-item spend ceiling across all of its turns; a turn starts with what remains. */

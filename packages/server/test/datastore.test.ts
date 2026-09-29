@@ -234,6 +234,22 @@ describe('DataStore', () => {
   });
 });
 
+describe('defaults.auto_approve_plan (plan review by the orchestrator on by default)', () => {
+  it('ticks new items implemented on Claude; never art on another runner, an epic, or an explicit untick', async () => {
+    const { dataDir } = makeFixture();
+    store = await DataStore.open(dataDir);
+    expect(store.createItem({ title: 'Off by default' }).file.frontmatter.auto_approve_plan).toBeUndefined();
+    store.updateConfig((doc) => {
+      doc.setIn(['defaults', 'auto_approve_plan'], true);
+      doc.set('models', [...(doc.toJS().models as unknown[]), { id: 'codex-art', label: 'Codex Art', runner: 'codex' }]);
+    }, 'config: plan review default');
+    expect(store.createItem({ title: 'Wiring' }).file.frontmatter.auto_approve_plan).toBe(true);
+    expect(store.createItem({ title: 'Frog sheet', implementer: 'codex-art' }).file.frontmatter.auto_approve_plan).toBeUndefined();
+    expect(store.createItem({ title: 'Big', kind: 'epic' } as any).file.frontmatter.auto_approve_plan).toBeUndefined();
+    expect(store.createItem({ title: 'Mine', extra: { auto_approve_plan: false } } as any).file.frontmatter.auto_approve_plan).toBe(false);
+  });
+});
+
 describe('a base that was a merged epic\'s branch (p45)', () => {
   it('follows to that epic\'s own base, as far as it goes', async () => {
     const { dataDir } = makeFixture();

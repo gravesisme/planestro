@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, existsSync, mkdirSync, unlinkSync, statSync, writeFileSync } from 'node:fs';
 import { join, basename, relative } from 'node:path';
 import type YAML from 'yaml';
-import {
+import { planReviewByDefault,
   parseItemFile, serializeItemFile, setSection, appendActivity, getSection, idNumber, slugify,
   parsePromptFile, serializePromptFile, renderPrompt,
   parseReleaseFile, serializeReleaseFile, setReleaseSection, sortReleases, compareVersions, getReleaseSection, VERSION_RE, DATE_RE,
@@ -281,6 +281,7 @@ export class DataStore {
       planner: input.planner ?? this.config.defaults.planner, implementer: input.implementer ?? this.config.defaults.implementer,
       ...((input.allow_model_fallback ?? this.config.defaults.allow_model_fallback) ? { allow_model_fallback: true } : {}),
       depends_on: input.depends_on ?? [], attachments: [], created_at: now, updated_at: now, ...(status === 'ICEBOX' ? { iceboxed_at: now } : {}),
+      ...(input.extra?.auto_approve_plan === undefined && planReviewByDefault(this.config, input.implementer, input.kind ?? 'item') ? { auto_approve_plan: true } : {}),
       ...(input.extra ?? {}),
     };
     const file: ItemFile = { frontmatter: fm, sections: [] };
