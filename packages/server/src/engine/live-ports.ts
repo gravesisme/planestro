@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync, mkdirSync, renameSync, copyFileSync, unlinkSync, lstatSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, renameSync, copyFileSync, unlinkSync, lstatSync, readdirSync, readFileSync, statSync, constants as fsConstants } from 'node:fs';
 import { join, dirname } from 'node:path';
 import type { GitPort, GhPort, ProcPort, WorktreeEntry, RebaseResult, CiStatus, PrInfo, ChangedFile } from './ports.ts';
 
@@ -123,6 +123,18 @@ export class LiveGitPort implements GitPort {
       mkdirSync(dirname(to), { recursive: true });
       try { renameSync(join(cwd, p), to); } catch { copyFileSync(join(cwd, p), to); unlinkSync(join(cwd, p)); } // another volume
     }
+  }
+  async copyInto(cwd: string, paths: string[], destRoot: string) {
+    const out = { copied: [] as string[], identical: [] as string[], collided: [] as string[] };
+    for (const p of paths) {
+      const from = join(cwd, p); const to = join(destRoot, p);
+      if (existsSync(to)) { (readFileSync(to).equals(readFileSync(from)) ? out.identical : out.collided).push(p); continue; }
+      mkdirSync(dirname(to), { recursive: true });
+      copyFileSync(from, to, fsConstants.COPYFILE_EXCL);
+      if (statSync(to).size !== statSync(from).size) throw new Error(`copy of ${p} is ${statSync(to).size} bytes, not ${statSync(from).size}`);
+      out.copied.push(p);
+    }
+    return out;
   }
   async commitAll(cwd: string, message: string, leave: string[] = []) {
     await git(cwd, ['add', '-A']);

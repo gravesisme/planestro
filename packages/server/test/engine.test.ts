@@ -1383,6 +1383,42 @@ describe('files a worktree must not take with it (p40)', () => {
     expect(moved.flat()).toEqual(['tmp/raw.png']);
   });
 
+  it('copy_to_checkout copies a merged worker\'s untracked files into the main checkout, never over a different file, and keeps them (#72)', async () => {
+    const { store, engine, world } = await setup();
+    store.updateConfig((doc) => { doc.setIn(['worktrees', 'copy_to_checkout'], ['tmp']); }, 'config: copy tmp');
+    world.baseFiles.add('tmp/.gdignore');
+    world.checkout.set(store.codeRepoPath(), new Set(['tmp/raws/b.png']));   // already in the checkout, other content
+    const item = store.createItem({ title: 'Art raws', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    const cwd = (engine as any).absWorktree(store.getItem(item.id)!.file.frontmatter.worktree!);
+    world.ignored.set(cwd, ['tmp/raws/a.png', 'tmp/raws/b.png']);
+    await engine.approvePlan(item.id);
+    await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
+    expect([...world.checkout.get(store.codeRepoPath())!].sort()).toEqual(['tmp/raws/a.png', 'tmp/raws/b.png']);
+    const log = activityOf(store, item.id);
+    expect(log).toMatch(/copied 1 file under tmp into the main checkout \(worktrees\.copy_to_checkout\); 1 file not copied because the checkout has a different file at that path, kept only in \.displaced\/: tmp\/raws\/b\.png/);
+    expect(log).toMatch(/set aside 2 files under tmp/);                          // the originals are kept as keep_on_remove keeps them
+  });
+
+  it('a copy into the checkout that fails blocks cleanup_dirty and removes nothing (#72)', async () => {
+    const { store, engine, world } = await setup();
+    store.updateConfig((doc) => { doc.setIn(['worktrees', 'copy_to_checkout'], ['tmp']); }, 'config: copy tmp');
+    const item = store.createItem({ title: 'Disk full', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    const cwd = (engine as any).absWorktree(store.getItem(item.id)!.file.frontmatter.worktree!);
+    world.ignored.set(cwd, ['tmp/raw.png']);
+    (engine as any).ports.git.copyInto = async () => { throw new Error('ENOSPC: no space left on device'); };
+    await engine.approvePlan(item.id);
+    await waitFor(() => store.getItem(item.id)!.file.frontmatter.blocked_reason === 'cleanup_dirty', 8000);
+    expect(activityOf(store, item.id)).toMatch(/copying tmp into the main checkout failed \(ENOSPC.*\); nothing was removed/);
+    expect(world.worktrees.has(cwd)).toBe(true);
+    expect(world.ignored.get(cwd)).toEqual(['tmp/raw.png']);
+  });
+
   it('close as done sets them aside too, before it removes an unused worktree', async () => {
     const { store, engine, world } = await setup();
     store.updateConfig((doc) => { doc.setIn(['worktrees', 'keep_on_remove'], ['tmp']); }, 'config: keep tmp');

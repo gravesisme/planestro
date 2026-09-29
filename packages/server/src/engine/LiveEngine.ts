@@ -5,7 +5,7 @@ import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import type { Ports, TurnPhase, TurnResult, TurnTools, PermissionRequest, McpServerSpec } from './ports.ts';
 import { makePolicy, ruleFor, allowedByRules, BASE_ALLOWED } from './policy.ts';
-import { hostNote } from './hostNote.ts';
+import { hostNote, keptPathsNote } from './hostNote.ts';
 import { Orchestrator } from './orchestrator.ts';
 import { pngSize } from './placeholderPng.ts';
 import type { ReviewImage } from './Engine.ts';
@@ -823,7 +823,7 @@ export class LiveEngine implements Engine {
     try {
       result = await this.withRunnerSlot(runner, () => this.withSessionSlot(id, () => { if (abort.signal.aborted) return Promise.resolve<TurnResult>({ subtype: 'killed', isError: false, costUsd: 0, numTurns: 0, text: '' }); admitted(); return agent.runTurn({
         itemId: id, phase, cwd, model: model as string, permissionMode: phase === 'plan' ? 'plan' : 'acceptEdits', prompt, resume: resumeId, images,
-        systemAppend: `${this.store.renderPrompt(metered ? 'worker-system' : `worker-system-${runner}`, item)}\n\n${this.hostNote}`,
+        systemAppend: `${this.store.renderPrompt(metered ? 'worker-system' : `worker-system-${runner}`, item)}\n\n${this.hostNote}${keptPathsNote(this.store.config.worktrees.copy_to_checkout, this.repo)}`,
         ...(pick.sdkFallback ? { fallbackModel: pick.sdkFallback } : {}),
         ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
         allowedTools: [...BASE_ALLOWED[phase], ...this.store.config.permissions.allow, ...extraAllowed],
@@ -1516,7 +1516,7 @@ export class LiveEngine implements Engine {
    * Moved, never deleted (invariant 7), to a folder the Activity log names. Returns that line.
    */
   private async setAsideBeforeRemove(id: string, cwd: string): Promise<string | undefined> {
-    const keep = this.store.config.worktrees.keep_on_remove;
+    const keep = this.keptPaths();
     const byproducts = this.store.config.worktrees.byproducts.length ? (await this.worktreeDirt(cwd).catch(() => ({ byproducts: [] as string[] }))).byproducts : [];
     if (!keep.length && !byproducts.length) return undefined;
     // Only what git does not track: a tracked file (HH's tmp/.gdignore) moved away is a deletion,
@@ -1536,6 +1536,34 @@ export class LiveEngine implements Engine {
       ...(regenerated.length ? [`${n(regenerated.length, 'byproduct')} (worktrees.byproducts)`] : []),
     ];
     return `set aside ${what.join(' and ')} before removing the worktree: ${dest}`;
+  }
+
+  /** What is set aside when a worktree goes: keep_on_remove, and what copy_to_checkout copies (a copy keeps its original too). */
+  private keptPaths(): string[] {
+    const w = this.store.config.worktrees;
+    return [...new Set([...w.keep_on_remove, ...w.copy_to_checkout])];
+  }
+
+  /**
+   * After a merge, before the worktree goes (#72): the untracked files under `worktrees.copy_to_checkout`
+   * are copied to the same paths in the main checkout. A sandboxed worker (the art runner) cannot write
+   * there, and every art brief's "copy the raws into the main tmp/" step waited on a person. Never
+   * over a file with other content: that one stays only in .displaced/. Throws when a copy fails.
+   */
+  private async copyToCheckout(cwd: string): Promise<string | undefined> {
+    const paths = this.store.config.worktrees.copy_to_checkout;
+    if (!paths.length) return undefined;
+    const under = await this.ports.git.filesUnder(cwd, paths);
+    const tracked = new Set(under.length ? await this.ports.git.trackedAt(cwd, 'HEAD', under) : []);
+    const files = under.filter((f) => !tracked.has(f) && !this.isByproduct(f));
+    if (!files.length) return undefined;
+    const { copied, identical, collided } = await this.ports.git.copyInto(cwd, files, this.repo);
+    const n = (k: number) => `${k} file${k === 1 ? '' : 's'}`;
+    return [
+      `copied ${n(copied.length)} under ${paths.join(', ')} into the main checkout (worktrees.copy_to_checkout)`,
+      ...(identical.length ? [`${n(identical.length)} already there`] : []),
+      ...(collided.length ? [`${n(collided.length)} not copied because the checkout has a different file at that path, kept only in .displaced/: ${collided.slice(0, 10).join(', ')}${collided.length > 10 ? ', …' : ''}`] : []),
+    ].join('; ');
   }
 
   private async cleanup(id: string): Promise<void> {
@@ -1570,6 +1598,10 @@ export class LiveEngine implements Engine {
     if (view.state !== 'MERGED' || stranded.length) { this.store.journal.end(opId, id, 'aborted', { reason: 'unverifiable', stranded }); this.block(id, 'cleanup_unverifiable', view.state !== 'MERGED' ? `PR #${fm.pr} is ${view.state}; nothing was deleted` : `cannot prove ${stranded.join(', ')} reachable from origin/${base}; nothing was deleted`); return; }
     const { clean } = await this.worktreeDirt(cwd).catch(() => ({ clean: true }));
     if (!clean) { this.store.journal.end(opId, id, 'aborted', { reason: 'dirty' }); this.block(id, 'cleanup_dirty', 'the worktree has uncommitted changes after the merge; remove it by hand or discard them'); return; }
+    let copied: string | undefined;
+    try { copied = await this.copyToCheckout(cwd); }
+    catch (e) { this.store.journal.end(opId, id, 'aborted', { reason: 'copy_failed' }); this.block(id, 'cleanup_dirty', `copying ${this.store.config.worktrees.copy_to_checkout.join(', ')} into the main checkout failed (${(e as Error).message.replace(/\s+/g, ' ').slice(0, 200)}); nothing was removed`); return; }
+    if (copied) this.store.mutateItem(id, [{ activity: { actor: 'app', text: copied } }], 'engine');
     const kept = await this.setAsideBeforeRemove(id, cwd);
     if (kept) this.store.mutateItem(id, [{ activity: { actor: 'app', text: kept } }], 'engine');
     await this.ports.git.worktreeRemove(this.repo, cwd, false);
