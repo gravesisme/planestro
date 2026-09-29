@@ -61,8 +61,9 @@ function sessionContextAfter(before: SessionContext | undefined, session: string
   if (!session) return undefined;
   const same = before?.session === session ? before : undefined;
   const q = result.resumeQuote;
-  const tokens = result.contextTokens ?? same?.tokens ?? q?.contextTokens;
-  if (!tokens) return same;
+  // A turn that said nothing of its window (it was killed, or its runner does not report one) still reported a total: that is kept.
+  const tokens = result.contextTokens ?? same?.tokens ?? q?.contextTokens ?? 0;
+  if (!tokens && result.sessionTotalUsd === undefined) return same;
   // A turn that was declined sent nothing, so the cache is as old as the CLI said it was.
   const at = result.contextTokens ? now : same?.at ?? (q?.secondsSinceLast !== undefined ? isoLocal(new Date(Date.parse(now) - q.secondsSinceLast * 1000)) : now);
   const rate = q ? Math.round(q.cacheWriteUsd / q.contextTokens * 1e6 * 1e4) / 1e4 : same?.model === model ? same.write_usd_per_mtok : undefined;

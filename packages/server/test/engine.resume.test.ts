@@ -89,6 +89,15 @@ describe('what a turn cost, not what its conversation has cost (#64)', () => {
     expect(next.resumeTotalUsd).toBe(30.27);
   });
 
+  it('a turn that reported a total but no window still leaves the total for the next resume', async () => {
+    const { store: s, engine: e, id, turns } = await stopped({ first: async (o) => { await o.tools.report_blocked('which colour?'); return { ...ok, costUsd: 3, sessionTotalUsd: 3, blocked: 'which colour?' }; } });
+    expect(fmOf(s, id).session_context).toMatchObject({ session: 's-old', tokens: 0, total_usd: 3 });
+    await e.unblock(id, 'Green.');
+    await waitFor(() => turns.filter((t) => t.phase !== 'plan').length === 2);
+    expect(turns.at(-1)!.resume).toBe('s-old');                                // nothing is known of its size, so nothing is assumed
+    expect(turns.at(-1)!.resumeTotalUsd).toBe(3);
+  });
+
   it('the quote the CLI gave for a resume becomes the price of reloading that conversation', async () => {
     const { store: s, engine: e, id, turns } = await stopped({ later: async (o) => { await o.tools.report_blocked('and the frame?'); return { ...ok, costUsd: 0.2, sessionTotalUsd: 5, contextTokens: 100_000, cacheTtlS: 3600, resumeQuote: { contextTokens: 90_000, cacheWriteUsd: 3.6, cacheExpired: true }, blocked: 'and the frame?' }; } });
     await e.unblock(id, 'Green.');
