@@ -31,6 +31,7 @@ function run() {
   say({ type: 'turn.completed', usage: { input_tokens: 1000, cached_input_tokens: 900, output_tokens: 50 } });
   const final = /ASK/.test(prompt) ? { outcome: 'question', summary: 'need a call', question: 'Pixel art or painted?' }
     : /STUCK/.test(prompt) ? { outcome: 'blocked', summary: 'the sandbox refused the network', question: null }
+    : /WAIT/.test(prompt) ? { outcome: 'done', summary: 'Generated icon.png and committed it.', question: null, hold: 'until the header art has merged' }
     : /GIVE/.test(prompt) ? { outcome: 'done', summary: 'Generated icon.png and committed it.', question: null, hand_off: { to: 'TP-2', paths: ['icon.png'], note: 'the icon' } }
     : { outcome: 'done', summary: 'Generated icon.png and committed it.', question: null };
   if (!/SILENT/.test(prompt)) fs.writeFileSync(out, JSON.stringify(final));
@@ -43,7 +44,7 @@ function setup() {
   const bin = join(dir, 'codex'); writeFileSync(bin, FAKE); chmodSync(bin, 0o755);
   process.env.FAKE_CODEX_ARGS = join(dir, 'args.json');
   const calls: string[] = []; const output: string[] = []; const questions: unknown[][] = [];
-  const tools = { report_done: async (s: string) => { calls.push(`done:${s}`); return 'ok'; }, report_blocked: async (s: string) => { calls.push(`blocked:${s}`); return 'ok'; }, hand_off: async (to: string, paths: string[], note: string) => { calls.push(`hand_off:${to}:${paths.join(',')}:${note}`); return 'Delivered'; } } as unknown as TurnTools;
+  const tools = { report_done: async (s: string, _parts?: unknown, hold?: string) => { calls.push(`done:${s}${hold ? ` (hold: ${hold})` : ''}`); return 'ok'; }, report_blocked: async (s: string) => { calls.push(`blocked:${s}`); return 'ok'; }, hand_off: async (to: string, paths: string[], note: string) => { calls.push(`hand_off:${to}:${paths.join(',')}:${note}`); return 'Delivered'; } } as unknown as TurnTools;
   const opts = (prompt: string, extra: Partial<AgentTurnOptions> = {}): AgentTurnOptions => ({ itemId: 'TP-1', phase: 'implement', cwd: dir, prompt, systemAppend: 'RULES', extraDirs: ['/data'], tools, onQuestion: async (q) => { questions.push(q); }, onOutput: (t) => output.push(t), ...extra });
   const args = () => JSON.parse(readFileSync(process.env.FAKE_CODEX_ARGS!, 'utf8')) as string[];
   return { port: new LiveCodexPort(bin), opts, calls, output, questions, args, dir };
@@ -72,6 +73,18 @@ describe('LiveCodexPort (against a recorded fake codex)', () => {
     expect(r.done).toBe('Generated icon.png and committed it.');
     expect(t.calls).toEqual(['hand_off:TP-2:icon.png:the icon', 'done:Generated icon.png and committed it.']);
     expect(FINAL_SCHEMA.required).toContain('hand_off'); // structured output: every property is required, so the field is always there (null when unused)
+  });
+
+  it('a hold in the final message reaches report_done; null or blank is no hold (#97)', async () => {
+    const t = setup();
+    const r = await t.port.runTurn(t.opts('WAIT for the art'));
+    expect(r.done).toBe('Generated icon.png and committed it.');
+    expect(t.calls).toEqual(['done:Generated icon.png and committed it. (hold: until the header art has merged)']);
+    expect(FINAL_SCHEMA.required).toContain('hold');
+    expect(FINAL_SCHEMA.properties.hold.type).toEqual(['string', 'null']);
+    expect(parseFinal('{"outcome":"done","summary":"s","question":null,"hold":null}')?.hold).toBeUndefined();
+    expect(parseFinal('{"outcome":"done","summary":"s","question":null,"hold":"  "}')?.hold).toBeUndefined();
+    expect(parseFinal('{"outcome":"done","summary":"s","question":null,"hold":" until X "}')?.hold).toBe('until X');
   });
 
   it('resumes by thread id without re-stating the sandbox; a question parks, blocked reports', async () => {

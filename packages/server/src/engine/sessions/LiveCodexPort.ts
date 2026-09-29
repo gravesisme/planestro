@@ -20,6 +20,7 @@ export const FINAL_SCHEMA = {
     outcome: { type: 'string', enum: ['done', 'blocked', 'question'] },
     summary: { type: 'string' },
     question: { type: ['string', 'null'] },
+    hold: { type: ['string', 'null'] },
     parts: { type: ['array', 'null'], items: { type: 'object', properties: { name: { type: 'string' }, state: { type: 'string', enum: ['accepted', 'pending', 'rejected'] }, reason: { type: ['string', 'null'] } }, required: ['name', 'state', 'reason'], additionalProperties: false } },
     hand_off: {
       type: ['object', 'null'],
@@ -28,11 +29,11 @@ export const FINAL_SCHEMA = {
       additionalProperties: false,
     },
   },
-  required: ['outcome', 'summary', 'question', 'parts', 'hand_off'],
+  required: ['outcome', 'summary', 'question', 'hold', 'parts', 'hand_off'],
   additionalProperties: false,
 } as const;
 
-export interface CodexFinal { outcome: 'done' | 'blocked' | 'question'; summary: string; question: string | null; hand_off?: { to: string; paths: string[]; note: string } | null; parts?: unknown[] | null }
+export interface CodexFinal { outcome: 'done' | 'blocked' | 'question'; summary: string; question: string | null; /** Done, but the pull request must not merge yet: what it waits for (#97). */ hold?: string | null; hand_off?: { to: string; paths: string[]; note: string } | null; parts?: unknown[] | null }
 
 /** A lenient read of the final message: the schema is enforced by Codex, but a crash can leave anything. */
 export function parseFinal(text: string | undefined): CodexFinal | undefined {
@@ -42,7 +43,7 @@ export function parseFinal(text: string | undefined): CodexFinal | undefined {
     if (v && (v.outcome === 'done' || v.outcome === 'blocked' || v.outcome === 'question') && typeof v.summary === 'string') {
       const h = v.hand_off;
       const hand_off = h && typeof h === 'object' && typeof h.to === 'string' && Array.isArray(h.paths) && h.paths.every((p) => typeof p === 'string') ? { to: h.to, paths: h.paths, note: typeof h.note === 'string' ? h.note : '' } : null;
-      return { outcome: v.outcome, summary: v.summary, question: typeof v.question === 'string' ? v.question : null, hand_off, ...(Array.isArray(v.parts) && v.parts.length ? { parts: v.parts } : {}) };
+      return { outcome: v.outcome, summary: v.summary, question: typeof v.question === 'string' ? v.question : null, ...(typeof v.hold === 'string' && v.hold.trim() ? { hold: v.hold.trim() } : {}), hand_off, ...(Array.isArray(v.parts) && v.parts.length ? { parts: v.parts } : {}) };
     }
   } catch { /* not JSON */ }
   return undefined;
@@ -126,7 +127,7 @@ export class LiveCodexPort implements AgentPort<AgentTurnOptions> {
       const answer = await o.tools.hand_off(final.hand_off.to, final.hand_off.paths, final.hand_off.note ?? '');
       o.onOutput(`hand_off → ${final.hand_off.to}: ${answer}`);
     }
-    if (final.outcome === 'done') { await o.tools.report_done(final.summary, final.parts ?? undefined); result.done = final.summary; }
+    if (final.outcome === 'done') { await o.tools.report_done(final.summary, final.parts ?? undefined, final.hold ?? undefined); result.done = final.summary; }
     else if (final.outcome === 'blocked') { await o.tools.report_blocked(final.summary, final.parts ?? undefined); result.blocked = final.summary; }
     else if (final.parts) await o.tools.report_progress(final.parts);
     else { await o.onQuestion([{ question: final.question ?? final.summary, header: 'Codex asks', options: [] }]); result.parked = 'question'; }
