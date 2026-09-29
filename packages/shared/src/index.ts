@@ -16,4 +16,5 @@ export * from './blocks.ts';
 export * from './models.ts';
 export * from './decision.ts';
 export * from './usage.ts';
+export * from './resume.ts';
 export * from './settings.ts';
