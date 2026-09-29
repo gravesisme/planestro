@@ -1,3 +1,4 @@
+import { basename, matchesGlob } from 'node:path';
 import type { Runner, RateLimitSnapshot } from '@planestro/shared';
 /**
  * Everything that touches the world goes through a port. `Live*` ports act; `DryRun*`
@@ -5,7 +6,13 @@ import type { Runner, RateLimitSnapshot } from '@planestro/shared';
  * Lifecycle code never names a branch: every call receives the resolved base.
  */
 export interface WorktreeEntry { path: string; head: string; branch?: string; bare?: boolean; prunable?: boolean }
-export interface RebaseResult { ok: boolean; conflicts: string[]; head: string }
+/** `tookBase`: conflicted files the sync resolved by taking the base's copy (a `takeBase` pattern named them, #63). */
+export interface RebaseResult { ok: boolean; conflicts: string[]; head: string; tookBase?: string[] }
+
+/** A path pattern as the worktree settings use them: without `/` it matches the file name at any depth, with `/` the path from the root. */
+export function matchesPathPattern(path: string, pattern: string): boolean {
+  return matchesGlob(pattern.includes('/') ? path : basename(path), pattern);
+}
 
 export interface ChangedFile { path: string; change: 'added' | 'modified' | 'deleted'; bytes?: number }
 
@@ -35,9 +42,14 @@ export interface GitPort {
   commitAll(cwd: string, message: string, leave?: string[]): Promise<string>;
   aheadBehind(cwd: string, base: string, head: string): Promise<{ ahead: number; behind: number }>;
   /** Rebase `cwd`'s HEAD onto `onto`; on conflict the rebase is aborted and the files listed. */
-  rebase(cwd: string, onto: string): Promise<RebaseResult>;
+  /** With `takeBase`, a conflict only in files those patterns match is resolved with the base's copy and the sync goes on. */
+  rebase(cwd: string, onto: string, takeBase?: string[]): Promise<RebaseResult>;
   /** Merge `ref` into `cwd`'s HEAD (integration branches merge, never rebase); aborted on conflict. */
-  merge(cwd: string, ref: string): Promise<RebaseResult>;
+  merge(cwd: string, ref: string, takeBase?: string[]): Promise<RebaseResult>;
+  /** Put the worktree back on `sha` (its own earlier head, after a sync that has to be undone). */
+  resetHard(cwd: string, sha: string): Promise<void>;
+  /** Commit only these tracked paths; returns the new head. */
+  commitPaths(cwd: string, paths: string[], message: string): Promise<string>;
   inProgressOp(cwd: string): Promise<'rebase' | 'merge' | null>;
   abortInProgress(cwd: string): Promise<void>;
   pushForceWithLease(cwd: string, branch: string, expectedRemoteSha: string | null): Promise<void>;

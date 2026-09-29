@@ -153,6 +153,50 @@ describe('sync with base (p29)', () => {
     expect(ctx.store.getItem(id)!.file.frontmatter.blocked).toBeUndefined();
   });
 
+  describe('generated files (#63)', () => {
+    const POT = 'resources/i18n/messages.pot';
+    /** A worker whose sync conflicts only in messages.pot, with its regenerate command configured; `run` stands in for the command. */
+    async function potConflict(run: (command: string, cwd: string) => { code: number; stderr?: string }) {
+      const ctx = await setup();
+      ctx.store.updateConfig((doc) => { doc.setIn(['worktrees', 'generated'], { 'messages.pot': 'godot --headless --script tools/i18n_export_pot.gd' }); }, 'config: generated');
+      const w = worker(ctx, { pushed: true });
+      const ran: string[] = [];
+      (ctx.engine as any).ports.proc.run = async (command: string, o: { cwd: string }) => { ran.push(command); const r = run(command, o.cwd); return { code: r.code, stdout: '', stderr: r.stderr ?? '' }; };
+      ctx.world.conflictFiles = [POT]; ctx.world.conflictArmed = true;
+      return { ...ctx, ...w, ran };
+    }
+
+    it('a conflict only in a generated file takes the base copy, regenerates and commits it, with no session turn', async () => {
+      const ctx = await potConflict((_c, cwd) => { ctx.world.regenerated.set(cwd, [POT]); return { code: 0 }; });
+      const r = await ctx.engine.syncWithBase(ctx.id);
+      expect(r).toMatch(/^synced: rebased onto origin\/trunk/);
+      expect(ctx.ran).toEqual(['godot --headless --script tools/i18n_export_pot.gd']);
+      expect(ctx.log.some((l) => l.includes(`git commit -m "${ctx.id}: regenerate messages.pot" -- ${POT}`))).toBe(true);
+      expect(activityOf(ctx.store, ctx.id)).toContain(`took trunk's copy of ${POT} in the conflict and regenerated it (\`godot --headless --script tools/i18n_export_pot.gd\`); committed ${POT}`);
+      expect(ctx.prompts).toHaveLength(0);
+    });
+
+    it('a regenerate command that fails undoes the sync and the conflict goes to the session as before', async () => {
+      const ctx = await potConflict(() => ({ code: 1, stderr: 'godot: not found' }));
+      const r = await ctx.engine.syncWithBase(ctx.id);
+      expect(r).toMatch(/^conflict: .*conflicted in resources\/i18n\/messages\.pot; .*Handed to the session/);
+      expect(ctx.log.some((l) => l.startsWith('Would git reset --hard'))).toBe(true);
+      expect(activityOf(ctx.store, ctx.id)).toMatch(/exited 1: godot: not found; the sync was undone/);
+      await waitFor(() => ctx.prompts.length === 1);
+      expect(ctx.prompts[0].prompt).toContain(POT);
+    });
+
+    it('a command that also changes an unlisted file undoes the sync; a conflict in any other file never runs a command', async () => {
+      const ctx = await potConflict((_c, cwd) => { ctx.world.regenerated.set(cwd, [POT, 'resources/i18n/en.po']); return { code: 0 }; });
+      expect(await ctx.engine.syncWithBase(ctx.id)).toMatch(/^conflict: /);
+      expect(activityOf(ctx.store, ctx.id)).toContain('regenerating also changed resources/i18n/en.po, which worktrees.generated does not list; the sync was undone');
+      ctx.world.conflictFiles = [POT, 'src/main.ts']; ctx.world.conflictArmed = true; ctx.ran.length = 0;
+      await waitFor(() => !(ctx.engine as any).jobs.has(ctx.id) && !(ctx.engine as any).turns.has(ctx.id));
+      await ctx.engine.syncWithBase(ctx.id);
+      expect(ctx.ran).toEqual([]);
+    });
+  });
+
   it('a conflict with no session to take it blocks the item, and a blocked item stays blocked', async () => {
     const ctx = await setup();
     const fresh = worker(ctx, { session: false, status: 'PLAN_IN_PROGRESS' });

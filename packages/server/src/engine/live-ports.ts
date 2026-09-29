@@ -2,9 +2,23 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { existsSync, mkdirSync, renameSync, copyFileSync, unlinkSync, lstatSync, readdirSync, readFileSync, statSync, constants as fsConstants } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { matchesPathPattern } from './ports.ts';
 import type { GitPort, GhPort, ProcPort, WorktreeEntry, RebaseResult, CiStatus, PrInfo, ChangedFile } from './ports.ts';
 
 const execFileP = promisify(execFile);
+
+/** The files a stopped rebase or merge left unmerged. */
+async function unmerged(cwd: string): Promise<string[]> {
+  return (await git(cwd, ['diff', '--name-only', '--diff-filter=U'], true)).stdout.split('\n').filter(Boolean);
+}
+
+/** Resolve a conflict with one side's copy, only when every conflicted file is one `patterns` names; false when it cannot. */
+async function takeSide(cwd: string, conflicts: string[], patterns: string[], side: '--ours' | '--theirs'): Promise<boolean> {
+  if (!patterns.length || !conflicts.length || !conflicts.every((f) => patterns.some((p) => matchesPathPattern(f, p)))) return false;
+  // A delete on one side has no copy to take: that is a decision, not a regeneration.
+  if ((await git(cwd, ['checkout', side, '--', ...conflicts], true)).code !== 0) return false;
+  return (await git(cwd, ['add', '--', ...conflicts], true)).code === 0;
+}
 
 async function git(cwd: string, args: string[], allowFail = false): Promise<{ stdout: string; stderr: string; code: number }> {
   try {
@@ -144,19 +158,40 @@ export class LiveGitPort implements GitPort {
     const [behind, ahead] = (await git(cwd, ['rev-list', '--left-right', '--count', `${base}...${head}`])).stdout.trim().split(/\s+/).map(Number);
     return { ahead, behind };
   }
-  async rebase(cwd: string, onto: string): Promise<RebaseResult> {
-    const r = await git(cwd, ['rebase', onto], true);
-    if (r.code === 0) return { ok: true, conflicts: [], head: await this.revParse(cwd, 'HEAD') };
-    const conflicts = (await git(cwd, ['diff', '--name-only', '--diff-filter=U'], true)).stdout.split('\n').filter(Boolean);
-    await git(cwd, ['rebase', '--abort'], true);
-    return { ok: false, conflicts: conflicts.length ? conflicts : [r.stderr.trim().split('\n').pop() ?? 'unknown conflict'], head: await this.revParse(cwd, 'HEAD') };
+  async rebase(cwd: string, onto: string, takeBase: string[] = []): Promise<RebaseResult> {
+    let r = await git(cwd, ['rebase', onto], true);
+    const took = new Set<string>();
+    // Each replayed commit can stop on its own conflict; in a rebase `--ours` is the base being rebased onto (#63).
+    for (let step = 0; r.code !== 0 && step < 500; step++) {
+      const conflicts = await unmerged(cwd);
+      if (!(await takeSide(cwd, conflicts, takeBase, '--ours'))) {
+        await git(cwd, ['rebase', '--abort'], true);
+        return { ok: false, conflicts: conflicts.length ? conflicts : [r.stderr.trim().split('\n').pop() ?? 'unknown conflict'], head: await this.revParse(cwd, 'HEAD') };
+      }
+      conflicts.forEach((f) => took.add(f));
+      // A commit that only changed a generated file is empty once the base's copy is taken: skip it, the regenerate step remakes the file.
+      const staged = (await git(cwd, ['diff', '--cached', '--quiet'], true)).code !== 0;
+      r = staged ? await git(cwd, ['-c', 'core.editor=true', 'rebase', '--continue'], true) : await git(cwd, ['rebase', '--skip'], true);
+    }
+    if (r.code !== 0) { await git(cwd, ['rebase', '--abort'], true); return { ok: false, conflicts: [...took], head: await this.revParse(cwd, 'HEAD') }; }
+    return { ok: true, conflicts: [], head: await this.revParse(cwd, 'HEAD'), ...(took.size ? { tookBase: [...took] } : {}) };
   }
-  async merge(cwd: string, ref: string): Promise<RebaseResult> {
+  async merge(cwd: string, ref: string, takeBase: string[] = []): Promise<RebaseResult> {
     const r = await git(cwd, ['merge', '--no-edit', ref], true);
     if (r.code === 0) return { ok: true, conflicts: [], head: await this.revParse(cwd, 'HEAD') };
-    const conflicts = (await git(cwd, ['diff', '--name-only', '--diff-filter=U'], true)).stdout.split('\n').filter(Boolean);
+    const conflicts = await unmerged(cwd);
+    // In a merge `--theirs` is the ref merged in: the base (#63).
+    if (await takeSide(cwd, conflicts, takeBase, '--theirs') && (await git(cwd, ['-c', 'core.editor=true', 'commit', '--no-edit'], true)).code === 0) {
+      return { ok: true, conflicts: [], head: await this.revParse(cwd, 'HEAD'), tookBase: conflicts };
+    }
     await git(cwd, ['merge', '--abort'], true);
     return { ok: false, conflicts: conflicts.length ? conflicts : [r.stderr.trim().split('\n').pop() ?? 'unknown conflict'], head: await this.revParse(cwd, 'HEAD') };
+  }
+  async resetHard(cwd: string, sha: string) { await git(cwd, ['reset', '-q', '--hard', sha]); }
+  async commitPaths(cwd: string, paths: string[], message: string) {
+    await git(cwd, ['add', '--', ...paths]);
+    await git(cwd, ['commit', '-q', '-m', message, '--', ...paths]);
+    return this.revParse(cwd, 'HEAD');
   }
   async inProgressOp(cwd: string) {
     const dir = (await git(cwd, ['rev-parse', '--git-dir'])).stdout.trim();

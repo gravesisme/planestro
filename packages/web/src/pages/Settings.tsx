@@ -196,6 +196,7 @@ function Control({ def, value, state }: { def: SettingDef; value: unknown; state
     }
     case 'list': return <ListCtl def={def} value={(value as string[] | undefined) ?? []} />;
     case 'record': return <RecordCtl def={def} value={(value as Record<string, number> | undefined) ?? {}} />;
+    case 'commands': return <CommandsCtl def={def} value={(value as Record<string, string> | undefined) ?? {}} />;
     case 'secret': return <SecretCtl def={def} state={state} />;
     case 'readonly': {
       const names = Object.keys((value as Record<string, unknown> | undefined) ?? {});
@@ -280,6 +281,30 @@ function RecordCtl({ def, value }: { def: SettingDef; value: Record<string, numb
         <input className="mono" placeholder={def.placeholder} aria-label={`Name for ${def.label}`} value={name} onChange={(e) => setName(e.target.value)} />
         <input type="number" step="any" min={def.min} placeholder={def.unit} aria-label={`${def.unit ?? 'Number'} for ${def.label}`} value={num} onChange={(e) => setNum(e.target.value)} />
         <button className="small" type="submit" disabled={!name.trim() || !num.trim()}>Add</button>
+      </form>
+    </div>
+  );
+}
+
+/** Rows of a file pattern and the command that regenerates it (worktrees.generated, #63). */
+function CommandsCtl({ def, value }: { def: SettingDef; value: Record<string, string> }) {
+  const [name, setName] = useState('');
+  const [cmd, setCmd] = useState('');
+  const add = () => {
+    const k = name.trim(); const c = cmd.trim();
+    if (!k || !c) { complain(`${def.label}: a file pattern and a command`); return; }
+    void save(def, { ...value, [k]: c }).then((r) => { if (r) { setName(''); setCmd(''); } });
+  };
+  return (
+    <div className="setting-list">
+      {Object.entries(value).map(([k, c]) => (
+        <div key={k} className="li"><span style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0, flex: 1 }}><code>{k}</code><code className="muted small" style={{ overflowWrap: 'anywhere' }}>{c}</code></span>
+          <button className="small" aria-label={`Remove ${k}`} title="Remove" onClick={() => { const { [k]: _gone, ...rest } = value; void save(def, rest); }}>×</button></div>
+      ))}
+      <form className="li add" style={{ flexWrap: 'wrap' }} onSubmit={(e) => { e.preventDefault(); add(); }}>
+        <input className="mono" style={{ flex: '1 1 100%' }} placeholder={def.placeholder} aria-label={`File pattern for ${def.label}`} value={name} onChange={(e) => setName(e.target.value)} />
+        <input className="mono" style={{ flex: '1 1 0' }} placeholder="command that regenerates it" aria-label={`Command for ${def.label}`} value={cmd} onChange={(e) => setCmd(e.target.value)} />
+        <button className="small" type="submit" disabled={!name.trim() || !cmd.trim()}>Add</button>
       </form>
     </div>
   );

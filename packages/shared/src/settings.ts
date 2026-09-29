@@ -35,7 +35,7 @@ export type SettingsTabId = (typeof SETTINGS_TABS)[number]['id'];
  * can plan); `models`, `categories` and `sections` are whole editors of their own; `secret` shows
  * set / not set and takes a replacement, never the value.
  */
-export type SettingControl = 'number' | 'toggle' | 'text' | 'select' | 'model' | 'list' | 'record' | 'secret' | 'readonly' | 'categories' | 'models' | 'sections';
+export type SettingControl = 'number' | 'toggle' | 'text' | 'select' | 'model' | 'list' | 'record' | 'commands' | 'secret' | 'readonly' | 'categories' | 'models' | 'sections';
 export type SettingFile = 'config' | 'local';
 
 export interface SettingDef {
@@ -67,7 +67,7 @@ export interface SettingDef {
 }
 
 /** Controls whose value the generic write endpoints accept; the others have their own routes or none. */
-export const WRITABLE_CONTROLS: readonly SettingControl[] = ['number', 'toggle', 'text', 'select', 'model', 'list', 'record', 'secret', 'sections'];
+export const WRITABLE_CONTROLS: readonly SettingControl[] = ['number', 'toggle', 'text', 'select', 'model', 'list', 'record', 'commands', 'secret', 'sections'];
 
 const C = (d: Omit<SettingDef, 'file'>): SettingDef => ({ file: 'config', ...d });
 const L = (d: Omit<SettingDef, 'file' | 'tab'> & { tab?: SettingsTabId }): SettingDef => ({ file: 'local', tab: 'machine', ...d });
@@ -147,6 +147,8 @@ export const SETTINGS: readonly SettingDef[] = [
     detail: ['Paths inside a worktree, relative (tmp). Their files go to <worktrees folder>/.displaced/<item>-<time>/ whether git tracks, ignores or does not know them; the Activity log says where.'] }),
   C({ key: 'worktrees.copy_to_checkout', tab: 'workers', group: 'Worktrees', label: 'Copy into the main checkout on merge', summary: "Folders whose files planestro copies into the same folder of your main checkout when an item merges: a sandboxed worker's output it cannot put there itself.", control: 'list', mono: true, placeholder: 'tmp',
     detail: ['Paths inside a worktree, relative (tmp). Only files git does not track are copied, and never over a file that is already there with other content: that one stays only in .displaced/, and the Activity log names it.', 'They are kept on removal too, as Keep when a worktree is removed does. A copy that fails stops the cleanup (cleanup_dirty); nothing is removed.', 'Workers and the orchestrator are told, so a brief never asks a sandboxed worker to copy there itself.'] }),
+  C({ key: 'worktrees.generated', tab: 'workers', group: 'Worktrees', label: 'Generated files', summary: 'Tracked files a command rebuilds. A sync that conflicts only in these takes the base\'s copy and runs the command, with no session turn.', control: 'commands', mono: true, placeholder: 'resources/i18n/messages.pot',
+    detail: ['Each row is a file pattern and the command that regenerates it, run in the worktree (godot --headless --script tools/i18n_export_pot.gd). A pattern without / matches the file name at any depth; one with / matches the path from the worktree root.', 'When a rebase or merge conflicts only in files listed here, planestro takes the base\'s copy, finishes the sync, runs each command once and commits the regenerated files as "<id>: regenerate …". The Activity log says so.', 'If any other file conflicts, a command fails, or it changes a file not listed here, the sync is undone and the conflict goes to the session as before.'] }),
   C({ key: 'worktrees.root', tab: 'workers', group: 'Worktrees', label: 'Worktrees folder', summary: 'Where item worktrees go, relative to the code repository.', control: 'text', mono: true,
     detail: ['Each machine can override it with This machine → Worktrees folder.'] }),
   C({ key: 'worktrees.branch_pattern', tab: 'workers', group: 'Worktrees', label: 'Branch name', summary: 'The branch a worker gets. {{prefix_lower}}, {{number}} and {{slug}} are filled in.', control: 'text', mono: true,

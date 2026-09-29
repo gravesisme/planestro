@@ -1,4 +1,5 @@
 import { placeholderPng } from './placeholderPng.ts';
+import { matchesPathPattern } from './ports.ts';
 import type { GitPort, GhPort, ProcPort, ClaudePort, AgentPort, AgentTurnOptions, WorktreeEntry, RebaseResult, CiStatus, PrInfo, TurnOptions, TurnResult, CustomTurnOptions } from './ports.ts';
 
 /**
@@ -33,6 +34,10 @@ export class FakeWorld {
   seq = 0;
   ciMode: 'green' | 'red-once' | 'conflict-once' = (process.env.PLANESTRO_DRYRUN_CI as any) ?? 'green';
   conflictArmed = this.ciMode === 'conflict-once';
+  /** The files a simulated conflict is in. */
+  conflictFiles: string[] = ['src/conflicted.ts'];
+  /** Tracked files a regenerate command changed, by worktree (#63): set by a test's proc port, shown by dirtyDetail. */
+  regenerated = new Map<string, string[]>();
   /** Commits a worktree is behind its base (default 1: the base is assumed to have moved, so every dry run exercises the sync). A sync puts it on the tip; a merge moves the tip under the others. */
   behind = new Map<string, number>();
   /** How many `gh pr view` polls after a push still report the replaced head — GitHub's real propagation lag. */
@@ -69,7 +74,7 @@ export class DryRunGitPort implements GitPort {
   async worktreePrune() { this.say('git worktree prune'); }
   async worktreeList() { return [...this.w.worktrees.values()]; }
   async status(cwd: string) { const u = this.w.untracked.get(cwd) ?? []; const dirty = [...(this.w.dirty.has(cwd) ? ['src/fake.ts'] : []), ...u]; return { clean: dirty.length === 0, dirty }; }
-  async dirtyDetail(cwd: string) { return { tracked: this.w.dirty.has(cwd) ? ['src/fake.ts'] : [], untracked: [...(this.w.untracked.get(cwd) ?? [])] }; }
+  async dirtyDetail(cwd: string) { return { tracked: [...(this.w.dirty.has(cwd) ? ['src/fake.ts'] : []), ...(this.w.regenerated.get(cwd) ?? [])], untracked: [...(this.w.untracked.get(cwd) ?? [])] }; }
   async trackedAt(_cwd: string, _ref: string, paths: string[]) { return paths.filter((p) => this.w.baseFiles.has(p)); }
   async moveAside(cwd: string, paths: string[], dest: string) { this.say(`move ${paths.join(', ')} from ${cwd} to ${dest}`); this.w.untracked.set(cwd, (this.w.untracked.get(cwd) ?? []).filter((p) => !paths.includes(p))); this.w.ignored.set(cwd, (this.w.ignored.get(cwd) ?? []).filter((p) => !paths.includes(p))); }
   async copyInto(cwd: string, paths: string[], destRoot: string) {
@@ -82,12 +87,27 @@ export class DryRunGitPort implements GitPort {
   async filesUnder(cwd: string, paths: string[]) { const under = (f: string) => paths.some((p) => f === p || f.startsWith(`${p.replace(/\/+$/, '')}/`)); return [...this.w.baseFiles, ...(this.w.untracked.get(cwd) ?? []), ...(this.w.ignored.get(cwd) ?? [])].filter(under); }
   async commitAll(cwd: string, message: string, _leave: string[] = []) { this.say(`git add -A && git commit -m "${message.split('\n')[0]}" (in ${cwd})`); this.w.dirty.delete(cwd); this.w.commits.set(cwd, (this.w.commits.get(cwd) ?? 0) + 1); const wt = this.w.worktrees.get(cwd); const head = this.w.sha(); if (wt) wt.head = head; return head; }
   async aheadBehind(cwd: string) { return { ahead: this.w.commits.get(cwd) ?? 0, behind: this.w.behind.get(cwd) ?? 1 }; }
-  async rebase(cwd: string, onto: string): Promise<RebaseResult> {
-    if (this.w.conflictArmed) { this.w.conflictArmed = false; this.say(`git rebase ${onto} in ${cwd} → CONFLICT (simulated)`); return { ok: false, conflicts: ['src/conflicted.ts'], head: this.w.worktrees.get(cwd)?.head ?? '' }; }
+  /** A simulated conflict in `w.conflictFiles`: taken from the base when every one of them is a takeBase pattern's (#63). */
+  private conflict(cwd: string, what: string, takeBase: string[]): RebaseResult | undefined {
+    if (!this.w.conflictArmed) return undefined;
+    this.w.conflictArmed = false;
+    const files = this.w.conflictFiles;
+    if (takeBase.length && files.every((f) => takeBase.some((p) => matchesPathPattern(f, p)))) {
+      this.say(`${what} in ${cwd} → CONFLICT in ${files.join(', ')} (simulated); took the base's copy`);
+      const wt = this.w.worktrees.get(cwd); const head = this.w.sha(); if (wt) wt.head = head; this.w.behind.set(cwd, 0);
+      return { ok: true, conflicts: [], head, tookBase: [...files] };
+    }
+    this.say(`${what} in ${cwd} → CONFLICT (simulated)`);
+    return { ok: false, conflicts: [...files], head: this.w.worktrees.get(cwd)?.head ?? '' };
+  }
+  async resetHard(cwd: string, sha: string) { this.say(`git reset --hard ${sha.slice(0, 7)} (in ${cwd})`); const wt = this.w.worktrees.get(cwd); if (wt) wt.head = sha; this.w.regenerated.delete(cwd); }
+  async commitPaths(cwd: string, paths: string[], message: string) { this.say(`git commit -m "${message}" -- ${paths.join(' ')} (in ${cwd})`); this.w.regenerated.delete(cwd); const wt = this.w.worktrees.get(cwd); const head = this.w.sha(); if (wt) wt.head = head; return head; }
+  async rebase(cwd: string, onto: string, takeBase: string[] = []): Promise<RebaseResult> {
+    const c = this.conflict(cwd, `git rebase ${onto}`, takeBase); if (c) return c;
     this.say(`git rebase ${onto} in ${cwd}`); const wt = this.w.worktrees.get(cwd); const head = this.w.sha(); if (wt) wt.head = head; this.w.behind.set(cwd, 0); return { ok: true, conflicts: [], head };
   }
-  async merge(cwd: string, ref: string): Promise<RebaseResult> {
-    if (this.w.conflictArmed) { this.w.conflictArmed = false; this.say(`git merge ${ref} in ${cwd} → CONFLICT (simulated)`); return { ok: false, conflicts: ['src/conflicted.ts'], head: this.w.worktrees.get(cwd)?.head ?? '' }; }
+  async merge(cwd: string, ref: string, takeBase: string[] = []): Promise<RebaseResult> {
+    const c = this.conflict(cwd, `git merge ${ref}`, takeBase); if (c) return c;
     this.say(`git merge ${ref} in ${cwd}`); const wt = this.w.worktrees.get(cwd); const head = this.w.sha(); if (wt) wt.head = head;
     // Taking in the branch's own remote copy says nothing about the base; merging the base puts it on the tip.
     if (ref !== `origin/${wt?.branch}`) this.w.behind.set(cwd, 0);
