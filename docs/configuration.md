@@ -189,6 +189,7 @@ ended it. One that cannot be judged (`cd "$DIR"`, `cd -`) is left to the rules.
 | `review.image_scale` | `1` | Review thumbnails can also be shown at this integer scale, nearest-neighbour. |
 | `review.max_file_bytes` | `10000000` | One changed file over this blocks the item as `asset_too_large` before a pull request exists. |
 | `review.max_file_bytes_by_ext` | `{}` | Limits by extension that replace `max_file_bytes` for those files, for kinds of file that are legitimately big (`{ ".ogg": 20000000 }` for a game's music). |
+| `review.hold_into` | `[]` | Branches a pull request into opens **held** for you (`skip_merge`, with the reason on the item), whether an item or an epic opened it: for a branch whose merges go live, such as a `main` that deploys to production. It stays out of the merge queue until you release the hold; CI still runs (as a draft while held, if `ci.draft_while_held`). The hold is put on when the pull request opens, so nothing depends on anyone noticing it in time. |
 | `review.nudge_after_min` | `240` | A review nobody has looked at for this long wakes the orchestrator, once. |
 | `notifications.on_merge` | none | A command run after each merge (`say "PR merged"`). |
 | `notifications.on_usage_pause` | none | A command run when the [usage guard](#usage-guard) pauses automation (`say "planestro paused for usage"`). |

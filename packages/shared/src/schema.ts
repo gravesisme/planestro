@@ -395,7 +395,9 @@ export const Config = z.object({
     /** Per-extension limits that replace max_file_bytes for those files (`.ogg: 20000000`): a project's music is legitimately bigger than its sprites. */
     max_file_bytes_by_ext: z.record(z.string(), z.number().int().positive()).default({}),
     nudge_after_min: z.number().int().positive().default(240),
-  }).default({ image_scale: 1, max_file_bytes: 10_000_000, max_file_bytes_by_ext: {}, nudge_after_min: 240 }),
+    /** Branches a pull request into opens held (skip_merge) for the user, item or epic: a branch that deploys (LM's main is production). The hold, not a model's timing, keeps it out of the merge queue. */
+    hold_into: z.array(z.string().min(1)).default([]),
+  }).default({ image_scale: 1, max_file_bytes: 10_000_000, max_file_bytes_by_ext: {}, nudge_after_min: 240, hold_into: [] }),
   attachments: z.object({ managed_max_bytes: z.number().int().positive().default(2_000_000) }).default({ managed_max_bytes: 2_000_000 }),
   releases: z.object({ sections: z.array(ReleaseSectionDef).min(1).default(DEFAULT_RELEASE_SECTIONS) }).default({ sections: DEFAULT_RELEASE_SECTIONS }),
 });

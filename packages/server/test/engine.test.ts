@@ -653,6 +653,38 @@ describe('epics and external watchers (dry-run ports)', () => {
   });
 });
 
+describe('pull requests into a branch that deploys open held (review.hold_into, LM-2)', () => {
+  it("an epic's PR into it is held and the orchestrator hears of it; an item's too; any other base merges as before", async () => {
+    const { store, engine, world } = await setup();
+    store.updateConfig((doc) => { doc.setIn(['review', 'hold_into'], ['trunk']); }, 'config: hold into trunk');
+    const epic = store.createItem({ title: 'Land realism', description: 'x', kind: 'epic' } as any);
+    const child = store.createItem({ title: 'Trees', description: 'x', parent: epic.id });
+    world.remoteBranches.set('feature/land-realism', world.sha());
+    store.mutateItem(epic.id, [{ set: { status: 'IN_PROGRESS', branch: 'feature/land-realism' } }], 'engine');
+    store.mutateItem(child.id, [{ set: { status: 'FINISHED' } }], 'engine');
+    await engine.submitEpic(epic.id);
+    let fm = store.getItem(epic.id)!.file.frontmatter;
+    expect(fm).toMatchObject({ status: 'IN_REVIEW', skip_merge: true, hold_reason: 'a pull request into trunk: held for you before it merges (review.hold_into)' });
+    expect(store.derived(store.getItem(epic.id)!).needs_you).toBe(true);
+    expect(store.journal.read({ item: epic.id, type: 'orchestrator.wake' }).some((w) => w.data?.event === 'pr_opened')).toBe(true);
+    // an item whose base is trunk: the same
+    const item = store.createItem({ title: 'Ramps', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    world.commits.set(join(store.codeRepoPath(), '.claude/worktrees/tp-3-ramps'), 1);
+    await engine.approvePlan(item.id);
+    await waitFor(() => status(store, item.id) === 'IN_REVIEW', 8000);
+    await sleep(400);
+    fm = store.getItem(item.id)!.file.frontmatter;
+    expect(fm).toMatchObject({ status: 'IN_REVIEW', skip_merge: true });
+    expect(status(store, epic.id)).toBe('IN_REVIEW');                                   // neither merged
+    // released by the person, it merges as usual
+    await engine.releaseHold(item.id);
+    await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
+  });
+});
+
 describe('an epic whose branch moved on GitHub (p53)', () => {
   it('the merge pipeline takes in origin/<integration> before merging the base, so its push is a fast-forward', async () => {
     const { store, engine, world } = await setup();
