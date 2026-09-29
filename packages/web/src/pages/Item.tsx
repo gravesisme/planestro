@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
-import { canPlan, decisionOf, dollarHint, epicFlagOf, kindConversionRefusal, type Status } from '@planestro/shared';
+import { canPlan, decisionOf, dollarHint, epicFlagOf, heldReasonOf, holdShapeOf, kindConversionRefusal, type Status } from '@planestro/shared';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { Markdown } from '../components/Markdown.tsx';
@@ -57,6 +57,8 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
     return () => window.removeEventListener('resize', fit);
   }, [title]);
   const [approval, setApproval] = useState('');
+  /** What the hold waits for, once the user has typed over what the plan states; null until then. */
+  const [holdFor, setHoldFor] = useState<string | null>(null);
   const [reject, setReject] = useState('');
   const [msg, setMsg] = useState('');
   const [refPath, setRefPath] = useState('');
@@ -81,6 +83,10 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
   const other = fm.kind === 'epic' ? 'item' : 'epic';
   const convertible = !session && !kindConversionRefusal(fm, other, d.children.length);
   const epicShaped = fm.status === 'PLAN_READY' ? epicFlagOf(fm) : undefined;
+  // A plan that says its pull request must wait (#97): read from the plan as it stands, offered at approval.
+  const statedHold = fm.status === 'PLAN_READY' && fm.kind !== 'epic' && !epicShaped ? holdShapeOf(item.sections.Plan ?? '') : null;
+  const holdText = holdFor ?? statedHold?.reason ?? '';
+  const heldFor = heldReasonOf(fm);
   const convert = (to: 'item' | 'epic') => {
     const carries = item.sections.Plan.trim() ? ` Its ${fm.kind === 'epic' ? 'breakdown' : 'plan'} moves into Notes for the new planner.` : '';
     const next = ['QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY'].includes(fm.status) ? (to === 'epic' ? ' Its breakdown is planned at once.' : ' It is queued to be planned as one item.') : '';
@@ -153,16 +159,31 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
                 </div>
               </div>
             )}
+            {statedHold && (
+              <div className="hold-warning" role="note">
+                <b>This plan says its pull request must wait.</b>
+                <p className="small">“{statedHold.quote}” Writing it in the plan holds nothing. Approved with the hold, the pull request is opened and its CI is read, but it does not merge until you release the hold.</p>
+                <label className="row small">Held: <input className="grow" aria-label="What the pull request waits for" placeholder="what it waits for" value={holdText} onChange={(e) => setHoldFor(e.target.value)} /></label>
+              </div>
+            )}
             <textarea placeholder="Optional notes to pass to the implementer" value={approval} onChange={(e) => setApproval(e.target.value)} style={{ minHeight: 60 }} />
-            <div className="row">{!epicShaped && <button className="primary" onClick={() => act(() => api.approvePlan(item.id, approval || undefined))}>Approve &amp; implement</button>}{canClose && <button title={CLOSE_HINT} onClick={closeAsDone}>Already done — close…</button>}<span className="grow" /><input className="grow" placeholder="What should change?" value={reject} onChange={(e) => setReject(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && reject.trim()) { e.preventDefault(); void act(() => api.rejectPlan(item.id, reject)); } }} /><button className="danger" disabled={!reject.trim()} onClick={() => act(() => api.rejectPlan(item.id, reject))}>Request changes</button></div>
+            <div className="row">{statedHold && <button className="primary" disabled={!holdText.trim()} onClick={() => act(() => api.approvePlan(item.id, approval || undefined, false, holdText))}>Approve and hold the PR</button>}{!epicShaped && <button className={statedHold ? '' : 'primary'} title={statedHold ? 'Without the hold: its pull request merges as soon as CI is green' : undefined} onClick={() => act(() => api.approvePlan(item.id, approval || undefined))}>Approve &amp; implement</button>}{canClose && <button title={CLOSE_HINT} onClick={closeAsDone}>Already done — close…</button>}<span className="grow" /><input className="grow" placeholder="What should change?" value={reject} onChange={(e) => setReject(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && reject.trim()) { e.preventDefault(); void act(() => api.rejectPlan(item.id, reject)); } }} /><button className="danger" disabled={!reject.trim()} onClick={() => act(() => api.rejectPlan(item.id, reject))}>Request changes</button></div>
           </div>
         )}
         {fm.parts?.length ? <PartsStrip parts={fm.parts} /> : null}
         <AwaitingPanels item={item} />
         <ReviewPanel item={item} />
+        {fm.status === 'IN_PROGRESS' && fm.skip_merge && (
+          <div className="approval">
+            <h2 style={{ margin: '0 0 8px' }}>Its pull request will be held</h2>
+            <p className="small">{heldFor ? <><b>Held:</b> {heldFor}. </> : null}The work goes on as usual. Its pull request is opened and its CI is read, but it does not merge until you release the hold.</p>
+            <div className="row"><button onClick={() => { const n = prompt(`Drop the hold on ${item.id}, so its pull request merges as usual? Optional note for the log:`); if (n !== null) void act(() => api.releaseHold(item.id, n || undefined)); }}>Drop the hold</button></div>
+          </div>
+        )}
         {fm.status === 'IN_REVIEW' && fm.skip_merge && (
           <div className="approval">
             <h2 style={{ margin: '0 0 8px' }}>Held out of the merge queue</h2>
+            {heldFor && <p className="small" style={{ marginTop: 0 }}><b>Held:</b> {heldFor}</p>}
             {fm.op_data?.pr_draft ? <p className="small">The pull request is a <b>draft</b> while it is held: its session's commits are pushed, but CI waits. Releasing the hold syncs the branch, marks the PR ready, and CI runs once, on the head that merges.</p> : <p className="small">CI for the pushed head: <b>{fm.ci_result ?? 'pending'}</b>{fm.ci_head_sha ? ` (${fm.ci_head_sha.slice(0, 7)})` : ''}. While it is held, its session's commits are still pushed and a red run still goes to the session to fix; it just does not merge. Releasing it sends it back through sync and CI before it merges.</p>}
             <div className="row"><button className="primary" onClick={() => { const n = prompt(`Let ${item.id} merge? Optional note for the log:`); if (n !== null) void act(() => api.releaseHold(item.id, n || undefined)); }}>Release hold</button></div>
           </div>

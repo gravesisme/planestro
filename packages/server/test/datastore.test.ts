@@ -292,3 +292,26 @@ describe('activity lines (p49)', () => {
     } finally { store.close(); }
   });
 });
+
+describe('a hold\'s reason (#97)', () => {
+  it('goes when the hold goes, whoever lifts it, and is never written without one', async () => {
+    const { dataDir } = makeFixture();
+    const store = await DataStore.open(dataDir);
+    try {
+      const { id } = store.createItem({ title: 'Held', description: 'x' });
+      const fm = () => store.getItem(id)!.file.frontmatter;
+      store.mutateItem(id, [{ set: { skip_merge: true, hold_reason: 'until the release is cut' } }], 'engine');
+      expect(fm()).toMatchObject({ skip_merge: true, hold_reason: 'until the release is cut' });
+      store.mutateItem(id, [{ activity: { actor: 'app', text: 'something else' } }], 'engine');
+      expect(fm().hold_reason).toBe('until the release is cut');
+      store.editItem(id, [{ unset: ['skip_merge'] }]);
+      expect(fm().hold_reason).toBeUndefined();
+      store.mutateItem(id, [{ set: { skip_merge: true, hold_reason: 'until QA confirms' } }], 'engine');
+      store.mutateItem(id, [{ set: { skip_merge: false } }], 'orchestrator');
+      expect(fm().hold_reason).toBeUndefined();
+      store.mutateItem(id, [{ set: { hold_reason: 'no hold to explain' } }], 'engine');
+      expect(fm().hold_reason).toBeUndefined();
+      expect(readFileSync(store.getItem(id)!.path, 'utf8')).not.toContain('hold_reason');
+    } finally { store.close(); }
+  });
+});

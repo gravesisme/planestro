@@ -103,7 +103,8 @@ export interface TurnTools {
   submit_breakdown(plan: string, children: unknown): Promise<string>;
   add_note(markdown: string): Promise<string>;
   append_activity(text: string): Promise<string>;
-  report_done(summary: string, parts?: unknown): Promise<string>;
+  /** `hold`: the pull request must not merge yet, and why ("until the release is cut"); it is held out of the merge queue until the user releases it (#97). */
+  report_done(summary: string, parts?: unknown, hold?: string): Promise<string>;
   report_blocked(reason: string, parts?: unknown): Promise<string>;
   /** Multi-part work: each part's state (accepted | pending | rejected) with the gate reason, replacing the last report. */
   report_progress(parts: unknown): Promise<string>;

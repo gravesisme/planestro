@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
-import { getSection, epicFlagOf, canPlan, partsSummary, serializeItemFile, serializeQuestionFile, parseThread, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent, parseActivity } from '@planestro/shared';
+import { getSection, epicFlagOf, holdShapeOf, heldReasonOf, type HoldFlag, canPlan, partsSummary, serializeItemFile, serializeQuestionFile, parseThread, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent, parseActivity } from '@planestro/shared';
 import { hostNote, keptPathsNote } from './hostNote.ts';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Ports, CustomToolDef, TurnResult } from './ports.ts';
@@ -58,7 +58,10 @@ const HANDS_OFF = new Set([
 
 export interface OrchestratorHooks {
   message(id: string, text: string): Promise<void>;
-  approvePlan(id: string, notes?: string): Promise<void>;
+  /** `hold`: the pull request it opens stays out of the merge queue, for this reason (#97). */
+  approvePlan(id: string, notes?: string, hold?: string): Promise<void>;
+  /** Hold an item out of the merge queue, with the reason on the item. Returns what happened. */
+  holdMerge(id: string, reason: string): string;
   /** Make an item an epic or back while nothing has run for implementation (LiveEngine.convertKind). Returns what happened, or why not. */
   convertKind(id: string, to: 'item' | 'epic', why: string): Promise<string>;
   /** Have an epic's planner propose its children (LiveEngine.planEpic). */
@@ -361,6 +364,7 @@ export class Orchestrator {
         lines.push(`Status: ${fm.status}${fm.blocked ? ` · BLOCKED: ${fm.blocked_reason}` : ''}${fm.awaiting ? ` · awaiting ${fm.awaiting}` : ''}${fm.op ? ` · op ${fm.op}` : ''}${fm.taken_over ? ' · TAKEN OVER by the user' : ''}`);
         if (fm.taken_over) lines.push(`Taken over: the user is finishing this item by hand (since ${fm.taken_over.since}${fm.taken_over.note ? `: ${fm.taken_over.note}` : ''}). Do not act on it (no messages, unblocks, retries, cards or merge order; those tools refuse it) until they hand it back. You may read it and annotate it.`);
         if (fm.pr) lines.push(`PR: #${fm.pr} · CI ${fm.ci_result ?? '—'} · red count ${fm.ci_failed_count ?? 0}`);
+        if (fm.skip_merge) lines.push(`Held out of the merge queue${heldReasonOf(fm) ? `: ${heldReasonOf(fm)}` : ''}. Its commits are pushed and its CI is read, but it does not merge until the hold is released (the user's Release hold, or unskip_merge once what it waits for has happened).`);
         // A fact the state machine knows (p29): what it depends on merged after its worktree was cut, so its branch lacks it until synced.
         const since = fm.worktree && fm.started_at && ['PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS'].includes(fm.status) ? fm.depends_on.map((d) => this.store.getItem(d)?.file.frontmatter).filter((d) => d?.merged_at && Date.parse(d.merged_at) > Date.parse(fm.started_at!)) : [];
         if (since.length) lines.push(`Merged since its worktree was cut: ${since.map((d) => `${d!.id} (${d!.merged_at!.slice(0, 16).replace('T', ' ')})`).join(', ')}. Its branch does not have that work yet: sync it (sync_with_base, or unblock_item with sync_first: true) before it resumes.`);
@@ -372,6 +376,8 @@ export class Orchestrator {
           if (fm.op_data?.plan_amended) lines.push(`Amended: you sent this plan back to be amended with: ${String(fm.op_data.plan_amended).slice(0, 1500)}\nThis is the revision. Check that it carries the amendment before deciding.`);
           const epic = epicFlagOf(fm);
           lines.push(epic ? this.epicPlanPolicy(fm.id, epic.reason) : this.planPolicy(fm.id, fm.plan_revisions ?? 0, this.priorReview(item.file, fm.plan_ready_at)));
+          const stated = epic ? null : holdShapeOf(plan);
+          if (stated) lines.push(this.holdPlanPolicy(fm.id, stated));
         }
         if (e.type === 'permission_request') lines.push(this.permissionPacket(fm));
         if (fm.triage) lines.push(e.type === 'decision_answered' ? this.decisionAnsweredPacket() : this.triagePacket(fm));
@@ -436,6 +442,16 @@ export class Orchestrator {
       '- hand_plan_to_user — you are not sure which it is.',
       'Record your reasoning with annotate_item either way.',
     ].join('\n');
+  }
+
+  /**
+   * A plan that says its pull request must wait (#97): planestro found the sentence, so nobody has to
+   * remember to hold it. Stated in the packet for the same reason as the rest of the policy.
+   */
+  private holdPlanPolicy(id: string, stated: HoldFlag): string {
+    const head = `THIS PLAN STATES A MERGE HOLD: "${stated.quote}"`;
+    if (!this.hooks.planDelegated(id)) return `${head}\nIts approval is the user's: the item page offers them "Approve and hold the PR". Nothing for you to set.`;
+    return `${head}\nIf you approve it, planestro holds its pull request out of the merge queue (${stated.reason}) until the user releases the hold; pass \`hold\` to approve_plan only to word the reason better. If that sentence is not about this item's own pull request, do not approve it: hand_plan_to_user, and say so.`;
   }
 
   private planPolicy(id: string, used: number, prior: string[] = []): string {
@@ -527,21 +543,22 @@ export class Orchestrator {
     const store = this.store;
     const idArg = { id: z.string() };
     return [
-      { name: 'list_items', description: 'List backlog items (id, status, flags), optionally filtered by status.', schema: { status: z.string().optional() }, handler: async (a) => store.listItems().filter((i) => !a.status || i.file.frontmatter.status === a.status).map((i) => { const f = i.file.frontmatter; return `${f.id} [${f.status}${f.blocked ? ' BLOCKED:' + f.blocked_reason : ''}${f.awaiting ? ' awaiting:' + f.awaiting : ''}${f.taken_over ? ' TAKEN_OVER' : ''}] rank=${f.rank ?? '—'} pr=${f.pr ?? '—'} ${f.kind === 'epic' ? 'EPIC ' : ''}${f.title}`; }).join('\n') || '(no items)' },
+      { name: 'list_items', description: 'List backlog items (id, status, flags), optionally filtered by status.', schema: { status: z.string().optional() }, handler: async (a) => store.listItems().filter((i) => !a.status || i.file.frontmatter.status === a.status).map((i) => { const f = i.file.frontmatter; return `${f.id} [${f.status}${f.blocked ? ' BLOCKED:' + f.blocked_reason : ''}${f.awaiting ? ' awaiting:' + f.awaiting : ''}${f.taken_over ? ' TAKEN_OVER' : ''}${f.skip_merge ? ` HELD${heldReasonOf(f) ? ':' + heldReasonOf(f) : ''}` : ''}] rank=${f.rank ?? '—'} pr=${f.pr ?? '—'} ${f.kind === 'epic' ? 'EPIC ' : ''}${f.title}`; }).join('\n') || '(no items)' },
       { name: 'read_item', description: 'Read one item file in full.', schema: idArg, handler: async (a) => serializeItemFile(store.requireItem(String(a.id)).file) },
       { name: 'pr_status', description: 'Pull request + CI status for an item.', schema: idArg, handler: async (a) => { const fm = store.requireItem(String(a.id)).file.frontmatter; if (!fm.pr) return 'no PR'; const gh = store.config.code_repo.github; if (!gh) return 'no github remote configured'; const pr = await this.ports.gh.prView(gh, fm.pr); return `#${pr.number} ${pr.state} base=${pr.baseRefName} head=${pr.headRefName}@${pr.headRefOid.slice(0, 7)} ci=${fm.ci_result ?? '—'} (${fm.ci_failed_count ?? 0} red)`; } },
       { name: 'set_merge_order', description: 'Override the merge order of the given IN_REVIEW items (first merges first). Items not listed keep rank order after these.', schema: { ids: z.array(z.string()) }, handler: async (a) => { (a.ids as string[]).forEach((id, i) => store.mutateItem(id, [{ set: { merge_order: i + 1 } }, { activity: { actor: 'orchestrator', text: `merge order ${i + 1}` } }], 'orchestrator', { commit: `${id}: merge order ${i + 1}` })); this.hooks.poke(); return 'merge order set'; } },
       { name: 'set_queue_order', description: 'Reorder the QUEUED items (first is admitted first).', schema: { ids: z.array(z.string()) }, handler: async (a) => { const ids = a.ids as string[]; const ranks = renormalize(ids); for (const id of ids) { const it = store.requireItem(id); if (laneOf(it.file.frontmatter.status) !== 'board') throw new Error(`${id} is not on the board`); store.mutateItem(id, [{ rank: ranks.get(id)! }], 'orchestrator'); } this.hooks.poke(); return 'queue order set'; } },
-      { name: 'skip_merge', description: 'Hold an IN_REVIEW item out of the merge queue, with a reason.', schema: { ...idArg, reason: z.string() }, handler: async (a) => { store.mutateItem(String(a.id), [{ set: { skip_merge: true } }, { activity: { actor: 'orchestrator', text: `held out of the merge queue: ${a.reason}` } }], 'orchestrator', { commit: `${a.id}: skip merge` }); return 'held'; } },
-      { name: 'unskip_merge', description: 'Return a held item to the merge queue.', schema: idArg, handler: async (a) => { store.mutateItem(String(a.id), [{ unset: ['skip_merge'] }, { set: { ci_result: 'pending' } }, { activity: { actor: 'orchestrator', text: 'returned to the merge queue' } }], 'orchestrator', { commit: `${a.id}: unskip merge` }); this.hooks.poke(); return 'returned'; } },
+      { name: 'skip_merge', description: 'Hold an item\'s pull request out of the merge queue, with a reason: what it waits for. The reason is shown on the item. Its commits are still pushed and its CI is still read; it does not merge until the hold is released. Before the pull request exists, it is opened held.', schema: { ...idArg, reason: z.string() }, handler: async (a) => this.hooks.holdMerge(String(a.id), String(a.reason)) },
+      { name: 'unskip_merge', description: 'Return a held item to the merge queue.', schema: idArg, handler: async (a) => { store.mutateItem(String(a.id), [{ unset: ['skip_merge'] }, { set: { ci_result: 'pending', op_data: { ...(store.requireItem(String(a.id)).file.frontmatter.op_data ?? {}), hold_waived: true } } }, { activity: { actor: 'orchestrator', text: 'returned to the merge queue' } }], 'orchestrator', { commit: `${a.id}: unskip merge` }); this.hooks.poke(); return 'returned'; } },
       { name: 'message_session', description: "Send guidance to an item's worker session (queued for its next turn).", schema: { ...idArg, text: z.string() }, handler: async (a) => { await this.hooks.message(String(a.id), String(a.text)); return 'queued for the session'; } },
       { name: 'annotate_item', description: "Append an orchestrator note to an item's activity log.", schema: { ...idArg, text: z.string() }, handler: async (a) => { store.mutateItem(String(a.id), [{ activity: { actor: 'orchestrator', text: String(a.text) } }], 'orchestrator'); return 'noted'; } },
       { name: 'submit_item', description: 'Queue a NOT_YET_SUBMITTED worker item for planning.', schema: idArg, handler: async (a) => { store.transition(String(a.id), 'QUEUED', 'orchestrator'); this.hooks.poke(); return 'queued'; } },
       { name: 'mark_blocked', description: 'Block an item for the user with a reason.', schema: { ...idArg, reason: z.string() }, handler: async (a) => { const { decision: stale, ...rest } = store.requireItem(String(a.id)).file.frontmatter.awaiting_data ?? {}; store.mutateItem(String(a.id), [{ set: { blocked: true, blocked_reason: 'orchestrator', awaiting: 'user' } }, { unset: ['triage'] }, ...(stale ? [(Object.keys(rest).length ? { set: { awaiting_data: rest } } : { unset: ['awaiting_data'] }) as ItemOp] : []), { activity: { actor: 'orchestrator', text: `blocked for the user: ${a.reason}${stale ? ' (the decision card it had is withdrawn: this block replaces it)' : ''}` } }], 'orchestrator', { commit: `${a.id}: blocked (orchestrator)` }); return 'blocked'; } },
-      { name: 'approve_plan', description: 'Approve a PLAN_READY item (only allowed when the item opted into auto-approval and config permits). Refused for a plan that reads as an epic breakdown (the packet says THIS IS AN EPIC): convert it with convert_item instead.', schema: { ...idArg, notes: z.string().optional() }, handler: async (a) => {
+      { name: 'approve_plan', description: 'Approve a PLAN_READY item (only allowed when the item opted into auto-approval and config permits). Refused for a plan that reads as an epic breakdown (the packet says THIS IS AN EPIC): convert it with convert_item instead. With `hold`, its pull request stays out of the merge queue until the user releases it; a plan that states a merge hold (the packet says so) is held whether or not you pass it.', schema: { ...idArg, notes: z.string().optional(), hold: z.string().optional().describe('What the pull request waits for before it may merge ("until HH-12 has merged"). Only when it must wait.') }, handler: async (a) => {
         if (!this.hooks.planDelegated(String(a.id))) return 'not permitted: the user approves this plan (add review notes with annotate_item instead)';
-        try { await this.hooks.approvePlan(String(a.id), a.notes ? String(a.notes) : undefined); } catch (e) { return `refused: ${(e as Error).message}`; }
-        return 'approved';
+        try { await this.hooks.approvePlan(String(a.id), a.notes ? String(a.notes) : undefined, a.hold ? String(a.hold) : undefined); } catch (e) { return `refused: ${(e as Error).message}`; }
+        const held = heldReasonOf(store.requireItem(String(a.id)).file.frontmatter);
+        return held ? `approved; its pull request will be held out of the merge queue: ${held}` : 'approved';
       } },
       { name: 'convert_item', description: 'Make a plain item an epic (to: "epic") or an epic back into an item (to: "item"), while nothing has run for implementation: not submitted yet, or planning with no approved plan. The description stays; its plan (or breakdown) moves into Notes for the new planner; its planning worktree is removed only if it holds no work (otherwise it is refused). A submitted item carries on as the new kind: an epic has its breakdown planned at once, an item is queued. An epic with children stays an epic. Use it when a plan reads as an epic (THIS IS AN EPIC in the packet) and the plan is yours to decide, or when the user asks in the chat.', schema: { ...idArg, to: z.enum(['item', 'epic']), reason: z.string().describe('Why, in a sentence: it goes in the Activity log') }, handler: async (a) => {
         const id = String(a.id);

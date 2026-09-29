@@ -318,6 +318,8 @@ export class DataStore {
       }
       else if ('rank' in op) file.frontmatter.rank = op.rank;
     }
+    // A hold's reason lasts as long as the hold, whoever lifts it (a release, the orchestrator, an edit): #97.
+    if (!file.frontmatter.skip_merge) delete file.frontmatter.hold_reason;
     file.frontmatter.updated_at = now;
     const stored = this.writeItem(file);
     this.journal.append({ type: 'item.updated', item: id, actor, data: { ops: ops.map(opName), from: before, to: stored.file.frontmatter.status } });

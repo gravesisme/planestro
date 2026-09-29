@@ -82,6 +82,8 @@ main { padding: 16px; flex: 1; }
 @media (max-width: 480px) { .kind-choice { grid-template-columns: minmax(0, 1fr); } }
 .epic-warning { border: 1px solid var(--warn); border-left-width: 4px; background: #2b2413; border-radius: var(--radius); padding: 10px 12px; margin: 0 0 10px; }
 .epic-warning p { margin: 4px 0; } .epic-warning .row { flex-wrap: wrap; }
+.hold-warning { border: 1px solid var(--line); border-left: 4px solid var(--warn); background: var(--panel2); border-radius: var(--radius); padding: 10px 12px; margin: 0 0 10px; }
+.hold-warning p { margin: 4px 0 8px; } .hold-warning label.row { gap: 8px; align-items: center; } .hold-warning input { min-width: 0; }
 .deps { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; color: var(--muted); font-size: 12px; } .deps .tag { color: var(--text); } .deps select { max-width: 220px; padding: 3px 6px; }
 .parts-strip { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; } .parts-strip .part { min-width: 14px; height: 18px; padding: 0 6px; border-radius: 3px; font-size: 11px; line-height: 18px; background: var(--panel2); border: 1px solid var(--line); color: var(--muted); }
 .parts-strip .part.accepted { background: color-mix(in srgb, var(--ok) 25%, var(--panel2)); border-color: var(--ok); color: var(--text); } .parts-strip .part.rejected { background: color-mix(in srgb, var(--hot) 22%, var(--panel2)); border-color: var(--hot); color: var(--text); } .parts-strip .part.pending { border-style: dashed; }

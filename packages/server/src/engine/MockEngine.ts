@@ -14,8 +14,8 @@ export class MockEngine implements Engine {
   pause(): void { this._paused = true; this.store.updateLocal({ engine: { ...this.store.local.engine, paused: true } }); this.emit({ type: 'engine.paused', paused: true }); }
   resume(): void { this._paused = false; this.store.updateLocal({ engine: { ...this.store.local.engine, paused: false } }); this.emit({ type: 'engine.paused', paused: false }); }
   poke(): void {}
-  async approvePlan(id: string, notes?: string): Promise<void> {
-    this.store.mutateItem(id, [{ transition: { to: 'IN_PROGRESS', actor: 'user' } }, ...(notes ? [{ activity: { actor: 'user' as const, text: `approval notes: ${notes}` } }] : [])], 'user', { commit: `${id}: approve plan` });
+  async approvePlan(id: string, notes?: string, _by?: 'user' | 'orchestrator', { hold }: { asItem?: boolean; hold?: string } = {}): Promise<void> {
+    this.store.mutateItem(id, [{ transition: { to: 'IN_PROGRESS', actor: 'user' } }, ...(notes ? [{ activity: { actor: 'user' as const, text: `approval notes: ${notes}` } }] : []), ...(hold?.trim() ? [{ set: { skip_merge: true, hold_reason: hold.trim() } }, { activity: { actor: 'user' as const, text: `held out of the merge queue: ${hold.trim()}` } }] : [])], 'user', { commit: `${id}: approve plan` });
   }
   async rejectPlan(id: string, message: string): Promise<void> {
     this.store.mutateItem(id, [{ transition: { to: 'PLAN_IN_PROGRESS', actor: 'user' } }, { activity: { actor: 'user', text: `plan changes requested: ${message}` } }], 'user', { commit: `${id}: request plan changes` });

@@ -50,6 +50,16 @@ describe('transitions', () => {
     expect(fm).toMatchObject({ status: 'FINISHED', finished_at: 't9' });
     for (const k of ['blocked', 'blocked_reason', 'awaiting', 'worktree', 'op_data'] as const) expect(fm[k], k).toBeUndefined();
   });
+  it('a hold ends when the item merges, finishes or leaves the board; it survives the way into review (#97)', () => {
+    const held: ItemFrontmatter = { ...base, status: 'IN_PROGRESS', skip_merge: true, hold_reason: 'until the release is cut' };
+    expect(applyTransition(held, 'IN_REVIEW', 'engine', 'worker', 't1')).toMatchObject({ skip_merge: true, hold_reason: 'until the release is cut' });
+    const gone = [
+      applyTransition({ ...held, status: 'IN_REVIEW' }, 'MERGED', 'engine', 'worker', 't2'),
+      applyTransition(held, 'FINISHED', 'user', 'worker', 't3'),
+      applyTransition(held, 'ICEBOX', 'user', 'worker', 't4'),
+    ];
+    for (const fm of gone) { expect(fm.skip_merge, fm.status).toBeUndefined(); expect(fm.hold_reason, fm.status).toBeUndefined(); }
+  });
   it('derived values', () => {
     expect(flavorOf({ kind: 'item', implementer: 'codex' }, models)).toBe('external');
     expect(flavorOf({ kind: 'epic', implementer: 'fable-5' }, models)).toBe('epic');

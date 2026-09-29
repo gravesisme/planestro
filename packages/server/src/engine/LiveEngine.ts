@@ -1,6 +1,6 @@
 import { join, relative, isAbsolute, extname, basename, matchesGlob } from 'node:path';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
-import { validateParts, partsSummary, type Part, serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, epicFlagOf, epicShapeOf, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1 } from '@planestro/shared';
+import { validateParts, partsSummary, type Part, serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, epicFlagOf, epicShapeOf, holdShapeOf, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1 } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult } from './ports.ts';
@@ -105,7 +105,8 @@ export class LiveEngine implements Engine {
     this.ciWorkflow = opts.ciWorkflow ?? 'CI';
     this.orchestrator = new Orchestrator(store, ports, {
       message: (id, text) => this.message(id, text),
-      approvePlan: (id, notes) => this.approvePlan(id, notes, 'orchestrator'),
+      approvePlan: (id, notes, hold) => this.approvePlan(id, notes, 'orchestrator', { hold }),
+      holdMerge: (id, reason) => this.orchestratorHolds(id, reason),
       convertKind: (id, to, why) => this.convertKind(id, to, 'orchestrator', why).catch((e) => (e as Error).message),
       planEpic: (id, why) => this.planEpic(id, why),
       requestPlanChanges: (id, m) => this.orchestratorRequestsPlanChanges(id, m),
@@ -648,23 +649,32 @@ export class LiveEngine implements Engine {
   /**
    * `asItem`: the user read a plan that reads as an epic breakdown (epicFlagOf) and approves it as one
    * item anyway, deliberately. Nobody else can: the orchestrator converts it or leaves it to the user.
+   * `hold`: the pull request this opens stays out of the merge queue until it is released, for this
+   * reason (#97). A plan that states a hold (holdShapeOf) is held when the orchestrator approves it,
+   * with or without the argument; the user chooses, and approving without it is on the record.
    */
-  async approvePlan(id: string, notes?: string, by: 'user' | 'orchestrator' = 'user', { asItem = false }: { asItem?: boolean } = {}): Promise<void> {
+  async approvePlan(id: string, notes?: string, by: 'user' | 'orchestrator' = 'user', { asItem = false, hold }: { asItem?: boolean; hold?: string } = {}): Promise<void> {
     const item = this.store.requireItem(id);
     if (item.file.frontmatter.kind === 'epic') { if (by !== 'user') throw new Error(`${id} is an epic: its breakdown is the user's to approve`); await this.approveBreakdown(id); return; }
     if (item.file.frontmatter.status !== 'PLAN_READY') throw new Error(`${id} is ${item.file.frontmatter.status}, not PLAN_READY`);
     // An epic approved as an item goes to one implementer, who has to stop and ask (#69, HH-198).
     const epicShaped = epicFlagOf(item.file.frontmatter);
     if (epicShaped && !(asItem && by === 'user')) throw new Error(`${id} is not approved: ${epicShaped.reason}, so it is an epic, not one item. Convert it to an epic (its plan becomes the breakdown request)${by === 'user' ? ', request plan changes, or approve it as one item deliberately' : ' or leave it to the user'}.`);
-    const { plan_handed_back: _spent, plan_amended: _folded, looks_like_epic: _overruled, ...opData } = item.file.frontmatter.op_data ?? {};
+    // LM-22's plan said its PR stays held, and nothing held it (#97). Read from the plan as it stands, not from when it was handed in.
+    const stated = holdShapeOf(getSection(item.file, 'Plan'));
+    const holdFor = hold?.trim() || (by === 'orchestrator' ? stated?.reason : undefined);
+    const waived = Boolean(stated && !holdFor && !item.file.frontmatter.skip_merge);
+    const { plan_handed_back: _spent, plan_amended: _folded, looks_like_epic: _overruled, hold_waived: _earlier, ...opData } = item.file.frontmatter.op_data ?? {};
     this.store.mutateItem(id, [
       { transition: { to: 'IN_PROGRESS', actor: by } },
-      { set: { op_data: { ...opData, approval_notes: notes ?? '' } } },
+      { set: { op_data: { ...opData, approval_notes: notes ?? '', ...(waived ? { hold_waived: true } : {}) } } },
+      ...(holdFor ? this.holdOps(holdFor, by) : []),
+      ...(waived ? [{ activity: { actor: by, text: `approved without the hold its plan states: "${stated!.quote}"` } }] : []),
       ...(epicShaped ? [{ activity: { actor: by, text: `approved as one item although ${epicShaped.reason}` } }] : []),
       ...(by === 'orchestrator' ? [{ activity: { actor: by, text: `approved the plan on your behalf${notes ? `: ${notes}` : ''}` } }] : notes ? [{ activity: { actor: by, text: `approval notes: ${notes}` } }] : []),
     ], by, { commit: `${id}: approve plan${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
     // queued, not dropped: the orchestrator can decide while the planner's turn is still ending
-    this.queueFollowUp(id, () => this.runTurnFor(id, 'implement', this.withDelivered(id, 'implement-plan', this.store.renderPrompt('implement-plan', this.store.requireItem(id), { approval_notes: notes?.trim() || '(none)' })), [], [], { opener: true }));
+    this.queueFollowUp(id, () => this.runTurnFor(id, 'implement', this.withHoldNote(id, this.withDelivered(id, 'implement-plan', this.store.renderPrompt('implement-plan', this.store.requireItem(id), { approval_notes: notes?.trim() || '(none)' }))), [], [], { opener: true }));
   }
 
   async rejectPlan(id: string, message: string, by: 'user' | 'orchestrator' = 'user', { amend = false }: { amend?: boolean } = {}): Promise<void> {
@@ -1957,6 +1967,8 @@ export class LiveEngine implements Engine {
       if (cur.op_data?.plan_handed_back || cur.op_data?.plan_retry_turns || cur.op_data?.looks_like_epic || epic) ops.push({ set: { op_data: { ...opData, ...(epic ? { looks_like_epic: epic } : {}) } } });
       if (delegated) ops.push({ set: { awaiting: 'orchestrator' } });
       if (epic) ops.push({ activity: { actor: 'app', text: `this reads as an epic, not one item: ${epic.reason}. Approval is refused; convert it to an epic` } });
+      const stated = epic ? null : holdShapeOf(plan);
+      if (stated) ops.push({ activity: { actor: 'app', text: `its plan states a merge hold: "${stated.quote}". Approving it can hold its pull request` } });
       s.mutateItem(id, ops, 'engine', { commit: `${id}: submit plan` });
       this.note(epic ? 'warn' : 'info', `${id}: plan submitted — ${epic ? `it reads as an epic (${epic.reason}): convert it rather than approve it` : delegated ? 'the orchestrator decides (you asked it to)' : 'needs your approval'}`);
       this.wakeOrchestrator('plan_review', id);
@@ -1997,7 +2009,21 @@ export class LiveEngine implements Engine {
       add_note: async (markdown) => { const cur = getSection(s.requireItem(id).file, 'Notes'); s.mutateItem(id, [{ section: 'Notes', body: cur ? `${cur}\n\n${markdown}` : markdown }], 'engine', { commit: `${id}: worker note` }); return 'Note recorded.'; },
       append_activity: async (text) => { s.mutateItem(id, [{ activity: { actor: 'worker', text } }], 'engine'); return 'Recorded.'; },
       report_progress: async (parts) => this.recordParts(id, parts) ?? 'Recorded.',
-      report_done: async (summary, parts) => { const bad = parts === undefined ? undefined : this.recordParts(id, parts); const cur = s.requireItem(id).file.frontmatter; s.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), done_summary: summary } } }, { activity: { actor: 'worker', text: `done: ${summary.slice(0, 300)}` } }], 'engine'); return bad ? `Recorded, but ${bad} End your turn now.` : 'Recorded. End your turn now.'; },
+      report_done: async (summary, parts, hold) => {
+        const bad = parts === undefined ? undefined : this.recordParts(id, parts);
+        const cur = s.requireItem(id).file.frontmatter;
+        const ops: ItemOp[] = [{ set: { op_data: { ...(cur.op_data ?? {}), done_summary: summary } } }, { activity: { actor: 'worker', text: `done: ${summary.slice(0, 300)}` } }];
+        // The worker that knows its pull request must wait says so (#97). Recorded here, with the done: the pull
+        // request is opened from the item as persisted, and no drive path sees the item before this turn ends.
+        const asked = typeof hold === 'string' && cur.kind !== 'epic' && (cur.status === 'IN_PROGRESS' || cur.status === 'IN_REVIEW') && !cur.skip_merge ? hold.trim() : '';
+        const held = asked !== '' && !cur.op_data?.hold_waived;
+        if (held) ops.push(...this.holdOps(asked, 'worker'));
+        // A hold the user released, or left out at approval, is not put back by a later turn.
+        else if (asked) ops.push({ activity: { actor: 'app', text: `the worker asked for a hold (${asked.slice(0, 200)}); not held: you released this item's hold, or approved its plan without one` } });
+        s.mutateItem(id, ops, 'engine', held ? { commit: `${id}: skip merge` } : {});
+        if (held) this.note('info', `${id}: its worker asked for the pull request to be held: ${asked.slice(0, 200)}`);
+        return `Recorded${held ? ': planestro keeps the pull request out of the merge queue until the user releases the hold' : ''}${bad ? `, but ${bad}` : '.'} End your turn now.`;
+      },
       report_blocked: async (reason, parts) => {
         if (parts !== undefined) this.recordParts(id, parts);
         const cur = s.requireItem(id).file.frontmatter;
@@ -2953,6 +2979,32 @@ export class LiveEngine implements Engine {
     this.runJob(id, () => this.runTurnFor(id, 'fix', `${this.resumeNote(id, 'your review')}\n\nThe user reviewed what you delivered and asks for changes:\n\n${note.trim()}\n\nRevise it in your worktree, commit on your branch, leave the tree clean, and finish as before. It will come back to the user for another look.`));
   }
 
+  /** The one way a hold is put on an item (#97): out of the merge queue, with the reason on the item and in its log. */
+  private holdOps(reason: string, by: 'user' | 'orchestrator' | 'worker' | 'app'): ItemOp[] {
+    const why = reason.trim().replace(/\s+/g, ' ').slice(0, 300);
+    return [{ set: { skip_merge: true, hold_reason: why } }, { activity: { actor: by, text: `held out of the merge queue: ${why}` } }];
+  }
+
+  private orchestratorHolds(id: string, reason: string): string {
+    this.store.requireItem(id);
+    if (!reason?.trim()) return 'not held: say why, the reason is shown on the item';
+    this.store.mutateItem(id, this.holdOps(reason, 'orchestrator'), 'orchestrator', { commit: `${id}: skip merge` });
+    return 'held';
+  }
+
+  /**
+   * What the implementer is told about a hold, in code rather than in implement-plan (data dirs keep
+   * their own copies of it): it does the work as usual and never waits for the hold itself.
+   */
+  private withHoldNote(id: string, rendered: string): string {
+    const item = this.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    if (fm.skip_merge) return `${rendered}\n\n## Merge hold\n\nThis item's pull request is held out of the merge queue${fm.hold_reason ? `: ${fm.hold_reason}` : ''}. Do the work and report it done as usual: planestro opens the pull request, shows its CI, and does not merge it until the user releases the hold. Do not wait for anything yourself; there is no need to pass \`hold\`.`;
+    const stated = fm.op_data?.hold_waived ? holdShapeOf(getSection(item.file, 'Plan')) : null;
+    if (stated) return `${rendered}\n\n## Merge hold\n\nThe plan says "${stated.quote}" The user approved it without that hold: the pull request merges as usual, so do not ask for a hold when you report the work done.`;
+    return rendered;
+  }
+
   /**
    * Let a held pull request merge: a review hold the user has now approved, or a plain `skip_merge`.
    * The item goes back through the merge pipeline rather than straight to the merge — the base may
@@ -2961,6 +3013,11 @@ export class LiveEngine implements Engine {
    */
   async releaseHold(id: string, note?: string): Promise<void> {
     const fm = this.store.requireItem(id).file.frontmatter;
+    // A hold put on at approval, or by the worker, before there is a pull request to let through: it is simply dropped (#97).
+    if (fm.status === 'IN_PROGRESS' && fm.skip_merge) {
+      this.store.mutateItem(id, [{ unset: ['skip_merge'] }, { set: { op_data: { ...(fm.op_data ?? {}), hold_waived: true } } }, { activity: { actor: 'user', text: `hold dropped: its pull request will merge as usual${note?.trim() ? `: ${note.trim()}` : ''}` } }], 'user', { commit: `${id}: release hold` });
+      return;
+    }
     if (fm.status !== 'IN_REVIEW') throw new Error(`${id} is ${fm.status}; only an item in review can be released to merge`);
     if (!fm.review_hold && !fm.skip_merge) throw new Error(`${id} is not held`);
     if (fm.awaiting && fm.awaiting !== 'review') throw new Error(`${id} is awaiting ${fm.awaiting}; answer that first`);
@@ -2968,6 +3025,7 @@ export class LiveEngine implements Engine {
     this.store.mutateItem(id, [
       { unset: ['review_hold', 'skip_merge', ...(fm.awaiting === 'review' ? ['awaiting', 'awaiting_data'] : [])] },
       ...(keep ? [] : [{ set: { ci_result: 'pending' as const } }]),
+      { set: { op_data: { ...(fm.op_data ?? {}), hold_waived: true } } },
       { activity: { actor: 'user', text: `approved for merge${note?.trim() ? `: ${note.trim()}` : ''}` } },
       ...(keep ? [{ activity: { actor: 'app' as const, text: `CI stays green: ${fm.ci_head_sha!.slice(0, 7)} is still the PR's head and on its base's tip, so it merges without a new run` } }] : []),
     ], 'user', { commit: `${id}: release hold` });
@@ -3091,7 +3149,7 @@ export class LiveEngine implements Engine {
       // Not a lifecycle transition: the item starts over as the other kind, from the backlog (or stays in the icebox).
       { set: { kind: to, ...(reset ? { status: 'NOT_YET_SUBMITTED' as const } : {}) } },
       // What belonged to the other kind's planning goes with it; the new planner starts a conversation of its own.
-      { unset: ['worktree', 'branch', 'session_id', 'agent_sessions', 'op', 'op_started_at', 'op_data', 'awaiting', 'awaiting_data', 'triage', 'blocked', 'blocked_reason', 'resume_after', 'plan_revisions'] },
+      { unset: ['worktree', 'branch', 'session_id', 'agent_sessions', 'op', 'op_started_at', 'op_data', 'awaiting', 'awaiting_data', 'triage', 'blocked', 'blocked_reason', 'resume_after', 'plan_revisions', 'skip_merge', 'hold_reason'] },
       ...(carried ? [{ section: 'Notes', body: notes ? `${notes}\n\n${carried}` : carried }, { section: 'Plan', body: '' }] : []),
       ...(reset ? [a(`status ${fm.status} → NOT_YET_SUBMITTED`)] : []),
       a(`converted to ${to === 'epic' ? 'an epic' : 'an item'}${why?.trim() ? `: ${why.trim()}` : ''}${carried ? `. The ${was === 'epic' ? 'breakdown' : 'plan'} is kept in Notes for its new planner` : ''}`),

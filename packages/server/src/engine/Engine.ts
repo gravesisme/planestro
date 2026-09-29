@@ -16,8 +16,11 @@ export interface Engine {
   resume(): void;
   /** Called after an item enters QUEUED; the engine admits it when a slot is free. */
   poke(): void;
-  /** `asItem`: the user approves, deliberately, a plan that reads as an epic breakdown (epicFlagOf), which is refused otherwise (#69). */
-  approvePlan(id: string, notes?: string, by?: 'user' | 'orchestrator', opts?: { asItem?: boolean }): Promise<void>;
+  /**
+   * `asItem`: the user approves, deliberately, a plan that reads as an epic breakdown (epicFlagOf), which is refused otherwise (#69).
+   * `hold`: its pull request stays out of the merge queue until released, for this reason (#97).
+   */
+  approvePlan(id: string, notes?: string, by?: 'user' | 'orchestrator', opts?: { asItem?: boolean; hold?: string }): Promise<void>;
   /** Make an item an epic or back while nothing has run for implementation (kindConversionRefusal). Returns what happened; throws why not. */
   convertKind(id: string, to: 'item' | 'epic', by?: 'user' | 'orchestrator', why?: string): Promise<string>;
   rejectPlan(id: string, message: string): Promise<void>;
@@ -30,7 +33,7 @@ export interface Engine {
   reviewImages(id: string): Promise<ReviewImage[]>;
   reviewImage(id: string, path: string, side: 'before' | 'after'): Promise<Buffer | null>;
   requestReviewChanges(id: string, note: string): Promise<void>;
-  /** Let a held pull request (a review hold, or skip_merge) back into the merge pipeline. */
+  /** Let a held pull request (a review hold, or skip_merge) back into the merge pipeline; before the pull request exists, drop the hold. */
   releaseHold(id: string, note?: string): Promise<void>;
   /** Finish an item without a pull request: the work landed some other way. User-only. */
   closeAsDone(id: string, reason?: string): Promise<void>;

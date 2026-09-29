@@ -50,7 +50,8 @@ export const api = {
   requestReviewChanges: (id: string, note: string) => req<ItemView>('POST', `/api/items/${id}/review/changes`, { note }),
   releaseHold: (id: string, note?: string) => req<ItemView>('POST', `/api/items/${id}/hold/release`, { note }),
   approveBreakdown: (id: string, children: BreakdownChild[], queue: boolean) => req<{ created: string[]; item: ItemView }>('POST', `/api/items/${id}/breakdown/approve`, { children, queue }),
-  approvePlan: (id: string, notes?: string, asItem?: boolean) => req<ItemView>('POST', `/api/items/${id}/plan/approve`, { notes, ...(asItem ? { as_item: true } : {}) }),
+  /** `hold`: its pull request stays out of the merge queue until released, for this reason (#97). */
+  approvePlan: (id: string, notes?: string, asItem?: boolean, hold?: string) => req<ItemView>('POST', `/api/items/${id}/plan/approve`, { notes, ...(asItem ? { as_item: true } : {}), ...(hold?.trim() ? { hold: hold.trim() } : {}) }),
   convertKind: (id: string, to: 'item' | 'epic', reason?: string) => req<ItemView>('POST', `/api/items/${id}/convert`, { to, reason }),
   rejectPlan: (id: string, message: string) => req<ItemView>('POST', `/api/items/${id}/plan/reject`, { message }),
   message: (id: string, text: string) => req<{ ok: true }>('POST', `/api/items/${id}/message`, { text }),
