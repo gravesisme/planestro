@@ -60,7 +60,7 @@ export const api = {
   handBack: (id: string, note?: string) => req<ItemView>('POST', `/api/items/${id}/hand-back`, { note }),
   finishFromWorktree: (id: string) => req<ItemView>('POST', `/api/items/${id}/finish`),
   syncWithBase: (id: string) => req<ItemView & { result: string }>('POST', `/api/items/${id}/sync`, {}),
-  unblock: (id: string, message?: string) => req<ItemView>('POST', `/api/items/${id}/unblock`, { message }),
+  unblock: (id: string, message?: string, fresh?: boolean) => req<ItemView>('POST', `/api/items/${id}/unblock`, { message, ...(fresh ? { fresh: true } : {}) }),
   decide: (id: string, body: { choice?: string; text?: string }) => req<ItemView>('POST', `/api/items/${id}/decision`, body),
   respond: (id: string, payload: Record<string, unknown>) => req<{ ok: true }>('POST', `/api/items/${id}/respond`, payload),
   uploadAttachment: (id: string, file: File) => { const fd = new FormData(); fd.append('file', file, file.name); return req<{ path: string }>('POST', `/api/items/${id}/attachments`, undefined, fd); },
