@@ -7,6 +7,26 @@ sessions in a throwaway worktree of a real project repo. Runner:
 are in `spikes/out/*.stdout` (gitignored). `packages/server/src/compat.ts`
 pins these versions so planestro can warn when the installed CLI drifts.
 
+## Re-validated 2026-09-28 against Claude Code 2.1.284
+
+Same SDK (0.3.251), the installed CLI 2.1.284 (the spike now runs the CLI the engine
+runs, via `resolveClaudeBin`, not the SDK's bundled 2.1.251), planner Opus 5.5 and
+implementer Sonnet 5.5, in a throwaway `git init` repo. **Every assumption (a)–(j)
+passes again.** About $1.90 of usage. Two observations, neither a change the engine needs:
+
+- **A resumed session can yield an extra, empty `result` first.** Resuming the session
+  killed mid-`sleep` (f) yielded `task_notification`, then `result success turns=0 ""`,
+  then a second `init`, the answer, and the real `result`. The killed session had left a
+  background task; its notification is delivered as a turn of its own. `LiveClaudePort`
+  reads to the end of the stream and the last `result` wins (cost and turns are summed).
+- **The CLI blocks a long foreground `sleep`.** The kill step's `sleep 25 && echo slept`
+  was refused in the foreground and run in the background instead. Workers that wait with
+  `sleep` will see the same; nothing in planestro relies on it.
+
+The kill step now only kills a session whose id it holds: before `init` arrives the id
+is undefined, and an entry without a `sessionId` (another session on the machine, such as
+a live worker) would have matched it.
+
 ## Assumptions
 
 | # | Assumption the engine depends on | Result | Observed |

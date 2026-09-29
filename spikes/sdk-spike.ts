@@ -18,6 +18,7 @@ import { z } from 'zod';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { resolveClaudeBin } from '../packages/server/src/engine/sessions/claudeBin.ts';
 
 const OUT = join(import.meta.dirname, 'out');
 mkdirSync(OUT, { recursive: true });
@@ -28,6 +29,11 @@ if (!CWD) { console.error('SPIKE_CWD must name a throwaway git worktree for the 
 const PLANNER = process.env.SPIKE_PLANNER ?? 'claude-fable-5';
 const IMPLEMENTER = process.env.SPIKE_IMPLEMENTER ?? 'claude-opus-5';
 const CODEWORD = 'PELICAN-42';
+// The CLI the engine runs (LiveClaudePort): the installed one when it is newer than the SDK's bundled copy.
+// Without this the spike validated the bundled CLI, not the one the compat warning is about.
+const BIN = resolveClaudeBin(process.env.SPIKE_CLAUDE_BIN);
+const BIN_OPT = BIN.bin ? { pathToClaudeCodeExecutable: BIN.bin } : {};
+console.log(`spike runs ${BIN.why}`);
 
 type State = { session_id?: string; plan?: string; questions?: unknown; killed_session?: string };
 const state: State = existsSync(STATE) ? JSON.parse(readFileSync(STATE, 'utf8')) : {};
@@ -98,7 +104,7 @@ if (cmd === 'plan') {
   const r = await run('plan (fable, plan mode, MCP submit_plan)', query({
     prompt: `You are doing a tiny planning exercise. Remember this codeword for later: ${CODEWORD}. Read the header comment of tools/run_checks.sh, then write a 3-bullet plan for adding a "--version" flag that prints the script's own version. Submit the plan by calling the planestro submit_plan tool (do NOT use ExitPlanMode), then end your turn immediately.`,
     options: {
-      cwd: CWD, model: PLANNER, permissionMode: 'plan',
+      ...BIN_OPT, cwd: CWD, model: PLANNER, permissionMode: 'plan',
       mcpServers: { planestro: planestroServer },
       allowedTools: ['mcp__planestro__submit_plan', 'Read', 'Grep', 'Glob'],
       canUseTool: canUseToolLogger((t, input) => t === 'ExitPlanMode' ? (state.plan = String((input as any).plan ?? ''), save(), { behavior: 'deny', message: 'Plan recorded by planestro (captured from ExitPlanMode). End your turn now.' }) : null),
@@ -114,7 +120,7 @@ if (cmd === 'resume-impl') {
   const r = await run('resume-impl (NEW process, opus, acceptEdits)', query({
     prompt: `Your plan was approved. First, tell me the codeword I gave you earlier (just the codeword). Then use the AskUserQuestion tool to ask me whether the flag should print "short" or "long" output — do not guess. After the question tool returns, end your turn.`,
     options: {
-      cwd: CWD, model: IMPLEMENTER, permissionMode: 'acceptEdits', resume: state.session_id,
+      ...BIN_OPT, cwd: CWD, model: IMPLEMENTER, permissionMode: 'acceptEdits', resume: state.session_id,
       mcpServers: { planestro: planestroServer },
       allowedTools: ['mcp__planestro__report_done', 'Read', 'Grep', 'Glob'],
       canUseTool: canUseToolLogger((t, input) => t === 'AskUserQuestion' ? (state.questions = (input as any).questions, save(), { behavior: 'deny', message: 'Questions recorded by planestro. End your turn now; you will be resumed with the answers.' }) : null),
@@ -130,7 +136,7 @@ if (cmd === 'resume-answer') {
   const r = await run('resume-answer (answer + allowedTools pre-approval; unknown Bash must park)', query({
     prompt: `Answer to your question: "long". Now do exactly two things via Bash, one at a time: (1) run \`echo spike-ok\`; (2) run \`uname -a\`. Then call planestro report_done with a one-line summary and end your turn.`,
     options: {
-      cwd: CWD, model: IMPLEMENTER, permissionMode: 'acceptEdits', resume: state.session_id,
+      ...BIN_OPT, cwd: CWD, model: IMPLEMENTER, permissionMode: 'acceptEdits', resume: state.session_id,
       mcpServers: { planestro: planestroServer },
       allowedTools: ['mcp__planestro__report_done', 'Bash(echo spike-ok)'],
       canUseTool: canUseToolLogger((t, input) => t === 'Bash' ? { behavior: 'deny', message: 'Permission requires user approval; the request has been recorded by planestro — end this turn.' } : null),
@@ -143,13 +149,15 @@ if (cmd === 'resume-answer') {
 if (cmd === 'kill') {
   const q = query({
     prompt: 'Run `sleep 25 && echo slept` via Bash, then tell me it finished.',
-    options: { cwd: CWD, model: IMPLEMENTER, permissionMode: 'acceptEdits', allowedTools: ['Bash(sleep 25 && echo slept)'] },
+    options: { ...BIN_OPT, cwd: CWD, model: IMPLEMENTER, permissionMode: 'acceptEdits', allowedTools: ['Bash(sleep 25 && echo slept)'] },
   });
   let sid: string | undefined;
   const t = setTimeout(() => {
     try {
       const agents = JSON.parse(execFileSync('claude', ['agents', '--json'], { encoding: 'utf8' }));
-      const mine = agents.find((a: any) => a.sessionId === sid);
+      // Only our own session, by an id we have: before init arrives sid is undefined, and an entry with no
+      // sessionId would match it — another session on this machine (a live worker) must never be killed.
+      const mine = sid ? agents.find((a: any) => a.sessionId === sid) : undefined;
       log(`  (h) claude agents --json entry for our session: ${mine ? JSON.stringify(mine) : 'NOT FOUND'}`);
       if (mine?.pid) { log(`  killing pid ${mine.pid} with SIGTERM`); process.kill(mine.pid, 'SIGTERM'); }
       else log('  no pid to kill; will rely on process exit');
@@ -167,7 +175,7 @@ if (cmd === 'resume-after-kill') {
   if (!state.killed_session) throw new Error('run kill first');
   const r = await run('resume-after-kill', query({
     prompt: 'What command were you running before we were interrupted? Answer in one line, no tools.',
-    options: { cwd: CWD, model: IMPLEMENTER, permissionMode: 'acceptEdits', resume: state.killed_session },
+    options: { ...BIN_OPT, cwd: CWD, model: IMPLEMENTER, permissionMode: 'acceptEdits', resume: state.killed_session },
   }));
   log(`\n(f) torn session resumable: ${r.sessionId === state.killed_session && r.subtype === 'success' ? 'PASS' : 'FAIL'}; mentions sleep: ${/sleep/i.test(r.text)}`);
 }
@@ -184,8 +192,8 @@ if (cmd === 'sessions') {
 }
 
 if (cmd === 'budget') {
-  const r1 = await run('budget maxTurns=1', query({ prompt: 'List the files in tools/ using Glob, then Read tools/run_checks.sh, then summarize.', options: { cwd: CWD, model: IMPLEMENTER, permissionMode: 'acceptEdits', maxTurns: 1 } }));
-  const r2 = await run('budget maxBudgetUsd=0.001', query({ prompt: 'Read CLAUDE.md fully and summarize it in detail.', options: { cwd: CWD, model: IMPLEMENTER, permissionMode: 'acceptEdits', maxBudgetUsd: 0.001 } }));
+  const r1 = await run('budget maxTurns=1', query({ prompt: 'List the files in tools/ using Glob, then Read tools/run_checks.sh, then summarize.', options: { ...BIN_OPT, cwd: CWD, model: IMPLEMENTER, permissionMode: 'acceptEdits', maxTurns: 1 } }));
+  const r2 = await run('budget maxBudgetUsd=0.001', query({ prompt: 'Read CLAUDE.md fully and summarize it in detail.', options: { ...BIN_OPT, cwd: CWD, model: IMPLEMENTER, permissionMode: 'acceptEdits', maxBudgetUsd: 0.001 } }));
   log(`\n(i) subtypes: maxTurns→${r1.subtype}, maxBudgetUsd→${r2.subtype}`);
 }
 
@@ -196,7 +204,7 @@ if (cmd === 'resume-park') {
   const r = await run('resume-park (non-read-only, non-allowlisted Bash must reach canUseTool and park)', query({
     prompt: 'One more thing: run `node -e "console.log(\'park-probe\')"` via Bash. If the tool is denied, do not retry or work around it — just end your turn.',
     options: {
-      cwd: CWD, model: IMPLEMENTER, permissionMode: 'acceptEdits', resume: state.session_id,
+      ...BIN_OPT, cwd: CWD, model: IMPLEMENTER, permissionMode: 'acceptEdits', resume: state.session_id,
       canUseTool: canUseToolLogger((t) => t === 'Bash' ? { behavior: 'deny', message: 'Permission requires user approval; the request has been recorded by planestro — end this turn.' } : null),
     },
   }));
