@@ -36,6 +36,7 @@ favorite: true
 | `implement` | `implement-plan` | The plan is approved. |
 | `ci_failed`, `rebase_conflict`, `commit_dirty_tree` | same names | CI is red; a sync conflicted; a turn ended with uncommitted changes. |
 | `resume_context` | `resume-context` | Prefixed to a turn that resumes a parked session. |
+| `fresh_brief` | `fresh-brief` | Opens a fresh session on an item whose earlier one is not resumed (reloading it costs more than the job, or a fresh one was asked for). It carries the item, its plan and the state of its branch, and the task in `brief.task`. |
 | `cleanup` | `cleanup-worktree` | Not sent by the engine (cleanup is code, with positive evidence); kept for cleaning up by hand. |
 | `orchestrator_system` | `orchestrator-system` | The orchestrator's standing rules. Each wake's context packet is built in code from the item files. |
 
@@ -53,6 +54,7 @@ an unresolved placeholder is an error, never a half-filled prompt sent to an age
 | `dependencies.delivered` | what the items this one waited on added or changed, from git at merge time |
 | `repo.path`, `.default_branch`, `.release_branch`, `.github`, `project.name`, `data_dir` | the project |
 | `implementers`, `categories` | `plan-epic` only |
+| `approval_notes`, `brief.task`, `.stopped`, `.commits`, `.dirty`, `.in_progress`, `.pr`, `.done_summary`, `.activity` | `fresh-brief` only: the task, where the item last stopped, commits ahead of the base, uncommitted files, an unfinished rebase or merge, the pull request, the last reported summary, recent Activity |
 
 A starting-point template may carry `model: <model id>` in its frontmatter: the New item dialog then
 preselects that implementer, so an art brief lands on the art model without anyone remembering to

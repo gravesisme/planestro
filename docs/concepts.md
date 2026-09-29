@@ -291,7 +291,9 @@ orchestrator first. While it looks, the card shows **orchestrator triaging** and
 not counted as needing you. It then does one of two things:
 
 - **resolves it** when the fix is within its authority: `unblock_item` with an instruction
-  (resubmit the plan an MCP "Stream closed" ate, carry on after a hiccup), `answer_question`
+  (resubmit the plan an MCP "Stream closed" ate, carry on after a hiccup; with `fresh: true`
+  the instruction goes to a fresh session with a brief instead of the old conversation),
+  `commit_paths` for work that is done but uncommitted (no session turn), `answer_question`
   when the brief already answers the worker, `retry_op` for a transient GitHub 5xx or network
   failure, `set_item_fields` for a wrong parent / base / dependency / implementer / fallback
   setting (a whitelist — nothing else), `sync_with_base` (or `unblock_item` with
@@ -342,6 +344,34 @@ A card is a product call you can answer in one tap, in player and product terms.
 to edit code or config or run a command: a fix that needs a capability no worker or tool has (a
 workflow file, SSH, a secret) is filed as a backlog item for whoever runs planestro
 (`file_for_maintainer`, never queued), and the stopped item waits on it.
+
+**What a resume costs.** A resumed session sends its whole conversation again before it does
+anything: written to the prompt cache when the cache has expired, read from it when it has not.
+planestro records the size of each conversation and the price the CLI quotes for reloading it, and
+shows the estimate on the item page, on budget cards and in every wake about the item. It decides
+each turn on it, without asking anyone:
+
+- a resume the item can pay for, below `budget_usd_fresh_above`, is resumed;
+- above that threshold, or when the item cannot pay for the resume, a turn whose instruction
+  stands on its own goes to a **fresh session**: a new conversation that gets a brief rendered
+  from the item file and git (the request, the plan, commits ahead of the base, uncommitted
+  files, where it last stopped) and the task. It becomes the item's conversation; the old one
+  stays on disk and is named in the Activity log. Planning turns, and answers to a question or a
+  permission request the session itself raised, are never moved to a fresh session;
+- when nothing fits what is left, the item stops as `over_budget` before anything is spent, and
+  the orchestrator gets the numbers. A conversation planestro has no record of yet is asked about
+  before its first request (the CLI's own quote) and declined at no cost if it does not fit.
+
+You can ask for a fresh session yourself (**Unblock in a fresh session** on a blocked item), and
+so can the orchestrator (`unblock_item` with `fresh: true`). A budget card's raise always covers
+the reload and the work, or promises a fresh session: `ask_user_decision` refuses a smaller one.
+
+**Commit without a session** (the orchestrator's `commit_paths`): work that is done but not
+committed, on an item that cannot pay for a turn or would spend one only to run `git add` and
+`git commit`. The orchestrator names the files and the message; planestro checks that each is one
+of the worktree's own uncommitted files (never a byproduct, never during an unfinished rebase or
+merge) and commits them. Nothing is pushed and the item stays as it is: **Finish from here**, or
+`retry_op` for an item in review, carries on from the commit.
 
 **Finish from here** (an item action, and the orchestrator's `finish_from_worktree`): the work is
 committed on the branch but the item stopped before its pull request (over budget after
