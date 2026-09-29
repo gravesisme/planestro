@@ -52,7 +52,8 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
         allow_model_fallback: z.boolean().optional(),
       }).parse(await c.req.json());
       const { auto_approve_plan, ...input } = body;
-      return c.json(itemView(store, store.createItem({ ...input, ...(auto_approve_plan ? { extra: { auto_approve_plan: true } } : {}) })), 201);
+      // Said either way: an unticked box is the user's choice, not a gap for defaults.auto_approve_plan to fill.
+      return c.json(itemView(store, store.createItem({ ...input, ...(auto_approve_plan !== undefined ? { extra: { auto_approve_plan } } : {}) })), 201);
     } catch (e) { return fail(c, e); }
   });
   api.get('/items/:id', (c) => { const it = store.getItem(c.req.param('id')); return it ? c.json(itemView(store, it)) : c.json({ error: 'not found' }, 404); });

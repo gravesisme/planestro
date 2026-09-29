@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
-import { useStore } from '../store.ts';
+import { useStore, act } from '../store.ts';
+import { api } from '../api.ts';
 import { Markdown } from './Markdown.tsx';
 import { ItemConsole } from './ItemConsole.tsx';
 import { statusLabel } from './ItemCard.tsx';
@@ -63,6 +64,16 @@ export function PreviewDrawer({ id, onClose }: { id: string; onClose: () => void
         {fm.branch ? <> · <code>{fm.branch}</code></> : null}
         {fm.pr ? <> · <a href={`https://github.com/${state!.config.code_repo.github}/pull/${fm.pr}`} target="_blank" rel="noreferrer">PR #{fm.pr}</a>{fm.ci_result ? ` (CI ${fm.ci_result})` : ''}</> : null}
       </p>
+      {fm.kind !== 'epic' && !d.external && state && (() => {
+        // At the top, so a plan waiting on you says whether the orchestrator was allowed to review it at all.
+        const orch = state.config.orchestrator;
+        return (
+          <label className="row small" style={{ margin: '0 0 8px' }} title={orch.may_approve_plans ? `The orchestrator reviews the plan and approves it, sends it back with fixes (up to ${orch.max_plan_revisions} round${orch.max_plan_revisions === 1 ? '' : 's'}), or leaves it to you` : 'Turn on "May approve plans" in Settings → Orchestrator first'}>
+            <input type="checkbox" checked={!!fm.auto_approve_plan} disabled={!orch.may_approve_plans} onChange={(e) => void act(() => api.patchItem(id, { fields: { auto_approve_plan: e.target.checked } }))} />
+            let the orchestrator approve the plan{orch.may_approve_plans ? ` (up to ${orch.max_plan_revisions} fix round${orch.max_plan_revisions === 1 ? '' : 's'}, then you)` : ' (off in Settings)'}
+          </label>
+        );
+      })()}
       <DecisionCard item={item} />
       {fm.parts?.length ? <PartsStrip parts={fm.parts} compact /> : null}
       <TakenOverPanel item={item} />

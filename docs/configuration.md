@@ -92,6 +92,7 @@ dollar figures elsewhere carry a short hint.
 | `defaults.implementer` | — | For new items. |
 | `defaults.category` | — | For new items. |
 | `defaults.allow_model_fallback` | `false` | New items start with **allow fallback model** ticked; an epic's children inherit the epic's setting. |
+| `defaults.auto_approve_plan` | `false` | New items start with **let the orchestrator approve the plan** ticked (the New item dialog, the orchestrator's `create_item`, an epic's children), except items whose implementer runs outside Claude (an art runner such as Codex), whose plans you review. Untick it on any item. Only matters while `orchestrator.may_approve_plans` is on. |
 | `categories` | — | The list items choose from. Rename and remove in Settings, which reassigns items. |
 
 ### Budgets and concurrency

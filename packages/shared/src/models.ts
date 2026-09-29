@@ -39,6 +39,17 @@ export function resetTime(v: unknown): Date | undefined {
 }
 
 /** A model row by id, or by its runner model string (the orchestrator setting has accepted both). */
+/**
+ * Whether a new item starts with "let the orchestrator approve the plan" ticked: defaults.auto_approve_plan, for an
+ * item (never an epic) whose implementer runs on Claude. An implementer on another runner is the project's art
+ * pipeline (HH's Codex Art), whose plans the designer reviews, so those stay unticked.
+ */
+export function planReviewByDefault(config: Pick<Config, 'models' | 'defaults'>, implementer: string | undefined, kind: 'item' | 'epic' = 'item'): boolean {
+  if (kind === 'epic' || !config.defaults.auto_approve_plan) return false;
+  const m = findModel(config, implementer ?? config.defaults.implementer);
+  return Boolean(m) && !m!.external && (m!.runner ?? 'claude') === 'claude';
+}
+
 export function findModel(config: Pick<Config, 'models'>, ref: string | undefined): ModelDef | undefined {
   if (!ref) return undefined;
   return config.models.find((m) => m.id === ref) ?? config.models.find((m) => m.claude_model === ref || m.codex_model === ref);
