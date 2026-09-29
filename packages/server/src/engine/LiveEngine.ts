@@ -639,6 +639,24 @@ export class LiveEngine implements Engine {
     if (cur.ci_head_sha !== remote || cur.ci_result === 'green' || cur.ci_result === 'red') this.store.mutateItem(id, [{ set: { ci_result: 'pending', ci_head_sha: remote } }], 'engine');
   }
 
+  /**
+   * Messages queued for an item's session while something other than a turn drove it: sent now as the item's next
+   * job, when nothing else is queued and nothing waits on an answer. Returns whether it did (HH-263).
+   */
+  private deliverQueued(id: string, when: string): boolean {
+    const item = this.store.getItem(id);
+    if (!item) return false;
+    const fm = item.file.frontmatter;
+    const pending = (fm.op_data?.pending_messages as string[] | undefined) ?? [];
+    const phase = this.phaseFor(fm.status);
+    if (!pending.length || !phase || fm.taken_over || fm.blocked || fm.awaiting || this.turns.has(id) || this.followUps.has(id)) return false;
+    if (this.store.derived(item).flavor !== 'worker' || this.stopping) return false;
+    this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), pending_messages: [] } } }, { activity: { actor: 'app', text: `sending ${pending.length} queued message${pending.length === 1 ? '' : 's'} to the session ${when}` } }], 'engine');
+    const review = fm.status === 'IN_REVIEW' ? '\n\nYour pull request is open and was about to merge: it waits for what you do with these. Commit any change; planestro pushes it and runs CI again.' : '';
+    this.queueFollowUp(id, () => this.runTurnFor(id, phase, `Messages from the user while you were working:\n\n${pending.map((m) => `- ${m}`).join('\n')}${review}`));
+    return true;
+  }
+
   private followUps = new Map<string, () => Promise<unknown>>();
   /** Why a live turn was aborted on purpose (a take-over, a move into review), for the line its end writes. */
   private stoppedFor = new Map<string, string>();
@@ -651,6 +669,8 @@ export class LiveEngine implements Engine {
       this.jobs.delete(id);
       const next = this.followUps.get(id);
       if (next) { this.followUps.delete(id); this.runJob(id, next); }
+      // A message queued while a job that is not a turn ran (a CI wait, a merge step) has no turn to end and deliver it.
+      else if (this.deliverQueued(id, 'its job ended')) { /* queued as the next job */ }
       else { const wake = this.pendingWakes.get(id); if (wake) { this.pendingWakes.delete(id); this.wakeOrchestrator(wake.type, id, wake.data); } }
     });
     this.jobs.set(id, p);
@@ -1349,6 +1369,9 @@ export class LiveEngine implements Engine {
     const base = d.base_branch!;
     const integration = fm.kind === 'epic';
     const canFix = d.flavor === 'worker';
+    // Never merge over a message still queued for the session (HH-263): the designer's ruling "ship the Crawler" sat in
+    // the queue through a 14-minute CI wait, then the PR merged without it. It goes to the session now; the PR comes back after.
+    if (canFix && this.deliverQueued(id, 'before its pull request merges')) return;
     if (!fm.worktree) {
       // epics and app-policy external items have no session worktree: make a temporary one from the remote branch
       const dir = join(this.store.worktreesRoot(), `merge-${id.toLowerCase()}`);

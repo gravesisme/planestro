@@ -1677,6 +1677,43 @@ describe('a held epic PR whose CI goes red (#116, HH-242)', () => {
   });
 });
 
+describe('a message queued for the session is never merged over (HH-263)', () => {
+  it('goes to the session before the pull request merges, and the PR merges after', async () => {
+    const prompts: { phase: string; prompt: string; status: string }[] = [];
+    let store!: DataStore;
+    const claude = () => ({
+      async runTurn(o: TurnOptions): Promise<TurnResult> {
+        prompts.push({ phase: o.phase, prompt: o.prompt, status: store.getItem(o.itemId)!.file.frontmatter.status });
+        if (o.phase === 'plan') { await o.tools.submit_plan('# p'); return { sessionId: 's', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', planSubmitted: '# p' }; }
+        await o.tools.report_done('done');
+        return { sessionId: 's', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', done: 'done' };
+      },
+    });
+    const ctx = await setup({ claude });
+    store = ctx.store;
+    const { engine, world } = ctx;
+    const item = store.createItem({ title: 'Crawler', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    world.commits.set(join(store.codeRepoPath(), '.claude/worktrees/tp-1-crawler'), 1);
+    store.mutateItem(item.id, [{ set: { skip_merge: true } }], 'user');                  // held until the designer says
+    await engine.approvePlan(item.id);
+    await waitFor(() => status(store, item.id) === 'IN_REVIEW' && !(engine as any).jobs.has(item.id), 8000);
+    // the designer's ruling reaches the queue while something else drives the item (HH-263: a CI wait)
+    const cur = store.getItem(item.id)!.file.frontmatter;
+    store.mutateItem(item.id, [{ set: { op_data: { ...(cur.op_data ?? {}), pending_messages: ['ship the Crawler with the width waiver'] } } }], 'user');
+    await engine.releaseHold(item.id);
+    await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
+    const fix = prompts.find((p) => p.prompt.includes('ship the Crawler with the width waiver'))!;
+    expect(fix).toMatchObject({ phase: 'fix', status: 'IN_REVIEW' });                    // delivered while the PR was still open
+    expect(fix.prompt).toContain('was about to merge: it waits for what you do with these');
+    const log = activityOf(store, item.id);
+    expect(log.indexOf('sending 1 queued message to the session before its pull request merges')).toBeGreaterThan(-1);
+    expect(log.indexOf('sending 1 queued message')).toBeLessThan(log.indexOf('status IN_REVIEW → MERGED'));
+  });
+});
+
 describe('a pull request attached by hand (p44)', () => {
   /** An item with a worker branch, a worktree and an open PR the engine did not open. */
   function handMade(store: DataStore, engine: LiveEngine, world: FakeWorld, status: 'IN_PROGRESS' | 'IN_REVIEW', extra: Record<string, unknown> = {}) {
