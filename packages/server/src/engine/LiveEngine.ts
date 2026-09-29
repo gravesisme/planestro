@@ -376,7 +376,7 @@ export class LiveEngine implements Engine {
 
   /**
    * Stall detection (f1). An item planning or in progress with no live turn, no engine step, no op,
-   * not waiting on anyone and not blocked has nothing driving it. Past `stall_after_min` it is carried
+   * not waiting on anyone (a person, the orchestrator, or other items to merge: resume_after) and not blocked has nothing driving it. Past `stall_after_min` it is carried
    * on once: committed work goes to its pull request, otherwise the session is resumed (an item that
    * never had a conversation, like HH-123 orphaned between its setup and its first turn, gets the full prompt).
    * A second stall within the hour is not retried again: it blocks as `stalled` for triage.
@@ -390,7 +390,9 @@ export class LiveEngine implements Engine {
     for (const item of this.store.listItems()) {
       const fm = item.file.frontmatter;
       if (!ACTIVE_FOR_SLOTS.includes(fm.status) || fm.kind === 'epic' || this.store.derived(item).flavor !== 'worker') continue;
-      if (this.turns.has(item.id) || this.jobs.has(item.id) || this.followUps.has(item.id) || fm.op || fm.awaiting || fm.blocked || fm.triage || fm.taken_over) continue;
+      // Parked with resume_after, it waits for other items to merge (HH-265 on HH-272, whose PR was held): the resume is
+      // theirs to trigger. Carried on, it re-reported the same block and woke the orchestrator for nothing.
+      if (this.turns.has(item.id) || this.jobs.has(item.id) || this.followUps.has(item.id) || fm.op || fm.awaiting || fm.blocked || fm.triage || fm.taken_over || fm.resume_after) continue;
       seen.add(item.id);
       const since = this.idleSince.get(item.id) ?? now;
       this.idleSince.set(item.id, since);

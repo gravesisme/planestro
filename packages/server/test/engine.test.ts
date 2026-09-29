@@ -1181,6 +1181,18 @@ describe('session slots and stalls (p25, f1)', () => {
     await waitFor(() => status(store, queued.id) === 'PLAN_READY');
   });
 
+  it('an item parked until others merge (resume_after) is not a stall (HH-265)', async () => {
+    const { store, engine, world } = await setup();
+    store.updateConfig((doc) => { doc.setIn(['concurrency', 'stall_after_min'], 0.002); }, 'config');
+    const { id } = idleItem(store, engine, world, 'Waiting');
+    const other = store.createItem({ title: 'Crawler sheet', description: 'x' });
+    store.mutateItem(id, [{ set: { resume_after: { items: [other.id], message: 'wire the sheet once it merges', since: '2026-09-29T15:48:39-04:00' } } }], 'orchestrator');
+    await engine.start();
+    await sleep(600);                                                              // many ticks past stall_after_min
+    expect(activityOf(store, id)).not.toContain('stalled: nothing has driven this item');
+    expect(store.getItem(id)!.file.frontmatter.resume_after?.items).toEqual([other.id]);
+  });
+
   it('a stalled item with committed work is carried on to its pull request', async () => {
     const { store, engine, world } = await setup();
     store.updateConfig((doc) => { doc.setIn(['concurrency', 'stall_after_min'], 0.002); }, 'config');
