@@ -1195,6 +1195,47 @@ describe('the host note (p21)', () => {
   });
 });
 
+describe('ordinary commands in the worktree, and the pinned directory (#96)', () => {
+  it('allows a chain that stays in the worktree, refuses a cd out of it, and parks only what names something outside', async () => {
+    const seen: TurnOptions[] = [];
+    const answers: Record<string, string> = {};
+    const claude = () => ({
+      async runTurn(o: TurnOptions): Promise<TurnResult> {
+        seen.push(o);
+        if (o.phase === 'plan') {
+          for (const c of ['grep -rn TODO src | head -3; echo "exit $?"', 'echo notes > notes.txt']) answers[`plan: ${c}`] = (await o.onPermission({ tool: 'Bash', input: { command: c } })).action;
+          // The second of those parked the planning turn; nothing else is asked of it here.
+          return { sessionId: 's', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', parked: 'permission' };
+        }
+        return { sessionId: 's', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '' };
+      },
+      runCustomTurn: async (): Promise<TurnResult> => ({ subtype: 'success', isError: false, costUsd: 0, numTurns: 0, text: '' }),
+    });
+    const { store, engine } = await setup({ claude });
+    store.updateConfig((doc) => { doc.setIn(['permissions', 'allow'], ['Bash(npm run *)@worktree', 'Bash(npx tsc*)']); }, 'config: allow');
+    const item = store.createItem({ title: 'Parks', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => store.getItem(item.id)!.file.frontmatter.awaiting === 'permission');
+    const o = seen[0];
+    const wt = join(store.codeRepoPath(), '.claude/worktrees/tp-1-parks');
+    expect(o.cwd).toBe(wt);
+    // The SDK's allow-list never sees a scoped rule, built in or the project's.
+    expect(o.allowedTools).toContain('Bash(npx tsc*)');
+    expect(o.allowedTools.filter((r) => r.includes('@worktree'))).toEqual([]);
+    expect(o.systemAppend).toContain('## Your working directory');
+    expect(o.systemAppend).toContain(`Every Bash command starts in your worktree (${wt})`);
+    expect(answers).toEqual({ 'plan: grep -rn TODO src | head -3; echo "exit $?"': 'allow', 'plan: echo notes > notes.txt': 'park' });
+    expect((store.getItem(item.id)!.file.frontmatter.awaiting_data as any).input.command).toBe('echo notes > notes.txt');
+    // A cd out of the worktree is refused, not parked: the turn goes on.
+    const ask = async (command: string) => o.onPermission({ tool: 'Bash', input: { command } });
+    expect(await ask('cd ../../.. && ls node_modules')).toMatchObject({ action: 'deny', message: expect.stringContaining('pinned to your worktree') });
+    expect((await ask('npm run build > build.log 2>&1; echo "exit $?"')).action).toBe('park');  // a planning turn writes nothing
+    expect((await ask('npm run check 2>&1 | tail -5; echo "exit $?"')).action).toBe('allow');
+    expect(activityOf(store, item.id)).toContain('denied Bash: your working directory is pinned');
+  });
+});
+
 describe('preparing to restart (f3)', () => {
   it('lets the running turn finish, starts nothing new, says when it is safe, and is not persisted', async () => {
     let release!: () => void;

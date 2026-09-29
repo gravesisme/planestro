@@ -161,6 +161,8 @@ export const SETTINGS: readonly SettingDef[] = [
   C({ key: 'permissions.allow', tab: 'workers', group: 'Commands workers may run', label: 'Always allowed', summary: '"Always allow" on a request adds here. Entries that look like one-off commands are marked.', control: 'list', mono: true, placeholder: 'Bash(npm test*)',
     detail: [
       'Extra allow rules on top of the built-in ones. Rules match each part of a chained or piped command (&&, ||, ;, |), and every part must match. Leading NAME=value assignments and wrappers such as timeout 120 are looked through.',
+      'A rule ending in @worktree, such as Bash(npm run *)@worktree, holds only while the command stays in the item\'s worktree: every path it names, and every file it redirects into, is inside the worktree or under /tmp. Loops, assignments and $(…) are read too. Reading, comparing and printing (echo, cat, grep, diff, ls, …) are allowed this way for every project; sed and find are not among them.',
+      'That check reads the command\'s text. It catches a wrong path or a stray cd; it does not confine what a script does once it runs.',
       'Pushes, gh pr, protected branches, branch and worktree management, force operations and in-place shell edits (sed -i) are refused in code whatever this list says. Codex workers are governed by their sandbox instead.',
     ] }),
   C({ key: 'permissions.deny', tab: 'workers', group: 'Commands workers may run', label: 'Never allowed', summary: 'Checked before anything else.', control: 'list', mono: true, placeholder: 'Bash(rm -rf *)' }),
@@ -290,6 +292,31 @@ export function looksOneOff(rule: string): boolean {
   if (!m) return false;
   const cmd = m[1];
   return cmd.length > 80 || /&&|\|\||;|\s\|\s|2>&1|\$\(/.test(cmd) || (!cmd.includes('*') && cmd.split(/\s+/).length > 3);
+}
+
+/** The ending of an allow rule that holds only inside the item's worktree (#96). */
+export const WORKTREE_SCOPE = '@worktree';
+
+/**
+ * The files in a code repository's root that say which tools it is built with, and the commands
+ * those tools are run by. Settings offers them as worktree-scoped allow rules; none is on by default,
+ * because each runs code the project holds.
+ */
+export const TOOLCHAINS: readonly { marker: string; commands: string[] }[] = [
+  { marker: 'package.json', commands: ['npm run', 'npm test', 'npx tsx', 'npx tsc', 'npx vitest', 'node'] },
+  { marker: 'pyproject.toml', commands: ['python3', 'pytest'] },
+  { marker: 'requirements.txt', commands: ['python3', 'pytest'] },
+  { marker: 'Cargo.toml', commands: ['cargo build', 'cargo check', 'cargo test', 'cargo clippy'] },
+  { marker: 'go.mod', commands: ['go build', 'go test', 'go vet'] },
+  { marker: 'project.godot', commands: ['godot --headless'] },
+  { marker: 'Makefile', commands: ['make'] },
+];
+
+/** Allow rules worth offering for the toolchains found, without the ones the list already covers (scoped or not). */
+export function suggestedAllowRules(markers: readonly string[], have: readonly string[] = []): string[] {
+  const covered = new Set(have.map((r) => r.trim()).map((r) => (r.endsWith(WORKTREE_SCOPE) ? r.slice(0, -WORKTREE_SCOPE.length) : r)));
+  const commands = new Set(TOOLCHAINS.filter((t) => markers.includes(t.marker)).flatMap((t) => t.commands));
+  return [...commands].map((c) => `Bash(${c} *)`).filter((r) => !covered.has(r)).map((r) => `${r}${WORKTREE_SCOPE}`);
 }
 
 /** Who pays for the dollars planestro counts: a Claude plan's usage limits, or an API account. */

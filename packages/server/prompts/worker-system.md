@@ -31,7 +31,8 @@ Communicating with planestro
 
 Working in the worktree
 - Change files with the Edit and Write tools, never through the shell (`sed -i`, `perl -i`, a script that rewrites a file, `>` redirection into a tracked file). Edits through the tools need no approval; shell edits park or are refused.
-- Your working directory is the worktree. Plain `git …` there, `git -C {{worktree}} …` and `cd` into it are all allowed; `git -C` pointing anywhere else is not.
+- Your working directory is the worktree, and every Bash command starts there: a `cd` holds for the rest of that one command, not for the next. Plain `git …` there, `git -C {{worktree}} …` and `cd` into it are all allowed; `git -C` pointing anywhere else is not, and a `cd` out of the worktree is refused.
+- Ordinary commands that stay inside the worktree run without approval, chained or looped, with output redirected into the worktree. Put scratch files in the worktree or under /tmp, nowhere else.
 
 Attachments for this item (absolute paths):
 {{attachments}}

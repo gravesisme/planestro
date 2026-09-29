@@ -113,7 +113,7 @@ dollar figures elsewhere carry a short hint.
 
 | Key | Default | |
 |---|---|---|
-| `permissions.allow` | `[]` | Extra allow rules (`Bash(npm test*)`, …) on top of the built-in ones. "Always allow" in the UI appends here. |
+| `permissions.allow` | `[]` | Extra allow rules (`Bash(npm test*)`, …) on top of the built-in ones. "Always allow" in the UI appends here. A rule ending in `@worktree` holds only while the command stays in the item's worktree (below). |
 | `permissions.deny` | `[]` | Extra deny patterns, checked before anything else. |
 
 Pushes, `gh pr`, protected branches, branch and worktree management and force operations
@@ -132,6 +132,46 @@ prefixes, so `GIT_TRACE=1 git push` is still refused. A segment that sets an env
 variable which changes what runs (`PATH`, `LD_*`, `DYLD_*`, `GIT_*`, `NODE_OPTIONS`,
 `BASH_ENV`, …), or whose value contains quotes or expansions, is never auto-allowed and parks
 for a decision.
+
+**Inside the worktree.** A command those rules do not allow is read a second time, whole:
+every line, loops (`for … do … done`, `if`, `while`), groups, bare `NAME=value` assignments,
+`$(…)` and redirections. It is allowed when every command in it matches a rule and nothing
+it names lies outside the item's worktree:
+
+- A rule ending in `@worktree` (`Bash(npm run *)@worktree`, `Bash(python3 *)@worktree`)
+  counts only in this second reading. Settings → Workers & permissions offers the ones for
+  the toolchain the code repository has (`package.json`, `pyproject.toml`, `Cargo.toml`,
+  `go.mod`, `project.godot`, `Makefile`); none is on until you add it.
+- Reading, comparing and printing are allowed this way for every project: `echo`, `printf`,
+  `pwd`, `test`, `[`, `diff`, `ls`, `cat`, `grep`, `rg`, `sort`, `uniq`, `cut`, `tr`, `wc`,
+  `head`, `tail`, `basename`, `dirname`, `date`, `sleep`, `which`, `command -v`, `file`,
+  `stat`, `du`, `git grep`, `git rev-parse`, `git branch --show-current`, and `mkdir -p`
+  outside planning turns. So `npm run check; echo "exit $?"` no longer parks on the `echo`.
+  Their flags that run another program are not allowed this way (`rg --pre`,
+  `git grep -O`, `sort --compress-program`), and `sed` and `find` are not in the list.
+- A `cd` inside the worktree is followed for the commands chained to it with `&&`
+  (`cd packages/web && cat ../shared/x.ts`). Past that chain it may have failed, so a later
+  `..` has to stay inside from both directories. One in a subshell ends with it; one in a
+  loop, a pipeline or the background parks the command.
+- Every path the command names, and every file it redirects into, must be inside the
+  worktree, under `/tmp` or the system temp folder, or `/dev/null`. `~`, `$HOME` and any
+  variable the command did not set itself park it, and so does `..` beside a value only the
+  shell will know (`$(pwd)/..`). An absolute path whose top folder does not exist on this
+  machine (`grep "/api/config"`, a URL path handed to a script) is not taken for a path.
+- A planning turn writes nothing: its redirections go to `/dev/null` only.
+- Backticks, `<(…)`, `case`, `[[ … ]]`, `${x:-y}` and arithmetic are not read; a command
+  holding one parks as before.
+
+This reads the command's text. It catches a wrong path or a stray `cd`; it does not confine
+what a script does once it runs, and a symlink inside the worktree is followed by the
+command, not by the check. It is a guard against mistakes, not a sandbox.
+
+**The working directory is pinned.** Every Bash command of a Claude worker starts in its
+worktree: the shell goes back there after each command (`CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR`),
+so a `cd` holds for the rest of that one command only. A `cd` that can be seen to leave
+the worktree (`cd ..` from its root, `cd /tmp`, `cd ~`, `cd` alone) is refused in code, like a
+push: the worker is told to use a path instead and its turn goes on, where a park would have
+ended it. One that cannot be judged (`cd "$DIR"`, `cd -`) is left to the rules.
 
 ### CI and merging
 

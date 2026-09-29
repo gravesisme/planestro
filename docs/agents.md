@@ -9,7 +9,7 @@ planestro runs workers on two agent CLIs. The engine knows neither by name: it a
 | Can plan | yes — plan mode, `submit_plan`, `submit_breakdown` | **no** — it only implements (and fixes) |
 | Reports through | planestro's tools: `report_done`, `report_blocked`, `add_note`, `hand_off`, `AskUserQuestion` | its **final message**, constrained to `{outcome, summary, question, hold, parts, hand_off}` |
 | Images | cannot generate them | built-in image generation and editing, headless |
-| What it may do | a **per-command policy**: pushes, PR operations and protected branches are denied outright; an allow-list covers the routine; anything else *parks* as a permission request you answer | a **sandbox**: writes confined to the worktree (and temp), no network for its commands. No per-command decisions, no permission parking |
+| What it may do | a **per-command policy**: pushes, PR operations and protected branches are denied outright; an allow-list covers the routine, ordinary commands that stay inside the worktree included; its shell starts every command in the worktree and a `cd` out of it is refused; anything else *parks* as a permission request you answer | a **sandbox**: writes confined to the worktree (and temp), no network for its commands. No per-command decisions, no permission parking |
 | Budget | dollars: `budget_usd_per_item` | turns and tokens: `budget_turns_per_item`, `budget_tokens_per_item` |
 | Conversation id | `session_id` | `agent_sessions.codex` — a Codex thread cannot resume a Claude session or the reverse |
 | Concurrency | `concurrency.max_sessions` admits items | `concurrency.runner_limits.codex` (default 1: image generation is slow and rate-limited) |

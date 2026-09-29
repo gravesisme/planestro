@@ -2,7 +2,8 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import YAML from 'yaml';
-import { SETTINGS, settingDefault, looksOneOff, billingMode, shownNumber, storedNumber, settingChanged, settingDef } from '@planestro/shared';
+import { writeFileSync } from 'node:fs';
+import { SETTINGS, settingDefault, looksOneOff, suggestedAllowRules, billingMode, shownNumber, storedNumber, settingChanged, settingDef } from '@planestro/shared';
 import { DataStore } from '../src/store/DataStore.ts';
 import { MockEngine } from '../src/engine/MockEngine.ts';
 import { apiRoutes } from '../src/routes/api.ts';
@@ -181,6 +182,26 @@ describe('the settings registry', () => {
     expect(ids.filter((k, i) => ids.indexOf(k) !== i)).toEqual([]);
     expect(SETTINGS.filter((s) => !s.label || !s.summary).map((s) => s.key)).toEqual([]);
     expect(SETTINGS.filter((s) => s.control === 'select' && !s.options?.length).map((s) => s.key)).toEqual([]);
+  });
+
+  it('offers worktree-scoped rules for the toolchains the repository has, less what the list covers (#96)', async () => {
+    expect(suggestedAllowRules([])).toEqual([]);
+    expect(suggestedAllowRules(['Makefile', 'go.mod'])).toEqual(['Bash(go build *)@worktree', 'Bash(go test *)@worktree', 'Bash(go vet *)@worktree', 'Bash(make *)@worktree']);
+    // Two markers of one toolchain offer each rule once; a rule the list holds, scoped or not, is not offered again.
+    expect(suggestedAllowRules(['pyproject.toml', 'requirements.txt'], ['Bash(pytest *)'])).toEqual(['Bash(python3 *)@worktree']);
+    expect(suggestedAllowRules(['package.json'], ['Bash(npm run *)', 'Bash(node *)@worktree', ' Bash(npx tsx *) '])).toEqual(['Bash(npm test *)@worktree', 'Bash(npx tsc *)@worktree', 'Bash(npx vitest *)@worktree']);
+    expect(looksOneOff('Bash(npm run *)@worktree')).toBe(false);
+
+    const { store, send } = await setup();
+    const codeRepo = store.codeRepoPath();
+    expect(stateView(store, new MockEngine(store, () => {}), {}, undefined).toolchain).toEqual([]);
+    writeFileSync(join(codeRepo, 'package.json'), '{}');
+    writeFileSync(join(codeRepo, 'Makefile'), 'all:\n');
+    expect(stateView(store, new MockEngine(store, () => {}), {}, undefined).toolchain).toEqual(['package.json', 'Makefile']);
+    // A scoped rule is saved as written.
+    const res = await send('PUT', '/config', { permissions: { allow: ['Bash(npm run *)@worktree'] } });
+    expect(res.status).toBe(200);
+    expect(store.config.permissions.allow).toEqual(['Bash(npm run *)@worktree']);
   });
 
   it('marks allow-list entries that look like one-off commands', () => {

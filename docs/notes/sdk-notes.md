@@ -173,6 +173,17 @@ a live worker) would have matched it.
    `prompt_cache_likely_expired: false`. The port reports which TTL a turn's
    writes used (`TurnResult.cacheTtlS`), and the engine's estimate takes the
    cache as warm inside it.
+18. **The Bash tool's working directory carries over between calls** (checked
+   2026-09-29, Claude Code 2.1.284, SDK 0.3.251): after `cd sub && pwd` a plain
+   `pwd` answered `…/sub`. A `cd` that lands outside the session's `cwd`
+   (`cd ..`, `cd /tmp`) is undone by the CLI after the command, and the result
+   says so ("Shell cwd was reset to …"); whether one into an
+   `additionalDirectories` folder is undone was not checked. With
+   `CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1` in the session's `env` the shell
+   is back in `cwd` after every command, `cd sub` included, with no message.
+   Workers run with it (#96): the policy resolves every relative path against
+   the worktree, which is only true if each command starts there. Passing `env`
+   replaces the child's environment, so it is `{ ...process.env, … }`.
 
 ## Engine decisions confirmed by the spike
 
