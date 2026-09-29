@@ -20,6 +20,19 @@ export function hostNote(os: string = platform(), has: (cmd: string) => boolean 
 }
 
 /**
+ * Where a Claude worker's shell stands, said in code because a data dir's copy of worker-system
+ * predates it (#96). After LM-24's `cd ../../..` three commands were denied because nobody
+ * could say where they would run.
+ */
+export function cwdNote(worktree: string): string {
+  return ['', '', '## Your working directory', '',
+    `- Every Bash command starts in your worktree (${worktree}). A \`cd\` holds for the rest of that one command and not for the next: write \`cd packages/web && npm test\`, or use paths from the worktree root.`,
+    '- A `cd` out of the worktree is refused. Name what you need there by its path instead.',
+    '- Ordinary commands that stay inside the worktree run without approval, chained or looped, with output redirected into the worktree. Put scratch files in the worktree or under /tmp, nowhere else.',
+  ].join('\n');
+}
+
+/**
  * What planestro copies into the main checkout on merge (worktrees.copy_to_checkout, #72), said to
  * every session: art briefs asked sandboxed Codex workers to copy their raws into the main checkout's
  * tmp/, which they cannot write, and the orchestrator flagged each such "rescue blocked" as a merge blocker.

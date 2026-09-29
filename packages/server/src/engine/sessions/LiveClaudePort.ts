@@ -9,6 +9,11 @@ import type { ClaudePort, TurnOptions, TurnResult, CustomTurnOptions, ResumeQuot
 
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] });
 const PARTS = z.array(z.object({ name: z.string(), state: z.enum(['accepted', 'pending', 'rejected']), reason: z.string().optional() }));
+/**
+ * A worker's shell goes back to its worktree after every command (#96): without this a `cd` carries
+ * over to the next call, and neither the policy nor the orchestrator can say where a command runs.
+ */
+const PINNED = { CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR: '1' };
 const PARK_MSG = 'Permission requires a decision; the request has been recorded by planestro. This is NOT a denial: do not retry it, work around it or call report_blocked — end this turn now, and you will be resumed with the decision.';
 /** The SDK's list of usage-limit messages (alpha export) merged with our copy, so a rename cannot switch detection off. */
 const USAGE_PREFIXES: readonly string[] = [...new Set([...(((sdk as Record<string, unknown>).USAGE_LIMIT_ERROR_PREFIXES as readonly string[] | undefined) ?? []), ...KNOWN_USAGE_LIMIT_PREFIXES])];
@@ -92,7 +97,7 @@ export class LiveClaudePort implements ClaudePort {
         allowedTools: [...o.allowedTools, 'mcp__planestro__submit_plan', 'mcp__planestro__submit_breakdown', 'mcp__planestro__add_note', 'mcp__planestro__append_activity', 'mcp__planestro__report_done', 'mcp__planestro__report_progress', 'mcp__planestro__report_blocked', 'mcp__planestro__hand_off', 'mcp__planestro__get_item'],
         additionalDirectories: o.extraDirs, maxBudgetUsd: o.maxBudgetUsd, abortController,
         ...(this.claudeBin ? { pathToClaudeCodeExecutable: this.claudeBin } : {}),
-        ...(this.apiKey ? { env: { ...process.env, ANTHROPIC_API_KEY: this.apiKey } } : {}),
+        env: { ...process.env, ...PINNED, ...(this.apiKey ? { ANTHROPIC_API_KEY: this.apiKey } : {}) },
         canUseTool: async (toolName, input) => {
           // Plan mode routes even allow-listed tools through this callback; planestro's own tools are always fine.
           if (toolName.startsWith('mcp__planestro__')) return { behavior: 'allow', updatedInput: input };

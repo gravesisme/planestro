@@ -326,6 +326,7 @@ input.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 .setting-list { display: grid; gap: 4px; width: 100%; min-width: 0; }
 .setting-list .li { display: flex; gap: 6px; align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 3px 4px 3px 9px; min-width: 0; }
 .setting-list .li code, .setting-list .li > span.grow { flex: 1; min-width: 0; overflow-wrap: anywhere; } .setting-list .li.bad { border-color: #5a4a22; }
+.setting-list .li.suggest { background: none; border-style: dashed; flex-wrap: wrap; padding: 5px 9px; } .setting-list .li.suggest > span { flex-basis: 100%; }
 .setting-list .li button { padding: 0 7px; } .setting-list .li.add { background: none; } .setting-list .li.add input { flex: 1; min-width: 0; border: 0; padding: 3px 0; background: none; } .setting-list .li.add input[type=number] { flex: 0 1 90px; }
 .settings-empty { color: var(--muted); padding: 24px 0; margin: 0; }
 .settings-invalid { color: var(--hot); margin: 8px 0 0; padding-left: 18px; }

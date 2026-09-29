@@ -36,7 +36,10 @@ use is planned (see `docs/going-public.md`).
 
 **What agents may do.** A Claude worker runs under a permission policy (hard rules, your
 `permissions.allow` / `deny`, and optionally the orchestrator's judgment). It is a guard
-rail, not a sandbox: an allowed command runs with your privileges. A Codex worker runs
+rail, not a sandbox: an allowed command runs with your privileges. The worktree-scoped
+rules (`…@worktree`) and the pinned working directory read a command's text: they stop a
+command that names a path outside the worktree, not a script that writes there once it
+runs. A Codex worker runs
 inside the Codex CLI's own sandbox (writes confined to its worktree, no network for its
 commands). planestro checks its result afterwards.
 

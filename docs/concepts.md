@@ -272,7 +272,11 @@ card says *amended by the orchestrator* with the text, so what you approve is th
 ### Letting it decide permission requests
 
 A worker that wants to run something outside its allow-list parks until someone answers,
-and "Always allow" only ever remembers that exact command. With
+and "Always allow" only ever remembers that exact command. Ordinary commands that stay
+inside the item's worktree never get that far (reading and printing for every project, the
+project's own runners once you add them as `…@worktree` rules: see
+[configuration](configuration.md#what-claude-workers-may-do)), and a `cd` out of the
+worktree is refused rather than parked. With
 `orchestrator.may_decide_permissions` on (Settings → Orchestrator), the request goes to the
 orchestrator first. It sees the whole command, the worker's stated purpose and the item, and
 does one of three things: **allow** it once (the session resumes, and no allow rule is

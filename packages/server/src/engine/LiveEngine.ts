@@ -4,8 +4,8 @@ import { resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD,
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote } from './ports.ts';
-import { makePolicy, ruleFor, allowedByRules, BASE_ALLOWED } from './policy.ts';
-import { hostNote, keptPathsNote } from './hostNote.ts';
+import { makePolicy, ruleFor, allowedByRules, sdkRules, BASE_ALLOWED } from './policy.ts';
+import { hostNote, keptPathsNote, cwdNote } from './hostNote.ts';
 import { Orchestrator } from './orchestrator.ts';
 import { pngSize } from './placeholderPng.ts';
 import type { ReviewImage } from './Engine.ts';
@@ -960,10 +960,11 @@ export class LiveEngine implements Engine {
           declined = quoted;
           return 'stop';
         },
-        systemAppend: `${this.store.renderPrompt(metered ? 'worker-system' : `worker-system-${runner}`, item)}\n\n${this.hostNote}${keptPathsNote(this.store.config.worktrees.copy_to_checkout, this.repo)}`,
+        systemAppend: `${this.store.renderPrompt(metered ? 'worker-system' : `worker-system-${runner}`, item)}\n\n${this.hostNote}${metered ? cwdNote(cwd) : ''}${keptPathsNote(this.store.config.worktrees.copy_to_checkout, this.repo)}`,
         ...(pick.sdkFallback ? { fallbackModel: pick.sdkFallback } : {}),
         ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
-        allowedTools: [...BASE_ALLOWED[phase], ...this.store.config.permissions.allow, ...extraAllowed],
+        // Scoped rules (…@worktree) are planestro's to judge in onPermission; the SDK's allow-list never sees them.
+        allowedTools: sdkRules([...BASE_ALLOWED[phase], ...this.store.config.permissions.allow, ...extraAllowed]),
         extraDirs: [this.store.dataDir], maxBudgetUsd: turnCap,
         tools: this.makeTools(id),
         onPermission: async (req) => {
@@ -985,7 +986,7 @@ export class LiveEngine implements Engine {
           const why = policy.deny(req);
           if (why) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `denied ${req.tool}: ${why}` } }], 'engine'); return { action: 'deny', message: `Not allowed: ${why}` }; }
           if (req.tool === 'Bash' && oneShot.delete(String(req.input.command ?? '').trim())) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: 'one-shot approval consumed' } }], 'engine'); return { action: 'allow' }; }
-          if (allowedByRules(req, [...BASE_ALLOWED[phase], ...this.store.config.permissions.allow, ...extraAllowed], cwd)) return { action: 'allow' };
+          if (allowedByRules(req, [...BASE_ALLOWED[phase], ...this.store.config.permissions.allow, ...extraAllowed], cwd, { readOnly: phase === 'plan' })) return { action: 'allow' };
           const ask = this.permissionsDelegated() && this.mayAskOrchestrator(this.store.requireItem(id).file.frontmatter);
           // The safety valve tripped: say so on the card, or the stream of requests reaching the user is a mystery (#95).
           const tripped = !ask && this.permissionsDelegated();
@@ -2968,9 +2969,9 @@ export class LiveEngine implements Engine {
     try {
       result = await this.withRunnerSlot(runner, () => this.withSessionSlot(id, () => agent.runTurn({
         itemId: id, phase: 'fix', cwd, model: model as string, permissionMode: 'acceptEdits', prompt,
-        systemAppend: `${this.store.renderPrompt(runner === 'claude' ? 'worker-system' : `worker-system-${runner}`, item)}\n\n${this.hostNote}`,
+        systemAppend: `${this.store.renderPrompt(runner === 'claude' ? 'worker-system' : `worker-system-${runner}`, item)}\n\n${this.hostNote}${runner === 'claude' ? cwdNote(cwd) : ''}`,
         ...(pick.sdkFallback ? { fallbackModel: pick.sdkFallback } : {}),
-        allowedTools: allowed, extraDirs: [this.store.dataDir], maxBudgetUsd: cap, tools,
+        allowedTools: sdkRules(allowed), extraDirs: [this.store.dataDir], maxBudgetUsd: cap, tools,
         // One shot, so nothing parks: what the rules do not allow is refused with a way forward.
         onPermission: async (req) => {
           const why = policy.deny(req);

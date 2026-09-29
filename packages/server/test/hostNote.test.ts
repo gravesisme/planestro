@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { hostNote, keptPathsNote } from '../src/engine/hostNote.ts';
+import { hostNote, keptPathsNote, cwdNote } from '../src/engine/hostNote.ts';
 
 describe('the host note in every session (p21)', () => {
   it('on a Mac without GNU coreutils it says timeout is missing, and what exit 127 means', () => {
@@ -14,6 +14,17 @@ describe('the host note in every session (p21)', () => {
     const linux = hostNote('linux', () => true);
     expect(linux).toContain('Operating system: Linux.');
     expect(linux).not.toContain('not installed');
+  });
+});
+
+describe('cwdNote (#96)', () => {
+  it('says where every command starts, that a cd does not carry over, and that one out of the worktree is refused', () => {
+    const note = cwdNote('/repo/.claude/worktrees/t-1');
+    expect(note).toMatch(/^\n\n## Your working directory\n/);
+    expect(note).toContain('Every Bash command starts in your worktree (/repo/.claude/worktrees/t-1)');
+    expect(note).toContain('not for the next');
+    expect(note).toContain('A `cd` out of the worktree is refused');
+    expect(note).toContain('under /tmp');
   });
 });
 

@@ -1,4 +1,6 @@
-import { getSection, parseActivity, serializePromptFile, releaseCandidates, getQuestionSection, parseThread, billingMode, type Status, type LocalConfig } from '@planestro/shared';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { getSection, parseActivity, serializePromptFile, releaseCandidates, getQuestionSection, parseThread, billingMode, TOOLCHAINS, type Status, type LocalConfig } from '@planestro/shared';
 import { readUpdateStatus } from '../autoUpdate.ts';
 import type { DataStore, StoredItem, StoredPrompt, StoredRelease, StoredQuestion } from '../store/DataStore.ts';
 
@@ -76,6 +78,8 @@ export function stateView(store: DataStore, engine: { mode: string; paused: bool
     readOnly: store.readOnly,
     dataDir: store.dataDir,
     codeRepo: store.codeRepoPath(),
+    /** Which toolchain files the code repository has, for the allow rules Settings offers (#96). */
+    toolchain: TOOLCHAINS.map((t) => t.marker).filter((m) => existsSync(join(store.codeRepoPath(), m))),
     config: store.config,
     local: publicLocal(store.local),
     /** Whether the dollars planestro counts are an API-price yardstick on a Claude plan, or real charges to an API account (#83). */

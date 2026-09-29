@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
 import { getSection, epicFlagOf, holdShapeOf, heldReasonOf, type HoldFlag, canPlan, partsSummary, serializeItemFile, serializeQuestionFile, parseThread, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent, parseActivity } from '@planestro/shared';
@@ -489,7 +489,8 @@ export class Orchestrator {
     const what = data.tool === 'Bash' ? String(input.command ?? '') : JSON.stringify(input, null, 2);
     return [
       `Permission request: DELEGATED TO YOU. The worker on this item wants to use ${String(data.tool)}, which its allow-list does not cover, and its session is parked until someone answers.`,
-      fm.worktree ? `Its worktree (the only place it should write, besides scratch files under /tmp or $TMPDIR): ${fm.worktree}` : '',
+      fm.worktree ? `Its worktree (the only place it should write, besides scratch files under /tmp or $TMPDIR): ${isAbsolute(fm.worktree) ? fm.worktree : join(this.store.codeRepoPath(), fm.worktree)}` : '',
+      fm.worktree ? 'Every command of this worker starts in that worktree: its shell goes back there after each command, and planestro refuses a cd out of it. A relative path in the request is a path in the worktree.' : '',
       input.description ? `What the worker says it is for: ${String(input.description)}` : '',
       `The request, in full:\n\`\`\`\n${what.slice(0, 6000)}\n\`\`\``,
       'planestro has already refused the things no worker may do (git push, gh pr, touching protected branches, force flags, rm -rf of / or ~). Read the whole request, then call decide_permission with exactly one of:',

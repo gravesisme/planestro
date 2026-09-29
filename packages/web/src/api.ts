@@ -19,6 +19,8 @@ export interface ReleaseFields { version?: string; title?: string | null; status
 export interface SessionView { item: string; session_id?: string; model?: string; op?: string; started_at?: string; busy: boolean; last_output?: string }
 export interface State {
   schema: string; readOnly: boolean; dataDir: string; codeRepo: string; config: Config;
+  /** Toolchain files found in the code repository's root (package.json, Cargo.toml, …). */
+  toolchain?: string[];
   /** planestro.local.yml without its secrets: the API key is never sent, only whether one is set (`api_key`). */
   local: LocalConfig;
   /** Whether budget dollars are an API-price yardstick on a Claude plan or real charges to an API account (#83). */

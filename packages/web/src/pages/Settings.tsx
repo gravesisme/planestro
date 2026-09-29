@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import {
-  SETTINGS, SETTINGS_TABS, canPlan, fallbackChain, fallbackProblems, findModel, getPath, looksOneOff, settingChanged, settingDefault, shownNumber, storedNumber, unavailableEntry,
+  SETTINGS, SETTINGS_TABS, canPlan, fallbackChain, fallbackProblems, findModel, getPath, looksOneOff, settingChanged, settingDefault, shownNumber, storedNumber, suggestedAllowRules, unavailableEntry,
   RUNNERS, type Config, type ModelDef, type ReleaseSectionDef, type SettingDef, type SettingsTabId,
 } from '@planestro/shared';
 import { api, type State } from '../api.ts';
@@ -194,7 +194,7 @@ function Control({ def, value, state }: { def: SettingDef; value: unknown; state
         </select></div>
       );
     }
-    case 'list': return <ListCtl def={def} value={(value as string[] | undefined) ?? []} />;
+    case 'list': return <ListCtl def={def} value={(value as string[] | undefined) ?? []} suggested={def.key === 'permissions.allow' ? suggestedAllowRules(state.toolchain ?? [], (value as string[] | undefined) ?? []) : undefined} />;
     case 'record': return <RecordCtl def={def} value={(value as Record<string, number> | undefined) ?? {}} />;
     case 'commands': return <CommandsCtl def={def} value={(value as Record<string, string> | undefined) ?? {}} />;
     case 'secret': return <SecretCtl def={def} state={state} />;
@@ -239,7 +239,7 @@ function TextCtl({ def, value, placeholder }: { def: SettingDef; value: string |
   );
 }
 
-function ListCtl({ def, value }: { def: SettingDef; value: string[] }) {
+function ListCtl({ def, value, suggested }: { def: SettingDef; value: string[]; suggested?: string[] }) {
   const [draft, setDraft] = useState('');
   const add = () => { const v = draft.trim(); if (!v) return; if (value.includes(v)) { complain(`${def.label}: "${v}" is already there`); return; } void save(def, [...value, v]).then((r) => r && setDraft('')); };
   return (
@@ -258,6 +258,12 @@ function ListCtl({ def, value }: { def: SettingDef; value: string[] }) {
         <input className={def.mono ? 'mono' : ''} placeholder={def.placeholder ?? 'Add…'} aria-label={`Add to ${def.label}`} value={draft} onChange={(e) => setDraft(e.target.value)} data-dirty={draft.trim() ? 'true' : undefined} />
         <button className="small" type="submit" disabled={!draft.trim()}>Add</button>
       </form>
+      {suggested && suggested.length > 0 && (
+        <div className="li suggest" role="group" aria-label={`Suggested for ${def.label}`}>
+          <span className="small muted">For this repository, inside the worktree only:</span>
+          {suggested.map((s) => <button key={s} className="small mono" title={`Add ${s}`} onClick={() => void save(def, [...value, s])}>+ {s.replace(/^Bash\((.*) \*\)@worktree$/, '$1')}</button>)}
+        </div>
+      )}
     </div>
   );
 }
