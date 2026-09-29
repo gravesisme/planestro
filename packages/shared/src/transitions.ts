@@ -80,6 +80,8 @@ export function applyTransition(fm: ItemFrontmatter, to: Status, actor: Actor, f
   if (to === 'FINISHED') { delete next.worktree; delete next.blocked; delete next.blocked_reason; }
   // Off the board, nothing drives the item anyway; a take-over left on it would silently hold it back when it is queued again.
   if (to === 'ICEBOX' || to === 'NOT_YET_SUBMITTED' || to === 'FINISHED') delete next.taken_over;
+  // A hold is about one pull request: once that has merged, or the item has left the board, it would silently hold the next one (#97).
+  if (to === 'MERGED' || to === 'ICEBOX' || to === 'NOT_YET_SUBMITTED' || to === 'FINISHED') { delete next.skip_merge; delete next.hold_reason; }
   return next;
 }
 

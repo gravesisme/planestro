@@ -55,7 +55,7 @@ export const OPERATIONAL_KEYS = [
   'pr_created_at', 'merged_at', 'finished_at', 'iceboxed_at',
   'branch', 'worktree', 'pr', 'session_id', 'agent_sessions', 'awaiting', 'awaiting_data', 'triage', 'resume_after', 'taken_over',
   'op', 'op_started_at', 'op_data', 'plan_revisions', 'ci_head_sha', 'ci_result', 'ci_failed_count',
-  'merge_order', 'skip_merge', 'review_hold', 'delivered', 'parts', 'blocked', 'blocked_reason', 'cost_usd', 'turns', 'agent_turns', 'tokens',
+  'merge_order', 'skip_merge', 'hold_reason', 'review_hold', 'delivered', 'parts', 'blocked', 'blocked_reason', 'cost_usd', 'turns', 'agent_turns', 'tokens',
   'imported_from', 'dates_estimated',
 ] as const;
 export const DERIVED_KEYS = ['base_branch', 'lane', 'external', 'children', 'deps_satisfied', 'needs_you'] as const;
@@ -133,7 +133,10 @@ export const ItemFrontmatter = z.object({
   ci_result: z.enum(CI_RESULTS).optional(),
   ci_failed_count: z.number().int().nonnegative().optional(),
   merge_order: z.number().int().optional(),
+  /** Held out of the merge queue: its commits are pushed and its CI is read, but it does not merge until the hold is released. */
   skip_merge: z.boolean().optional(),
+  /** Why it is held, in the words of whoever held it (the plan, the worker, the orchestrator, the user). Kept only while `skip_merge` is set (#97). */
+  hold_reason: z.string().optional(),
   /** The PR goes through sync and CI as usual, then parks (`awaiting: review`) instead of merging, until a person releases it. */
   review_hold: z.boolean().optional(),
   /** What this item's branch changed, recorded from git as it merged — so items that waited on it can be told, long after the branch is gone. */
