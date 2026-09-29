@@ -81,6 +81,12 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   goes to the orchestrator first (`triage`, not "needs you"): it resolves it with
   its tools or leaves one plain decision card (`awaiting_data.decision`); a wake
   that ends without either, or `orchestrator.triage_timeout_min`, hands it back.
+- The orchestrator adds and starts work on the user's word only (#73). A card option may carry
+  an `action` (`create_item`, `submit_item`) that the engine performs as the user when it is
+  picked: `actionRefusal` checks it when the card is filed and again at the tap (a refusal
+  leaves the card as it was), and once the first write is made nothing throws. Where the user
+  is talking to it (`user_message`, `question_message`) `submit_item` on an epic plans its
+  breakdown; an epic is never QUEUED. Anywhere else both are refused in words, never thrown.
 - FINISHED has two ways in: the engine after a merged PR, and the user's
   **close as done** (`Engine.closeAsDone`) for work that landed some other way.
   The second is user-only, stops at IN_REVIEW (a PR decides from there), and

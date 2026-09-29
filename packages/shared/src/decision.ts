@@ -10,7 +10,17 @@ export interface DecisionOption {
   raise_budget_usd?: number;
   /** Carrying this option out resumes the item in a fresh conversation with a brief, not its old one (#64): a small raise is then enough. */
   fresh?: boolean;
+  /** Answering with this option has planestro do this as the user (#73): the answer is the authorization, with no second round in the chat. */
+  action?: DecisionAction;
 }
+
+export interface CreateItemArgs { title: string; description: string; kind?: 'item' | 'epic'; planner?: string; implementer?: string; category?: string; parent?: string; depends_on?: string[]; submit?: boolean }
+/**
+ * What an option can carry: only what the user could do on the page themselves. `submit_item` on an
+ * epic plans its breakdown (an epic is never queued), so planning one needs no tool of its own.
+ */
+export type DecisionAction = { tool: 'create_item'; args: CreateItemArgs } | { tool: 'submit_item'; args: { id: string } };
+export const DECISION_ACTION_TOOLS = ['create_item', 'submit_item'] as const;
 export interface Decision {
   question: string;
   why: string;
@@ -21,9 +31,53 @@ export interface Decision {
   reason?: string;
 }
 
-export const DECISION_LIMITS = { question: 200, why: 400, label: 60, description: 300, minOptions: 2, maxOptions: 4, maxRaiseUsd: 1000 } as const;
+export const DECISION_LIMITS = { question: 200, why: 400, label: 60, description: 300, minOptions: 2, maxOptions: 4, maxRaiseUsd: 1000, actionTitle: 200, actionDescription: 8000 } as const;
 
 export interface DecisionInput { question: string; why: string; options: DecisionOption[]; allow_free_text?: boolean }
+
+/** An option's action as the orchestrator passed it (a tool argument: anything), checked for shape; whether it can be carried out is the engine's to say. */
+function parseAction(raw: unknown): { value: DecisionAction } | { error: string } {
+  const L = DECISION_LIMITS;
+  const a = raw as { tool?: unknown; args?: unknown };
+  if (!a || typeof a !== 'object' || Array.isArray(a)) return { error: 'its action must be { tool, args }' };
+  const args = (a.args && typeof a.args === 'object' && !Array.isArray(a.args) ? a.args : {}) as Record<string, unknown>;
+  const str = (k: string) => (typeof args[k] === 'string' ? (args[k] as string).trim() : '');
+  if (a.tool === 'submit_item') return str('id') ? { value: { tool: 'submit_item', args: { id: str('id') } } } : { error: 'action submit_item needs args.id, the item to submit' };
+  if (a.tool !== 'create_item') return { error: `its action's tool "${String(a.tool)}" is not one an option can carry: ${DECISION_ACTION_TOOLS.join(', ')}` };
+  const title = str('title'); const description = str('description');
+  if (!title) return { error: 'action create_item needs args.title' };
+  if (title.length > L.actionTitle) return { error: `action create_item: the title is ${title.length} characters; keep it under ${L.actionTitle}` };
+  if (!description) return { error: 'action create_item needs args.description, a complete brief: the worker sees only the title and description' };
+  if (description.length > L.actionDescription) return { error: `action create_item: the description is ${description.length} characters; keep it under ${L.actionDescription}` };
+  if (args.kind !== undefined && args.kind !== 'item' && args.kind !== 'epic') return { error: 'action create_item: kind is "item" or "epic"' };
+  const named = ['planner', 'implementer', 'category', 'parent'] as const;
+  const bad = named.find((k) => args[k] !== undefined && !str(k));
+  if (bad) return { error: `action create_item: ${bad} must be a name (leave it out for the default)` };
+  if (args.depends_on !== undefined && !(Array.isArray(args.depends_on) && args.depends_on.every((d) => typeof d === 'string' && d.trim()))) return { error: 'action create_item: depends_on is a list of item ids' };
+  if (args.submit !== undefined && typeof args.submit !== 'boolean') return { error: 'action create_item: submit is true or false' };
+  return { value: { tool: 'create_item', args: {
+    title, description, ...(args.kind === 'epic' ? { kind: 'epic' as const } : {}),
+    ...Object.fromEntries(named.filter((k) => str(k)).map((k) => [k, str(k)])),
+    ...(Array.isArray(args.depends_on) && args.depends_on.length ? { depends_on: (args.depends_on as string[]).map((d) => d.trim()) } : {}),
+    ...(args.submit === true ? { submit: true } : {}),
+  } } };
+}
+
+/**
+ * What picking an option with this action does, as the rest of a sentence ("Tapping this …"). Said by
+ * code from the action itself: the orchestrator writes both the label and the action, and the user
+ * must be able to see what the tap really does. `lookup` names the item a submit is for.
+ */
+export function describeAction(action: DecisionAction, lookup?: (id: string) => { title: string; kind?: 'item' | 'epic' } | undefined): string {
+  if (action.tool === 'submit_item') {
+    const it = lookup?.(action.args.id);
+    const name = `${action.args.id}${it ? ` "${it.title}"` : ''}`;
+    return it?.kind === 'epic' ? `has the breakdown of epic ${name} planned (you approve its children)` : `queues ${name} for planning`;
+  }
+  const a = action.args; const epic = a.kind === 'epic';
+  const what = `creates the ${epic ? 'epic' : 'item'} "${a.title}"${a.parent ? ` in epic ${a.parent}` : ''}${a.implementer ? `, implemented by ${a.implementer}` : ''}${a.depends_on?.length ? `, after ${a.depends_on.join(', ')}` : ''}`;
+  return `${what}${a.submit ? (epic ? ' and has its breakdown planned (you approve its children)' : ' and queues it for planning') : ', not submitted yet'}`;
+}
 
 /**
  * Validate what the orchestrator proposed and put the recommended option first. Returns the error
@@ -38,7 +92,8 @@ export function validateDecision(input: DecisionInput): { ok: true; value: Omit<
   if (question.length > L.question) return { ok: false, error: `the question is ${question.length} characters; keep it under ${L.question} — one plain question` };
   if (!why) return { ok: false, error: 'say why in one sentence' };
   if (why.length > L.why) return { ok: false, error: `the why is ${why.length} characters; one sentence, under ${L.why}` };
-  const options = (input.options ?? []).map((o) => ({ label: String(o.label ?? '').trim(), description: String(o.description ?? '').trim(), ...(o.recommended ? { recommended: true } : {}), ...(o.raise_budget_usd !== undefined ? { raise_budget_usd: Number(o.raise_budget_usd) } : {}), ...(o.fresh ? { fresh: true } : {}) }));
+  const raw = input.options ?? [];
+  const options: DecisionOption[] = raw.map((o) => ({ label: String(o.label ?? '').trim(), description: String(o.description ?? '').trim(), ...(o.recommended ? { recommended: true } : {}), ...(o.raise_budget_usd !== undefined ? { raise_budget_usd: Number(o.raise_budget_usd) } : {}), ...(o.fresh ? { fresh: true } : {}) }));
   if (options.length < L.minOptions || options.length > L.maxOptions) return { ok: false, error: `give ${L.minOptions}–${L.maxOptions} options (you gave ${options.length})` };
   if (options.some((o) => !o.label)) return { ok: false, error: 'every option needs a label' };
   const raise = options.find((o) => o.raise_budget_usd !== undefined && !(Number.isFinite(o.raise_budget_usd) && o.raise_budget_usd! > 0 && o.raise_budget_usd! <= L.maxRaiseUsd));
@@ -48,6 +103,15 @@ export function validateDecision(input: DecisionInput): { ok: true; value: Omit<
   if (new Set(options.map((o) => o.label.toLowerCase())).size !== options.length) return { ok: false, error: 'option labels must differ' };
   const recommended = options.filter((o) => o.recommended);
   if (recommended.length !== 1) return { ok: false, error: `mark exactly one option recommended (you marked ${recommended.length}): always recommend` };
+  // Actions last, so a card that is wrong in a plainer way hears about that first.
+  for (const [i, o] of options.entries()) {
+    const given = (raw[i] as { action?: unknown }).action;
+    if (given === undefined || given === null) continue;
+    if (o.raise_budget_usd !== undefined || o.fresh) return { ok: false, error: `option "${o.label.slice(0, 30)}" has both ${o.raise_budget_usd !== undefined ? 'raise_budget_usd' : 'fresh'} and an action: an option does one thing` };
+    const action = parseAction(given);
+    if ('error' in action) return { ok: false, error: `option "${o.label.slice(0, 30)}": ${action.error}` };
+    o.action = action.value;
+  }
   return { ok: true, value: { question, why, options: [...recommended, ...options.filter((o) => !o.recommended)], allow_free_text: input.allow_free_text !== false } };
 }
 

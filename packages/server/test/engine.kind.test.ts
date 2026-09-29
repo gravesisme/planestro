@@ -262,7 +262,7 @@ describe('the orchestrator creates epics from the chat (#69)', () => {
     engine.orchestrator.wake({ type: 'user_message', data: { message: 'add the frost wand and the ice wall as epics' } });
     await waitFor(() => results.convert !== undefined);
     expect(results.bad).toMatch(/^failed: planner "codex-art" is not a model that can plan/);
-    expect(results.idle).toBe('created epic TP-1 (not submitted; the user or the item page\'s "plan the breakdown" starts it)');
+    expect(results.idle).toBe('created epic TP-1 (not submitted; submit_item has its breakdown planned when the user asks, or they press "plan the breakdown" on its page)');
     expect(fmOf(store, 'TP-1')).toMatchObject({ kind: 'epic', planner: 'opus-5', status: 'NOT_YET_SUBMITTED' });
     expect(section(store, 'TP-1', 'Activity')).toContain('[orchestrator] created from the chat as an epic');
     expect(results.go).toBe('created epic TP-2 and started planning its breakdown (the user approves the children)');
@@ -287,5 +287,69 @@ describe('the orchestrator creates epics from the chat (#69)', () => {
     expect(results.prompt).toContain("THIS IS AN EPIC, NOT ONE ITEM: its plan has a table of 3 child items. approve_plan refuses it, whoever approves.\nPlan approval: the user's.");
     expect(results.convert).toMatch(/^not permitted: this item's plan is the user's to decide/);
     expect(fmOf(store, item.id).kind).toBe('item');
+  });
+});
+
+describe('the orchestrator submits on the user\'s word (#73)', () => {
+  it('submit_item plans an epic\'s breakdown in the chat, refuses it in words anywhere else, and queues a worker item as before', async () => {
+    const results: Record<string, unknown> = {};
+    const { store, engine } = await setup({ orchestrate: async (label, t, prompt) => {
+      if (label.includes('orchestrator_note')) {
+        results.outside = await t('submit_item').handler({ id: 'TP-1' });
+        results.statusOutside = fmOf(store!, 'TP-1').status;
+        results.createOutside = await t('create_item').handler({ title: 'X', description: 'x' });
+      }
+      if (!label.includes('user_message')) return;
+      results.prompt = prompt;
+      results.epic = await t('submit_item').handler({ id: 'TP-1' });
+      results.again = await t('submit_item').handler({ id: 'TP-1' });
+      results.item = await t('submit_item').handler({ id: 'TP-2' });
+      results.ghost = await t('submit_item').handler({ id: 'TP-99' });
+      results.child = await t('create_item').handler({ title: 'Wand icon', description: 'Draw the 256px wand icon.', parent: 'TP-3', implementer: 'opus-5' });
+      results.nested = await t('create_item').handler({ title: 'Nested', description: 'x', kind: 'epic', parent: 'TP-3' });
+      results.unknown = await t('create_item').handler({ title: 'Waits for nothing', description: 'x', depends_on: ['TP-99'], implementer: 'gpt-9' });
+      results.parented = await t('submit_item').handler({ id: 'TP-3' });
+      await t('reply_to_user').handler({ text: 'done' });
+    } });
+    store.createItem({ title: 'Frost wand', description: 'Icon, header art and the weapon.', kind: 'epic' });
+    store.createItem({ title: 'Typo', description: 'Fix the typo.' });
+    store.createItem({ title: 'Ice wall', description: 'Art and code.', kind: 'epic' });
+    await engine.start();
+    engine.orchestrator.wake({ type: 'orchestrator_note', data: { note: 'routine' } });
+    await waitFor(() => results.createOutside !== undefined);
+    expect(results.outside).toMatch(/^not permitted: TP-1 is an epic, and planning an epic's breakdown is the user's call/);
+    expect(results.outside).toContain('{ tool: "submit_item", args: { id: "TP-1" } }');
+    expect(results.statusOutside).toBe('NOT_YET_SUBMITTED');
+    expect(results.createOutside).toMatch(/^not permitted: only when the user asks you to in the chat.*offer it on its decision card/);
+
+    engine.orchestrator.wake({ type: 'user_message', data: { message: 'start the frost wand, and queue the typo' } });
+    await waitFor(() => results.parented !== undefined);
+    expect(results.prompt).toContain('submit_item on an epic does not queue it: it has the epic\'s breakdown planned');
+    expect(results.epic).toBe('planning the breakdown of epic TP-1 (it is not queued: the user approves the children it proposes)');
+    expect(results.again).toMatch(/^refused: TP-1 is PLAN_(IN_PROGRESS|READY); only an item that is not submitted yet can be submitted\. Nothing was submitted\./);
+    expect(results.item).toBe('queued');
+    expect(results.ghost).toMatch(/^refused: .*TP-99/);
+    expect(results.child).toBe('created TP-4 (not submitted; the user or submit_item queues it)');
+    expect(fmOf(store, 'TP-4')).toMatchObject({ parent: 'TP-3', implementer: 'opus-5', status: 'NOT_YET_SUBMITTED' });
+    expect(results.nested).toBe('failed: an epic cannot be a child of TP-3: epics do not nest');
+    expect(results.unknown).toMatch(/^failed: implementer "gpt-9" is not one of the project's models/);
+    expect(results.parented).toMatch(/^refused: epic TP-3 already has children \(TP-4\): submit those/);
+    expect(store.getItem('TP-5')).toBeUndefined();
+    expect(section(store, 'TP-1', 'Activity')).toContain('submitted from the chat: planning the breakdown');
+    await waitFor(() => fmOf(store, 'TP-1').awaiting === 'breakdown_approval');
+    expect(fmOf(store, 'TP-1').status).toBe('PLAN_READY');
+  });
+
+  it('planEpic refuses an epic with a step running, before its status moves', async () => {
+    const { store, engine } = await setup();
+    const epic = store.createItem({ title: 'Frost wand', description: 'x', kind: 'epic' });
+    let release!: () => void;
+    (engine as any).runJob(epic.id, () => new Promise<void>((r) => { release = r; }));
+    await expect(engine.planEpic(epic.id)).rejects.toThrow(`${epic.id} has a step running; let it finish first`);
+    expect(fmOf(store, epic.id).status).toBe('NOT_YET_SUBMITTED');
+    release();
+    await sleep(20);
+    await engine.planEpic(epic.id);
+    expect(fmOf(store, epic.id).status).toBe('PLAN_IN_PROGRESS');
   });
 });

@@ -207,11 +207,14 @@ Console tab while any are unread, so they are never buried in an item's Activity
 The **Orchestrator** button in the corner of every page opens a chat. A message wakes it with
 your text and the current state, and it answers in the chat (its questions from other wakes
 show up there too, each linking to its own page: see [Its questions for you](#its-questions-for-you)). In a wake you started it may also add work for you: `create_item` adds a
-backlog item (queued only if you say so), and it refuses in any wake you did not start, so the
-orchestrator never adds work unasked. It chooses the `kind` (an **epic**, with its planner if you
+backlog item (queued only if you say so; in an epic, with `parent`), and it refuses in any wake
+you did not start, so the orchestrator never adds work unasked. It chooses the `kind` (an **epic**, with its planner if you
 name one, for several separately shippable pieces; a submitted epic has its breakdown planned),
 and `convert_item` turns an item into an epic or back under the same rules as the button
-(see [Item or epic](#item-or-epic)). It resolves stopped items with the same tools it uses in
+(see [Item or epic](#item-or-epic)). `submit_item` queues an item that is not submitted yet. An
+epic is never queued: asked in the chat to start one, `submit_item` has its breakdown planned,
+as if you had pressed **plan the breakdown**, and you approve the children. In any wake you did
+not start it refuses an epic and says why, rather than reporting something that did not happen. It resolves stopped items with the same tools it uses in
 triage (`unblock_item`, `retry_op`, …). The **Ask the orchestrator** button on a blocked item
 opens the chat about that item. While automation is paused it answers when you resume.
 
@@ -311,6 +314,14 @@ not counted as needing you. It then does one of two things:
   why, two to four options with its recommendation first, a box for your own answer, and the
   raw block reason tucked under *details*. Your answer (`POST /api/items/:id/decision`) is
   logged, and the orchestrator is woken with the question and the answer to carry it out.
+  An option can **do** what it names, so your answer is the authorization and nothing is asked
+  twice: `raise_budget_usd` raises the item's budget, and an `action` has planestro add an item
+  (`create_item`) or submit one (`submit_item`; an epic has its breakdown planned) as you, at
+  the tap. The card says what the tap does in planestro's own words, with the new item's brief
+  under it. An action is checked when the card is filed, so you are not offered one that would
+  fail, and again when you pick it: if the backlog has moved since (the item was iceboxed,
+  say), the answer is refused with the reason and the card stays as it was. What was done is
+  in the Activity log of both items, and the orchestrator is told it is already done.
 
 Nothing is stranded: a wake that ends without resolving or asking, a triage older than
 `orchestrator.triage_timeout_min`, a paused engine or an unavailable orchestrator all put the

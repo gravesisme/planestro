@@ -307,6 +307,80 @@ describe('needs-you triage', () => {
     expect(a.prompts[1]).toContain('The user chose the epic branch.');
   });
 
+  it("a card option's action is done by planestro, as you, when you pick it: the answer is the authorization (#73, LM-1)", async () => {
+    const replies: string[] = []; let packet = '';
+    const create = { tool: 'create_item', args: { title: 'Fix the base', description: 'Make the base branch build again, then say so on TP-1.', parent: 'TP-2', implementer: 'opus-5', submit: true } };
+    const card = (action: unknown) => ({ item: 'TP-1', question: 'Start a worker for the base fix?', why: 'The fix is a piece of work of its own.', options: [{ label: 'Not now', description: 'Leave it stopped' }, { label: 'Yes, start a worker', description: 'I create the task and queue it', recommended: true, action }] });
+    const a = agents({ firstTurn: blocksOnce, orchestrate: async (w) => {
+      if (w.label.startsWith('blocked_')) {
+        expect(w.prompt).toContain('give that option an action and the user\'s tap does it');
+        const t = w.tools('ask_user_decision');
+        replies.push(await t.handler(card({ ...create, args: { ...create.args, parent: 'TP-9' } })));
+        replies.push(await t.handler(card({ tool: 'submit_item', args: { id: 'TP-1' } })));
+        replies.push(await t.handler(card({ tool: 'approve_plan', args: { id: 'TP-1' } })));
+        replies.push(await t.handler(card(create)));
+      }
+      if (w.label === 'decision_answered') {
+        packet = w.prompt;
+        replies.push(await w.tools('create_item').handler({ title: 'Fix the base', description: 'again' }));
+        await w.tools('unblock_item').handler({ id: 'TP-1', message: 'The base is being fixed in TP-3.' });
+      }
+    } });
+    const { store: s, engine: e, id } = await setup(a.claude);
+    s.createItem({ title: 'Repairs', description: 'x', kind: 'epic' });
+    await e.start();
+    await waitFor(() => Boolean((fmOf(s, id).awaiting_data as any)?.decision));
+    expect(replies[0]).toBe('not recorded: option "Yes, start a worker" cannot be carried out: there is no item TP-9 to be its parent. Fix its action (or leave the action out) and call ask_user_decision again.');
+    expect(replies[1]).toMatch(/^not recorded: option "Yes, start a worker" cannot be carried out: TP-1 is PLAN_IN_PROGRESS; only an item that is not submitted yet/);
+    expect(replies[2]).toContain('its action\'s tool "approve_plan" is not one an option can carry');
+    expect(replies[3]).toContain('recorded: the user sees the card');
+    expect((fmOf(s, id).awaiting_data as any).decision.options[0]).toMatchObject({ label: 'Yes, start a worker', action: create });
+    expect(s.getItem('TP-3')).toBeUndefined();                                            // nothing is done until you answer
+
+    const res = await apiRoutes(s, e).request(`/items/${id}/decision`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ choice: 'Yes, start a worker' }) });
+    expect(res.status).toBe(200);
+    const made = fmOf(s, 'TP-3');
+    expect(made).toMatchObject({ title: 'Fix the base', parent: 'TP-2', implementer: 'opus-5', kind: 'item' });
+    expect(made.queued_at).toBeDefined();
+    expect(activityOf(s, 'TP-3')).toMatch(/\[user\] created\n.*\[user\] created by your answer on TP-1's decision card, as the orchestrator proposed it there\n.*\[user\] status NOT_YET_SUBMITTED → QUEUED/);
+    expect(activityOf(s, id)).toContain('decided: Start a worker for the base fix? → Yes, start a worker (done for you: created TP-3 ("Fix the base") and queued it for planning)');
+    expect(s.journal.read({ type: 'orchestrator.decision_answered' })[0].data).toMatchObject({ choice: 'Yes, start a worker', action: 'create_item', action_result: 'created TP-3 ("Fix the base") and queued it for planning' });
+    await waitFor(() => !fmOf(s, id).blocked);
+    expect(packet).toContain('action: Already done by planestro, as the user: created TP-3 ("Fix the base") and queued it for planning. Do not do it again.');
+    expect(packet).toContain('If the packet has an action line, planestro did that as the user');
+    expect(replies[4]).toMatch(/^not permitted/);                                          // the wake itself still may not add work
+    expect(s.getItem('TP-4')).toBeUndefined();
+  });
+
+  it('an action that can no longer be carried out leaves the card as it was; an epic is planned, not queued (#73)', async () => {
+    const a = agents({ firstTurn: blocksOnce, orchestrate: async (w) => {
+      if (w.label.startsWith('blocked_')) await w.tools('ask_user_decision').handler({ item: 'TP-1', question: 'Start the repairs epic?', why: 'This item waits for it.', options: [{ label: 'Start it', description: 'Its breakdown is planned', recommended: true, action: { tool: 'submit_item', args: { id: 'TP-2' } } }, { label: 'Not now', description: 'Leave it' }] });
+      if (w.label === 'decision_answered') await w.tools('annotate_item').handler({ id: 'TP-1', text: 'waits for the repairs epic' });
+    } });
+    const { store: s, engine: e, id } = await setup(a.claude);
+    s.createItem({ title: 'Repairs', description: 'x', kind: 'epic' });
+    await e.start();
+    await waitFor(() => Boolean((fmOf(s, id).awaiting_data as any)?.decision));
+    const app = apiRoutes(s, e);
+    const pick = () => app.request(`/items/${id}/decision`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ choice: 'Start it' }) });
+
+    s.transition('TP-2', 'ICEBOX', 'user');                                                // the backlog moved after the card was made
+    const refused = await pick();
+    expect(refused.status).toBe(400);
+    expect(((await refused.json()) as { error: string }).error).toBe('"Start it" cannot be carried out any more: TP-2 is ICEBOX; only an item that is not submitted yet can be submitted. Pick another option, or answer in your own words.');
+    expect((fmOf(s, id).awaiting_data as any)?.decision.question).toBe('Start the repairs epic?');
+    expect(s.journal.read({ type: 'orchestrator.decision_answered' })).toHaveLength(0);
+    expect(activityOf(s, id)).not.toContain('decided:');
+
+    s.transition('TP-2', 'NOT_YET_SUBMITTED', 'user');
+    expect((await pick()).status).toBe(200);
+    expect(['PLAN_IN_PROGRESS', 'PLAN_READY']).toContain(fmOf(s, 'TP-2').status);         // never QUEUED: an epic has no such state
+    expect(fmOf(s, 'TP-2').queued_at).toBeUndefined();
+    expect(activityOf(s, 'TP-2')).toContain("you chose it on TP-1's decision card: planning the breakdown");
+    expect(activityOf(s, id)).toContain('decided: Start the repairs epic? → Start it (done for you: epic TP-2 is having its breakdown planned)');
+    expect((fmOf(s, id).awaiting_data as any)?.decision).toBeUndefined();
+  });
+
   it('a triage that outlives orchestrator.triage_timeout_min comes to you as it is', async () => {
     let release!: () => void;
     const hung = new Promise<void>((r) => { release = r; });

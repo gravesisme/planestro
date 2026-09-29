@@ -1,6 +1,6 @@
 import { join, relative, isAbsolute, extname, basename, matchesGlob } from 'node:path';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
-import { resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, epicFlagOf, epicShapeOf, holdShapeOf, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1 } from '@planestro/shared';
+import { resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1 } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote } from './ports.ts';
@@ -145,6 +145,8 @@ export class LiveEngine implements Engine {
       holdMerge: (id, reason) => this.orchestratorHolds(id, reason),
       convertKind: (id, to, why) => this.convertKind(id, to, 'orchestrator', why).catch((e) => (e as Error).message),
       planEpic: (id, why) => this.planEpic(id, why),
+      actionRefusal: (action) => this.actionRefusal(action),
+      submitForUser: (id, why) => this.submitAsUser(id, why),
       requestPlanChanges: (id, m) => this.orchestratorRequestsPlanChanges(id, m),
       amendPlan: (id, m) => this.orchestratorAmendsPlan(id, m),
       planDelegated: (id) => this.planDelegated(this.store.requireItem(id).file.frontmatter),
@@ -1920,7 +1922,15 @@ export class LiveEngine implements Engine {
   // ---- epics planned by the planner: it proposes the children, the user approves, the engine creates them
   private epicPlanDir(id: string): string { return join(this.store.worktreesRoot(), `${this.store.config.project.id_prefix.toLowerCase()}-${idNumber(id)}-plan`); }
 
-  async planEpic(id: string, why?: string): Promise<void> {
+  async planEpic(id: string, why?: string): Promise<void> { this.startEpicPlan(id, why); }
+
+  /**
+   * planEpic in one synchronous step. An epic with a step running is refused before its status moves:
+   * runJob drops a second job, which would leave the epic planning with no planner (#73).
+   */
+  private startEpicPlan(id: string, why?: string): void {
+    const busy = this.busyWith(id);
+    if (busy) throw new Error(busy);
     this.runJob(id, this.beginEpicPlan(id, why));
   }
 
@@ -2681,6 +2691,75 @@ export class LiveEngine implements Engine {
     return undefined;
   }
 
+  // ---- what the user authorized: a card option's action, an explicit request in the chat (#73) ----
+
+  /**
+   * Why planestro cannot do this for the user, or null when it can: exactly what would make doing it
+   * throw, or leave an item that never starts. Asked when a card is made, so the user is never
+   * offered an option that fails, and again when it is picked, since the backlog moves in between.
+   * The chat's create_item is held to the same answer.
+   */
+  private actionRefusal(action: DecisionAction): string | null {
+    const cfg = this.store.config;
+    if (action.tool === 'submit_item') {
+      const item = this.store.getItem(action.args.id);
+      if (!item) return `there is no item ${action.args.id}`;
+      const fm = item.file.frontmatter; const d = this.store.derived(item);
+      if (fm.status !== 'NOT_YET_SUBMITTED') return `${fm.id} is ${fm.status}; only an item that is not submitted yet can be submitted`;
+      if (fm.taken_over) return `${fm.id} is taken over: the user is finishing it by hand`;
+      if (fm.blocked || fm.awaiting) return `${fm.id} is stopped (${fm.blocked ? `blocked: ${fm.blocked_reason}` : `awaiting ${fm.awaiting}`}); that comes first`;
+      if (d.flavor === 'external') return `${fm.id} is implemented outside planestro (${fm.implementer}): it is started by hand, not queued`;
+      if (d.flavor !== 'epic') return null;
+      if (d.children.length) return `epic ${fm.id} already has children (${d.children.join(', ')}): submit those, and the epic opens by itself when one is queued`;
+      if (!d.base_branch) return d.base_branch_error ?? `${fm.id} has no base branch`;
+      return this.busyWith(fm.id) ?? null;
+    }
+    const a = action.args;
+    if (a.category && !cfg.categories.includes(a.category)) return `unknown category "${a.category}": ${cfg.categories.join(', ')}`;
+    if (a.parent) {
+      const parent = this.store.getItem(a.parent)?.file.frontmatter;
+      if (!parent) return `there is no item ${a.parent} to be its parent`;
+      if (parent.kind !== 'epic') return `${a.parent} is not an epic, so it cannot be a parent`;
+      if (a.kind === 'epic') return `an epic cannot be a child of ${a.parent}: epics do not nest`;
+      if (isDone(parent.status)) return `epic ${a.parent} is ${parent.status}: it takes no more children`;
+    }
+    const planner = findModel(cfg, a.planner);
+    if (a.planner && (!planner || !canPlan(planner))) return `planner "${a.planner}" is not a model that can plan: ${cfg.models.filter(canPlan).map((m) => m.id).join(', ')}`;
+    if (a.implementer && !findModel(cfg, a.implementer)) return `implementer "${a.implementer}" is not one of the project's models: ${cfg.models.map((m) => m.id).join(', ')}`;
+    const missing = (a.depends_on ?? []).filter((d) => !this.store.getItem(d));
+    if (missing.length) return `it would depend on ${missing.join(', ')}, which ${missing.length === 1 ? 'is not an item' : 'are not items'} here: it could never start`;
+    if (a.submit && a.kind !== 'epic' && findModel(cfg, a.implementer ?? cfg.defaults.implementer)?.external) return 'its implementer works outside planestro, so it is started by hand, not queued: leave submit out';
+    return null;
+  }
+
+  /** Submit an item as the user does on its page: a worker item is queued, an epic has its breakdown planned (an epic is never queued). Throws the refusal. */
+  private submitAsUser(id: string, why: string): 'queued' | 'planning' {
+    const refusal = this.actionRefusal({ tool: 'submit_item', args: { id } });
+    if (refusal) throw new Error(refusal);
+    if (this.store.requireItem(id).file.frontmatter.kind === 'epic') { this.startEpicPlan(id, why); return 'planning'; }
+    this.store.mutateItem(id, [{ transition: { to: 'QUEUED', actor: 'user' } }, { activity: { actor: 'app', text: `queued for planning: ${why}` } }], 'user', { commit: `${id}: queued` });
+    this.poke();
+    return 'queued';
+  }
+
+  /**
+   * Do what the picked option says, as the user: their answer on `from`'s card authorized it. Returns
+   * what happened, in words. It throws only while nothing is written; once the item exists a submit
+   * that fails is part of the result, so a second tap can never create a second item.
+   */
+  private performAction(action: DecisionAction, from: string): string {
+    const why = `you chose it on ${from}'s decision card`;
+    if (action.tool === 'submit_item') return this.submitAsUser(action.args.id, why) === 'planning' ? `epic ${action.args.id} is having its breakdown planned` : `${action.args.id} is queued for planning`;
+    const a = action.args; const epic = a.kind === 'epic';
+    const planner = findModel(this.store.config, a.planner)?.id; const implementer = findModel(this.store.config, a.implementer)?.id;
+    const it = this.store.createItem({ title: a.title, description: a.description, kind: epic ? 'epic' : 'item', ...(planner ? { planner } : {}), ...(implementer ? { implementer } : {}), ...(a.category ? { category: a.category } : {}), ...(a.parent ? { parent: a.parent } : {}), ...(a.depends_on ? { depends_on: a.depends_on } : {}) }, 'user');
+    this.store.mutateItem(it.id, [{ activity: { actor: 'user', text: `created by your answer on ${from}'s decision card, as the orchestrator proposed it there` } }], 'user');
+    const made = `created ${epic ? 'epic ' : ''}${it.id} ("${a.title}")`;
+    if (!a.submit) return `${made}, not submitted yet`;
+    try { return `${made} and ${this.submitAsUser(it.id, why) === 'planning' ? 'started planning its breakdown' : 'queued it for planning'}`; }
+    catch (e) { return `${made}, but it could not be submitted: ${(e as Error).message}`; }
+  }
+
   /** The orchestrator's escalation: one plain decision, parked on an item that is already stopped. */
   private askUserDecision(id: string, input: DecisionInput): string {
     const item = this.store.getItem(id);
@@ -2693,6 +2772,11 @@ export class LiveEngine implements Engine {
     // the card is answered by someone who cannot know that, so every raise on it must be enough to finish.
     const small = this.raiseTooSmall(fm, v.value.options);
     if (small) return `not recorded: ${small} Fix that and call ask_user_decision again.`;
+    // An option that does something is checked now: the user is never offered one that would fail (#73).
+    for (const o of v.value.options) {
+      const refusal = o.action ? this.actionRefusal(o.action) : null;
+      if (refusal) return `not recorded: option "${o.label}" cannot be carried out: ${refusal}. Fix its action (or leave the action out) and call ask_user_decision again.`;
+    }
     const decision: Decision = { ...v.value, requested_at: this.now(), reason: fm.blocked ? fm.blocked_reason : fm.awaiting === 'question' ? 'question' : fm.awaiting };
     this.store.mutateItem(id, [
       { set: { awaiting: fm.awaiting ?? 'user', awaiting_data: { ...(fm.awaiting_data ?? {}), decision } } },
@@ -2724,19 +2808,25 @@ export class LiveEngine implements Engine {
     const chosen = decision.options.find((o) => o.label === choice);
     const raise = chosen?.raise_budget_usd;
     const fresh = Boolean(chosen?.fresh) && !this.freshRefusal(fm, said);
+    // Or it carries an action (#73): the answer is the authorization, so planestro does it as the user, here. Checked
+    // again first, since the backlog may have moved since the card was made; a refusal leaves the card as it was.
+    const refusal = chosen?.action ? this.actionRefusal(chosen.action) : null;
+    if (refusal) throw new Error(`"${choice}" cannot be carried out any more: ${refusal}. Pick another option, or answer in your own words.`);
+    const done = chosen?.action ? this.performAction(chosen.action, id) : undefined;
     const raisedTo = raise ? Math.round((Math.max(this.budgetOf(fm).usd, fm.cost_usd ?? 0) + raise) * 100) / 100 : undefined;
     this.store.mutateItem(id, [
       Object.keys(rest).length ? { set: { awaiting_data: rest } } : { unset: ['awaiting_data'] },
       ...(carry ? [{ set: { triage: { reason: 'decision', started_at: this.now() } } } as ItemOp] : []),
       ...(raisedTo !== undefined ? [{ set: { budget_usd: raisedTo } } as ItemOp] : []),
-      { activity: { actor: 'user', text: `decided: ${decision.question} → ${said}${raisedTo !== undefined ? ` (budget raised to $${raisedTo})` : ''}` } },
+      { activity: { actor: 'user', text: `decided: ${decision.question} → ${said}${raisedTo !== undefined ? ` (budget raised to $${raisedTo})` : ''}${done ? ` (done for you: ${done})` : ''}` } },
     ], 'user', { commit: `${id}: decision answered` });
-    this.store.journal.append({ type: 'orchestrator.decision_answered', item: id, actor: 'user', data: { question: decision.question, choice: choice ?? null, text: text ?? null, ...(raisedTo !== undefined ? { budget_raised_to: raisedTo } : {}) } });
+    this.store.journal.append({ type: 'orchestrator.decision_answered', item: id, actor: 'user', data: { question: decision.question, choice: choice ?? null, text: text ?? null, ...(raisedTo !== undefined ? { budget_raised_to: raisedTo } : {}), ...(done ? { action: chosen!.action!.tool, action_result: done } : {}) } });
+    const doneNote = done ? `Already done by planestro, as the user: ${done}. Do not do it again. ` : '';
     const raisedNote = raisedTo !== undefined ? `The item's budget is already raised to $${raisedTo} (budget_usd); nothing else needs changing. ` : '';
-    if (carry) { this.wakeOrchestrator('decision_answered', id, { question: decision.question, answer: said, options: decision.options.map((o) => `${o.label}: ${o.description}`).join(' | '), ...(raisedTo !== undefined ? { budget: `${raisedNote}Resume it with unblock_item${fresh ? ' and fresh: true, as the option promised' : ''}.` } : fresh ? { budget: 'The option promised a fresh session: unblock_item with fresh: true and the instruction as its message.' } : {}) }); return; }
+    if (carry) { this.wakeOrchestrator('decision_answered', id, { question: decision.question, answer: said, options: decision.options.map((o) => `${o.label}: ${o.description}`).join(' | '), ...(raisedTo !== undefined ? { budget: `${raisedNote}Resume it with unblock_item${fresh ? ' and fresh: true, as the option promised' : ''}.` } : fresh ? { budget: 'The option promised a fresh session: unblock_item with fresh: true and the instruction as its message.' } : {}), ...(done ? { action: `${doneNote}What is left is this item's own stop.` } : {}) }); return; }
     // No orchestrator to carry it out: a blocked session hears the answer itself; a worker's question stays for you to answer.
     const cur = this.store.requireItem(id).file.frontmatter;
-    if (cur.blocked || cur.awaiting === 'user') await this.unblock(id, `The user was asked: ${decision.question}\nTheir answer: ${said}${raisedNote ? `\n${raisedNote}` : ''}`, 'user', { fresh });
+    if (cur.blocked || cur.awaiting === 'user') await this.unblock(id, `The user was asked: ${decision.question}\nTheir answer: ${said}${raisedNote ? `\n${raisedNote}` : ''}${doneNote ? `\n${doneNote}` : ''}`, 'user', { fresh });
   }
 
   /**
