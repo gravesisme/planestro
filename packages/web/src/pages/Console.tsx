@@ -4,7 +4,7 @@ import { heldReasonOf, type JournalEntry } from '@planestro/shared';
 import { DndContext, MouseSensor, TouchSensor, useSensor, useSensors, closestCenter, type DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { api, type QuestionView, type ParkSummary } from '../api.ts';
+import { api, type QuestionView, type ParkSummary, type OrchestratorSpend } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { usePhone } from '../usePhone.ts';
 
@@ -32,6 +32,7 @@ export function ConsolePage() {
       <div className="section"><h2>Orchestrator</h2>
         <p className="muted small">The judgment layer: woken on plan submissions, merges, repeated CI failures and blocks. Talk to it from any page with the <b>Orchestrator</b> button in the corner; it answers there, and records its decisions on the items.</p>
         <div className="row"><button className="primary" onClick={() => useStore.getState().openChat()}>Open the chat</button></div>
+        <OrchestratorSpendPanel />
         <Questions />
       </div>
       <PlanestroNotes />
@@ -195,6 +196,41 @@ function ParkCosts() {
           </tr>))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+/** The orchestrator's cost per wake (#49): today, in its current conversation (it starts again on rotation), and the latest wakes. */
+function OrchestratorSpendPanel() {
+  const rotate = useStore((s) => s.state?.config.orchestrator.rotate_after_wakes);
+  const [spend, setSpend] = useState<OrchestratorSpend | null>(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => { const load = () => void api.orchestratorSpend().then(setSpend).catch(() => undefined); load(); const t = setInterval(load, 30_000); return () => clearInterval(t); }, []);
+  if (!spend || !spend.wakes.length) return null;
+  const k = (n?: number) => (n === undefined ? '' : n >= 1000 ? `${Math.round(n / 1000)}k tokens` : `${n} tokens`);
+  const c = spend.conversation;
+  return (
+    <div style={{ margin: '8px 0 10px' }}>
+      <p className="small" style={{ margin: 0 }}>
+        <b>Spend:</b> today ${spend.today.cost.toFixed(2)} over {spend.today.wakes} wake{spend.today.wakes === 1 ? '' : 's'}
+        {c ? <> · this conversation ${c.cost.toFixed(2)} over {c.wakes} wake{c.wakes === 1 ? '' : 's'}{rotate ? ` (a fresh one every ${rotate})` : ''}{c.context_tokens ? `, now ${k(c.context_tokens)}` : ''}</> : null}
+        {' '}<button className="small" onClick={() => setOpen(!open)}>{open ? 'Hide wakes' : 'Wakes'}</button>
+      </p>
+      {open && (
+        <table className="small" style={{ width: '100%', marginTop: 6 }}>
+          <thead><tr><th style={{ textAlign: 'left' }}>When</th><th style={{ textAlign: 'left' }}>Why</th><th style={{ textAlign: 'left' }}>Item</th><th>Cost</th><th>Context</th></tr></thead>
+          <tbody>{spend.wakes.slice(0, 20).map((w, i) => (
+            <tr key={i} title={w.summary}>
+              <td>{w.at.slice(5, 16).replace('T', ' ')}{w.fresh ? ' ✦' : ''}</td>
+              <td>{w.events.join(', ').replace(/_/g, ' ')}{w.failed ? ' (failed)' : ''}</td>
+              <td>{w.items.map((id) => <Link key={id} to={`/items/${id}`}>{id} </Link>)}</td>
+              <td style={{ textAlign: 'right' }}>${w.cost.toFixed(2)}</td>
+              <td style={{ textAlign: 'right' }} className="muted">{k(w.context_tokens)}</td>
+            </tr>))}
+          </tbody>
+        </table>
+      )}
+      {open && <p className="muted small" style={{ margin: '4px 0 0' }}>✦ started a fresh conversation. Hover a row for what the wake did.</p>}
     </div>
   );
 }

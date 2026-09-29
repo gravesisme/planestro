@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
@@ -17,7 +17,23 @@ export function makeFixture(opts: { git?: boolean } = {}): { root: string; codeR
   mkdirSync(dataDir);
   if (opts.git !== false) git(dataDir, 'init', '-q', '-b', 'planning');
   initDataDir({ dataDir, codeRepo, name: 'Test Project', prefix: 'TP', defaultBranch: 'trunk', categories: ['Game', 'Marketing Site', 'Chores', 'Tools', 'Not Yet Categorized'], commit: opts.git !== false });
+  pinTestModels(dataDir, opts.git !== false);
   return { root, codeRepo, dataDir };
+}
+
+/**
+ * The tests' own model rows, independent of what `init` gives new projects (#49): a planner and an implementer that
+ * differ, a fallback between them, the orchestrator on the planner, rotation every 40 wakes. Amended into init's commit.
+ */
+function pinTestModels(dataDir: string, committed: boolean): void {
+  const cfg = join(dataDir, 'planestro.yml');
+  const y = readFileSync(cfg, 'utf8')
+    .replace(/^models:\n(?:  (?:#.*|- .*)\n)+/m, 'models:\n  - { id: fable-5, label: Fable 5, claude_model: claude-fable-5, fallback: opus-5 }\n  - { id: opus-5, label: Opus 5, claude_model: claude-opus-5 }\n')
+    .replace(/^  planner: .*$/m, '  planner: fable-5').replace(/^  implementer: .*$/m, '  implementer: opus-5')
+    .replace(/^  model: opus-5-5$/m, '  model: claude-fable-5')
+    .replace(/^  # A fresh conversation.*\n  rotate_after_wakes: \d+$/m, '  rotate_after_wakes: 40');
+  writeFileSync(cfg, y);
+  if (committed) git(dataDir, 'commit', '-q', '-a', '--amend', '--no-edit');
 }
 
 export function git(cwd: string, ...args: string[]): string {

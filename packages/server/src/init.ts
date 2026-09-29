@@ -68,15 +68,18 @@ ${o.releaseBranch ? `  release_branch: ${yamlStr(o.releaseBranch)}\n` : ''}${git
 hooks:
   after_worktree_create: []
 models:
+  # Model ids age: when a newer Claude model ships, change claude_model here or in Settings → Models.
+  # Opus 5.5 plans and implements everything by default. Fable 5.1 is for the hardest plans (an epic's
+  # breakdown, a cross-system mechanic): pick it as the planner on those items.
   # fallback: while a model is out of usage, items that allow it (and the orchestrator, if allowed) run on this one instead.
-  - { id: fable-5, label: Fable 5, claude_model: claude-fable-5, fallback: opus-5 }
-  - { id: opus-5, label: Opus 5, claude_model: claude-opus-5 }
+  - { id: opus-5-5, label: Opus 5.5, claude_model: claude-opus-5-5 }
+  - { id: fable-5-1, label: Fable 5.1, claude_model: claude-fable-5-1, fallback: opus-5-5 }
   # A model on the Codex CLI implements but never plans. Its description is what the epic planner routes by;
   # hold_for_review parks its pull requests for your eye before they merge.
   # - { id: codex-art, label: Codex Art, runner: codex, hold_for_review: true, description: "All raster art: icons, sprites, illustrations. The Claude models cannot generate images." }
 defaults:
-  planner: fable-5
-  implementer: opus-5
+  planner: opus-5-5
+  implementer: opus-5-5
   category: ${yamlStr(categories.at(-1)!)}
 categories:
 ${categories.map((c) => `  - ${yamlStr(c)}`).join('\n')}
@@ -92,11 +95,12 @@ ci:
   start_timeout_min: 10
   timeout_min: 45
 orchestrator:
-  model: claude-fable-5
+  model: opus-5-5
   may_approve_plans: false
   max_plan_revisions: 2
   may_decide_permissions: false
-  rotate_after_wakes: 40
+  # A fresh conversation costs less per wake than a long one, and the files are its memory: rotate often.
+  rotate_after_wakes: 10
   rotate_after_days: 3
 engine:
   mode: dry-run

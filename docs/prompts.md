@@ -39,6 +39,7 @@ favorite: true
 | `fresh_brief` | `fresh-brief` | Opens a fresh session on an item whose earlier one is not resumed (reloading it costs more than the job, or a fresh one was asked for). It carries the item, its plan and the state of its branch, and the task in `brief.task`. |
 | `cleanup` | `cleanup-worktree` | Not sent by the engine (cleanup is code, with positive evidence); kept for cleaning up by hand. |
 | `orchestrator_system` | `orchestrator-system` | The orchestrator's standing rules. Each wake's context packet is built in code from the item files. |
+| (partial) | `standing-decisions` | The project's own rulings, included at the end of `orchestrator-system` with `{{> standing-decisions}}`, so the orchestrator applies them on every wake and after every fresh conversation. Ships empty; add one line per ruling ("art is reviewed by the designer: never approve it on their behalf"). A data dir without its own copy uses the shipped one. |
 
 ## Placeholders
 

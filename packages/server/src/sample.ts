@@ -137,7 +137,7 @@ export async function seedSample(out: string, opts: { reset?: boolean; log?: (m:
   // Two agents: Claude models for code, a Codex model for raster art — described, so the epic planner can route by it.
   const cfg = join(dataDir, CONFIG_FILE);
   writeFileSync(cfg, readFileSync(cfg, 'utf8')
-    .replace(/^  - \{ id: opus-5,.*$/m, (line) => `${line.replace(' }', ', description: "Code, tests and docs. Cannot generate images." }')}\n  - { id: codex-art, label: Codex Art, runner: codex, hold_for_review: true, description: "All raster art: icons, illustrations, sprites. Does not write code." }`)
+    .replace(/^  - \{ id: opus-5-5,.*$/m, (line) => `${line.replace(' }', ', description: "Code, tests and docs. Cannot generate images." }')}\n  - { id: codex-art, label: Codex Art, runner: codex, hold_for_review: true, description: "All raster art: icons, illustrations, sprites. Does not write code." }`)
     // Release sections are the project's own: a store-style tagline with a limit, carried from one release to the next.
     .replace(/^releases:\n(?:  .*\n)+/m, 'releases:\n  sections:\n    - { title: Release notes, hint: "What users are told changed." }\n    - { title: Tagline, max_chars: 60, carry: true, hint: "The one line on the npm page and the README." }\n    - { title: Notes, hint: "Yours: the checklist, what went wrong." }\n')
     + '\nreview:\n  image_scale: 2\n');
