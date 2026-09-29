@@ -210,7 +210,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
       return c.json({ ...itemView(store, store.requireItem(c.req.param('id'))), result: r });
     } catch (e) { return fail(c, e); }
   });
-  api.post('/items/:id/unblock', async (c) => { try { const { message } = z.object({ message: z.string().optional() }).parse(await c.req.json().catch(() => ({}))); const e = engine as Engine & { unblock?: (id: string, m?: string) => Promise<void> }; if (e.unblock) await e.unblock(c.req.param('id'), message); else store.mutateItem(c.req.param('id'), [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data'] }], 'user', { commit: `${c.req.param('id')}: unblock` }); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
+  api.post('/items/:id/unblock', async (c) => { try { const { message, fresh } = z.object({ message: z.string().optional(), fresh: z.boolean().optional() }).parse(await c.req.json().catch(() => ({}))); const e = engine as Engine & { unblock?: (id: string, m?: string, by?: 'user', o?: { fresh?: boolean }) => Promise<void> }; if (e.unblock) await e.unblock(c.req.param('id'), message, 'user', { fresh }); else store.mutateItem(c.req.param('id'), [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data'] }], 'user', { commit: `${c.req.param('id')}: unblock` }); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
   // The answer to an orchestrator's decision card: an option's label, your own words, or both.
   api.post('/items/:id/decision', async (c) => {
     try {

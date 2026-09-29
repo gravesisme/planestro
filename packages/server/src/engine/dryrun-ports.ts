@@ -101,7 +101,15 @@ export class DryRunGitPort implements GitPort {
     return { ok: false, conflicts: [...files], head: this.w.worktrees.get(cwd)?.head ?? '' };
   }
   async resetHard(cwd: string, sha: string) { this.say(`git reset --hard ${sha.slice(0, 7)} (in ${cwd})`); const wt = this.w.worktrees.get(cwd); if (wt) wt.head = sha; this.w.regenerated.delete(cwd); }
-  async commitPaths(cwd: string, paths: string[], message: string) { this.say(`git commit -m "${message}" -- ${paths.join(' ')} (in ${cwd})`); this.w.regenerated.delete(cwd); const wt = this.w.worktrees.get(cwd); const head = this.w.sha(); if (wt) wt.head = head; return head; }
+  async commitPaths(cwd: string, paths: string[], message: string) {
+    this.say(`git commit -m "${message.split('\n')[0]}" -- ${paths.join(' ')} (in ${cwd})`);
+    // What was named is committed: the fake's one tracked change, and any untracked file among them.
+    this.w.regenerated.delete(cwd);
+    if (paths.includes('src/fake.ts')) this.w.dirty.delete(cwd);
+    if (this.w.untracked.has(cwd)) this.w.untracked.set(cwd, this.w.untracked.get(cwd)!.filter((p) => !paths.includes(p)));
+    this.w.commits.set(cwd, (this.w.commits.get(cwd) ?? 0) + 1);
+    const wt = this.w.worktrees.get(cwd); const head = this.w.sha(); if (wt) wt.head = head; return head;
+  }
   async rebase(cwd: string, onto: string, takeBase: string[] = []): Promise<RebaseResult> {
     const c = this.conflict(cwd, `git rebase ${onto}`, takeBase); if (c) return c;
     this.say(`git rebase ${onto} in ${cwd}`); const wt = this.w.worktrees.get(cwd); const head = this.w.sha(); if (wt) wt.head = head; this.w.behind.set(cwd, 0); return { ok: true, conflicts: [], head };
