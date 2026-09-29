@@ -1642,12 +1642,18 @@ describe('orchestrator', () => {
     const activity = () => store.getItem(item.id)!.file.sections.find((s) => s.title === 'Activity')!.body;
     await waitFor(() => activity().includes('[orchestrator] plan looks tight'));
     // second wake resumes the same session; third rotates (rotate_after_wakes: 2)
-    engine.orchestrator.wake({ type: 'user_message', data: { message: 'hello' } });
+    // what the chat route journals beside each wake
+    const say = (text: string, item?: string) => { store.journal.append({ type: 'orchestrator.user_message', item, actor: 'user', data: { text } }); engine.orchestrator.wake({ type: 'user_message', item, data: { message: text } }); };
+    say('as each child of the epic merges, submit its dependents yourself', item.id);
     await waitFor(() => wakes.length >= 2);
     expect(wakes[1].resume).toBe('orch-1');
-    engine.orchestrator.wake({ type: 'user_message', data: { message: 'again' } });
+    expect(wakes[1].prompt).not.toContain('What the user said to you lately'); // the live conversation already has it
+    say('again');
     await waitFor(() => wakes.length >= 3);
     expect(wakes[2].resume).toBeUndefined(); // rotated: files are the memory
+    // #59: the instruction given to the rotated-away conversation is carried into the fresh one
+    expect(wakes[2].prompt).toContain('What the user said to you lately');
+    expect(wakes[2].prompt).toContain(`user (on ${item.id}): as each child of the epic merges, submit its dependents yourself`);
   });
 });
 
