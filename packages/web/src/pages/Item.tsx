@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router';
 import { canPlan, decisionOf, dollarHint, epicFlagOf, heldReasonOf, holdShapeOf, kindConversionRefusal, type Status } from '@planestro/shared';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
+import { reloadText, useResumeEstimate } from '../resumeCost.ts';
 import { Markdown } from '../components/Markdown.tsx';
 import { statusLabel } from '../components/ItemCard.tsx';
 import { ItemConsole } from '../components/ItemConsole.tsx';
@@ -71,6 +72,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
   /** A number typed into a budget box: empty clears the item's own cap (back to the project default). */
   const setBudget = (key: 'budget_usd' | 'budget_turns' | 'budget_tokens', raw: string) => { const n = Number(raw); const cur = fm[key]; if (raw.trim() === '' ? cur !== undefined : n > 0 && n !== cur) void field({ [key]: raw.trim() === '' ? null : n }); };
   const implementerDef = state.config.models.find((m) => m.id === fm.implementer);
+  const estimate = useResumeEstimate(item);
   const orch = state.config.orchestrator;
   const canClose = transitions.some((t) => t.to === 'FINISHED');
   const closeAsDone = () => promptCloseAsDone(item.id);
@@ -233,6 +235,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           <dt>CI</dt><dd>{fm.ci_result ?? '—'}{fm.ci_failed_count ? ` (${fm.ci_failed_count} red)` : ''}</dd>
           <dt>cost</dt><dd>
             <div title={dollarHint(state.billing)}>{fm.cost_usd !== undefined ? `$${fm.cost_usd.toFixed(2)} · ${fm.turns ?? 0} turns` : '$0.00'} <span className="muted small">{dollarHint(state.billing)}</span>{(fm.cost_usd ?? 0) / budget.usd >= 0.8 && <> <span className={`tag ${(fm.cost_usd ?? 0) >= budget.usd ? 'hot' : 'wait'}`}>{Math.round((fm.cost_usd ?? 0) / budget.usd * 100)}% spent</span></>}</div>
+            {estimate && <div className="muted small" title="What the next resume of this item's conversation sends again before it does any work. planestro starts a fresh conversation with a brief instead when that costs more than the item has left, or more than budget_usd_fresh_above.">resume: {reloadText(estimate)}</div>}
             <div className="row" style={{ gap: 6, marginTop: 4, flexWrap: 'wrap' }}><span className="muted small">budget</span><label title={fm.budget_usd !== undefined ? 'This item\'s own dollar budget; clear it for the project default' : `The project default ($${state.config.budget_usd_per_item}); type a number to give this item its own`}>$<input type="number" min={1} key={`bu${fm.budget_usd}`} defaultValue={fm.budget_usd ?? ''} placeholder={String(state.config.budget_usd_per_item)} onBlur={(e) => setBudget('budget_usd', e.target.value)} style={{ width: 70 }} /></label>{fm.budget_usd !== undefined && <span className="tag">this item</span>}</div>
             {implementerDef && implementerDef.runner && implementerDef.runner !== 'claude' && <>
               <div style={{ marginTop: 6 }}>{fm.agent_turns ?? 0} {implementerDef.runner} turns · {(fm.tokens ?? 0).toLocaleString()} tokens{(fm.tokens ?? 0) / budget.tokens >= 0.8 && <> <span className={`tag ${(fm.tokens ?? 0) >= budget.tokens ? 'hot' : 'wait'}`}>{Math.round((fm.tokens ?? 0) / budget.tokens * 100)}% used</span></>}</div>

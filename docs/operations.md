@@ -105,7 +105,10 @@ end. `git log -- items/MP-12.md` is an item's full history.
 
 ## Spending
 
-- Claude: `budget_usd_per_item` caps an item across all of its turns. Sessions use your
+- Claude: `budget_usd_per_item` caps an item across all of its turns, counted turn by turn (a
+  resumed session reports its running total; planestro takes what it rose by). A resume that
+  costs more than the item has left is not started, and above `budget_usd_fresh_above` a fix
+  goes to a fresh session with a brief rather than reloading a long one. Sessions use your
   `claude` login by default; set an Anthropic API key (Settings → This machine) to bill the
   API under the Commercial Terms, which is what the Agent SDK's documentation asks of
   SDK-built agents.

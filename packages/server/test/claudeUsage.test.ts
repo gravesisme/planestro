@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { noteUsage, classifyUsage, rateLimitSnapshot, type UsageSignals, noteToolFailures } from '../src/engine/sessions/LiveClaudePort.ts';
+import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { noteUsage, classifyUsage, rateLimitSnapshot, type UsageSignals, noteToolFailures, noteContext, resumeQuoteOf, settleCost, lastCostState, resumeWatch, type ContextSeen } from '../src/engine/sessions/LiveClaudePort.ts';
 import type { TurnResult } from '../src/engine/ports.ts';
 
 const result = (over: Partial<TurnResult> = {}): TurnResult => ({ subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', ...over });
@@ -93,5 +96,82 @@ describe('planestro tool failures', () => {
       ] } },
     ]) noteToolFailures(m, calls, r);
     expect(r.toolFailures).toEqual([{ tool: 'submit_plan', error: 'Tool permission request failed: AbortError: Stream closed' }]);
+  });
+});
+
+describe('what a resume costs and reports (#64)', () => {
+  const assistant = (usage: Record<string, unknown>, parent: string | null = null) => ({ type: 'assistant', parent_tool_use_id: parent, message: { content: [], usage } });
+
+  it("the conversation's window is its last response's: input, cache read, cache write and output", () => {
+    const c: ContextSeen = {};
+    noteContext(assistant({ input_tokens: 10, cache_read_input_tokens: 17_412, cache_creation_input_tokens: 98, output_tokens: 4, cache_creation: { ephemeral_1h_input_tokens: 98, ephemeral_5m_input_tokens: 0 } }), c);
+    expect(c).toEqual({ tokens: 17_524, ttlS: 3600 });
+    noteContext(assistant({ input_tokens: 8, cache_read_input_tokens: 19_795, cache_creation_input_tokens: 367, output_tokens: 1, cache_creation: { ephemeral_5m_input_tokens: 367 } }), c);
+    expect(c).toEqual({ tokens: 20_171, ttlS: 300 });
+  });
+
+  it("a subagent's response never counts: its window is not what a resume sends again", () => {
+    const c: ContextSeen = { tokens: 500 };
+    noteContext(assistant({ input_tokens: 90_000, output_tokens: 10 }, 'toolu_1'), c);
+    noteContext({ type: 'user', message: { content: [] } }, c);
+    noteContext(assistant({}), c);
+    expect(c).toEqual({ tokens: 500 });
+  });
+
+  it('reads the quote from a resume, and nothing from a start or a quote of nothing', () => {
+    expect(resumeQuoteOf({ hook_event_name: 'SessionStart', source: 'resume', seconds_since_last_response: 43, context_tokens: 18_162, prompt_cache_likely_expired: false, estimated_cache_write_usd: 0.0363 }))
+      .toEqual({ contextTokens: 18_162, cacheWriteUsd: 0.0363, cacheExpired: false, secondsSinceLast: 43 });
+    expect(resumeQuoteOf({ source: 'startup', context_tokens: 100, estimated_cache_write_usd: 1 })).toBeUndefined();
+    expect(resumeQuoteOf({ source: 'resume', context_tokens: 18_162, estimated_cache_write_usd: 0 })).toBeUndefined();
+    expect(resumeQuoteOf({ source: 'resume' })).toBeUndefined();
+    expect(resumeQuoteOf(undefined)).toBeUndefined();
+  });
+
+  it("a resumed conversation's total is its running total: the turn is what it rose by (HH-181)", () => {
+    const r = result();
+    settleCost(r, 30.27, { resumed: true, baseline: 29.71 });
+    expect(r.costUsd).toBe(0.56);
+    expect(r.sessionTotalUsd).toBe(30.27);
+  });
+
+  it('a new conversation, or a resume with no baseline to be found, is taken whole', () => {
+    const fresh = result(); settleCost(fresh, 1.41, { resumed: false });
+    expect(fresh.costUsd).toBe(1.41);
+    const unknown = result(); settleCost(unknown, 30.27, { resumed: true });
+    expect(unknown.costUsd).toBe(30.27);
+    const none = result({ costUsd: 0 }); settleCost(none, undefined, { resumed: true, baseline: 5 });
+    expect(none).toMatchObject({ costUsd: 0 });
+    expect(none.sessionTotalUsd).toBeUndefined();
+    // A total below its baseline (a transcript edited by hand) is never a negative spend.
+    const odd = result(); settleCost(odd, 4, { resumed: true, baseline: 5 });
+    expect(odd.costUsd).toBe(0);
+  });
+
+  it("reads the transcript's newest cost-state from its tail", () => {
+    const dir = mkdtempSync(join(tmpdir(), 'planestro-transcript-'));
+    const file = join(dir, 's.jsonl');
+    const line = (o: unknown) => JSON.stringify(o) + '\n';
+    writeFileSync(file, line({ type: 'cost-state', sessionId: 's', totalCostUSD: 13.76 }) + line({ type: 'user', message: { content: 'x'.repeat(4000) } }) + line({ type: 'cost-state', sessionId: 's', totalCostUSD: 23.32 }) + line({ type: 'last-prompt', lastPrompt: 'a "cost-state" in words' }));
+    expect(lastCostState(file)).toBe(23.32);
+    expect(lastCostState(file, 120)).toBeUndefined();            // the tail holds no whole cost-state line
+    expect(lastCostState(join(dir, 'missing.jsonl'))).toBeUndefined();
+    expect(lastCostState(undefined)).toBeUndefined();
+    writeFileSync(file, line({ type: 'user' }));
+    expect(lastCostState(file)).toBeUndefined();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('a new conversation is not watched; a resumed one asks the CLI for its quote and may decline', async () => {
+    expect(resumeWatch({}).options).toEqual({});
+    const w = resumeWatch({ resume: 's', resumeTotalUsd: 12, onResumeQuote: (q) => (q.cacheWriteUsd > 5 ? 'stop' : 'go') });
+    const command = (w.options.settings as any).hooks.SessionStart[0].hooks[0].command as string;
+    const file = /'(.+)'/.exec(command)![1];
+    writeFileSync(file, JSON.stringify({ source: 'resume', context_tokens: 800_000, estimated_cache_write_usd: 32, prompt_cache_likely_expired: true }));
+    const ask = (w.options.hooks as any).UserPromptSubmit[0].hooks[0] as (i: unknown) => Promise<Record<string, unknown>>;
+    expect(await ask({ transcript_path: undefined })).toMatchObject({ decision: 'block' });
+    expect(w).toMatchObject({ declined: true, baseline: 12, quote: { contextTokens: 800_000, cacheWriteUsd: 32, cacheExpired: true } });
+    expect(await ask({})).toEqual({ continue: true });            // asked once per turn
+    w.cleanup();
+    expect(existsSync(file)).toBe(false);
   });
 });

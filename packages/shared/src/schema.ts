@@ -53,7 +53,7 @@ export const AUTHORITATIVE_KEYS = [
 export const OPERATIONAL_KEYS = [
   'created_at', 'updated_at', 'queued_at', 'started_at', 'plan_ready_at', 'plan_approved_at',
   'pr_created_at', 'merged_at', 'finished_at', 'iceboxed_at',
-  'branch', 'worktree', 'pr', 'session_id', 'agent_sessions', 'awaiting', 'awaiting_data', 'triage', 'resume_after', 'taken_over',
+  'branch', 'worktree', 'pr', 'session_id', 'agent_sessions', 'session_context', 'awaiting', 'awaiting_data', 'triage', 'resume_after', 'taken_over',
   'op', 'op_started_at', 'op_data', 'plan_revisions', 'ci_head_sha', 'ci_result', 'ci_failed_count',
   'merge_order', 'skip_merge', 'hold_reason', 'review_hold', 'delivered', 'parts', 'blocked', 'blocked_reason', 'cost_usd', 'turns', 'agent_turns', 'tokens',
   'imported_from', 'dates_estimated',
@@ -101,6 +101,12 @@ export const ItemFrontmatter = z.object({
   session_id: z.string().optional(),
   /** Conversation ids of runners other than Claude, by runner: a Codex thread cannot resume a Claude session or vice versa. */
   agent_sessions: z.record(z.string(), z.string()).optional(),
+  /**
+   * What the conversation in `session_id` held when its last turn ended (#64): its window, its
+   * model, the price the CLI quoted for reloading it and the running total it reported. It names the
+   * conversation it describes, so a replaced conversation leaves no stale numbers behind.
+   */
+  session_context: z.object({ session: z.string(), model: z.string(), tokens: z.number().nonnegative(), at: ts, ttl_s: z.number().positive().optional(), write_usd_per_mtok: z.number().positive().optional(), total_usd: z.number().nonnegative().optional() }).passthrough().optional(),
   awaiting: z.enum(AWAITING).optional(),
   awaiting_data: z.record(z.string(), z.unknown()).optional(),
   /**
@@ -159,7 +165,7 @@ export type SectionTitle = (typeof SECTION_TITLES)[number];
 export const PROMPT_KINDS = ['template', 'action', 'partial'] as const;
 export const PROMPT_ROLES = [
   'worker_system', 'plan', 'implement', 'resume_context', 'commit_dirty_tree', 'ci_failed',
-  'rebase_conflict', 'cleanup', 'orchestrator_system', 'orch_wake',
+  'rebase_conflict', 'cleanup', 'orchestrator_system', 'orch_wake', 'fresh_brief',
 ] as const;
 export const PromptFrontmatter = z.object({
   schema: z.number().int().positive(),
@@ -322,6 +328,8 @@ export const Config = z.object({
   budget_usd_per_item: z.number().positive().default(25),
   /** What one planning turn may spend: a planner that researches for $97 without handing in a plan (HH-162) is stopped here and asked for the plan it has. */
   budget_usd_per_plan_turn: z.number().positive().default(15),
+  /** When reloading an item's conversation would cost more than this, a turn whose prompt stands on its own starts a fresh conversation with a brief instead (#64). 0 turns it off. */
+  budget_usd_fresh_above: z.number().min(0).default(10),
   /** The budget for runners that report tokens, not dollars: worker turns per item. */
   budget_turns_per_item: z.number().int().positive().default(20),
   /** …and uncached tokens per item. A live art turn measured 20–35k; the default leaves room for a dozen revisions. */

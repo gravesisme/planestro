@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync, symlinkSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { LiveGitPort } from '../src/engine/live-ports.ts';
@@ -95,5 +95,24 @@ describe('setting regenerated files aside (p17)', () => {
     const port = new LiveGitPort();
     await port.commitPaths(repo, ['a.pot'], 'TP-1: regenerate a.pot');
     expect((await port.dirtyDetail(repo)).tracked).toEqual(['b.ts']);
+  });
+
+  it('commitPaths takes a file git has never seen, a deletion and a path with a space, and leaves what was staged but not named (#64)', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'planestro-cp-'));
+    git(repo, 'init', '-q', '-b', 'trunk'); git(repo, 'config', 'user.email', 't@t'); git(repo, 'config', 'user.name', 't');
+    writeFileSync(join(repo, 'old.ts'), '1'); writeFileSync(join(repo, 'kept.ts'), '1');
+    git(repo, 'add', '-A'); git(repo, 'commit', '-q', '-m', 'base');
+    mkdirSync(join(repo, 'art'), { recursive: true });
+    writeFileSync(join(repo, 'art', 'the door.png'), 'png'); writeFileSync(join(repo, 'stray.log'), 'x');
+    rmSync(join(repo, 'old.ts'));
+    writeFileSync(join(repo, 'kept.ts'), '2'); git(repo, 'add', 'kept.ts');       // staged by a session that never committed
+    const port = new LiveGitPort();
+    const before = (await port.dirtyDetail(repo));
+    expect(before.untracked.sort()).toEqual(['art/the door.png', 'stray.log']);
+    const head = await port.commitPaths(repo, ['art/the door.png', 'old.ts'], 'TP-1: the door\n\nCommitted by planestro.');
+    expect(git(repo, 'show', '--name-status', '--format=%s', head).trim().split('\n').filter(Boolean)).toEqual(['TP-1: the door', 'A\tart/the door.png', 'D\told.ts']);
+    const after = await port.dirtyDetail(repo);
+    expect(after.tracked).toEqual(['kept.ts']);
+    expect(after.untracked).toEqual(['stray.log']);
   });
 });

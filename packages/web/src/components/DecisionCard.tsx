@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { decisionOf, dollarHint } from '@planestro/shared';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
+import { reloadText, useResumeEstimate } from '../resumeCost.ts';
 
 /**
  * The orchestrator's question for you, when a stopped item needs a call that is yours: the
@@ -16,6 +17,7 @@ export function DecisionCard({ item }: { item: ItemView }) {
   const billing = useStore((s) => s.state?.billing);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
+  const estimate = useResumeEstimate(item);
   if (!decision) return null;
   const send = async (body: { choice?: string; text?: string }) => {
     setSending(true);
@@ -36,7 +38,9 @@ export function DecisionCard({ item }: { item: ItemView }) {
           <button key={o.label} className={`decision-option ${o.recommended ? 'recommended' : ''}`} disabled={sending} onClick={() => void send({ choice: o.label, ...(text.trim() ? { text: text.trim() } : {}) })}>
             <span className="decision-label">{o.label}{o.recommended && <span className="decision-badge">Recommended</span>}</span>
             {o.description && <span className="decision-desc">{o.description}</span>}
-            {o.raise_budget_usd !== undefined && <span className="decision-desc">Tapping this sets the item's budget to ${(Math.max(fm.budget_usd ?? projectBudget ?? 0, fm.cost_usd ?? 0) + o.raise_budget_usd).toFixed(0)} (+${o.raise_budget_usd}) and resumes it. <span className="muted">Dollars here: {dollarHint(billing)}.</span></span>}
+            {o.raise_budget_usd !== undefined && <span className="decision-desc">Tapping this sets the item's budget to ${(Math.max(fm.budget_usd ?? projectBudget ?? 0, fm.cost_usd ?? 0) + o.raise_budget_usd).toFixed(0)} (+${o.raise_budget_usd}) and {o.fresh ? 'finishes it in a fresh session' : 'resumes it'}. <span className="muted">Dollars here: {dollarHint(billing)}.</span></span>}
+            {o.fresh ? <span className="decision-desc">A fresh session gets a brief instead of the old conversation, so nothing is spent reloading it.</span>
+              : o.raise_budget_usd !== undefined && estimate && <span className="decision-desc">Resuming costs {reloadText(estimate)}, before any work; this raise covers it.</span>}
           </button>
         ))}
       </div>

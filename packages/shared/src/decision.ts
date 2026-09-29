@@ -8,6 +8,8 @@ export interface DecisionOption {
   label: string; description: string; recommended?: boolean;
   /** Answering with this option first raises the item's dollar budget by this much above what it has spent (dogfood p43): the card does the thing, instead of asking the user to do it elsewhere. */
   raise_budget_usd?: number;
+  /** Carrying this option out resumes the item in a fresh conversation with a brief, not its old one (#64): a small raise is then enough. */
+  fresh?: boolean;
 }
 export interface Decision {
   question: string;
@@ -36,7 +38,7 @@ export function validateDecision(input: DecisionInput): { ok: true; value: Omit<
   if (question.length > L.question) return { ok: false, error: `the question is ${question.length} characters; keep it under ${L.question} — one plain question` };
   if (!why) return { ok: false, error: 'say why in one sentence' };
   if (why.length > L.why) return { ok: false, error: `the why is ${why.length} characters; one sentence, under ${L.why}` };
-  const options = (input.options ?? []).map((o) => ({ label: String(o.label ?? '').trim(), description: String(o.description ?? '').trim(), ...(o.recommended ? { recommended: true } : {}), ...(o.raise_budget_usd !== undefined ? { raise_budget_usd: Number(o.raise_budget_usd) } : {}) }));
+  const options = (input.options ?? []).map((o) => ({ label: String(o.label ?? '').trim(), description: String(o.description ?? '').trim(), ...(o.recommended ? { recommended: true } : {}), ...(o.raise_budget_usd !== undefined ? { raise_budget_usd: Number(o.raise_budget_usd) } : {}), ...(o.fresh ? { fresh: true } : {}) }));
   if (options.length < L.minOptions || options.length > L.maxOptions) return { ok: false, error: `give ${L.minOptions}–${L.maxOptions} options (you gave ${options.length})` };
   if (options.some((o) => !o.label)) return { ok: false, error: 'every option needs a label' };
   const raise = options.find((o) => o.raise_budget_usd !== undefined && !(Number.isFinite(o.raise_budget_usd) && o.raise_budget_usd! > 0 && o.raise_budget_usd! <= L.maxRaiseUsd));

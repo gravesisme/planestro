@@ -124,6 +124,11 @@ export interface AgentTurnOptions {
   prompt: string;
   systemAppend: string;
   resume?: string;
+  /**
+   * The running total the resumed conversation last reported, when the caller recorded it. A resumed
+   * conversation reports its whole spend again, not the turn's (#64): only what is above this is new.
+   */
+  resumeTotalUsd?: number;
   extraDirs: string[];
   /** Files to attach to the prompt, for runners that take images (absolute paths). */
   images?: string[];
@@ -146,15 +151,39 @@ export interface ClaudeTurnExtras {
   fallbackModel?: string;
   /** Servers beyond planestro's own that this session gets, by name, as the SDK takes them. Their tools reach onPermission like any other. */
   mcpServers?: Record<string, McpServerSpec>;
+  /**
+   * Asked once, before a resumed conversation's first request, with the CLI's own quote for reloading
+   * it. 'stop' ends the turn there (`resume_declined`), before anything is spent.
+   */
+  onResumeQuote?(quote: ResumeQuote): 'go' | 'stop';
   /** Decide a permission prompt. Return 'park' to persist + deny + park, 'deny' with a reason, or 'allow'. */
   onPermission(req: PermissionRequest): Promise<{ action: 'allow' } | { action: 'deny'; message: string } | { action: 'park' }>;
 }
 export type TurnOptions = AgentTurnOptions & ClaudeTurnExtras;
+/** What reloading a conversation costs before it does any work, as the CLI quotes it when it resumes one. */
+export interface ResumeQuote {
+  /** The window of the conversation's last response: what the first request sends again. */
+  contextTokens: number;
+  /** Writing that to the prompt cache again, at the conversation's model's price. */
+  cacheWriteUsd: number;
+  /** The cache has (probably) expired, so the first request pays the write; otherwise it reads, far cheaper. */
+  cacheExpired?: boolean;
+  secondsSinceLast?: number;
+}
 export interface TurnResult {
   sessionId?: string;
-  subtype: string;            // success | error_max_turns | error_max_budget_usd | error_during_execution | killed | spawn_error | usage_exhausted
+  subtype: string;            // success | error_max_turns | error_max_budget_usd | error_during_execution | killed | spawn_error | usage_exhausted | resume_declined
   isError: boolean;
+  /** What this turn spent. Never the conversation's running total (#64). */
   costUsd: number;
+  /** The conversation's running total as its runner reported it, for the next resume to be measured against. */
+  sessionTotalUsd?: number;
+  /** Tokens in the window of the conversation's last response: what resuming it reloads. */
+  contextTokens?: number;
+  /** How long the runner's cache writes live, in seconds: a resume within it reads the context instead of writing it. */
+  cacheTtlS?: number;
+  /** The CLI's quote for this resume, when it gave one. */
+  resumeQuote?: ResumeQuote;
   /** Uncached input + output tokens, from runners that report tokens instead of dollars. */
   tokens?: number;
   numTurns: number;
@@ -186,6 +215,8 @@ export interface CustomTurnOptions {
   prompt: string;
   systemAppend: string;
   resume?: string;
+  /** As for worker turns: the running total the resumed conversation last reported. */
+  resumeTotalUsd?: number;
   allowedTools: string[];
   mcpTools: CustomToolDef[];
   maxTurns?: number;

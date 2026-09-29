@@ -105,6 +105,15 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   was queued for it, and every drive path (turns, wakes, triage, stalls, fix turns,
   merge, cleanup) skips the item until it is handed back; CI is still read. Hand-back
   resumes from persisted state. A manual move into IN_REVIEW also stops the session.
+- Cost is per turn (#64): a resumed conversation reports its running total, so the port takes
+  what that rose by (`settleCost`; the baseline is the transcript's last `cost-state`, else
+  `session_context.total_usd`). `session_context` also holds the conversation's window and the
+  price the CLI quoted for reloading it; every turn goes one of three ways on that estimate
+  (`chooseTurnPath`): resume, a **fresh session** with a brief rendered from the item file and
+  git (`fresh-brief`; the resume is unaffordable or above `budget_usd_fresh_above`, only for a
+  prompt that stands on its own, never planning or an answer to the session's own question), or
+  `over_budget` before anything is spent. The fresh session replaces `session_id`; its intent is
+  persisted first (`op_data.fresh_brief`). `commit_paths` commits named dirty files with no turn.
 - A session slot is held only while something drives the item (a turn, an engine step,
   an op), never by an epic. An active item that nothing drives for
   `concurrency.stall_after_min` is carried on once (`driveStalls`), then blocked `stalled`.

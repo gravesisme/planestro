@@ -1,9 +1,9 @@
 import { join, relative, isAbsolute, extname, basename, matchesGlob } from 'node:path';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
-import { validateParts, partsSummary, type Part, serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, epicFlagOf, epicShapeOf, holdShapeOf, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1 } from '@planestro/shared';
+import { resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, epicFlagOf, epicShapeOf, holdShapeOf, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1 } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
-import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult } from './ports.ts';
+import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote } from './ports.ts';
 import { makePolicy, ruleFor, allowedByRules, BASE_ALLOWED } from './policy.ts';
 import { hostNote, keptPathsNote } from './hostNote.ts';
 import { Orchestrator } from './orchestrator.ts';
@@ -28,14 +28,50 @@ const ACTIVE_FOR_SLOTS: Status[] = ['PLAN_IN_PROGRESS', 'IN_PROGRESS'];
 const ACTIONABLE_FAILURES = new Set(['auth_required', 'rate_limited', 'session_lost', 'spawn_error', 'cli_too_old']);
 /** Spend past this share of a budget is said out loud once (Activity and the log), before the hard stop. */
 const BUDGET_WARN_AT = 0.8;
-/** Below this many dollars left on an item's budget a Claude turn cannot do real work: it is not started. */
-const MIN_TURN_USD = 1;
 /** What a sandbox says when it refused git's own files (the worktree's index.lock lives outside the worktree). */
 const GIT_REFUSAL = /index\.lock|\.git\/worktrees|EPERM|Operation not permitted|Permission denied/i;
 /** A block that is about committing ("planestro needs to commit this", "complete but uncommitted", "nothing added to commit"). */
 const ASKS_COMMIT = /commit|\bstag(e|ing)\b/i;
 /** How many stops of one item, in one status, the orchestrator triages before the rest go straight to the user (a fix that keeps failing is a conversation for a person). */
 const MAX_TRIAGE_ROUNDS = 4;
+/**
+ * How a turn is started. `opener`: the phase's own first prompt. `note`: why the session was parked,
+ * said first when it is resumed and left out when the conversation is new. `fresh`: `true` asks for a
+ * new conversation with a brief; `'auto'` lets the engine choose one, for a prompt that stands on its
+ * own (a CI failure, a conflict, a reminder, an instruction) and never for an answer to something the
+ * session itself asked. `carryOn`: the prompt only says "continue", so an interrupted fresh turn keeps
+ * the task it was given. `final`: the prompt is already what the agent is to read (a re-run).
+ */
+interface TurnOpts { opener?: boolean; fresh?: true | 'auto'; note?: string; carryOn?: boolean; final?: boolean; estimate?: ResumeEstimate }
+
+/** The CLI's quote as the engine's estimate: the write when the cache has expired, a read of the same window when it has not. */
+function quoteEstimate(q: ResumeQuote): ResumeEstimate {
+  const cold = Math.round(q.cacheWriteUsd * 100) / 100;
+  const warm = Math.round(cold * WARM_SHARE * 100) / 100;
+  const isWarm = q.cacheExpired === false;
+  return { tokens: q.contextTokens, cold, warm, usd: isWarm ? warm : cold, isWarm, basis: 'quoted' };
+}
+
+/**
+ * What is known of an item's conversation once a turn has ended: its window, when it was last
+ * used, the price the CLI quoted and the running total it reported. What a turn did not say is kept
+ * from the record before it, as long as that record is this conversation's.
+ */
+function sessionContextAfter(before: SessionContext | undefined, session: string | undefined, model: string, result: TurnResult, now: string): SessionContext | undefined {
+  if (!session) return undefined;
+  const same = before?.session === session ? before : undefined;
+  const q = result.resumeQuote;
+  // A turn that said nothing of its window (it was killed, or its runner does not report one) still reported a total: that is kept.
+  const tokens = result.contextTokens ?? same?.tokens ?? q?.contextTokens ?? 0;
+  if (!tokens && result.sessionTotalUsd === undefined) return same;
+  // A turn that was declined sent nothing, so the cache is as old as the CLI said it was.
+  const at = result.contextTokens ? now : same?.at ?? (q?.secondsSinceLast !== undefined ? isoLocal(new Date(Date.parse(now) - q.secondsSinceLast * 1000)) : now);
+  const rate = q ? Math.round(q.cacheWriteUsd / q.contextTokens * 1e6 * 1e4) / 1e4 : same?.model === model ? same.write_usd_per_mtok : undefined;
+  const ttl = result.cacheTtlS ?? same?.ttl_s;
+  const total = result.sessionTotalUsd ?? same?.total_usd;
+  return { session, model: result.contextTokens || !same ? model : same.model, tokens, at, ...(ttl ? { ttl_s: ttl } : {}), ...(rate ? { write_usd_per_mtok: rate } : {}), ...(total !== undefined ? { total_usd: total } : {}) };
+}
+
 /** What `set_item_fields` may touch: the item's own wiring, never its lifecycle, sessions or history. */
 const ORCHESTRATOR_FIELDS = ['parent', 'depends_on', 'base_branch_override', 'skip_merge', 'implementer', 'allow_model_fallback'] as const;
 
@@ -118,7 +154,9 @@ export class LiveEngine implements Engine {
       decidePermission: (id, decision, reason) => this.orchestratorDecidesPermission(id, decision, reason),
       permissionReviewEnded: (id) => this.handPermissionToUser(id, 'the orchestrator looked at it without deciding'),
       handOff: (from, to, paths, note) => this.handOff(from, to, paths, note, 'orchestrator'),
-      unblock: (id, message, syncFirst) => this.orchestratorUnblocks(id, message, syncFirst),
+      unblock: (id, message, syncFirst, fresh) => this.orchestratorUnblocks(id, message, syncFirst, fresh),
+      commitPaths: (id, paths, message) => this.commitPaths(id, paths, message, 'orchestrator'),
+      budgetLine: (id) => this.budgetLine(id),
       syncWithBase: (id) => this.syncWithBase(id, { by: 'orchestrator' }),
       resolveEpicConflict: (id, hint) => this.retryEpicConflict(id, hint, 'orchestrator'),
       answerQuestion: (id, answers) => this.orchestratorAnswers(id, answers),
@@ -379,7 +417,7 @@ export class LiveEngine implements Engine {
       if (ahead > 0) { await this.afterWorkTurn(id, 'implement', { subtype: 'success', isError: false, costUsd: 0, numTurns: 0, text: '', done: String(fm.op_data?.done_summary ?? '') || undefined }); return; }
     }
     const phase = this.phaseFor(fm.status)!;
-    await this.runTurnFor(id, phase, `${this.resumeNote(id, from.who)}\n\n${from.say}`);
+    await this.runTurnFor(id, phase, from.say, [], [], { fresh: 'auto', note: from.who, carryOn: true });
   }
 
   /**
@@ -776,8 +814,44 @@ export class LiveEngine implements Engine {
     catch { return `[planestro] Your session was parked while waiting on ${reason} and has now been resumed.`; }
   }
 
+  /** What resuming this item's conversation on `model` costs now; a conversation never quoted borrows the rate last quoted for its model. */
+  private resumeEstimateFor(fm: { session_id?: string; session_context?: SessionContext }, model?: string): ResumeEstimate | undefined {
+    return resumeEstimate(fm, { now: new Date(Date.parse(this.now())), model, rates: resumeRates(this.store.listItems().map((i) => i.file.frontmatter.session_context)) });
+  }
+
+  /**
+   * The brief a fresh conversation opens with (#64): the item, its plan, what is committed and what is
+   * not, where it last stopped, and the task. All of it from the item file and git, none of it from a
+   * conversation (invariant 3).
+   */
+  private async freshBrief(id: string, task: string): Promise<string> {
+    const item = this.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    const cwd = this.absWorktree(fm.worktree!);
+    const base = this.store.derived(item).base_branch!;
+    const dirty = await this.worktreeDirt(cwd).then((d) => d.dirty, () => [] as string[]);
+    const commits = await this.ports.git.log(cwd, `origin/${base}..HEAD`, 30).catch(() => '');
+    const inFlight = await this.ports.git.inProgressOp(cwd).catch(() => null);
+    const lines = getSection(item.file, 'Activity').split('\n').filter((l) => l.trim());
+    const stopped = [...lines].reverse().find((l) => l.includes('BLOCKED ('));
+    const github = this.store.config.code_repo.github;
+    return this.store.renderPrompt('fresh-brief', item, {
+      approval_notes: String(fm.op_data?.approval_notes ?? '').trim() || '(none)',
+      brief: {
+        task,
+        stopped: stopped ? `It last stopped with: ${stopped.replace(/^[-*\s]+/, '').slice(0, 400)}` : 'It has not been blocked.',
+        commits: commits.trim() || '(none yet)',
+        dirty: dirty.join('\n') || '(clean)',
+        in_progress: inFlight ? `a ${inFlight} was left unfinished in the worktree: finish or abort it before anything else` : '(none)',
+        pr: fm.pr ? `#${fm.pr}${github ? ` (https://github.com/${github}/pull/${fm.pr})` : ''}, CI ${fm.ci_result ?? 'not run yet'}` : '(no pull request yet)',
+        done_summary: String(fm.op_data?.done_summary ?? '').trim().slice(0, 1200) || '(none)',
+        activity: lines.slice(-12).join('\n') || '(none)',
+      },
+    });
+  }
+
   // ---- turns ----
-  private async runTurnFor(id: string, phase: TurnPhase, prompt: string, extraAllowed: string[] = [], oneShotCommands: string[] = [], opts: { opener?: boolean } = {}): Promise<TurnResult | undefined> {
+  private async runTurnFor(id: string, phase: TurnPhase, prompt: string, extraAllowed: string[] = [], oneShotCommands: string[] = [], opts: TurnOpts = {}): Promise<TurnResult | undefined> {
     const oneShot = new Set(oneShotCommands.map((c) => c.trim()));
     if (this.stopping) return undefined;
     const item = this.store.requireItem(id);
@@ -811,12 +885,36 @@ export class LiveEngine implements Engine {
     // A turn with less than MIN_TURN_USD left ends at error_max_budget_usd before it can finish
     // anything (HH-125's $0.50 conflict fix, HH-122's CI fix): say what the item needs instead.
     const usdLeft = budget.usd - (fm.cost_usd ?? 0);
-    if (metered && usdLeft < MIN_TURN_USD) { this.block(id, 'over_budget', `this item has spent $${(fm.cost_usd ?? 0).toFixed(2)} of its $${budget.usd} budget (${budget.usdKey}), too little for a ${phase} turn; raise the budget on the item and unblock, or take the item over by hand`); return undefined; }
-    const resumeId = metered ? fm.session_id : fm.agent_sessions?.[runner];
+    let resumeId = metered ? fm.session_id : fm.agent_sessions?.[runner];
+    // What the turn costs before it does anything (#64): a resume sends the whole conversation again.
+    // One the item cannot pay for, or whose reload is above budget_usd_fresh_above, becomes a fresh
+    // conversation with a brief when the turn's prompt stands on its own; only when nothing fits is it
+    // stopped, and then before anything is spent (HH-184 spent a +$15 raise on the reload alone).
+    const pending = fm.op_data?.fresh_brief as { task?: string; from_session?: string } | undefined;
+    const mayBeFresh = phase !== 'plan' && !opts.opener;
+    const estimate = opts.estimate ?? (metered && resumeId ? this.resumeEstimateFor(fm, model as string) : undefined);
+    const path = chooseTurnPath({ left: metered ? usdLeft : Infinity, estimate, hasSession: Boolean(resumeId), fresh: !mayBeFresh ? undefined : pending || opts.fresh === true ? true : opts.fresh, freshAboveUsd: this.store.config.budget_usd_fresh_above });
+    if (path.path === 'stop') {
+      this.block(id, 'over_budget', usdLeft < MIN_TURN_USD
+        ? `this item has spent $${(fm.cost_usd ?? 0).toFixed(2)} of its $${budget.usd} budget (${budget.usdKey}), too little for a ${phase} turn; raise the budget on the item and unblock, or take the item over by hand`
+        : `this item has $${usdLeft.toFixed(2)} left of its $${budget.usd} budget (${budget.usdKey}) and ${path.why}, so its ${phase} turn was not started and nothing was spent. A fresh conversation with a brief needs far less (unblock_item with fresh: true). The turn was for: ${prompt.replace(/\s+/g, ' ').trim().slice(0, 300)}`);
+      return undefined;
+    }
+    const asked = prompt;
+    let replaced: string | undefined;
+    if (path.path === 'fresh' && !opts.final) {
+      // The brief is rendered from the item file and git (invariant 3). The intent is persisted before the
+      // turn: one that dies before its conversation has an id is still a fresh turn after a restart.
+      const task = (opts.carryOn && pending?.task) || prompt;
+      replaced = resumeId; resumeId = undefined;
+      prompt = await this.freshBrief(id, task);
+      this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), fresh_brief: { task, from_session: replaced } } } }, { activity: { actor: 'app', text: `starting a fresh ${def.label} conversation with a brief instead of resuming ${replaced?.slice(0, 8) ?? 'its own'}: ${path.why}` } }], 'engine');
+    } else if (path.path === 'fresh') { replaced = resumeId; resumeId = undefined; }
+    else if (opts.note && !opts.final) prompt = `${this.resumeNote(id, opts.note)}\n\n${prompt}`;
     // "Continue where you left off" presumes a conversation to continue. When there is none — the
     // opening turn died before the agent heard the task, or the thread was lost — a fresh conversation
     // gets the phase's full prompt first, and the resume note after it.
-    if (!resumeId && !opts.opener && (phase === 'plan' || phase === 'implement')) {
+    if (!resumeId && !replaced && !opts.opener && !opts.final && (phase === 'plan' || phase === 'implement')) {
       const opener = phase === 'plan' ? this.withImplementer(id, this.withDelivered(id, 'plan-item', this.store.renderPrompt('plan-item', item))) : this.withDelivered(id, 'implement-plan', this.store.renderPrompt('implement-plan', item, { approval_notes: String(fm.op_data?.approval_notes ?? '').trim() || '(none)' }));
       prompt = `${opener}\n\n---\n\n${prompt}`;
       this.store.mutateItem(id, [{ activity: { actor: 'app', text: `no ${def.label} conversation to resume: starting a fresh one with the full ${phase} prompt` } }], 'engine');
@@ -844,11 +942,24 @@ export class LiveEngine implements Engine {
     const admitted = () => { const t = this.turns.get(id); if (t?.waiting) { t.waiting = undefined; t.startedAt = this.now(); } this.emit({ type: 'session.started', id, session_id: fm.session_id }); };
     const budgetLeft = Math.max(MIN_TURN_USD, usdLeft);
     // A planning turn is capped on its own (dogfood p41): past the cap it is asked for the plan it has, not for more research.
-    const turnCap = phase === 'plan' ? Math.min(budgetLeft, this.store.config.budget_usd_per_plan_turn) : budgetLeft;
+    // The cap is for the work: what the resume reloads first is on top of it.
+    const turnCap = phase === 'plan' ? Math.min(budgetLeft, this.store.config.budget_usd_per_plan_turn + (resumeId ? estimate?.usd ?? 0 : 0)) : budgetLeft;
+    const known = resumeId && fm.session_context?.session === resumeId ? fm.session_context : undefined;
+    let declined: ResumeEstimate | undefined;
     let result: TurnResult;
     try {
       result = await this.withRunnerSlot(runner, () => this.withSessionSlot(id, () => { if (abort.signal.aborted) return Promise.resolve<TurnResult>({ subtype: 'killed', isError: false, costUsd: 0, numTurns: 0, text: '' }); admitted(); return agent.runTurn({
         itemId: id, phase, cwd, model: model as string, permissionMode: phase === 'plan' ? 'plan' : 'acceptEdits', prompt, resume: resumeId, images,
+        ...(known?.total_usd !== undefined ? { resumeTotalUsd: known.total_usd } : {}),
+        // The CLI's own quote, before the first request: the same choice as above, on its numbers. It is
+        // what stops a conversation nothing was recorded for (every one that predates the record).
+        onResumeQuote: (q) => {
+          const quoted = quoteEstimate(q);
+          const again = chooseTurnPath({ left: usdLeft, estimate: quoted, hasSession: true, fresh: !mayBeFresh ? undefined : opts.fresh, freshAboveUsd: this.store.config.budget_usd_fresh_above });
+          if (again.path === 'resume') return 'go';
+          declined = quoted;
+          return 'stop';
+        },
         systemAppend: `${this.store.renderPrompt(metered ? 'worker-system' : `worker-system-${runner}`, item)}\n\n${this.hostNote}${keptPathsNote(this.store.config.worktrees.copy_to_checkout, this.repo)}`,
         ...(pick.sdkFallback ? { fallbackModel: pick.sdkFallback } : {}),
         ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
@@ -895,31 +1006,48 @@ export class LiveEngine implements Engine {
       this.turns.delete(id);
     }
     const after = this.store.requireItem(id).file.frontmatter;
+    const sessionNow = metered ? result.sessionId ?? after.session_id : result.sessionId ?? after.agent_sessions?.[runner];
+    // A fresh conversation has its id: it is the item's from here on, and the brief's marker has done its work.
+    const started = replaced !== undefined && result.sessionId !== undefined && result.sessionId !== replaced;
+    const { fresh_brief: _brief, ...opDataAfter } = after.op_data ?? {};
+    const context = metered ? sessionContextAfter(after.session_context, sessionNow, model as string, result, this.now()) : undefined;
     this.store.mutateItem(id, [
       { set: {
-        ...(metered ? { session_id: result.sessionId ?? after.session_id } : result.sessionId ? { agent_sessions: { ...(after.agent_sessions ?? {}), [runner]: result.sessionId } } : {}),
+        ...(metered ? { session_id: sessionNow } : result.sessionId ? { agent_sessions: { ...(after.agent_sessions ?? {}), [runner]: result.sessionId } } : {}),
+        ...(context ? { session_context: context } : {}),
+        ...(started && after.op_data?.fresh_brief ? { op_data: opDataAfter } : {}),
         cost_usd: Math.round(((after.cost_usd ?? 0) + result.costUsd) * 10000) / 10000, turns: (after.turns ?? 0) + result.numTurns,
-        ...(metered ? {} : { agent_turns: (after.agent_turns ?? 0) + 1 }),
+        ...(metered || result.subtype === 'resume_declined' ? {} : { agent_turns: (after.agent_turns ?? 0) + 1 }),
         ...(result.tokens ? { tokens: (after.tokens ?? 0) + result.tokens } : {}),
       } },
+      ...(started ? [{ activity: { actor: 'app', text: `this item's conversation is now ${result.sessionId!.slice(0, 8)}; the one before it (${replaced}) was not resumed and is kept on disk` } } as ItemOp] : []),
       // A turn killed by stop() keeps its op: that is what resumeInterrupted looks for at the next
       // start. Cleared, the item sat in its phase with nothing to resume it, holding a session slot.
       ...(after.op === op && !(result.subtype === 'killed' && this.stopping) ? [{ unset: ['op', 'op_started_at'] } as ItemOp] : []),
     ], 'engine');
     this.warnOnBudget(id, after, this.store.requireItem(id).file.frontmatter);
-    this.store.journal.end(opId, id, result.isError ? 'failed' : 'ok', { subtype: result.subtype, cost: result.costUsd, parked: result.parked });
+    // The quote beside what the turn really cost, so an estimate that drifts from the bill is seen (HH-247's resume was quoted nowhere).
+    this.store.journal.end(opId, id, result.isError ? 'failed' : 'ok', { subtype: result.subtype, cost: result.costUsd, parked: result.parked, ...(result.sessionTotalUsd !== undefined ? { session_total: result.sessionTotalUsd } : {}), ...(result.contextTokens ? { context_tokens: result.contextTokens } : {}), ...(result.resumeQuote ? { quoted_reload_usd: result.resumeQuote.cacheWriteUsd, quoted_tokens: result.resumeQuote.contextTokens, quoted_cache_expired: result.resumeQuote.cacheExpired } : {}), ...(replaced !== undefined ? { fresh: true, replaced_session: replaced } : {}) });
+    if (started) this.store.journal.append({ type: 'session.replaced', item: id, actor: 'engine', data: { from: replaced, to: result.sessionId, why: path.path === 'fresh' ? path.why : 'fresh' } });
     this.usageSeen(result.rateLimit);
     this.emit({ type: 'session.ended', id, subtype: result.subtype });
     for (const f of result.toolFailures ?? []) this.store.mutateItem(id, [{ activity: { actor: 'app', text: `planestro tool ${f.tool} failed before reaching planestro (nothing was recorded): ${f.error}` } }], 'engine');
     const stoppedFor = this.stoppedFor.get(id); this.stoppedFor.delete(id);
     if (result.subtype === 'killed') { this.store.mutateItem(id, [{ activity: { actor: 'app', text: stoppedFor && !this.stopping ? `turn stopped: ${stoppedFor}` : 'turn interrupted (engine stopping); resumable' } }], 'engine'); return result; }
+    if (result.subtype === 'resume_declined') {
+      // Nothing was sent and nothing spent. The same turn again, on the CLI's numbers: a fresh conversation if it may have one, else the stop.
+      const q = result.resumeQuote;
+      this.store.mutateItem(id, [{ activity: { actor: 'app', text: `did not resume this item's conversation: the CLI quoted ${q ? `$${q.cacheWriteUsd.toFixed(2)} to reload its ${Math.round(q.contextTokens / 1000)}k tokens${q.cacheExpired === false ? ' (cache still warm)' : ''}` : 'a reload it cannot pay for'}, with $${usdLeft.toFixed(2)} left` } }], 'engine');
+      if (!declined || opts.estimate) { this.block(id, 'over_budget', `this item has $${usdLeft.toFixed(2)} left of its $${budget.usd} budget (${budget.usdKey}) and its conversation costs more than that to reload; nothing was spent`); return result; }
+      return this.runTurnFor(id, phase, asked, extraAllowed, oneShotCommands, { ...opts, estimate: declined });
+    }
     if (result.subtype === 'usage_exhausted') {
       // Remember the outage for every item on this machine, then run the same turn again: with
       // fallback allowed it resolves to the next model in the chain; without, it blocks.
       const until = this.recordUnavailable(def, result.usageLimit);
       if (allowFallback && !this.stopping && fallbackChain(this.store.config, requested).some((m) => m.id !== def.id && !unavailableEntry(this.store.local.model_unavailable, m.id, new Date(Date.now())))) {
         this.store.mutateItem(id, [{ activity: { actor: 'app', text: `${def.label} is out of usage until ${until}; retrying this ${phase} turn on its fallback` } }], 'engine');
-        return this.runTurnFor(id, phase, prompt, extraAllowed, oneShotCommands, opts);
+        return this.runTurnFor(id, phase, prompt, extraAllowed, oneShotCommands, { ...opts, final: true, ...(replaced !== undefined ? { fresh: true as const } : {}) });
       }
       this.block(id, 'usage_exhausted', `${def.label} is out of usage until ${until}${allowFallback ? ' and has no available fallback' : ' (this item does not allow a fallback model)'}: ${result.usageLimit?.message ?? ''}`);
       return result;
@@ -1016,6 +1144,18 @@ export class LiveEngine implements Engine {
     await this.afterWorkTurn(id, phase, result);
   }
 
+  /**
+   * Why no turn of this phase can be started for the item on what it has left, or undefined when one
+   * can (resumed, or fresh). The same choice runTurnFor makes, for a caller that must know before it
+   * spends something on the turn. Only Claude turns are paid for in dollars.
+   */
+  private cannotStart(fm: ItemFrontmatter, phase: TurnPhase, fresh?: true | 'auto'): string | undefined {
+    const def = this.store.config.models.find((m) => m.id === (phase === 'plan' ? fm.planner : fm.implementer));
+    if (!def || (def.runner ?? 'claude') !== 'claude') return undefined;
+    const path = chooseTurnPath({ left: this.budgetOf(fm).usd - (fm.cost_usd ?? 0), estimate: fm.session_id ? this.resumeEstimateFor(fm, def.claude_model) : undefined, hasSession: Boolean(fm.session_id), fresh: phase === 'plan' ? undefined : fresh, freshAboveUsd: this.store.config.budget_usd_fresh_above });
+    return path.path === 'stop' ? path.why : undefined;
+  }
+
   /** Whether planestro commits for this item's implementer (engine_commits on its model row). */
   private commitsFor(fm: { implementer?: string }): boolean { return Boolean(this.store.config.models.find((m) => m.id === fm.implementer)?.engine_commits); }
 
@@ -1060,10 +1200,14 @@ export class LiveEngine implements Engine {
     // behind it, is the one that can clean the tree, so no reminder is spent on it (dogfood p54, HH-222).
     if (!clean && result.parked) return;
     if (!clean) {
+      // A reminder the item cannot pay for is not spent (HH-247: it was sent at the instant the budget
+      // stopped the item, so it could never act). The stop says which files, for whoever can commit them without a turn.
+      const cannot = this.cannotStart(fm, phase, 'auto');
+      if (cannot) { this.block(id, 'over_budget', `the worktree has ${dirty.length} uncommitted file${dirty.length === 1 ? '' : 's'} (${dirty.slice(0, 8).join(', ')}${dirty.length > 8 ? ', …' : ''}) and the item cannot pay for a turn to commit them: ${cannot}. Nothing was started. commit_paths commits the ones that belong without a turn; finish_from_worktree (retry_op in review) carries on from there`); return; }
       const tries = Number(fm.op_data?.dirty_tree_turns ?? 0) + 1;
       if (tries > 2) { this.block(id, 'dirty_tree', `the worktree still has uncommitted changes after ${tries - 1} reminders: ${dirty.slice(0, 5).join(', ')}`); return; }
       this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), dirty_tree_turns: tries } } }, { activity: { actor: 'app', text: `worktree dirty after turn (${dirty.length} files); asking the session to commit` } }], 'engine');
-      await this.runTurnFor(id, phase, this.store.renderPrompt('commit-dirty-tree', item, { dirty_files: dirty.join('\n') }));
+      await this.runTurnFor(id, phase, this.store.renderPrompt('commit-dirty-tree', item, { dirty_files: dirty.join('\n') }), [], [], { fresh: 'auto' });
       return;
     }
     const opData = LiveEngine.withoutDirtyCount(fm.op_data);
@@ -1217,7 +1361,7 @@ export class LiveEngine implements Engine {
           { activity: { actor: 'app', text: `${integration ? 'merge of' : 'rebase onto'} origin/${base} (${baseSha.slice(0, 7)}) conflicted in ${sync.conflicts.join(', ')}${sync.note ? ` (${sync.note})` : ''}${canFix ? '; handing to the session' : ''}` } },
         ], 'engine', { commit: `${id}: ${integration ? 'merge' : 'rebase'} conflict` });
         this.store.journal.end(opId, id, 'aborted', { reason: 'conflict', files: sync.conflicts });
-        if (canFix) this.queueFollowUp(id, () => this.runTurnFor(id, 'fix', this.store.renderPrompt('rebase-conflict', this.store.requireItem(id), { conflict_files: sync.conflicts.join('\n'), base_sha: baseSha.slice(0, 12) })));
+        if (canFix) this.queueFollowUp(id, () => this.runTurnFor(id, 'fix', this.store.renderPrompt('rebase-conflict', this.store.requireItem(id), { conflict_files: sync.conflicts.join('\n'), base_sha: baseSha.slice(0, 12) }), [], [], { fresh: 'auto' }));
         else if (integration && this.store.config.epics.conflict_budget_usd > 0) {
           // An epic has no session of its own: a one-shot one resolves the merge (#71), as the item's next job, outside the
           // serial merge chain (a session inside it would hold every other merge). Resolved, it is pushed and the chain picks the epic up again.
@@ -1481,7 +1625,7 @@ export class LiveEngine implements Engine {
     if (this.store.requireItem(id).file.frontmatter.taken_over) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: 'no fix turn: you have this item (taken over)' } }], 'engine'); return; }
     if (!canFix) { this.block(id, 'ci_red', 'CI is red and there is no session to hand the failure to; investigate by hand'); return; }
     if (count >= 2) { this.block(id, 'ci_red_twice', `CI failed ${count} times`); this.wakeOrchestrator('ci_red_again', id, { failed_log: log.slice(0, 3000) }); return; }
-    this.queueFollowUp(id, () => this.runTurnFor(id, 'fix', this.store.renderPrompt('ci-failed', this.store.requireItem(id), { ci: { attempt: String(count), run_url: ci?.url ?? '(local run)', failed_log: log } })));
+    this.queueFollowUp(id, () => this.runTurnFor(id, 'fix', this.store.renderPrompt('ci-failed', this.store.requireItem(id), { ci: { attempt: String(count), run_url: ci?.url ?? '(local run)', failed_log: log } }), [], [], { fresh: 'auto' }));
   }
 
   /**
@@ -1760,7 +1904,7 @@ export class LiveEngine implements Engine {
       if (RESUMABLE_TURN_OPS.has(fm.op)) {
         const phase = this.phaseFor(fm.status);
         this.store.mutateItem(item.id, [{ unset: ['op', 'op_started_at'] }, { activity: { actor: 'app', text: `turn (${fm.op}) was interrupted by a restart; ${fm.taken_over ? 'not resumed: you have this item' : 'resuming'}` } }], 'engine');
-        if (phase && !fm.awaiting && !fm.blocked && !fm.taken_over) this.runJob(item.id, () => this.runTurnFor(item.id, phase, `${this.resumeNote(item.id, 'a planestro restart')}\n\nYour previous turn was interrupted before it finished. Check the state of your worktree and continue where you left off.`));
+        if (phase && !fm.awaiting && !fm.blocked && !fm.taken_over) this.runJob(item.id, () => this.runTurnFor(item.id, phase, 'Your previous turn was interrupted before it finished. Check the state of your worktree and continue where you left off.', [], [], { fresh: 'auto', note: 'a planestro restart', carryOn: true }));
       } else if (fm.op === 'awaiting_ci') {
         this.store.mutateItem(item.id, [{ unset: ['op', 'op_started_at'] }, { set: { ci_result: 'pending' } }, { activity: { actor: 'app', text: 'restart while waiting for CI; re-entering the merge pipeline' } }], 'engine');
       } else {
@@ -2175,14 +2319,60 @@ export class LiveEngine implements Engine {
 
   private busyWith(id: string): string | undefined { return this.jobs.has(id) || this.turns.has(id) ? `${id} has a step running; let it finish first` : undefined; }
 
-  private async orchestratorUnblocks(id: string, message?: string, syncFirst = false): Promise<string> {
+  private async orchestratorUnblocks(id: string, message?: string, syncFirst = false, fresh = false): Promise<string> {
     const fm = this.store.requireItem(id).file.frontmatter;
     if (!fm.blocked && fm.awaiting !== 'user') return `nothing to unblock: ${id} is not blocked${fm.awaiting ? ` (it is awaiting ${fm.awaiting}; answer that instead)` : ''}`;
     const busy = this.busyWith(id); if (busy) return `not now: ${busy}`;
+    const noFresh = fresh ? this.freshRefusal(fm, message) : undefined;
+    if (noFresh) return `not possible: ${noFresh}`;
     // Sync first (p29): the branch takes in what merged since it was cut before the session resumes; a refusal leaves it blocked.
-    if (syncFirst) return this.syncWithBase(id, { by: 'orchestrator', unblock: { message: message?.trim() || undefined } });
-    await this.unblock(id, message?.trim() || undefined, 'orchestrator');
-    return message?.trim() && this.phaseFor(fm.status) ? 'unblocked; the session resumes with your message' : 'unblocked; the pipeline retries from where it stopped';
+    if (syncFirst) return this.syncWithBase(id, { by: 'orchestrator', unblock: { message: message?.trim() || undefined, fresh } });
+    await this.unblock(id, message?.trim() || undefined, 'orchestrator', { fresh });
+    return message?.trim() && this.phaseFor(fm.status) ? (fresh ? 'unblocked; a fresh session starts with a brief and your message as its task' : 'unblocked; the session resumes with your message') : 'unblocked; the pipeline retries from where it stopped';
+  }
+
+  /**
+   * Commit named files in an item's worktree, with no model turn (#64): HH-247 resumed a long
+   * conversation for $46 to run two `git add … && git commit` that had already been approved. Which
+   * files belong to the change is a judgment, so whoever calls this names them; that they are there to
+   * commit is checked here (each must be one of the worktree's own dirty files). It never pushes and
+   * never unblocks: finish_from_worktree, or retry_op for an item in review, carries on from the commit.
+   */
+  async commitPaths(id: string, paths: string[], message: string, by: 'user' | 'orchestrator' = 'orchestrator'): Promise<string> {
+    const item = this.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    if (this._paused || this.draining || this.stopping) return `not now: automation is ${this._paused ? 'paused' : 'stopping'}; nothing was committed`;
+    if (this.store.derived(item).flavor !== 'worker' || (fm.status !== 'IN_PROGRESS' && fm.status !== 'IN_REVIEW')) return `not possible: ${id} is ${fm.status}; only a worker item in progress or in review has work to commit`;
+    if (fm.taken_over) return `not now: the user has taken ${id} over`;
+    if (!fm.worktree || !fm.branch) return `not possible: ${id} has no worktree or branch`;
+    const busy = this.busyWith(id); if (busy) return `not now: ${busy}`;
+    if (fm.op) return `not now: ${id} is ${fm.op.replace(/_/g, ' ')}; let it finish first`;
+    if (fm.awaiting && fm.awaiting !== 'user') return `not now: ${id} is awaiting ${fm.awaiting.replace(/_/g, ' ')}; answer that first`;
+    const cwd = this.absWorktree(fm.worktree);
+    if (!(await this.ports.git.worktreeList(this.repo)).some((w) => w.path === cwd && !w.prunable)) return `not possible: the worktree ${fm.worktree} is missing; use recreate_worktree`;
+    const inFlight = await this.ports.git.inProgressOp(cwd);
+    if (inFlight) return `refused: a ${inFlight} is unfinished in ${fm.worktree}; a commit now would be part of it. It needs a session (unblock_item) or a person`;
+    const subject = message.trim().split('\n')[0];
+    if (!subject) return 'refused: the commit needs a message';
+    const named = [...new Set(paths.map((p) => p.trim().replace(/^\.\//, '')).filter(Boolean))];
+    if (!named.length) return 'refused: name the files to commit';
+    const bad = named.find((p) => isAbsolute(p) || p.startsWith('-') || p.split('/').some((part) => part === '..' || part === '.git'));
+    if (bad) return `refused: "${bad}" is not a path inside the worktree (relative paths only, no "..", nothing under .git)`;
+    const detail = await this.ports.git.dirtyDetail(cwd);
+    const dirty = new Set([...detail.tracked, ...detail.untracked]);
+    const absent = named.filter((p) => !dirty.has(p));
+    if (absent.length) return `refused: ${absent.slice(0, 5).join(', ')} ${absent.length === 1 ? 'is' : 'are'} not among the worktree's uncommitted files (${[...dirty].slice(0, 8).join(', ') || 'it is clean'}); name files exactly as listed, one by one`;
+    const byproduct = named.find((p) => detail.untracked.includes(p) && this.store.config.worktrees.byproducts.some((g) => matchesPathPattern(p, g)));
+    if (byproduct) return `refused: ${byproduct} is a byproduct the project's tools regenerate (worktrees.byproducts), never part of a change`;
+    const opId = this.store.journal.begin('commit_paths', id, { paths: named, by });
+    let head: string;
+    try { head = await this.ports.git.commitPaths(cwd, named, `${subject}${message.trim().includes('\n') ? `\n${message.trim().split('\n').slice(1).join('\n')}` : ''}\n\nCommitted by planestro for ${by === 'orchestrator' ? 'the orchestrator' : 'the user'}, without a session turn.`); }
+    catch (e) { this.store.journal.end(opId, id, 'failed', { error: (e as Error).message.slice(0, 300) }); return `failed: git would not commit them: ${(e as Error).message.slice(0, 300)}`; }
+    this.store.journal.end(opId, id, 'ok', { head, paths: named });
+    const left = (await this.worktreeDirt(cwd)).dirty;
+    this.store.mutateItem(id, [{ activity: { actor: by, text: `committed ${named.length} file${named.length === 1 ? '' : 's'} without a session turn (${head.slice(0, 7)} "${subject.slice(0, 72)}"): ${named.slice(0, 8).join(', ')}${named.length > 8 ? ', …' : ''}${left.length ? `; still uncommitted: ${left.slice(0, 5).join(', ')}` : '; the tree is clean'}` } }], by, { commit: `${id}: commit paths${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
+    const next = fm.status === 'IN_PROGRESS' ? 'finish_from_worktree opens the pull request from here' : 'retry_op sends it back through the merge pipeline, which pushes the commit';
+    return `committed ${head.slice(0, 7)}: ${named.length} file${named.length === 1 ? '' : 's'}. ${left.length ? `Still uncommitted: ${left.slice(0, 8).join(', ')} (commit what belongs the same way; the rest needs a session or a person).` : `The tree is clean: ${next}.`} Nothing was pushed and ${id} is as ${fm.blocked ? 'blocked' : 'it was'}.`;
   }
 
   private async orchestratorAnswers(id: string, answers: Record<string, string>): Promise<string> {
@@ -2444,6 +2634,52 @@ export class LiveEngine implements Engine {
     return `finishing: ${ahead} commit${ahead === 1 ? '' : 's'} go to a pull request`;
   }
 
+  /**
+   * What an item has left and what its next turn costs before any work, for the orchestrator's packet
+   * (#64): the numbers it needs to pick the step that fits without asking anyone. Undefined for an item
+   * with no dollar budget to speak of (no Claude session phase).
+   */
+  private budgetLine(id: string): string | undefined {
+    const fm = this.store.getItem(id)?.file.frontmatter;
+    const phase = fm ? this.phaseFor(fm.status) : null;
+    if (!fm || !phase) return undefined;
+    const def = this.store.config.models.find((m) => m.id === (phase === 'plan' ? fm.planner : fm.implementer));
+    if (!def || (def.runner ?? 'claude') !== 'claude') return undefined;
+    const b = this.budgetOf(fm);
+    const left = b.usd - (fm.cost_usd ?? 0);
+    const e = fm.session_id ? this.resumeEstimateFor(fm, def.claude_model) : undefined;
+    const head = `Budget: $${(fm.cost_usd ?? 0).toFixed(2)} spent of $${b.usd} (${b.usdKey}), $${left.toFixed(2)} left.`;
+    if (!fm.session_id) return `${head} It has no conversation yet, so nothing to reload.`;
+    if (!e) return `${head} What resuming its conversation costs is not known yet (no turn has been quoted); planestro asks the CLI before the first request and declines a resume the item cannot pay for.`;
+    const fits = left >= e.usd + MIN_TURN_USD;
+    const freshFits = left >= FRESH_FLOOR_USD && phase !== 'plan';
+    return [
+      `${head} Resuming its conversation reloads ${Math.round(e.tokens / 1000)}k tokens first: about $${e.usd.toFixed(2)} before any work${e.isWarm ? ` (the cache is still warm; $${e.cold.toFixed(2)} once it expires)` : ''}.`,
+      fits ? 'A resume fits what is left.' : `A resume does NOT fit what is left: planestro will not start one.`,
+      phase === 'plan' ? '' : freshFits ? `A fresh session fits (unblock_item with fresh: true and the task as the message): it gets a brief from the item and git, not the old conversation, and needs about $${FRESH_FLOOR_USD}.` : `A fresh session needs about $${FRESH_FLOOR_USD}, which is not left either.`,
+      phase === 'plan' ? '' : 'Work that is already in the worktree needs no session at all: commit_paths commits named files, then finish_from_worktree (retry_op in review) carries on.',
+      !fits && !freshFits ? `Only money is missing: a card with raise_budget_usd of at least $${minRaiseUsd(e, left, false)} to resume, or $${minRaiseUsd(e, left, true)} with fresh: true.` : '',
+    ].filter(Boolean).join(' ');
+  }
+
+  /** The first raise option that would not pay for what it promises, as a sentence for the orchestrator; undefined when they all do. */
+  private raiseTooSmall(fm: ItemFrontmatter, options: DecisionOption[]): string | undefined {
+    const phase = this.phaseFor(fm.status);
+    const left = this.budgetOf(fm).usd - (fm.cost_usd ?? 0);
+    const def = this.store.config.models.find((m) => m.id === (phase === 'plan' ? fm.planner : fm.implementer));
+    const estimate = fm.session_id && def && (def.runner ?? 'claude') === 'claude' ? this.resumeEstimateFor(fm, def.claude_model) : undefined;
+    for (const o of options) {
+      if (o.raise_budget_usd === undefined) continue;
+      if (o.fresh && phase !== 'implement' && phase !== 'fix') return `option "${o.label.slice(0, 30)}" asks for a fresh session, which is only for work in progress or in review (${fm.id} is ${fm.status}).`;
+      const floor = minRaiseUsd(estimate, left, Boolean(o.fresh));
+      if (o.raise_budget_usd >= floor) continue;
+      return o.fresh
+        ? `option "${o.label.slice(0, 30)}" raises the budget by $${o.raise_budget_usd}, but a fresh session needs about $${floor} to do a small job.`
+        : `option "${o.label.slice(0, 30)}" raises the budget by $${o.raise_budget_usd}, but resuming ${fm.id}'s conversation costs about $${estimate!.cold.toFixed(2)} before any work (${Math.round(estimate!.tokens / 1000)}k tokens to reload), so the raise would be spent on the reload. Raise by at least $${floor}, or offer a fresh session instead (fresh: true on the option, from +$${minRaiseUsd(estimate, left, true)}): it gets a brief and your instruction, and needs no reload.`;
+    }
+    return undefined;
+  }
+
   /** The orchestrator's escalation: one plain decision, parked on an item that is already stopped. */
   private askUserDecision(id: string, input: DecisionInput): string {
     const item = this.store.getItem(id);
@@ -2452,6 +2688,10 @@ export class LiveEngine implements Engine {
     if (!fm.blocked && fm.awaiting !== 'question' && fm.awaiting !== 'user') return `not possible: ${id} is not stopped (not blocked, no question). A decision card belongs on an item that waits; use ask_user for anything else.`;
     const v = validateDecision(input);
     if (!v.ok) return `not recorded: ${v.error}. Fix that and call ask_user_decision again.`;
+    // A raise the item would spend reloading its conversation is not an option (HH-184's +$15 met a $32 reload):
+    // the card is answered by someone who cannot know that, so every raise on it must be enough to finish.
+    const small = this.raiseTooSmall(fm, v.value.options);
+    if (small) return `not recorded: ${small} Fix that and call ask_user_decision again.`;
     const decision: Decision = { ...v.value, requested_at: this.now(), reason: fm.blocked ? fm.blocked_reason : fm.awaiting === 'question' ? 'question' : fm.awaiting };
     this.store.mutateItem(id, [
       { set: { awaiting: fm.awaiting ?? 'user', awaiting_data: { ...(fm.awaiting_data ?? {}), decision } } },
@@ -2480,7 +2720,9 @@ export class LiveEngine implements Engine {
     const { decision: _answered, ...rest } = fm.awaiting_data ?? {};
     const carry = this.triageAvailable();
     // The option carries the change it names (p43): answering IS raising the budget, not a promise to go raise it elsewhere.
-    const raise = decision.options.find((o) => o.label === choice)?.raise_budget_usd;
+    const chosen = decision.options.find((o) => o.label === choice);
+    const raise = chosen?.raise_budget_usd;
+    const fresh = Boolean(chosen?.fresh) && !this.freshRefusal(fm, said);
     const raisedTo = raise ? Math.round((Math.max(this.budgetOf(fm).usd, fm.cost_usd ?? 0) + raise) * 100) / 100 : undefined;
     this.store.mutateItem(id, [
       Object.keys(rest).length ? { set: { awaiting_data: rest } } : { unset: ['awaiting_data'] },
@@ -2490,10 +2732,10 @@ export class LiveEngine implements Engine {
     ], 'user', { commit: `${id}: decision answered` });
     this.store.journal.append({ type: 'orchestrator.decision_answered', item: id, actor: 'user', data: { question: decision.question, choice: choice ?? null, text: text ?? null, ...(raisedTo !== undefined ? { budget_raised_to: raisedTo } : {}) } });
     const raisedNote = raisedTo !== undefined ? `The item's budget is already raised to $${raisedTo} (budget_usd); nothing else needs changing. ` : '';
-    if (carry) { this.wakeOrchestrator('decision_answered', id, { question: decision.question, answer: said, options: decision.options.map((o) => `${o.label}: ${o.description}`).join(' | '), ...(raisedTo !== undefined ? { budget: `${raisedNote}Resume it with unblock_item.` } : {}) }); return; }
+    if (carry) { this.wakeOrchestrator('decision_answered', id, { question: decision.question, answer: said, options: decision.options.map((o) => `${o.label}: ${o.description}`).join(' | '), ...(raisedTo !== undefined ? { budget: `${raisedNote}Resume it with unblock_item${fresh ? ' and fresh: true, as the option promised' : ''}.` } : fresh ? { budget: 'The option promised a fresh session: unblock_item with fresh: true and the instruction as its message.' } : {}) }); return; }
     // No orchestrator to carry it out: a blocked session hears the answer itself; a worker's question stays for you to answer.
     const cur = this.store.requireItem(id).file.frontmatter;
-    if (cur.blocked || cur.awaiting === 'user') await this.unblock(id, `The user was asked: ${decision.question}\nTheir answer: ${said}${raisedNote ? `\n${raisedNote}` : ''}`);
+    if (cur.blocked || cur.awaiting === 'user') await this.unblock(id, `The user was asked: ${decision.question}\nTheir answer: ${said}${raisedNote ? `\n${raisedNote}` : ''}`, 'user', { fresh });
   }
 
   /**
@@ -2551,12 +2793,12 @@ export class LiveEngine implements Engine {
     if (!phase) return;
     const had = `${merged.join(', ')} ${merged.length === 1 ? 'has' : 'have'} merged`;
     const sync = fm.worktree ? await this.syncBranch(id, 'before resuming') : undefined;
-    if (sync?.kind === 'conflict') { await this.runTurnFor(id, 'fix', `${this.conflictPrompt(id, sync)}\n\nThen continue with what you were waiting to do (${had}):\n\n${message}`); return; }
+    if (sync?.kind === 'conflict') { await this.runTurnFor(id, 'fix', `${this.conflictPrompt(id, sync)}\n\nThen continue with what you were waiting to do (${had}):\n\n${message}`, [], [], { fresh: 'auto' }); return; }
     const synced = sync?.kind === 'diverged' ? `planestro did not rebase your branch: the worktree (${sync.local.slice(0, 7)}) and the pushed branch (${sync.remote.slice(0, 7)}) have diverged, so someone pushed commits you do not have. Look at them first (git log HEAD..origin/${fm.branch}); ask with report_blocked if you need them brought in.`
       : sync?.kind === 'synced' ? `Your branch was rebased onto origin/${sync.base} (${sync.head.slice(0, 7)}), so it has what ${merged.join(', ')} delivered.`
       : sync?.kind === 'dirty' ? `Your branch is ${sync.behind} commit${sync.behind === 1 ? '' : 's'} behind origin/${sync.base}, which now has ${merged.join(', ')}; planestro did not rebase it because your worktree has uncommitted changes. Commit them first; ask with report_blocked if you need the rebase.`
       : '';
-    await this.runTurnFor(id, phase, `${this.resumeNote(id, `${merged.join(', ')} merging`)}\n\n${had}.${synced ? ` ${synced}` : ''}\n\n${message}`);
+    await this.runTurnFor(id, phase, `${had}.${synced ? ` ${synced}` : ''}\n\n${message}`, [], [], { fresh: 'auto', note: `${merged.join(', ')} merging` });
   }
 
   /**
@@ -2570,8 +2812,9 @@ export class LiveEngine implements Engine {
    * is then unblocked as unblock_item would (with the message, its session resumes told of the sync).
    * Waits for the git part and returns what happened, in words, for the API and the orchestrator.
    */
-  async syncWithBase(id: string, opts: { by?: 'user' | 'orchestrator'; unblock?: { message?: string } } = {}): Promise<string> {
+  async syncWithBase(id: string, opts: { by?: 'user' | 'orchestrator'; unblock?: { message?: string; fresh?: boolean } } = {}): Promise<string> {
     const by = opts.by ?? 'user';
+    const fresh = opts.unblock?.fresh === true;
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
     const d = this.store.derived(item);
@@ -2583,6 +2826,8 @@ export class LiveEngine implements Engine {
     if (fm.op) return `not now: ${id} is ${fm.op.replace(/_/g, ' ')}; let it finish first`;
     if (fm.awaiting && fm.awaiting !== 'user') return `not now: ${id} is awaiting ${fm.awaiting.replace(/_/g, ' ')}; answer that first`;
     if (opts.unblock && !fm.blocked && fm.awaiting !== 'user') return `nothing to unblock: ${id} is not blocked; sync it without unblocking`;
+    const noFresh = fresh ? this.freshRefusal(fm, opts.unblock?.message) : undefined;
+    if (noFresh) return `not possible: ${noFresh}`;
     const base = d.base_branch;
     if (!base) return `not possible: ${d.base_branch_error ?? 'the base branch cannot be resolved'}`;
     if (!epic) {
@@ -2612,7 +2857,7 @@ export class LiveEngine implements Engine {
       if (cur.blocked && !opts.unblock) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `${where}; ${id} stays blocked (${cur.blocked_reason}), so the conflict waits for it to be unblocked with a sync first` } }], 'engine'); return `conflict: ${where}. ${id} stays blocked (${cur.blocked_reason}); unblock it with sync_first to hand the conflict to its session`; }
       const then = opts.unblock?.message?.trim() ? `Then continue with this:\n\n${opts.unblock.message.trim()}` : 'Once the rebase is done, carry on with your work on this item where you left off.';
       this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, { activity: { actor: by, text: `${opts.unblock ? 'unblocked; ' : ''}the sync conflict goes to the session` } }], by, { commit: `${id}: sync conflict to the session` });
-      this.queueFollowUp(id, () => this.runTurnFor(id, 'fix', `${this.conflictPrompt(id, r)}\n\n${then}`));
+      this.queueFollowUp(id, () => this.runTurnFor(id, 'fix', `${this.conflictPrompt(id, r)}\n\n${then}`, [], [], { fresh: fresh ? true : 'auto' }));
       return `conflict: ${where}. Handed to the session to resolve${opts.unblock?.message?.trim() ? ', with your message to act on after' : ''}`;
     }
     if (r.kind === 'diverged') return `refused: the worktree (${r.local.slice(0, 7)}) and the pushed branch ${fm.branch} (${r.remote.slice(0, 7)}) have diverged; not pushing either way. Someone pushed commits the worktree lacks: bring them into the worktree (or reset it to them) first; nothing was rebased or pushed`;
@@ -2622,8 +2867,8 @@ export class LiveEngine implements Engine {
     if (r.kind === 'dirty') return said;
     if (opts.unblock) {
       const note = r.kind === 'synced' ? `planestro rebased your branch onto origin/${r.base} (${r.head.slice(0, 7)}), so it has what has merged there since you started.` : `Your branch is already on origin/${r.base}.`;
-      await this.unblock(id, opts.unblock.message?.trim() ? `${note}\n\n${opts.unblock.message.trim()}` : undefined, by);
-      return `${said}; unblocked${opts.unblock.message?.trim() ? ', and the session resumes with your message' : ', and the pipeline retries from where it stopped'}`;
+      await this.unblock(id, opts.unblock.message?.trim() ? `${note}\n\n${opts.unblock.message.trim()}` : undefined, by, { fresh });
+      return `${said}; unblocked${opts.unblock.message?.trim() ? `, and ${fresh ? 'a fresh session starts' : 'the session resumes'} with your message` : ', and the pipeline retries from where it stopped'}`;
     }
     return said;
   }
@@ -2859,10 +3104,21 @@ export class LiveEngine implements Engine {
     return { kind: 'synced', base, baseSha, head: sync.head, pushed: Boolean(expected), integration };
   }
 
-  /** User-driven unblock: clears the flag and, if the item is in a session phase, resumes with a message. */
-  async unblock(id: string, message?: string, by: 'user' | 'orchestrator' = 'user'): Promise<void> {
+  /** Why this item cannot be given a fresh conversation, in words; undefined when it can. */
+  private freshRefusal(fm: { id: string; status: Status; worktree?: string }, message?: string): string | undefined {
+    const phase = this.phaseFor(fm.status);
+    if (!message?.trim()) return 'a fresh session needs a message: it is the task in its brief, and the new conversation knows nothing else of what to do';
+    if (phase !== 'implement' && phase !== 'fix') return `${fm.id} is ${fm.status}: a fresh session is for work in progress or in review. A planning conversation is the basis of its plan and is resumed`;
+    if (!fm.worktree) return `${fm.id} has no worktree for a fresh session to work in`;
+    return undefined;
+  }
+
+  /** User-driven unblock: clears the flag and, if the item is in a session phase, resumes with a message. With `fresh`, in a new conversation that gets a brief. */
+  async unblock(id: string, message?: string, by: 'user' | 'orchestrator' = 'user', opts: { fresh?: boolean } = {}): Promise<void> {
     const fm = this.store.requireItem(id).file.frontmatter;
     if (fm.taken_over) throw new Error(`${id} is taken over: hand it back instead`);
+    const refusal = opts.fresh ? this.freshRefusal(fm, message) : undefined;
+    if (refusal) throw new Error(refusal);
     // Without a message there is nothing to tell a session, so "unblock" means "carry on from where
     // it stopped": the same step retry_op takes (open the PR for committed work, re-enter the merge
     // pipeline, requeue a setup that never ran, resume the session). Clearing the flag alone left
@@ -2874,7 +3130,8 @@ export class LiveEngine implements Engine {
     const opData = LiveEngine.withoutDirtyCount(fm.op_data);
     this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, ...(opData !== fm.op_data ? [{ set: { op_data: opData } } as ItemOp] : []), { activity: { actor: by, text: `unblocked${message ? `: ${message}` : ''}` } }], by, { commit: `${id}: unblock${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
     const phase = this.phaseFor(fm.status);
-    if (message && phase) this.queueFollowUp(id, () => this.runTurnFor(id, phase, `${this.resumeNote(id, by === 'orchestrator' ? 'the orchestrator' : 'a decision from the user')}\n\n${message}`));
+    // The message is an instruction that stands on its own, so the engine may give it to a fresh conversation (#64); `fresh` asks for one.
+    if (message && phase) this.queueFollowUp(id, () => this.runTurnFor(id, phase, message, [], [], { fresh: opts.fresh ? true : 'auto', note: by === 'orchestrator' ? 'the orchestrator' : 'a decision from the user' }));
     // p50: a merged item that stopped in cleanup (a worktree removal failed) retries it now, the path reconcile takes
     // five minutes later; with a message, or a retry that declined, clearing the flag alone left it MERGED until then.
     else if (fm.status === 'MERGED') this.runJob(id, () => this.cleanup(id));
@@ -2976,7 +3233,7 @@ export class LiveEngine implements Engine {
     if (fm.taken_over) throw new Error(`${id} is taken over: hand it back first`);
     if (!note.trim()) throw new Error('say what should change');
     this.store.mutateItem(id, [{ unset: ['awaiting', 'awaiting_data'] }, { set: { op_data: { ...(fm.op_data ?? {}), review_nudged: false } } }, { activity: { actor: 'user', text: `review: changes requested: ${note.trim()}` } }], 'user', { commit: `${id}: request review changes` });
-    this.runJob(id, () => this.runTurnFor(id, 'fix', `${this.resumeNote(id, 'your review')}\n\nThe user reviewed what you delivered and asks for changes:\n\n${note.trim()}\n\nRevise it in your worktree, commit on your branch, leave the tree clean, and finish as before. It will come back to the user for another look.`));
+    this.runJob(id, () => this.runTurnFor(id, 'fix', `The user reviewed what you delivered and asks for changes:\n\n${note.trim()}\n\nRevise it in your worktree, commit on your branch, leave the tree clean, and finish as before. It will come back to the user for another look.`, [], [], { fresh: 'auto', note: 'your review' }));
   }
 
   /** The one way a hold is put on an item (#97): out of the merge queue, with the reason on the item and in its log. */
