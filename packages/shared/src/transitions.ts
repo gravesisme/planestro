@@ -125,10 +125,11 @@ export function needsYou(fm: Pick<ItemFrontmatter, 'blocked' | 'awaiting' | 'tri
   // You took it over: you are already on it, and nothing on it waits for anyone else.
   if (fm.triage || fm.taken_over) return false;
   if (fm.blocked || (fm.awaiting !== undefined && NEEDS_YOU_AWAITING.has(fm.awaiting))) return true;
-  // A held pull request whose CI is green waits for exactly one thing, a person releasing the hold:
-  // nothing automatic moves it, so it is yours (dogfood p44: HH-162 sat held and green at NEEDS YOU 0).
-  // A held PR kept as a draft (ci.draft_while_held) never goes green, since CI waits for the release: same wait.
-  return fm.status === 'IN_REVIEW' && Boolean(fm.skip_merge) && (fm.ci_result === 'green' || fm.op_data?.pr_draft === true);
+  // A held pull request waits on a person releasing the hold, whatever its CI says (dogfood p44: HH-162 sat held and
+  // green at NEEDS YOU 0). Counting it only once CI was green hid HH-242 for four and a half hours (#116): its hold was
+  // "for the designer to play it", its CI went red on something unrelated, and nobody knew it was waiting. The card
+  // says what CI is doing; a red run is the orchestrator's or the session's to fix meanwhile.
+  return fm.status === 'IN_REVIEW' && Boolean(fm.skip_merge);
 }
 
 export function isDone(status: Status): boolean {

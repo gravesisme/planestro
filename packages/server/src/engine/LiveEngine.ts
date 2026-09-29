@@ -23,7 +23,7 @@ export interface EngineOptions { sleep?: (ms: number) => Promise<void>; tickMs?:
 const RESUMABLE_TURN_OPS = new Set(['planning_turn', 'implement_turn']);
 /** How many of one item's permission requests the orchestrator may refuse before they go to the user instead. */
 const MAX_ORCHESTRATOR_DENIALS = 3;
-const JUDGMENT_BLOCKS = ['turn_error', 'no_plan', 'no_commits', 'dirty_tree', 'sync_conflict', 'ci_timeout', 'ci_blocked', 'ci_disagree', 'base_red', 'pr_closed_externally', 'merge_unverified', 'agent_blocked', 'engine_error'] as const;
+const JUDGMENT_BLOCKS = ['turn_error', 'no_plan', 'no_commits', 'dirty_tree', 'sync_conflict', 'ci_red', 'ci_timeout', 'ci_blocked', 'ci_disagree', 'base_red', 'pr_closed_externally', 'merge_unverified', 'agent_blocked', 'engine_error'] as const;
 const ACTIVE_FOR_SLOTS: Status[] = ['PLAN_IN_PROGRESS', 'IN_PROGRESS'];
 /** Turn failures with their own block reason, because the fix is the user's (log in, wait, start over) and not a judgment call. */
 const ACTIONABLE_FAILURES = new Set(['auth_required', 'rate_limited', 'session_lost', 'spawn_error', 'cli_too_old']);
@@ -570,9 +570,11 @@ export class LiveEngine implements Engine {
       const fm = item.file.frontmatter;
       // A taken-over PR is polled the same way, for its CI only: it is shown, never acted on.
       const owned = Boolean(fm.taken_over);
-      if (fm.status !== 'IN_REVIEW' || !(fm.skip_merge || owned) || fm.blocked || fm.awaiting || !fm.pr || !fm.branch || (!fm.worktree && !owned)) continue;
+      // An epic's PR is held and polled too (#116): HH-242 was held "to play it", went red, and nothing read its CI.
+      const epic = this.store.derived(item).flavor === 'epic' && !owned;
+      if (fm.status !== 'IN_REVIEW' || !(fm.skip_merge || owned) || fm.blocked || fm.awaiting || !fm.pr || !fm.branch || (!fm.worktree && !owned && !epic)) continue;
       if (this.jobs.has(item.id) || this.turns.has(item.id) || fm.op || (fm.op_data?.needs_session_rebase && !owned)) continue;
-      if (this.store.derived(item).flavor !== 'worker') continue;
+      if (this.store.derived(item).flavor !== 'worker' && !epic) continue;
       if (now - (this.heldPolledAt.get(item.id) ?? 0) < HELD_POLL_MS) continue;
       this.heldPolledAt.set(item.id, now);
       this.runJob(item.id, () => owned ? this.readOwnedCi(item.id) : this.heldStep(item.id));
@@ -606,9 +608,11 @@ export class LiveEngine implements Engine {
       this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), pr_draft: true } } }, { activity: { actor: 'app', text: `held: PR #${fm.pr} is back to a draft, so CI waits until the hold is released` } }], 'engine');
       fm = this.store.requireItem(id).file.frontmatter;
     }
-    const cwd = this.absWorktree(fm.worktree!);
-    const [local, remote] = await Promise.all([this.ports.git.revParse(cwd, 'HEAD'), this.ports.git.remoteBranchSha(this.repo, fm.branch!)]);
-    if (remote && local !== remote) {
+    // An epic has no session of its own: nothing of its is pushed from here, only its CI is read, and a red run goes to triage.
+    const epic = fm.kind === 'epic';
+    const cwd = epic ? '' : this.absWorktree(fm.worktree!);
+    const [local, remote] = await Promise.all([epic ? Promise.resolve('') : this.ports.git.revParse(cwd, 'HEAD'), this.ports.git.remoteBranchSha(this.repo, fm.branch!)]);
+    if (!epic && remote && local !== remote) {
       // Commits the session made while the item was held. Pushed only when they build on what the
       // PR has; a remote that moved on its own is someone else's work and is left alone.
       if (await this.ports.git.isAncestor(cwd, remote, local)) { await this.mergeJob(id, { hold: true }); return; }
@@ -628,7 +632,7 @@ export class LiveEngine implements Engine {
       const lastRed = cur.op_data?.last_red as { runId?: number; sha?: string } | undefined;
       if (cur.ci_result === 'red' || (lastRed?.runId === ci.runId && lastRed?.sha === remote)) return;
       this.store.mutateItem(id, [{ set: { ci_head_sha: remote } }], 'engine');
-      await this.onCiRed(id, this.store.journal.begin('held_ci', id, { pr: fm.pr, sha: remote }), remote, undefined, 'github', true);
+      await this.onCiRed(id, this.store.journal.begin('held_ci', id, { pr: fm.pr, sha: remote }), remote, undefined, 'github', !epic);
       return;
     }
     // Still running, or not started: a green (or red) from another head is not this head's verdict.

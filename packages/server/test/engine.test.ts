@@ -1656,6 +1656,27 @@ describe('the orchestrator\'s notes about planestro (f8)', () => {
   });
 });
 
+describe('a held epic PR whose CI goes red (#116, HH-242)', () => {
+  it('is polled while held, and its red run goes to the orchestrator: never silent to both', async () => {
+    const { store, engine, world } = await setup();
+    store.updateConfig((doc) => { doc.setIn(['ci', 'draft_while_held'], false); }, 'config: no drafts');
+    const epic = store.createItem({ title: 'Game Over dashboard', description: 'x', kind: 'epic' } as any);
+    const branch = 'feature/game-over';
+    world.remoteBranches.set(branch, world.sha());
+    world.prs.set(428, { number: 428, url: 'u', state: 'OPEN', headRefOid: world.remoteBranches.get(branch)!, headRefName: branch, baseRefName: 'trunk', polls: 5, failOnce: true });
+    store.mutateItem(epic.id, [{ set: { status: 'IN_REVIEW' } }, { set: { pr: 428, branch, skip_merge: true, hold_reason: 'for the designer to play it', ci_result: 'pending' } }], 'engine');
+    expect(store.derived(store.getItem(epic.id)!).needs_you).toBe(true);           // held for the designer from the start
+    await engine.start();
+    await waitFor(() => store.getItem(epic.id)!.file.frontmatter.blocked_reason === 'ci_red', 8000);
+    const fm = store.getItem(epic.id)!.file.frontmatter;
+    expect(fm.ci_result).toBe('red');
+    // the orchestrator looks first (the dry-run one ends its triage at once, so it is read from the log)
+    expect(store.getItem(epic.id)!.file.sections.find((x) => x.title === 'Activity')!.body).toContain('the orchestrator is triaging this (ci_red)');
+    expect(store.journal.read({ item: epic.id, type: 'orchestrator.wake' }).some((w) => w.data?.event === 'blocked_ci_red')).toBe(true);
+    expect(fm.skip_merge).toBe(true);                                                // the hold stands
+  });
+});
+
 describe('a pull request attached by hand (p44)', () => {
   /** An item with a worker branch, a worktree and an open PR the engine did not open. */
   function handMade(store: DataStore, engine: LiveEngine, world: FakeWorld, status: 'IN_PROGRESS' | 'IN_REVIEW', extra: Record<string, unknown> = {}) {
@@ -1670,15 +1691,15 @@ describe('a pull request attached by hand (p44)', () => {
   }
   const json = (body: unknown) => ({ method: 'PATCH' as const, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
 
-  it('a held item whose CI is green, or whose PR is a draft until release, needs you; pending, or not held, does not', async () => {
+  it('a held item needs you whatever its CI says (#116); one that is not held does not', async () => {
     const { store } = await setup();
     const item = store.createItem({ title: 'Held', description: 'x' });
     const needs = (set: Record<string, unknown>) => { store.mutateItem(item.id, [{ set }], 'engine'); return store.derived(store.getItem(item.id)!).needs_you; };
-    expect(needs({ status: 'IN_REVIEW', skip_merge: true, ci_result: 'pending' })).toBe(false);
+    expect(needs({ status: 'IN_REVIEW', skip_merge: true, ci_result: 'pending' })).toBe(true);
     expect(needs({ status: 'IN_REVIEW', skip_merge: true, ci_result: 'green' })).toBe(true);
+    expect(needs({ status: 'IN_REVIEW', skip_merge: true, ci_result: 'red' })).toBe(true);    // HH-242: held to be played, red on something else
     expect(needs({ status: 'IN_REVIEW', skip_merge: false, ci_result: 'green' })).toBe(false);
     expect(needs({ status: 'IN_REVIEW', skip_merge: true, ci_result: 'pending', op_data: { pr_draft: true } })).toBe(true);   // a held draft: CI waits for the release
-    expect(needs({ status: 'IN_REVIEW', skip_merge: true, ci_result: 'pending', op_data: { pr_draft: false } })).toBe(false); // marked ready: CI is running
   });
 
   it('PATCHing a pr onto an item in review marks its CI pending, so the pipeline takes it once it is free to', async () => {

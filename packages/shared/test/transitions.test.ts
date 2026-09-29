@@ -67,6 +67,10 @@ describe('transitions', () => {
     expect(needsYou({ blocked: true })).toBe(true);
     expect(needsYou({ awaiting: 'orchestrator' })).toBe(false);
     expect(needsYou({ awaiting: 'question' })).toBe(true);
+    // #116: a held PR waits on you whatever its CI says; its card says what CI is doing
+    for (const ci_result of ['green', 'red', 'pending', undefined] as const) expect(needsYou({ status: 'IN_REVIEW', skip_merge: true, ci_result }), String(ci_result)).toBe(true);
+    expect(needsYou({ status: 'IN_REVIEW', skip_merge: true, ci_result: 'red', triage: { reason: 'ci_red', started_at: 'x' } as any })).toBe(false);
+    expect(needsYou({ status: 'IN_REVIEW', ci_result: 'red' })).toBe(false);
     expect(baseBranchOf({}, undefined, 'develop')).toBe('develop');
     expect(baseBranchOf({ parent: 'HH-9' }, { branch: 'feature/x' }, 'develop')).toBe('feature/x');
     expect(baseBranchOf({ parent: 'HH-9', base_branch_override: 'release/1' }, { branch: 'feature/x' }, 'develop')).toBe('release/1');
