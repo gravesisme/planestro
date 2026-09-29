@@ -355,7 +355,11 @@ export const Config = z.object({
     rotate_after_days: z.number().positive().default(3),
   }).default({ model: 'claude-fable-5', allow_model_fallback: false, may_approve_plans: false, max_plan_revisions: 2, may_decide_permissions: false, triage: true, triage_timeout_min: 10, rotate_after_wakes: 40, rotate_after_days: 3 }),
   engine: z.object({ mode: z.enum(['live', 'dry-run']).default('dry-run') }).default({ mode: 'dry-run' }),
-  epics: z.object({ auto_submit: z.boolean().default(true) }).default({ auto_submit: true }),
+  epics: z.object({
+    auto_submit: z.boolean().default(true),
+    /** The cap on a one-shot session that resolves a merge conflict on an epic's integration branch (#71). 0: no such session, the epic blocks as sync_conflict. */
+    conflict_budget_usd: z.number().min(0).default(10),
+  }).default({ auto_submit: true, conflict_budget_usd: 10 }),
   /** Pause automation before a subscription usage window runs out (see docs/configuration.md, Usage guard). */
   usage_guard: z.object({
     enabled: z.boolean().default(true),
