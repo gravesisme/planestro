@@ -1220,8 +1220,20 @@ export class LiveEngine implements Engine {
     if (fm.status === 'IN_PROGRESS') {
       if (ahead === 0) { this.block(id, 'no_commits', 'the session reported done but the branch has no commits ahead of its base'); return; }
       if (await this.blockOversize(id)) return;
-      if (!result.done) this.store.mutateItem(id, [{ activity: { actor: 'app', text: 'turn ended with commits but without report_done; proceeding to a pull request' } }], 'engine');
-      await this.openPr(id, result.done);
+      // Only after a turn: retry_op, finish_from_worktree and a restart's carry-on come here with no turn (numTurns 0) and open the PR as they are.
+      if (!summary && result.numTurns > 0) {
+        // Its report is what the reviewer reads (#99): HH-248 and HH-249 committed and ended without it, so the check tally
+        // and the capture paths their approval notes asked for were lost. One short follow-up asks for it, right away while
+        // the conversation is warm; then the pull request opens with or without it.
+        const cannot = fm.op_data?.report_nudged ? 'asked once already' : this.cannotStart(fm, phase, 'auto');
+        if (!cannot) {
+          this.store.mutateItem(id, [{ set: { op_data: { ...(this.store.requireItem(id).file.frontmatter.op_data ?? {}), report_nudged: true } } }, { activity: { actor: 'app', text: 'turn ended with commits but without report_done; asking the session for its report before the pull request' } }], 'engine');
+          await this.runTurnFor(id, phase, this.reportNudge(fm), [], [], { fresh: 'auto' });
+          return;
+        }
+        this.store.mutateItem(id, [{ activity: { actor: 'app', text: `turn ended with commits but without report_done (${cannot}); proceeding to a pull request` } }], 'engine');
+      }
+      await this.openPr(id, summary);
       return;
     }
     if (fm.status === 'IN_REVIEW') {
@@ -1236,6 +1248,17 @@ export class LiveEngine implements Engine {
       this.heldPolledAt.delete(id);
       void this.tick();
     }
+  }
+
+  /** The one follow-up for a turn that committed without report_done (#99): the report, and nothing else. */
+  private reportNudge(fm: ItemFrontmatter): string {
+    const notes = String(fm.op_data?.approval_notes ?? '').trim();
+    return [
+      'Your work is committed, but you ended your turn without calling report_done, so there is no report for the reviewer.',
+      'Call report_done now with your summary: what you changed and why, the result of the checks you ran (the tally), and anything a reviewer should know (choices you made, what you left out).',
+      ...(notes ? [`The approval notes asked for this in your report as well:\n${notes.slice(0, 1500)}`] : []),
+      'Do not change or commit anything else. Then end your turn.',
+    ].join('\n\n');
   }
 
   private async openPr(id: string, summary?: string): Promise<void> {

@@ -265,6 +265,37 @@ describe('LiveEngine lifecycle (dry-run ports)', () => {
     expect(world.prs.get(100)!.state).toBe('MERGED');
   });
 
+  it('a turn that commits without report_done is asked once for its report before the pull request (#99)', async () => {
+    const implementPrompts: string[] = [];
+    const quiet = (reportWhenAsked: boolean) => () => ({
+      async runTurn(o: TurnOptions): Promise<TurnResult> {
+        if (o.phase === 'plan') { await o.tools.submit_plan('# p'); return { sessionId: 's', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', planSubmitted: '# p' }; }
+        implementPrompts.push(o.prompt);
+        const asked = o.prompt.includes('without calling report_done');
+        if (asked && reportWhenAsked) { await o.tools.report_done('suite 412/412; captures in docs/captures/'); return { sessionId: 's', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', done: 'suite 412/412; captures in docs/captures/' }; }
+        return { sessionId: 's', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: 'committed' };
+      },
+    });
+    for (const reports of [true, false]) {
+      implementPrompts.length = 0;
+      const { store, engine, world } = await setup({ claude: quiet(reports) });
+      const item = store.createItem({ title: 'Q', description: 'x' });
+      store.transition(item.id, 'QUEUED', 'user');
+      await engine.start();
+      await waitFor(() => status(store, item.id) === 'PLAN_READY');
+      world.commits.set(join(store.codeRepoPath(), '.claude/worktrees/tp-1-q'), 1);
+      await engine.approvePlan(item.id, 'report the suite tally and the capture paths');
+      await waitFor(() => ['IN_REVIEW', 'MERGED', 'FINISHED'].includes(status(store, item.id)), 8000);
+      expect(implementPrompts).toHaveLength(2);                                   // the work, then exactly one ask
+      expect(implementPrompts[1]).toContain('The approval notes asked for this in your report as well:\nreport the suite tally and the capture paths');
+      const log = activityOf(store, item.id);
+      expect(log).toContain('turn ended with commits but without report_done; asking the session for its report before the pull request');
+      if (reports) expect(log).toContain('done: suite 412/412');
+      else expect(log).toContain('turn ended with commits but without report_done (asked once already); proceeding to a pull request');
+      await engine.stop(); store.close();
+    }
+  });
+
   it('report_blocked after report_done withdraws the done, so a real block is never healed away', async () => {
     const fickle = () => ({
       async runTurn(o: TurnOptions): Promise<TurnResult> {
