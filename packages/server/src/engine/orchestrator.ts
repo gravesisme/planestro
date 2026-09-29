@@ -37,6 +37,10 @@ const QUESTION_REVIEW_POLICY = [
   'If it still stands exactly as written, do neither: planestro notes "reviewed, no change" in its thread. Do not reply in the thread for this check; the change you make is the answer.',
 ].join('\n');
 
+/** How much of the chat a fresh conversation is given (#59). */
+const RECENT_CHAT_DAYS = 7;
+const RECENT_CHAT_ENTRIES = 30;
+
 export interface WakeEvent { type: string; item?: string; data?: Record<string, unknown> }
 /** The question a wake is about: `question_message` and `question_review` carry its id in `data.question`. */
 const questionOf = (e: WakeEvent): string | undefined => (e.type.startsWith('question_') && typeof e.data?.question === 'string' ? e.data.question : undefined);
@@ -253,7 +257,8 @@ export class Orchestrator {
       state = { wakes_served: 0 };
     }
     const packet = [...events.map((e) => this.renderPacket(e)), ...(await this.inFlightSection(events))].join('\n\n---\n\n');
-    const prompt = `${state.session_id ? '' : this.systemIntro() + '\n\n'}# Wake: ${events.map((e) => e.type).join(', ')} — ${isoLocal()}\n\n${packet}\n\nHandle what needs judgment using the planestro tools, then call done_with_wake with a one-line summary. Everything mechanical is already handled by the app; do not attempt git or gh operations.`;
+    const carried = state.session_id ? '' : this.recentChat();
+    const prompt = `${state.session_id ? '' : this.systemIntro() + '\n\n'}${carried ? carried + '\n\n' : ''}# Wake: ${events.map((e) => e.type).join(', ')} — ${isoLocal()}\n\n${packet}\n\nHandle what needs judgment using the planestro tools, then call done_with_wake with a one-line summary. Everything mechanical is already handled by the app; do not attempt git or gh operations.`;
     let doneSummary = '';
     const pick = this.modelForWake();
     if (pick.fellBackFrom) this.log('info', `orchestrator: ${pick.fellBackFrom} is out of usage; waking on ${pick.label}`);
@@ -291,6 +296,27 @@ export class Orchestrator {
     this.writeState({ session_id: result.sessionId ?? state.session_id, started_at: state.started_at ?? isoLocal(), wakes_served: state.wakes_served + 1 });
     this.store.journal.append({ type: 'orchestrator.done', actor: 'orchestrator', data: { events: events.map((e) => e.type), summary: doneSummary || (result.isError ? `(failed: ${result.subtype}) ${result.error ?? ''}` : result.text.slice(-300)), cost: result.costUsd, subtype: result.subtype } });
     this.log('info', `orchestrator: ${doneSummary || result.subtype}`);
+  }
+
+  /**
+   * What the user said in the chat lately, for a fresh conversation (#59): an instruction given to the
+   * conversation that was rotated away ("as each child's dependencies merge, submit it") lived only there,
+   * and HH-172's children sat idle. The journal holds it (invariant 3), so it is carried, not remembered.
+   */
+  private recentChat(now = Date.now()): string {
+    const since = now - RECENT_CHAT_DAYS * 86_400_000;
+    const chat = this.store.journal.read().filter((j) => (j.type === 'orchestrator.user_message' || j.type === 'orchestrator.reply') && Date.parse(j.ts) >= since).slice(-RECENT_CHAT_ENTRIES);
+    if (!chat.some((j) => j.type === 'orchestrator.user_message')) return '';
+    const line = (j: (typeof chat)[number]) => {
+      const who = j.type === 'orchestrator.user_message' ? 'user' : 'you';
+      const text = String(j.data?.text ?? '').replace(/\s+/g, ' ').trim();
+      const max = who === 'user' ? 1000 : 300;
+      return `- ${j.ts.slice(0, 16).replace('T', ' ')} ${who}${j.item ? ` (on ${j.item})` : ''}: ${text.length > max ? `${text.slice(0, max)}…` : text}`;
+    };
+    return [
+      `# What the user said to you lately\nThis is a fresh conversation: the one before it was rotated away, and with it what the user told you in the chat (the last ${RECENT_CHAT_DAYS} days, from the journal). An instruction there that is not yet carried out, done or withdrawn still stands: act on it when its moment comes, as if they had just said it.`,
+      ...chat.map(line),
+    ].join('\n');
   }
 
   private readonly host = hostNote();

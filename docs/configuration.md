@@ -160,7 +160,7 @@ for a decision.
 | `orchestrator.triage_timeout_min` | `10` | How long an item may stay in triage. Past it — or with the orchestrator off, unavailable or paused — the item comes to you exactly as it stopped. |
 | `orchestrator.max_plan_revisions` | `2` | How many times it may send one item's plan back to the planner with fixes. Past that it can only approve the plan or leave it to you. |
 | `orchestrator.rotate_after_wakes` | `40` | Start a fresh orchestrator conversation after this many wakes… |
-| `orchestrator.rotate_after_days` | `3` | …or this many days. The files are its memory. |
+| `orchestrator.rotate_after_days` | `3` | …or this many days. The files are its memory, and the fresh conversation is given the last 7 days of the user's chat, so an instruction it has not carried out yet still stands. |
 | `engine.mode` | `dry-run` | `dry-run` logs `Would …` against in-memory fakes; `live` acts. Overridden per machine by `engine.mode` in the local file. |
 | `git.auto_commit` | `true` | Commit data-dir changes with semantic messages. |
 | `git.auto_push` | `true` | Push the data dir at checkpoints, if it has a remote. |
