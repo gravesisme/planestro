@@ -1318,8 +1318,9 @@ export class LiveEngine implements Engine {
     const base = this.store.derived(item).base_branch!;
     const implementer = this.store.config.models.find((m) => m.id === fm.implementer);
     const held = Boolean(implementer?.hold_for_review);
+    const holdInto = this.holdIntoReason(base, fm.skip_merge);
     // A held PR opens as a draft: no CI while it waits for a person, one run once it is released (dogfood f6).
-    const draft = this.store.config.ci.draft_while_held && (held || Boolean(fm.review_hold) || Boolean(fm.skip_merge));
+    const draft = this.store.config.ci.draft_while_held && (held || Boolean(fm.review_hold) || Boolean(fm.skip_merge) || Boolean(holdInto));
     const opId = this.store.journal.begin('creating_pr', id, { branch: fm.branch, base });
     this.store.mutateItem(id, [{ set: { op: 'pushing', op_started_at: this.now() } }], 'engine');
     await this.ports.git.pushSetUpstream(cwd, fm.branch!);
@@ -1336,6 +1337,7 @@ export class LiveEngine implements Engine {
       { unset: ['op', 'op_started_at'] },
       { activity: { actor: 'app', text: `opened PR #${pr.number} → ${base} (${pr.url})${draft ? ' as a draft: it is held, so CI waits until the hold is released' : ''}` } },
       ...(held ? [{ activity: { actor: 'app' as const, text: `will wait for your review before merging: ${implementer!.label} is a hold_for_review model` } }] : []),
+      ...(holdInto ? this.holdOps(holdInto, 'app') : []),
     ], 'engine', { commit: `${id}: open PR #${pr.number}` });
     this.store.journal.end(opId, id, 'ok', { pr: pr.number });
     this.note('info', `${id}: PR #${pr.number} opened against ${base}`);
@@ -2132,8 +2134,11 @@ export class LiveEngine implements Engine {
       { set: { pr: pr.number, ci_result: 'pending' } },
       { unset: ['op', 'op_started_at'] },
       { activity: { actor: 'app', text: `opened epic PR #${pr.number} → ${base} (${pr.url})` } },
+      ...(() => { const why = this.holdIntoReason(base, fm.skip_merge); return why ? this.holdOps(why, 'app') : []; })(),
     ], 'engine', { commit: `${id}: open PR #${pr.number}` });
     this.store.journal.end(opId, id, 'ok', { pr: pr.number });
+    // As for an item's PR: the orchestrator hears of it before it can merge (LM-2's went to main unseen).
+    this.wakeOrchestrator('pr_opened', id);
     void this.tick();
   }
 
@@ -3400,6 +3405,15 @@ export class LiveEngine implements Engine {
     if (!note.trim()) throw new Error('say what should change');
     this.store.mutateItem(id, [{ unset: ['awaiting', 'awaiting_data'] }, { set: { op_data: { ...(fm.op_data ?? {}), review_nudged: false } } }, { activity: { actor: 'user', text: `review: changes requested: ${note.trim()}` } }], 'user', { commit: `${id}: request review changes` });
     this.runJob(id, () => this.runTurnFor(id, 'fix', `The user reviewed what you delivered and asks for changes:\n\n${note.trim()}\n\nRevise it in your worktree, commit on your branch, leave the tree clean, and finish as before. It will come back to the user for another look.`, [], [], { fresh: 'auto', note: 'your review' }));
+  }
+
+  /**
+   * Why a pull request into `base` opens held (review.hold_into), or nothing. LM-2's epic PR into main, which deploys to
+   * production, merged five minutes after it opened: the project's rule was to hold it for a playtest, and nothing had.
+   */
+  private holdIntoReason(base: string, alreadyHeld?: boolean): string | undefined {
+    if (alreadyHeld || !this.store.config.review.hold_into.includes(base)) return undefined;
+    return `a pull request into ${base}: held for you before it merges (review.hold_into)`;
   }
 
   /** The one way a hold is put on an item (#97): out of the merge queue, with the reason on the item and in its log. */
