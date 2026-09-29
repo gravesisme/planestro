@@ -194,7 +194,8 @@ export function makePolicy(config: Config, baseBranch: string, worktree: string)
     { re: /^\s*sed\b[^|;&]*?\s(-[nErsuz]*i|--in-place)/, why: 'edit files with the Edit or Write tool, not through the shell.' },
     { re: /^\s*perl\b[^|;&]*?\s-[pln0-9]*i/, why: 'edit files with the Edit or Write tool, not through the shell.' },
   ];
-  const userDeny = config.permissions.deny.map((d) => d.trim()).filter(Boolean);
+  // Written as a rule (`Bash(rm -rf *)`, as Settings shows it) or as a bare prefix (`rm -rf`): both deny the prefix (#109).
+  const userDeny = config.permissions.deny.map((d) => d.trim()).filter(Boolean).map((d) => { const m = /^Bash\((.*)\)$/.exec(d); return m ? m[1].replace(/\s*\*$/, '').trim() : d; }).filter(Boolean);
   return {
     deny(req) {
       if (req.tool !== 'Bash') {
@@ -204,7 +205,11 @@ export function makePolicy(config: Config, baseBranch: string, worktree: string)
       }
       const cmd = String(req.input.command ?? '');
       if (leavesWorktree(cmd, worktree)) return `your working directory is pinned to your worktree (${worktree}): every command starts there and a cd out of it is refused. Run the command from the worktree, with paths relative to it.`;
-      for (const seg of cmd.split(SEPARATORS)) {
+      // Every command the shell would run (#109), heredoc bodies aside: split on the first line alone, a denied
+      // command on a second line or after a single `&` was never looked at. Unread, every line and every `&` split.
+      const items = readShell(cmd);
+      const segments = items ? items.flatMap((it) => (it.kind === 'command' ? [it.text.replace(HEREDOC, '')] : [])) : cmd.split(/\n|&&|\|\||;|\||&/);
+      for (const seg of segments) {
         // A prefix must not hide a denied command: judge the segment and what it actually runs.
         // The worktree anchor is peeled first, so its path cannot trip a rule (a directory named `worktree`).
         const own = unanchor(seg.trim(), worktree);
@@ -269,19 +274,51 @@ export function allowedByRules(req: PermissionRequest, rules: string[], worktree
   if (req.tool !== 'Bash') return rules.includes(req.tool);
   rules = rules.map((r) => r.trim());
   const command = String(req.input.command ?? '');
-  const firstLine = command.split('\n')[0];  // heredoc bodies follow the first line
-  const segments = firstLine.split(SEPARATORS).map((x) => x.replace(HEREDOC, '').trim()).filter(Boolean);
-  if (!segments.length) return false;
-  const prefixes = prefixesOf(sdkRules(rules));
-  const asWritten = segments.every((raw) => {
-    if (worktree) {
-      const cd = CD.exec(raw);
-      if (cd) return insideWorktree(cd[1], worktree);
-    }
-    return segmentAllowed(raw, prefixes, worktree);
-  });
+  const asWritten = firstReading(command, prefixesOf(sdkRules(rules)), worktree, scope);
   if (asWritten || !worktree) return asWritten;
   return staysInWorktree(command, prefixesOf(rules.map((r) => r.endsWith(SCOPE) ? r.slice(0, -SCOPE.length) : r)), worktree, scope);
+}
+
+/**
+ * The first reading (#109): every command the shell would run, on every line and inside every `$(…)`,
+ * matches an unscoped rule, and what they write goes to the worktree, a scratch folder or a device (only
+ * /dev/null while planning). It used to judge the first line split on `&&`, `||`, `;` and `|`, so
+ * `git status` followed by a line `rm -rf build`, `git status & rm -rf build` or `git log > /etc/x` passed
+ * as the rules for `git status` and `git log`. Heredoc bodies are data, never commands. A command the
+ * shell reader does not follow (backticks, `<(…)`, `[[ … ]]`, …) is not allowed by this reading: it could
+ * be running anything, and it parks for a decision. Loops are the second reading's.
+ */
+function firstReading(command: string, prefixes: string[], worktree: string | undefined, scope: ScopeOptions): boolean {
+  const items = readShell(command);
+  if (!items || !items.some((it) => it.kind === 'command')) return false;
+  const roots = worktree ? [worktree, ...SCRATCH] : [];
+  for (const at of located(items, worktree ?? '/')) {
+    if (!('command' in at)) return false;
+    const { dirs } = at;
+    if (!dirs) return false;
+    const it = at.command;
+    if (it.assigns.some((a) => DANGEROUS_ENV.test(a.name))) return false;
+    for (const r of it.redirects) {
+      if (r.kind !== 'file') continue;
+      const target = tilde(r.target) ? null : literal(r.target);
+      if (target === null) return false;
+      if (!r.write) continue;
+      for (const d of dirs) {
+        const abs = resolve(d, target);
+        if (scope.readOnly ? abs !== '/dev/null' : !DEVICES.has(abs) && !roots.some((root) => within(abs, root))) return false;
+      }
+    }
+    if (!it.words.length) return false;  // an assignment or a redirection by itself is the second reading's to judge
+    const head = literal(it.words[0]);
+    if (head === 'cd') {
+      const to = it.words.length === 2 && !tilde(it.words[1]) ? literal(it.words[1]) : null;
+      if (!worktree || to === null || it.piped || it.background || at.inLoop || !insideWorktree(to, worktree) || !dirs.every((d) => within(resolve(d, to), worktree))) return false;
+      at.enter(to);
+      continue;
+    }
+    if (!segmentAllowed(it.text.replace(HEREDOC, '').replace(/[ \t]+$/, ''), prefixes, worktree)) return false;
+  }
+  return true;
 }
 
 type Vars = Map<string, string[] | null>;
