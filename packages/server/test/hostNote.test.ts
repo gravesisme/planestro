@@ -25,6 +25,7 @@ describe('cwdNote (#96)', () => {
     expect(note).toContain('not for the next');
     expect(note).toContain('A `cd` out of the worktree is refused');
     expect(note).toContain('under /tmp');
+    expect(note).toContain('Change files with the Edit and Write tools, not with a script');   // #109
   });
 });
 
