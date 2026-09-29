@@ -29,6 +29,8 @@ export function cwdNote(worktree: string): string {
     `- Every Bash command starts in your worktree (${worktree}). A \`cd\` holds for the rest of that one command and not for the next: write \`cd packages/web && npm test\`, or use paths from the worktree root.`,
     '- A `cd` out of the worktree is refused. Name what you need there by its path instead.',
     '- Ordinary commands that stay inside the worktree run without approval, chained or looped, with output redirected into the worktree. Put scratch files in the worktree or under /tmp, nowhere else.',
+    // #109: `cat > /tmp/x.py <<EOF … EOF` then `python3 /tmp/x.py` ran unchecked; every command is judged now, and each such script parks.
+    '- Change files with the Edit and Write tools, not with a script: a command that writes a script and runs it (python3, node, sh) waits for approval every time, and each wait costs a resume. Scripts are for what the tools cannot do.',
   ].join('\n');
 }
 
