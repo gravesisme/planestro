@@ -302,7 +302,9 @@ export const Config = z.object({
     byproducts: z.array(z.string().min(1)).default([]),
     /** Paths inside a worktree (relative, e.g. `tmp`) whose untracked files are copied into the same path of the main checkout when the item merges, before the worktree goes: a sandboxed worker cannot write there itself (#72). Never overwrites; they are kept (keep_on_remove) as well. */
     copy_to_checkout: z.array(z.string().min(1)).default([]),
-  }).default({ root: '.claude/worktrees', branch_pattern: '{{prefix_lower}}/{{number}}-{{slug}}', dir_pattern: '{{prefix_lower}}-{{number}}-{{slug}}', keep_on_remove: [], byproducts: [], copy_to_checkout: [] }),
+    /** Tracked files a command regenerates (`resources/i18n/messages.pot` → its export command), by path pattern as for `byproducts`. A sync that conflicts only in these takes the base's copy, runs the command and commits what changed, with no session turn (#63). */
+    generated: z.record(z.string().min(1), z.string().min(1)).default({}),
+  }).default({ root: '.claude/worktrees', branch_pattern: '{{prefix_lower}}/{{number}}-{{slug}}', dir_pattern: '{{prefix_lower}}-{{number}}-{{slug}}', keep_on_remove: [], byproducts: [], copy_to_checkout: [], generated: {} }),
   hooks: z.object({ after_worktree_create: z.array(z.string()).default([]) }).default({ after_worktree_create: [] }),
   models: z.array(ModelDef).min(1),
   defaults: z.object({

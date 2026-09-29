@@ -51,6 +51,16 @@ function clean(def: SettingDef, v: unknown): unknown {
       for (const [k, n] of Object.entries(v)) { if (!k.trim()) throw new Error(`${def.key}: a name is empty`); out[k.trim()] = n; }
       return out;
     }
+    case 'commands': {
+      if (!isPlainObject(v)) throw new Error(`${def.key}: expected file patterns with commands`);
+      const out: Record<string, string> = {};
+      for (const [k, c] of Object.entries(v)) {
+        if (!k.trim()) throw new Error(`${def.key}: a file pattern is empty`);
+        if (typeof c !== 'string' || !c.trim()) throw new Error(`${def.key}: ${k.trim()} needs a command`);
+        out[k.trim()] = c.trim();
+      }
+      return out;
+    }
     case 'sections': {
       if (!Array.isArray(v)) throw new Error(`${def.key}: expected a list of sections`);
       const titles = v.map((s) => (isPlainObject(s) && typeof s.title === 'string' ? s.title.trim() : ''));

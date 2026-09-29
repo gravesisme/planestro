@@ -3,7 +3,7 @@ import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { validateParts, partsSummary, type Part, serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, epicFlagOf, epicShapeOf, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1 } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
-import type { Ports, TurnPhase, TurnResult, TurnTools, PermissionRequest, McpServerSpec } from './ports.ts';
+import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult } from './ports.ts';
 import { makePolicy, ruleFor, allowedByRules, BASE_ALLOWED } from './policy.ts';
 import { hostNote, keptPathsNote } from './hostNote.ts';
 import { Orchestrator } from './orchestrator.ts';
@@ -1193,12 +1193,12 @@ export class LiveEngine implements Engine {
       headSha = localHead;
       synced = `already on ${base}@${baseSha.slice(0, 7)}; no sync needed, reusing CI for ${headSha.slice(0, 7)}`;
     } else {
-      const sync = integration ? await this.ports.git.merge(cwd, `origin/${base}`) : await this.ports.git.rebase(cwd, `origin/${base}`);
+      const sync = await this.syncOnto(id, cwd, base, integration);
       if (!sync.ok) {
         this.store.mutateItem(id, [
           { unset: ['op', 'op_started_at'] },
           { set: { ci_result: 'unknown', op_data: { ...(fm.op_data ?? {}), needs_session_rebase: canFix } } },
-          { activity: { actor: 'app', text: `${integration ? 'merge of' : 'rebase onto'} origin/${base} (${baseSha.slice(0, 7)}) conflicted in ${sync.conflicts.join(', ')}${canFix ? '; handing to the session' : ''}` } },
+          { activity: { actor: 'app', text: `${integration ? 'merge of' : 'rebase onto'} origin/${base} (${baseSha.slice(0, 7)}) conflicted in ${sync.conflicts.join(', ')}${sync.note ? ` (${sync.note})` : ''}${canFix ? '; handing to the session' : ''}` } },
         ], 'engine', { commit: `${id}: ${integration ? 'merge' : 'rebase'} conflict` });
         this.store.journal.end(opId, id, 'aborted', { reason: 'conflict', files: sync.conflicts });
         if (canFix) this.queueFollowUp(id, () => this.runTurnFor(id, 'fix', this.store.renderPrompt('rebase-conflict', this.store.requireItem(id), { conflict_files: sync.conflicts.join('\n'), base_sha: baseSha.slice(0, 12) })));
@@ -1207,7 +1207,7 @@ export class LiveEngine implements Engine {
       }
 
       // 2. push (integration branches push plainly; worker branches force-with-lease their rebase)
-      this.store.mutateItem(id, [{ set: { op: 'pushing', op_started_at: this.now() } }], 'engine');
+      this.store.mutateItem(id, [{ set: { op: 'pushing', op_started_at: this.now() } }, ...(sync.note ? [{ activity: { actor: 'app', text: sync.note } } as ItemOp] : [])], 'engine');
       if (integration) await this.ports.git.pushSetUpstream(cwd, fm.branch!);
       else await this.ports.git.pushForceWithLease(cwd, fm.branch!, expected);
       headSha = sync.head;
@@ -2571,6 +2571,38 @@ export class LiveEngine implements Engine {
     return said;
   }
 
+  /**
+   * Rebase a worker branch onto origin/<base>, or merge it into an integration branch, with the project's
+   * generated files (worktrees.generated, #63) resolved by code: a conflict only in those takes the base's
+   * copy, their commands run, and what they changed is committed. HH-184's rebase conflicted only in
+   * messages.pot (generated from en.po), went to a session that was over budget, and the designer paid for
+   * a merge a tool could do. Anything else, a failed command, or a command that changed an unlisted file:
+   * the branch goes back to its head before the sync and the conflict goes where it always went. `note`
+   * says what was regenerated, or why it was not.
+   */
+  private async syncOnto(id: string, cwd: string, base: string, integration: boolean): Promise<RebaseResult & { note?: string }> {
+    const generated = this.store.config.worktrees.generated;
+    const patterns = Object.keys(generated);
+    const before = patterns.length ? await this.ports.git.revParse(cwd, 'HEAD') : '';
+    const sync = integration ? await this.ports.git.merge(cwd, `origin/${base}`, patterns) : await this.ports.git.rebase(cwd, `origin/${base}`, patterns);
+    const took = sync.tookBase ?? [];
+    if (!sync.ok || !took.length) return sync;
+    const undo = async (why: string): Promise<RebaseResult & { note: string }> => {
+      await this.ports.git.resetHard(cwd, before);
+      return { ok: false, conflicts: took, head: before, note: `${why}; the sync was undone` };
+    };
+    const commands = [...new Set(patterns.filter((p) => took.some((f) => matchesPathPattern(f, p))).map((p) => generated[p]))];
+    for (const command of commands) {
+      const r = await this.withLocalJobSlot(() => this.ports.proc.run(command, { cwd, timeoutMs: 20 * 60_000 }));
+      if (r.code !== 0) return undo(`regenerating with \`${command}\` exited ${r.code}: ${(r.stderr || r.stdout).trim().split('\n').slice(-3).join(' ').slice(0, 300)}`);
+    }
+    const { tracked } = await this.ports.git.dirtyDetail(cwd);
+    const other = tracked.filter((f) => !patterns.some((p) => matchesPathPattern(f, p)));
+    if (other.length) return undo(`regenerating also changed ${other.slice(0, 5).join(', ')}, which worktrees.generated does not list`);
+    const head = tracked.length ? await this.ports.git.commitPaths(cwd, tracked, `${id}: regenerate ${tracked.map((f) => basename(f)).join(', ')}`) : sync.head;
+    return { ...sync, head, note: `took ${base}'s copy of ${took.join(', ')} in the conflict and regenerated it (${commands.map((c) => `\`${c}\``).join(', ')})${tracked.length ? `; committed ${tracked.join(', ')}` : '; nothing changed'}` };
+  }
+
   /** The rebase-conflict prompt for a sync that stopped on a conflict. */
   private conflictPrompt(id: string, r: { files: string[]; baseSha: string }): string {
     return this.store.renderPrompt('rebase-conflict', this.store.requireItem(id), { conflict_files: r.files.join('\n'), base_sha: r.baseSha.slice(0, 12) });
@@ -2624,9 +2656,9 @@ export class LiveEngine implements Engine {
         return { kind: 'diverged', base, local, remote: expected };
       }
     }
-    const sync = integration ? await this.ports.git.merge(cwd, `origin/${base}`) : await this.ports.git.rebase(cwd, `origin/${base}`);
+    const sync = await this.syncOnto(id, cwd, base, integration);
     if (!sync.ok) {
-      done('aborted', { reason: 'conflict', files: sync.conflicts }, `${integration ? 'merge of' : 'rebase onto'} origin/${base} (${baseSha.slice(0, 7)}) conflicted in ${sync.conflicts.join(', ')}; aborted, the branch is unchanged`);
+      done('aborted', { reason: 'conflict', files: sync.conflicts }, `${integration ? 'merge of' : 'rebase onto'} origin/${base} (${baseSha.slice(0, 7)}) conflicted in ${sync.conflicts.join(', ')}${sync.note ? ` (${sync.note})` : ''}; aborted, the branch is unchanged`);
       return { kind: 'conflict', base, baseSha, files: sync.conflicts, integration, cwd };
     }
     // Pushed only when the branch is already on the remote: a branch no one has seen needs only the local rebase.
@@ -2635,7 +2667,7 @@ export class LiveEngine implements Engine {
       if (integration) await this.ports.git.pushSetUpstream(cwd, branch);
       else await this.ports.git.pushForceWithLease(cwd, branch, expected);
     }
-    done('ok', { head: sync.head, pushed: Boolean(expected) }, `${integration ? `merged origin/${base} into ${branch}` : `rebased onto origin/${base}`}${context ? ` ${context}` : ''} (${sync.head.slice(0, 7)}${expected ? (integration ? ', pushed' : ', pushed with --force-with-lease') : ''})`);
+    done('ok', { head: sync.head, pushed: Boolean(expected) }, `${integration ? `merged origin/${base} into ${branch}` : `rebased onto origin/${base}`}${context ? ` ${context}` : ''} (${sync.head.slice(0, 7)}${expected ? (integration ? ', pushed' : ', pushed with --force-with-lease') : ''})${sync.note ? `; ${sync.note}` : ''}`);
     return { kind: 'synced', base, baseSha, head: sync.head, pushed: Boolean(expected), integration };
   }
 
