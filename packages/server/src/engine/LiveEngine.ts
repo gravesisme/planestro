@@ -729,7 +729,10 @@ export class LiveEngine implements Engine {
       const rule = ruleFor(req);
       const who = by === 'orchestrator' ? 'The orchestrator' : 'The user';
       const ops: ItemOp[] = [{ unset: ['awaiting', 'awaiting_data'] }, { activity: { actor: by, text: `permission ${decision}${by === 'orchestrator' && payload.reason ? ` (${String(payload.reason).slice(0, 300)})` : ''}: ${rule.slice(0, 400)}` } }];
+      // Consecutive denials (#95): any approval, the user's included, means the worker adapted, and the item's requests go back to the
+      // orchestrator. Counted for the item's life, HH-253's three reasonable denials sent every later request to the designer's phone.
       if (by === 'orchestrator' && decision === 'deny') ops.push({ set: { op_data: { ...(fm.op_data ?? {}), orchestrator_denials: Number(fm.op_data?.orchestrator_denials ?? 0) + 1 } } });
+      else if (decision !== 'deny' && Number(fm.op_data?.orchestrator_denials ?? 0) > 0) ops.push({ set: { op_data: { ...(fm.op_data ?? {}), orchestrator_denials: 0 } } });
       if (decision === 'always' && !this.store.config.permissions.allow.includes(rule)) this.store.updateConfig((doc) => { doc.setIn(['permissions', 'allow'], [...this.store.config.permissions.allow, rule]); }, `config: always allow ${rule.slice(0, 60)}`);
       this.store.mutateItem(id, ops, by, { commit: `${id}: permission ${decision}${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
       const desc = req.tool === 'Bash' ? `\`${String(req.input.command)}\`` : `${req.tool} ${JSON.stringify(req.input).slice(0, 200)}`;
@@ -863,7 +866,9 @@ export class LiveEngine implements Engine {
           if (req.tool === 'Bash' && oneShot.delete(String(req.input.command ?? '').trim())) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: 'one-shot approval consumed' } }], 'engine'); return { action: 'allow' }; }
           if (allowedByRules(req, [...BASE_ALLOWED[phase], ...this.store.config.permissions.allow, ...extraAllowed], cwd)) return { action: 'allow' };
           const ask = this.permissionsDelegated() && this.mayAskOrchestrator(this.store.requireItem(id).file.frontmatter);
-          this.store.mutateItem(id, [{ set: { awaiting: ask ? 'orchestrator' : 'permission', awaiting_data: { ...(ask ? { kind: 'permission' } : {}), tool: req.tool, input: req.input, requested_at: this.now() } } }, { activity: { actor: 'app', text: `parked: permission for ${req.tool} ${String(req.input.command ?? req.input.file_path ?? '').slice(0, 80)}${ask ? ' (asking the orchestrator)' : ''}` } }], 'engine', { commit: `${id}: awaiting permission` });
+          // The safety valve tripped: say so on the card, or the stream of requests reaching the user is a mystery (#95).
+          const tripped = !ask && this.permissionsDelegated();
+          this.store.mutateItem(id, [{ set: { awaiting: ask ? 'orchestrator' : 'permission', awaiting_data: { ...(ask ? { kind: 'permission' } : {}), ...(tripped ? { escalated: 'orchestrator_denials' } : {}), tool: req.tool, input: req.input, requested_at: this.now() } } }, { activity: { actor: 'app', text: `parked: permission for ${req.tool} ${String(req.input.command ?? req.input.file_path ?? '').slice(0, 80)}${ask ? ' (asking the orchestrator)' : tripped ? ` (to you: the orchestrator denied its last ${MAX_ORCHESTRATOR_DENIALS} requests)` : ''}` } }], 'engine', { commit: `${id}: awaiting permission` });
           if (ask) this.wakeOrchestrator('permission_request', id);
           return { action: 'park' };
         },
@@ -1716,14 +1721,17 @@ export class LiveEngine implements Engine {
     // orphans: worktrees under our root that no item references
     const root = this.store.worktreesRoot();
     const referenced = new Set(this.store.listItems().map((i) => i.file.frontmatter.worktree && this.absWorktree(i.file.frontmatter.worktree!)).filter(Boolean));
-    const orphans = worktrees.filter((w) => w.path.startsWith(root + '/') && !referenced.has(w.path));
+    // A worktree inside an item's worktree is that item's (a project tool made it: LM-24's look-compare baseline), not an orphan (#100).
+    const inReferenced = (p: string) => [...referenced].some((r) => p.startsWith(`${r}/`));
+    const orphans = worktrees.filter((w) => w.path.startsWith(root + '/') && !referenced.has(w.path) && !inReferenced(w.path));
     if (orphans.length) {
       corrections.push(`orphan worktrees: ${orphans.map((o) => o.path).join(', ')}`);
-      // Wake the orchestrator only when the orphan set CHANGES — a wake per reconcile pass
-      // would re-ask the same question every five minutes and burn a model turn each time.
+      // Wake the orchestrator only for an orphan it has not been told about: a wake per reconcile pass would re-ask the same
+      // question every five minutes, and one per change re-asked about LM's four July worktrees whenever a fifth came and went.
       const key = orphans.map((o) => o.path).sort().join('|');
       const last = this.store.journal.read({ type: 'reconcile.orphans_reported', limit: 1 })[0];
-      if (last?.data?.key !== key) {
+      const told = new Set(String(last?.data?.key ?? '').split('|').filter(Boolean));
+      if (orphans.some((o) => !told.has(o.path))) {
         this.store.journal.append({ type: 'reconcile.orphans_reported', actor: 'engine', data: { key, count: orphans.length } });
         this.wakeOrchestrator('orphans_found', undefined, { worktrees: orphans.map((o) => `${o.path} (${o.branch ?? o.head})`).join('\n') });
       }

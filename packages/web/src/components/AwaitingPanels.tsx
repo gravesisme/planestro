@@ -12,7 +12,7 @@ type Question = { question: string; header?: string; options: { label: string; d
  */
 export function AwaitingPanels({ item }: { item: ItemView }) {
   const fm = item.frontmatter;
-  const data = fm.awaiting_data as { kind?: string; questions?: Question[]; tool?: string; input?: Record<string, unknown>; handed_back?: boolean } | undefined;
+  const data = fm.awaiting_data as { kind?: string; questions?: Question[]; tool?: string; input?: Record<string, unknown>; handed_back?: boolean; escalated?: string } | undefined;
   const orchestrating = fm.awaiting === 'orchestrator' && data?.kind === 'permission';
   // The orchestrator's plain-words card replaces whatever it was made from (a block, the worker's questions).
   if (decisionOf(fm)) return null; // shown by DecisionCard, at the top of the page and the preview
@@ -30,6 +30,7 @@ export function AwaitingPanels({ item }: { item: ItemView }) {
       <div className="approval">
         <h2 style={{ margin: '0 0 8px' }}>{orchestrating ? `The orchestrator is deciding a permission: ${data.tool}` : `Permission requested: ${data.tool}`}</h2>
         {orchestrating && <p className="small" style={{ marginTop: 0 }}>You asked it to decide these. It allows ordinary work in the worktree, denies what is wrong for the item, and leaves the rest to you. You can still decide yourself below.</p>}
+        {!orchestrating && data.escalated === 'orchestrator_denials' && <p className="small" style={{ marginTop: 0 }}>This comes to you because the orchestrator denied this item's last three requests. Allowing it hands the item's next requests back to the orchestrator.</p>}
         {why && <p className="small" style={{ margin: '0 0 6px' }}>{why}</p>}
         <pre className="events">{command ?? JSON.stringify(data.input, null, 2)}</pre>
         <div className="row">
