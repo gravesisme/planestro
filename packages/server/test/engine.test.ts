@@ -1267,6 +1267,45 @@ describe('ordinary commands in the worktree, and the pinned directory (#96)', ()
   });
 });
 
+describe('what parks cost (#108)', () => {
+  it('journals each park and its answer, tags the resuming turn, totals it per item, and offers the rule on the second park', async () => {
+    let asks = 0;
+    const claude = () => ({
+      async runTurn(o: TurnOptions): Promise<TurnResult> {
+        if (o.phase === 'plan') { await o.tools.submit_plan('# p'); return { sessionId: 's', subtype: 'success', isError: false, costUsd: 0.5, numTurns: 1, text: '', planSubmitted: '# p' }; }
+        if (asks < 2) { asks++; const r = await o.onPermission({ tool: 'Bash', input: { command: `npx tsx tools/check-${asks}.ts` } }); if (r.action === 'park') return { sessionId: 's', subtype: 'success', isError: false, costUsd: 2, numTurns: 1, text: '', parked: 'permission' }; }
+        await o.tools.report_done('done');
+        return { sessionId: 's', subtype: 'success', isError: false, costUsd: 7.25, numTurns: 1, text: '', done: 'done' };
+      },
+    });
+    const { store, engine, world } = await setup({ claude });
+    const item = store.createItem({ title: 'Parks', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    world.commits.set(join(store.codeRepoPath(), '.claude/worktrees/tp-1-parks'), 1);
+    await engine.approvePlan(item.id);
+    const app = apiRoutes(store, engine);
+    const view = async () => (await (await app.request(`/items/${item.id}`)).json()) as { park_hint: unknown };
+    await waitFor(() => store.getItem(item.id)!.file.frontmatter.awaiting === 'permission');
+    expect((await view()).park_hint).toBeNull();                                    // the first time is not a pattern
+    await engine.respond(item.id, { kind: 'permission', decision: 'allow' });
+    await waitFor(() => asks === 2 && store.getItem(item.id)!.file.frontmatter.awaiting === 'permission');
+    expect((await view()).park_hint).toEqual({ shape: 'npx tsx', parks: 2, rule: 'Bash(npx tsx *)@worktree' });
+    await engine.respond(item.id, { kind: 'permission', decision: 'allow' });
+    await waitFor(() => ['IN_REVIEW', 'MERGED', 'FINISHED'].includes(status(store, item.id)), 8000);
+    const parked = store.journal.read({ item: item.id, type: 'permission.parked' });
+    const answered = store.journal.read({ item: item.id, type: 'permission.answered' });
+    expect(parked.map((p) => p.data?.shape)).toEqual(['npx tsx', 'npx tsx']);
+    expect(answered.map((a) => [a.data?.park, a.data?.by, a.data?.decision])).toEqual(parked.map((p) => [p.data?.park, 'user', 'allow']));
+    const resumes = store.journal.read({ item: item.id, type: 'op.begin' }).filter((b) => b.data?.resumes_park);
+    expect(resumes.map((b) => b.data?.resumes_park)).toEqual(parked.map((p) => p.data?.park));
+    expect(store.getItem(item.id)!.file.frontmatter.op_data?.resume_park).toBeUndefined();
+    const summary = await (await app.request('/parks')).json();
+    expect(summary).toEqual([expect.objectContaining({ item: item.id, parks: 2, open: 0, resume_cost: 9.25, shapes: [{ shape: 'npx tsx', parks: 2, rule: 'Bash(npx tsx *)@worktree' }] })]);
+  });
+});
+
 describe('preparing to restart (f3)', () => {
   it('lets the running turn finish, starts nothing new, says when it is safe, and is not persisted', async () => {
     let release!: () => void;

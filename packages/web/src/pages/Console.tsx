@@ -4,7 +4,7 @@ import { heldReasonOf, type JournalEntry } from '@planestro/shared';
 import { DndContext, MouseSensor, TouchSensor, useSensor, useSensors, closestCenter, type DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { api, type QuestionView } from '../api.ts';
+import { api, type QuestionView, type ParkSummary } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { usePhone } from '../usePhone.ts';
 
@@ -35,6 +35,7 @@ export function ConsolePage() {
         <Questions />
       </div>
       <PlanestroNotes />
+      <ParkCosts />
       <div className="section"><h2>Merge queue ({phone ? 'hold, then drag' : 'drag'} to reorder)</h2>
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onQueueDrag}>
           <SortableContext items={queue.map((i) => i.id)} strategy={verticalListSortingStrategy}>
@@ -171,3 +172,29 @@ function PlanestroNotes() {
   );
 }
 
+
+/** What waiting on a person cost, per item (#108): parks, how long they waited, what their resumes cost, and what parked most. */
+function ParkCosts() {
+  const [rows, setRows] = useState<ParkSummary[] | null>(null);
+  useEffect(() => { const load = () => void api.parks().then(setRows).catch(() => undefined); load(); const t = setInterval(load, 30_000); return () => clearInterval(t); }, []);
+  if (!rows?.length) return null;
+  const minutes = (ms: number) => (ms < 60_000 ? '<1 min' : ms < 3_600_000 ? `${Math.round(ms / 60_000)} min` : `${(ms / 3_600_000).toFixed(1)} h`);
+  const total = rows.reduce((n, r) => n + r.resume_cost, 0);
+  return (
+    <div className="section"><h2>Permission waits</h2>
+      <p className="muted small">Each wait ends the worker's turn; the answer resumes it, and a resume after the cache has expired reloads the whole conversation. {rows.reduce((n, r) => n + r.parks, 0)} waits so far, ${total.toFixed(2)} in resumes.</p>
+      <table className="small" style={{ width: '100%' }}>
+        <thead><tr><th style={{ textAlign: 'left' }}>Item</th><th>Waits</th><th>Waited</th><th>Resumes</th><th style={{ textAlign: 'left' }}>Waits most on</th></tr></thead>
+        <tbody>{rows.slice(0, 15).map((r) => (
+          <tr key={r.item}>
+            <td><Link to={`/items/${r.item}`}>{r.item}</Link>{r.open ? <span className="muted"> · {r.open} open</span> : null}</td>
+            <td style={{ textAlign: 'center' }}>{r.parks}</td>
+            <td style={{ textAlign: 'center' }}>{minutes(r.waited_ms)}</td>
+            <td style={{ textAlign: 'center' }}>${r.resume_cost.toFixed(2)}</td>
+            <td>{r.shapes.slice(0, 2).map((s) => <span key={s.shape} title={s.rule ? `${s.rule} would allow it` : 'not offered as a rule'}><code>{s.shape}</code> ×{s.parks} </span>)}</td>
+          </tr>))}
+        </tbody>
+      </table>
+    </div>
+  );
+}

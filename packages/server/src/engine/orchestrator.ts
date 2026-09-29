@@ -3,6 +3,7 @@ import { isAbsolute, join } from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
 import { getSection, epicFlagOf, holdShapeOf, heldReasonOf, type HoldFlag, partsSummary, serializeItemFile, serializeQuestionFile, parseThread, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent, parseActivity } from '@planestro/shared';
+import { parkHint } from './parks.ts';
 import { hostNote, keptPathsNote } from './hostNote.ts';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Ports, CustomToolDef, TurnResult } from './ports.ts';
@@ -504,6 +505,12 @@ export class Orchestrator {
       fm.worktree ? `Its worktree (the only place it should write, besides scratch files under /tmp or $TMPDIR): ${isAbsolute(fm.worktree) ? fm.worktree : join(this.store.codeRepoPath(), fm.worktree)}` : '',
       fm.worktree ? 'Every command of this worker starts in that worktree: its shell goes back there after each command, and planestro refuses a cd out of it. A relative path in the request is a path in the worktree.' : '',
       input.description ? `What the worker says it is for: ${String(input.description)}` : '',
+      ...(() => {
+        // #108: the second park on one kind of command is a pattern, and each park costs a resume.
+        const id = (fm as { id?: string }).id;
+        const hint = id && data.tool === 'Bash' ? parkHint(this.store.journal.read({ item: id, type: 'permission.parked' }), what, this.store.config.permissions.allow) : undefined;
+        return hint ? [`This item has parked ${hint.parks} times on \`${hint.shape} …\`. The allow rule ${hint.rule} would let such commands run inside the worktree without a park. Only the user adds allow rules: if it fits this project, say so in your decision's reason (the user's card offers it).`] : [];
+      })(),
       `The request, in full:\n\`\`\`\n${what.slice(0, 6000)}\n\`\`\``,
       'planestro has already refused the things no worker may do (git push, gh pr, touching protected branches, force flags, rm -rf of / or ~). Read the whole request, then call decide_permission with exactly one of:',
       '- allow — ordinary development work for this item: reading and searching, building, running the project\'s tests and checks, generating or editing files inside its worktree, scratch files under a temp dir, git on its own branch. It is allowed this once and the session resumes.',
