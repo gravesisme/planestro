@@ -7,7 +7,7 @@ planestro runs workers on two agent CLIs. The engine knows neither by name: it a
 |---|---|---|
 | CLI | Claude Code, through the Agent SDK | `codex exec` |
 | Can plan | yes — plan mode, `submit_plan`, `submit_breakdown` | **no** — it only implements (and fixes) |
-| Reports through | planestro's tools: `report_done`, `report_blocked`, `add_note`, `hand_off`, `AskUserQuestion` | its **final message**, constrained to `{outcome, summary, question, hand_off}` |
+| Reports through | planestro's tools: `report_done`, `report_blocked`, `add_note`, `hand_off`, `AskUserQuestion` | its **final message**, constrained to `{outcome, summary, question, hold, parts, hand_off}` |
 | Images | cannot generate them | built-in image generation and editing, headless |
 | What it may do | a **per-command policy**: pushes, PR operations and protected branches are denied outright; an allow-list covers the routine; anything else *parks* as a permission request you answer | a **sandbox**: writes confined to the worktree (and temp), no network for its commands. No per-command decisions, no permission parking |
 | Budget | dollars: `budget_usd_per_item` | turns and tokens: `budget_turns_per_item`, `budget_tokens_per_item` |

@@ -25,9 +25,12 @@ codex exec [resume <thread_id>] --json --ignore-user-config
 | progress | NDJSON events become console lines (`agent_message`, `→ command`, non-zero exits, errors); unknown events are skipped | the console is read by a person; the parser must survive a CLI upgrade |
 | result | the final message, constrained by `--output-schema` | the worker has no planestro tools, so its last words are the report |
 
-The final message is `{ "outcome": "done" | "blocked" | "question", "summary", "question", "hand_off" }`:
+The final message is `{ "outcome": "done" | "blocked" | "question", "summary", "question", "hold", "parts", "hand_off" }`:
 
 - **done** → `report_done(summary)`; the summary becomes the pull request body.
+- **hold** (`null`, or what the pull request waits for) → passed to `report_done` with a
+  `done`: the pull request is opened held, with that reason on the item
+  ([Concepts](concepts.md#holds)).
 - **blocked** → `report_blocked(summary)`; the item blocks as `agent_blocked`.
 - **question** → the item parks on `awaiting: question` with a free-text answer box; your
   answer resumes the same thread.

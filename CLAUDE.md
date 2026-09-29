@@ -94,6 +94,12 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   approval refuses it for everyone but a user approving it as one item on purpose (#69).
 - An item that returns to QUEUED after an icebox/backlog round-trip reuses the
   worktree it already has; setup hooks are not re-run.
+- A hold (`skip_merge`) carries its reason in `hold_reason`, which lasts exactly as long as the
+  hold (`DataStore.mutateItem` drops it) and ends with the item's run (`applyTransition`). Every
+  hold is built by `holdOps`: the user's **Approve and hold the PR**, the orchestrator's
+  `skip_merge` / `approve_plan`, the worker's `report_done` `hold`. A plan that states a merge
+  hold is found by `holdShapeOf`, read from the Plan as it stands and never persisted; a hold the
+  user released or left out is not put back by the worker (`op_data.hold_waived`) (#97).
 - `taken_over` (**take over** / **hand back**, `Engine.takeOver` / `handBack`) is also
   orthogonal: a person finishes the item by hand. It aborts the live turn, drops what
   was queued for it, and every drive path (turns, wakes, triage, stalls, fix turns,

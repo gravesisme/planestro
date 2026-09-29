@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
-import type { JournalEntry } from '@planestro/shared';
+import { heldReasonOf, type JournalEntry } from '@planestro/shared';
 import { DndContext, MouseSensor, TouchSensor, useSensor, useSensors, closestCenter, type DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -38,7 +38,7 @@ export function ConsolePage() {
       <div className="section"><h2>Merge queue ({phone ? 'hold, then drag' : 'drag'} to reorder)</h2>
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onQueueDrag}>
           <SortableContext items={queue.map((i) => i.id)} strategy={verticalListSortingStrategy}>
-            {queue.map((i, n) => <QueueRow key={i.id} n={n + 1} id={i.id} title={i.frontmatter.title} base={i.derived.base_branch} ci={i.frontmatter.ci_result} skip={i.frontmatter.skip_merge} />)}
+            {queue.map((i, n) => <QueueRow key={i.id} n={n + 1} id={i.id} title={i.frontmatter.title} base={i.derived.base_branch} ci={i.frontmatter.ci_result} skip={i.frontmatter.skip_merge} why={heldReasonOf(i.frontmatter)} />)}
           </SortableContext>
         </DndContext>
         {!queue.length && <p className="muted small">Nothing in review.</p>}
@@ -57,11 +57,11 @@ export function ConsolePage() {
   );
 }
 
-function QueueRow({ n, id, title, base, ci, skip }: { n: number; id: string; title: string; base?: string; ci?: string; skip?: boolean }) {
+function QueueRow({ n, id, title, base, ci, skip, why }: { n: number; id: string; title: string; base?: string; ci?: string; skip?: boolean; why?: string }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
   return (
     <div ref={setNodeRef} style={{ transform: CSS.Transform.toString(transform), transition }} {...attributes} {...listeners} className={`card queue-row ${isDragging ? 'dragging' : ''}`}>
-      <span className="id">#{n}</span> <Link to={`/items/${id}`}>{id}</Link> {title} <span className="muted small">→ {base}</span> {ci && <span className="tag">{ci}</span>} {skip && <span className="tag hot">held</span>}
+      <span className="id">#{n}</span> <Link to={`/items/${id}`}>{id}</Link> {title} <span className="muted small">→ {base}</span> {ci && <span className="tag">{ci}</span>} {skip && <span className="tag hot" title={why ? `Held: ${why}` : 'Held out of the merge queue'}>held</span>}
     </div>
   );
 }

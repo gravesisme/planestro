@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
-import { epicFlagOf, type Status } from '@planestro/shared';
+import { epicFlagOf, holdShapeOf, type Status } from '@planestro/shared';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { canTakeOver, TakeOverButton } from './TakeOver.tsx';
@@ -64,12 +64,15 @@ export function QuickActions({ item, onActed }: { item: ItemView; onActed?: () =
   const live = useStore((s) => !!s.state?.engine.sessions.some((x) => x.item === item.id));
   const sync = canSyncWithBase(item, live);
   const planReady = fm.status === 'PLAN_READY' && fm.kind !== 'epic'; // an epic's breakdown is edited on its page, not approved blind
+  // A plan that says its pull request must wait is approved on its page, where the hold is offered (#97).
+  const statedHold = planReady ? holdShapeOf(item.sections.Plan ?? '') : null;
   // Approve / request-changes have their own endpoints (they start a session turn); the bare transition would not.
   const plain = transitions.filter((t) => !(fm.status === 'PLAN_READY' && (t.to === 'IN_PROGRESS' || t.to === 'PLAN_IN_PROGRESS')));
   if (!plain.length && !planReady && !fm.blocked && !sync && fm.status !== 'IN_PROGRESS' && !canTakeOver(item) && !(fm.status === 'IN_REVIEW' && (fm.awaiting === 'review' || fm.skip_merge))) return null;
   return (
     <div className="row quick-actions">
-      {planReady && !epicFlagOf(fm) && <button className="primary" onClick={() => run(() => api.approvePlan(item.id))}>Approve &amp; implement</button>}
+      {planReady && !epicFlagOf(fm) && !statedHold && <button className="primary" onClick={() => run(() => api.approvePlan(item.id))}>Approve &amp; implement</button>}
+      {planReady && !epicFlagOf(fm) && statedHold && <Link className="button primary" to={`/items/${item.id}`} title={`Its plan says: "${statedHold.quote}"`}>States a merge hold: decide…</Link>}
       {planReady && epicFlagOf(fm) && <Link className="button primary" to={`/items/${item.id}`} title={epicFlagOf(fm)!.reason}>An epic: convert it…</Link>}
       {fm.status === 'IN_REVIEW' && (fm.awaiting === 'review' || fm.skip_merge) && <button className="primary" onClick={() => { const n = prompt(`Let ${item.id} merge? Optional note for the log:`); if (n !== null) run(() => api.releaseHold(item.id, n || undefined)); }}>{fm.awaiting === 'review' ? 'Approve & merge' : 'Release hold'}</button>}
       {planReady && <button onClick={() => { const m = prompt(`What should change in the plan for ${item.id}?`); if (m?.trim()) run(() => api.rejectPlan(item.id, m.trim())); }}>Request changes…</button>}

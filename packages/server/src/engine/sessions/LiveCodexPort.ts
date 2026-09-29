@@ -87,7 +87,7 @@ export class LiveCodexPort implements AgentPort<AgentTurnOptions> {
       ? ['exec', 'resume', o.resume, ...shared]
       : ['exec', '-s', 'workspace-write', '-C', o.cwd, ...shared];
     // There is no system-prompt flag: the worker rules ride at the top of the prompt, every turn.
-    const prompt = `${o.systemAppend.trim()}\n\n---\n\n${o.prompt.trim()}\n\nEnd your turn with ONLY the JSON object described above: {"outcome": "done" | "blocked" | "question", "summary": "...", "parts": [...] or null, "question": "..." or null, "hand_off": null or {"to": "<item id that waits on this one>", "paths": ["<files in your worktree, relative>"], "note": "<what they are and how to use them>"}}. Use hand_off only when another backlog item needs files you made before your branch merges.`;
+    const prompt = `${o.systemAppend.trim()}\n\n---\n\n${o.prompt.trim()}\n\nEnd your turn with ONLY the JSON object described above: {"outcome": "done" | "blocked" | "question", "summary": "...", "parts": [...] or null, "question": "..." or null, "hold": null or "<what the pull request waits for>", "hand_off": null or {"to": "<item id that waits on this one>", "paths": ["<files in your worktree, relative>"], "note": "<what they are and how to use them>"}}. Use hand_off only when another backlog item needs files you made before your branch merges. Use hold only with "done", and only when the pull request must not merge yet because the plan or the request says it waits for something ("until TD-12 has merged"): planestro then keeps it out of the merge queue until the user releases it.`;
 
     let killed = false;
     this.lastError = undefined;

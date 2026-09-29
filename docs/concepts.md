@@ -107,8 +107,10 @@ planned at once, an item is queued. It is committed as `HH-198: convert to epic`
   synced and through CI as usual; then, instead of merging, the item parks on
   `awaiting: review` with before/after images. Approve, or send it back to the same session
   with a note.
-- **`skip_merge`** — takes an item out of the merge queue (the orchestrator can set it, with
-  a reason). It still gets everything short of the merge: when its session commits, the
+- **`skip_merge`** — takes an item out of the merge queue, with the reason on the item
+  (`hold_reason`, shown as **Held: …** on its page and card). Four things set it: you, at plan
+  approval; the orchestrator (`skip_merge`, or approving a plan that states a hold); the worker,
+  with `report_done`'s `hold`; and an edit of the field. It still gets everything short of the merge: when its session commits, the
   branch is rebased if behind and pushed, so the PR shows the work; its CI is read about once
   a minute, a red run goes to the session like any other, and the card says `held · CI …`.
   None of this waits inside the serial merge chain. A PR branch that moved on its own is never
@@ -117,6 +119,19 @@ planned at once, an item is queued. It is committed as `HH-198: convert to epic`
   running CI again.
   A held item whose CI is green, or whose PR is a draft until release, counts as **NEEDS YOU**:
   nothing automatic moves it, only you.
+- **A hold written in the plan** — a plan that says its pull request must wait ("The PR stays
+  held until the release is cut", "Do not merge until HH-12 has merged", "Merge hold: …") holds
+  nothing by being written down, so planestro finds the sentence itself (code, not a model; it
+  is read from the plan as it stands, so an edited plan counts).
+  The approval card quotes it and offers **Approve and hold the PR**, with the reason for you to
+  edit; **Approve & implement** is still there, and the Activity log records that the plan was
+  approved without its hold. When the orchestrator approves a plan for you, a stated hold is
+  applied. The check is narrow and reads English, one sentence at a time: what it misses, the
+  worker can still say as it reports the work done (`hold`).
+  A hold set before the pull request exists makes it open held; the item page shows **Its pull
+  request will be held** with **Drop the hold**. A hold you released, dropped or left out at
+  approval is not put back by the worker: its request is logged instead. A hold ends when the
+  item merges, finishes or leaves the board.
 - **Draft while held** (`ci.draft_while_held`, on by default) — a held item's pull request (a
   review hold or `skip_merge`) is a GitHub **draft**. With CI that skips drafts, nothing runs
   while it waits for you: a review-held item comes to you as soon as it is synced, and releasing
