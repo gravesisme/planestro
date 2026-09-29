@@ -9,6 +9,7 @@
  *   npx tsx spikes/sdk-spike.ts resume-after-kill (f)       resume the torn session
  *   npx tsx spikes/sdk-spike.ts sessions        (g)         listSessions/getSessionInfo + transcript path
  *   npx tsx spikes/sdk-spike.ts budget          (i)         maxTurns / maxBudgetUsd result subtypes
+ *   npx tsx spikes/sdk-spike.ts resume-quote    (k)(l)(m)(n) a resume's quote, declining it for nothing, the running total it reports, what the cap measures (#64)
  *
  * State lives in spikes/out/state.json; a human-readable log in spikes/out/log.md.
  */
@@ -19,6 +20,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { resolveClaudeBin } from '../packages/server/src/engine/sessions/claudeBin.ts';
+import { resumeWatch, noteContext, type ContextSeen } from '../packages/server/src/engine/sessions/LiveClaudePort.ts';
 
 const OUT = join(import.meta.dirname, 'out');
 mkdirSync(OUT, { recursive: true });
@@ -195,6 +197,54 @@ if (cmd === 'budget') {
   const r1 = await run('budget maxTurns=1', query({ prompt: 'List the files in tools/ using Glob, then Read tools/run_checks.sh, then summarize.', options: { ...BIN_OPT, cwd: CWD, model: IMPLEMENTER, permissionMode: 'acceptEdits', maxTurns: 1 } }));
   const r2 = await run('budget maxBudgetUsd=0.001', query({ prompt: 'Read CLAUDE.md fully and summarize it in detail.', options: { ...BIN_OPT, cwd: CWD, model: IMPLEMENTER, permissionMode: 'acceptEdits', maxBudgetUsd: 0.001 } }));
   log(`\n(i) subtypes: maxTurns→${r1.subtype}, maxBudgetUsd→${r2.subtype}`);
+}
+
+if (cmd === 'resume-quote') {
+  // #64: what a resume costs, and what the CLI reports for it. Runs the engine's own resumeWatch, so
+  // what is validated here is the code LiveClaudePort runs.
+  const drain = async (label: string, q: ReturnType<typeof query>) => {
+    log(`\n## ${label} — ${stamp()}`);
+    const seen = { sessionId: undefined as string | undefined, total: undefined as number | undefined, requests: 0, subtype: undefined as string | undefined, threw: undefined as string | undefined, context: {} as ContextSeen };
+    const ids = new Set<string>();
+    try {
+      for await (const m of q) {
+        log('- ' + summarize(m));
+        noteContext(m, seen.context);
+        if (m.type === 'system' && (m as any).subtype === 'init') seen.sessionId = (m as any).session_id;
+        if (m.type === 'assistant' && !(m as any).parent_tool_use_id && (m as any).message?.id && !ids.has((m as any).message.id)) { ids.add((m as any).message.id); seen.requests++; }
+        if (m.type === 'result') { seen.subtype = (m as any).subtype; seen.total = Number((m as any).total_cost_usd ?? 0); }
+      }
+    } catch (e) { seen.threw = String(e).slice(0, 200); log(`  query() threw: ${seen.threw}`); }
+    return seen;
+  };
+  const opts = { ...BIN_OPT, cwd: CWD, model: IMPLEMENTER, permissionMode: 'acceptEdits' as const, allowedTools: ['Read', 'Grep', 'Glob'], settingSources: ['project' as const] };
+  const first = await drain('resume-quote 1: a short first turn', query({ prompt: 'Reply with the single word READY. Use no tools.', options: opts }));
+  if (!first.sessionId || first.total === undefined) throw new Error('the first turn gave no session id or no cost');
+  log(`  first turn: session=${first.sessionId} total=$${first.total.toFixed(4)} context=${first.context.tokens} tokens, cache ttl ${first.context.ttlS}s`);
+
+  // (k): the SDK's own SessionStart callback, beside the command hook the engine uses.
+  let callbackFired = false;
+  const declinedWatch = resumeWatch({ resume: first.sessionId, onResumeQuote: () => 'stop' });
+  const declined = await drain('resume-quote 2: resume, declined before the first request', query({ prompt: 'Reply with the single word AGAIN. Use no tools.', options: { ...opts, resume: first.sessionId, ...declinedWatch.options,
+    hooks: { ...(declinedWatch.options.hooks as object), SessionStart: [{ hooks: [async () => { callbackFired = true; return { continue: true }; }] }] } } as any }));
+  declinedWatch.cleanup();
+  log(`\n(k) the quote arrives on a resume: ${declinedWatch.quote ? 'PASS' : 'FAIL'} through the command hook (${JSON.stringify(declinedWatch.quote)}); the SDK's own SessionStart callback fired: ${callbackFired ? 'yes' : 'NO (so the engine uses the command hook)'}`);
+  log(`    the quote's context matches the last response's window: ${declinedWatch.quote?.contextTokens === first.context.tokens ? 'PASS' : 'CHECK'} (${declinedWatch.quote?.contextTokens} vs ${first.context.tokens})`);
+  log(`(l) declining there spent nothing: ${declined.requests === 0 && declined.total === first.total ? 'PASS' : 'FAIL'} (requests=${declined.requests}, total $${declined.total} against $${first.total} before)`);
+
+  // (m): a resumed conversation reports its running total, and its transcript records the same number.
+  const watch = resumeWatch({ resume: first.sessionId });
+  const resumed = await drain('resume-quote 3: resume, let it run', query({ prompt: 'Reply with the single word AGAIN. Use no tools.', options: { ...opts, resume: first.sessionId, ...watch.options } as any }));
+  watch.cleanup();
+  const turn = (resumed.total ?? 0) - first.total;
+  log(`\n(m) total_cost_usd on a resume is the conversation's running total: ${resumed.total !== undefined && resumed.total > first.total && turn < first.total ? 'PASS' : 'CHECK'} ($${first.total.toFixed(4)} → $${resumed.total?.toFixed(4)}; the turn itself cost $${turn.toFixed(4)})`);
+  log(`    the transcript's last cost-state was the baseline: ${watch.baseline === first.total ? 'PASS' : 'CHECK'} (read $${watch.baseline}, the first turn ended at $${first.total})`);
+
+  // (n): the cap is this process's own spend, not the running total.
+  // A cap already below the running total: measured against that, the turn would end at its first check, after one request.
+  const cap = Math.round((resumed.total ?? first.total) * 0.9 * 1e4) / 1e4;
+  const capped = await drain(`resume-quote 4: resume under maxBudgetUsd $${cap}, below the running total`, query({ prompt: 'Use the Read tool to read README.md, then reply with the single word DONE.', options: { ...opts, resume: first.sessionId, maxBudgetUsd: cap } as any }));
+  log(`\n(n) maxBudgetUsd measures the process's own spend, not the running total: ${capped.requests > 1 ? 'PASS' : 'FAIL'} (running total $${resumed.total?.toFixed(4)} → $${capped.total?.toFixed(4)}, cap $${cap}, ${capped.requests} requests, ended ${capped.subtype})`);
 }
 
 if (cmd === 'resume-park') {

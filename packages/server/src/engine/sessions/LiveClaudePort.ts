@@ -1,8 +1,11 @@
 import * as sdk from '@anthropic-ai/claude-agent-sdk';
 import { query, tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
+import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { KNOWN_USAGE_LIMIT_PREFIXES, USAGE_ERROR_CODES, isUsageLimitText, resetTime, worseRateLimit, type RateLimitSnapshot } from '@planestro/shared';
-import type { ClaudePort, TurnOptions, TurnResult, CustomTurnOptions } from '../ports.ts';
+import type { ClaudePort, TurnOptions, TurnResult, CustomTurnOptions, ResumeQuote } from '../ports.ts';
 
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] });
 const PARTS = z.array(z.object({ name: z.string(), state: z.enum(['accepted', 'pending', 'rejected']), reason: z.string().optional() }));
@@ -27,12 +30,14 @@ export class LiveClaudePort implements ClaudePort {
     });
     const abortController = new AbortController();
     o.signal?.addEventListener('abort', () => abortController.abort(), { once: true });
+    const resumed = resumeWatch(o);
     const q = query({
       prompt: o.prompt,
       options: {
         cwd: o.cwd, model: o.model, permissionMode: o.permissionMode, resume: o.resume,
         ...(o.fallbackModel && o.fallbackModel !== o.model ? { fallbackModel: o.fallbackModel } : {}),
         systemPrompt: { type: 'preset', preset: 'claude_code', append: o.systemAppend },
+        ...resumed.options,
         mcpServers: { planestro: server }, strictMcpConfig: true, settingSources: ['project'],
         allowedTools: [...o.allowedTools, ...o.mcpTools.map((t) => `mcp__planestro__${t.name}`)],
         maxTurns: o.maxTurns, abortController,
@@ -44,7 +49,7 @@ export class LiveClaudePort implements ClaudePort {
         },
       },
     });
-    await consume(q, result, o.onOutput, abortController);
+    await consume(q, result, o.onOutput, abortController, resumed);
     return result;
   }
 
@@ -74,12 +79,14 @@ export class LiveClaudePort implements ClaudePort {
     });
     const abortController = new AbortController();
     o.signal?.addEventListener('abort', () => abortController.abort(), { once: true });
+    const resumed = resumeWatch(o);
     const q = query({
       prompt: o.prompt,
       options: {
         cwd: o.cwd, model: o.model, permissionMode: o.permissionMode, resume: o.resume,
         ...(o.fallbackModel && o.fallbackModel !== o.model ? { fallbackModel: o.fallbackModel } : {}),
         systemPrompt: { type: 'preset', preset: 'claude_code', append: o.systemAppend },
+        ...resumed.options,
         // The model's own servers ride along; their tools are not allow-listed, so every call reaches canUseTool and the engine's count.
         mcpServers: { planestro, ...(o.mcpServers ?? {}) } as any, strictMcpConfig: true, settingSources: ['project'],
         allowedTools: [...o.allowedTools, 'mcp__planestro__submit_plan', 'mcp__planestro__submit_breakdown', 'mcp__planestro__add_note', 'mcp__planestro__append_activity', 'mcp__planestro__report_done', 'mcp__planestro__report_progress', 'mcp__planestro__report_blocked', 'mcp__planestro__hand_off', 'mcp__planestro__get_item'],
@@ -107,9 +114,107 @@ export class LiveClaudePort implements ClaudePort {
         },
       },
     });
-    await consume(q, result, o.onOutput, abortController);
+    await consume(q, result, o.onOutput, abortController, resumed);
     return result;
   }
+}
+
+/**
+ * What a resumed conversation is measured against (#64). The CLI restores a conversation's cost when
+ * it resumes it, so `total_cost_usd` is the conversation's running total, not the turn's: HH-181's
+ * turns read 1.41, 3.10, 4.35 … 30.27 and every one was added to the item. The baseline is what the
+ * total stood at when this turn began.
+ */
+export interface ResumeWatch {
+  resumed: boolean;
+  /** The running total before this turn: the transcript's own record, else what the caller recorded. */
+  baseline?: number;
+  quote?: ResumeQuote;
+  declined?: boolean;
+  /** SDK options that make the CLI hand over its quote and ask before the first request. */
+  options: Record<string, unknown>;
+  cleanup(): void;
+}
+
+const DECLINED = 'planestro: this resume was declined before it started';
+
+/**
+ * The SDK's own SessionStart callback never fires on a resume (sdk-notes (k)), but a command hook
+ * does, and its input carries the quote: it is written to a file that the UserPromptSubmit callback,
+ * which does fire and runs before the first request, reads. Blocking the prompt there ends the turn
+ * with nothing spent (sdk-notes (l)).
+ */
+export function resumeWatch(o: { resume?: string; resumeTotalUsd?: number; onResumeQuote?(q: ResumeQuote): 'go' | 'stop' }): ResumeWatch {
+  const w: ResumeWatch = { resumed: Boolean(o.resume), baseline: o.resumeTotalUsd, options: {}, cleanup: () => {} };
+  if (!o.resume) return w;
+  const file = join(tmpdir(), `planestro-quote-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.json`);
+  w.cleanup = () => { try { rmSync(file, { force: true }); } catch { /* a temp file */ } };
+  let asked = false;
+  w.options = {
+    settings: { hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `cat > '${file}'` }] }] } },
+    hooks: { UserPromptSubmit: [{ hooks: [async (input: { transcript_path?: string }) => {
+      if (asked) return { continue: true };
+      asked = true;
+      w.baseline = lastCostState(input?.transcript_path) ?? w.baseline;
+      try { w.quote = existsSync(file) ? resumeQuoteOf(JSON.parse(readFileSync(file, 'utf8'))) : undefined; } catch { w.quote = undefined; }
+      if (w.quote && o.onResumeQuote?.(w.quote) === 'stop') { w.declined = true; return { decision: 'block', reason: DECLINED }; }
+      return { continue: true };
+    }] }] },
+  };
+  return w;
+}
+
+/** The quote in a SessionStart hook's input, when it is a resume's and says what it costs. Exported for tests. */
+export function resumeQuoteOf(input: any): ResumeQuote | undefined {
+  if (input?.source !== 'resume' && input?.source !== 'fork') return undefined;
+  const tokens = Number(input.context_tokens), usd = Number(input.estimated_cache_write_usd);
+  if (!Number.isFinite(tokens) || tokens <= 0 || !Number.isFinite(usd) || usd <= 0) return undefined;
+  return {
+    contextTokens: tokens, cacheWriteUsd: usd,
+    ...(typeof input.prompt_cache_likely_expired === 'boolean' ? { cacheExpired: input.prompt_cache_likely_expired } : {}),
+    ...(Number.isFinite(Number(input.seconds_since_last_response)) ? { secondsSinceLast: Number(input.seconds_since_last_response) } : {}),
+  };
+}
+
+/**
+ * The running total a conversation's transcript last recorded (its newest `cost-state` line): what
+ * the CLI restores when it resumes it. Read from the file's tail; undefined when there is none, or
+ * the format has moved on, and the caller's own record stands in. Exported for tests.
+ */
+export function lastCostState(path: string | undefined, tailBytes = 512 * 1024): number | undefined {
+  if (!path) return undefined;
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, 'r');
+    const size = fstatSync(fd).size;
+    const len = Math.min(size, tailBytes);
+    const buf = Buffer.alloc(len);
+    readSync(fd, buf, 0, len, size - len);
+    const lines = buf.toString('utf8').split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i].includes('"cost-state"')) continue;
+      try { const e = JSON.parse(lines[i]); if (e?.type === 'cost-state' && Number.isFinite(Number(e.totalCostUSD))) return Number(e.totalCostUSD); } catch { /* a line cut by the tail */ }
+    }
+  } catch { /* no transcript to read */ } finally { if (fd !== undefined) try { closeSync(fd); } catch { /* closed */ } }
+  return undefined;
+}
+
+/** What the next resume of this conversation reloads, from the responses as they stream. */
+export interface ContextSeen { tokens?: number; ttlS?: number }
+
+/**
+ * Feed one SDK message to the context reading. Exported for tests. Only the conversation's own
+ * responses count: a subagent's window is not what a resume sends again.
+ */
+export function noteContext(m: any, c: ContextSeen): void {
+  if (m?.type !== 'assistant' || m.parent_tool_use_id) return;
+  const u = m.message?.usage;
+  if (!u) return;
+  const n = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+  const tokens = n(u.input_tokens) + n(u.cache_read_input_tokens) + n(u.cache_creation_input_tokens) + n(u.output_tokens);
+  if (tokens > 0) c.tokens = tokens;
+  if (n(u.cache_creation?.ephemeral_1h_input_tokens) > 0) c.ttlS = 3600;
+  else if (n(u.cache_creation?.ephemeral_5m_input_tokens) > 0) c.ttlS = 300;
 }
 
 /** Human-readable one-liner for a tool call — the console is read by a person, not a parser. */
@@ -218,14 +323,17 @@ export function classifyUsage(result: TurnResult, u: UsageSignals): void {
 }
 
 /** Drain a query into a TurnResult. Completion is "the iterator finished": a torn session's resume emits a zero-turn result first. */
-async function consume(q: AsyncIterable<unknown>, result: TurnResult, onOutput: (t: string) => void, abortController: AbortController): Promise<void> {
+async function consume(q: AsyncIterable<unknown>, result: TurnResult, onOutput: (t: string) => void, abortController: AbortController, resumed?: ResumeWatch): Promise<void> {
   let sawResult = false;
+  let total: number | undefined;
   const usage: UsageSignals = {};
+  const context: ContextSeen = {};
   const calls = new Map<string, string>();
   try {
     for await (const m of q as AsyncIterable<any>) {
       noteUsage(m, usage);
       noteToolFailures(m, calls, result);
+      noteContext(m, context);
       if (m.type === 'system' && m.subtype === 'init') result.sessionId = m.session_id;
       else if (m.type === 'assistant') {
         for (const c of (m.message?.content ?? []) as any[]) {
@@ -237,7 +345,8 @@ async function consume(q: AsyncIterable<unknown>, result: TurnResult, onOutput: 
         result.sessionId = m.session_id ?? result.sessionId;
         result.subtype = m.subtype ?? 'success';
         result.isError = Boolean(m.is_error);
-        result.costUsd += Number(m.total_cost_usd ?? 0);
+        // A running total, so the last one stands: a torn session's zero-turn result carries what was restored, and adding the two counted it twice.
+        if (Number.isFinite(Number(m.total_cost_usd))) total = Number(m.total_cost_usd);
         result.numTurns += Number(m.num_turns ?? 0);
         if (m.is_error && m.errors) result.error = String(m.errors).slice(0, 400);
         noteApiErrorText(m, result);
@@ -249,7 +358,24 @@ async function consume(q: AsyncIterable<unknown>, result: TurnResult, onOutput: 
     else if (sawResult && result.isError) { result.error = result.error ?? msg; }   // the SDK throws after an error result
     else { result.subtype = 'error_during_execution'; result.isError = true; result.error = msg; }
     if (isUsageLimitText(msg, USAGE_PREFIXES)) usage.message = usage.message ?? msg.trim().slice(0, 300);
-  }
+  } finally { resumed?.cleanup(); }
+  settleCost(result, total, resumed);
+  if (context.tokens) result.contextTokens = context.tokens;
+  if (context.ttlS) result.cacheTtlS = context.ttlS;
+  if (resumed?.quote) result.resumeQuote = resumed.quote;
+  if (resumed?.declined) { result.subtype = 'resume_declined'; result.isError = false; result.error = undefined; result.costUsd = 0; result.text = ''; return; }
   if (usage.rateLimit) result.rateLimit = usage.rateLimit;
   classifyUsage(result, usage);
+}
+
+/**
+ * This turn's share of what the runner reported. Exported for tests. A resumed conversation reports
+ * its running total, so the turn is what that rose by; with no baseline to be found it is taken whole,
+ * as it always was, rather than guessed at.
+ */
+export function settleCost(result: TurnResult, total: number | undefined, resumed?: Pick<ResumeWatch, 'resumed' | 'baseline'>): void {
+  if (total === undefined) return;
+  result.sessionTotalUsd = total;
+  const spent = resumed?.resumed && resumed.baseline !== undefined ? Math.max(0, total - resumed.baseline) : total;
+  result.costUsd = Math.round(spent * 1e6) / 1e6;
 }

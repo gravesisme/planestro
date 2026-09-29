@@ -41,6 +41,10 @@ a live worker) would have matched it.
 | h | `claude agents --json` lists our child during a turn, with a pid | **PASS** | `{"pid":26928,"cwd":"<worktree>","kind":"interactive","sessionId":"…","name":"planestro-spike-b5"}` — SDK-spawned sessions show as `kind: interactive` with no `status` field for the pid entry we saw. |
 | i | `maxTurns` / `maxBudgetUsd` end the turn with distinguishable result subtypes | **PASS** | `error_max_turns` (`is_error: true`, `num_turns: 2` for `maxTurns: 1`) and `error_max_budget_usd`. |
 | j | Resume across a **full process restart** keeps context | **PASS** | Fable was told the codeword `PELICAN-42` while planning; a brand-new process resumed as Opus and answered it first. |
+| k | A resume is quoted before it runs (`context_tokens`, `estimated_cache_write_usd`) | **PASS**, through a command hook only | The SDK's own `SessionStart` callback never fired on `query({resume})`; a command hook in `Options.settings` received `{"source":"resume","seconds_since_last_response":43,"context_tokens":18162,"prompt_cache_likely_expired":false,"estimated_cache_write_usd":0.0363}`. Gotcha 16. |
+| l | A resume can be declined before its first request, at no cost | **PASS** | A `UserPromptSubmit` callback answering `decision: 'block'` ended the turn with zero assistant messages and the running total unchanged. |
+| m | What `total_cost_usd` means on a resume | **It is the session's running total** | $0.0093 → $0.0113 for a turn that cost $0.0020; the transcript's last `cost-state` line held the $0.0093. Gotcha 14. |
+| n | What `maxBudgetUsd` measures on a resume | **The process's own spend** | Under a cap below the running total the turn still made its requests; it ended `error_max_budget_usd` only once its own spend passed the cap. Gotcha 15. |
 
 ## Gotchas the engine must handle
 
@@ -124,6 +128,51 @@ a live worker) would have matched it.
    and the engine's usage guard pauses automation on it before the limit is
    reached (configuration.md, Usage guard). API-key sessions report no
    subscription windows.
+
+14. **`total_cost_usd` on a resumed session is the session's running total, not
+   the turn's cost** (#64, spike `resume-quote`, (m)). The CLI records a
+   `cost-state` line in the transcript and restores it on `resume`, so six
+   resumes of one small session reported $0.0350, $0.0380, $0.0401, $0.0433,
+   $0.0455, $0.0477 while each cost about $0.002. `modelUsage` is cumulative the
+   same way. planestro added every reading to the item: HH-181's turns read
+   1.41, 3.10, 4.35 … 30.27 in the journal, and the item showed over $300 for
+   about $30 of work; HH-247's "$46 resume" was about $7.60. The port now takes
+   the last total a process reports (a torn session's zero-turn result carries
+   the restored figure, and adding the two counted it twice) and subtracts the
+   baseline: the transcript's newest `cost-state` (`lastCostState`, read in the
+   `UserPromptSubmit` callback from the hook's `transcript_path`), else the
+   total the engine recorded after the previous turn (`session_context.total_usd`,
+   passed as `resumeTotalUsd`). `TurnResult.costUsd` is the turn's;
+   `sessionTotalUsd` the running total. With no baseline to be found the total
+   is taken whole, as before.
+15. **`maxBudgetUsd` measures the process's own spend** ((n)): a resume under a
+   cap already below the session's running total still ran its requests, and
+   the CLI's own budget reminder counts `used` from 0. The cap is checked
+   between requests, so the first request can overshoot it: a new session under
+   a $0.02 cap ended `error_max_budget_usd` at $0.033. A resume whose reload
+   costs more than the cap is therefore stopped only after paying for it; the
+   engine has to decline it before it starts.
+16. **A resume is quoted before it runs, but not to an SDK callback** ((k), (l)).
+   `SessionStartHookInput` carries `context_tokens`,
+   `seconds_since_last_response`, `prompt_cache_likely_expired` and
+   `estimated_cache_write_usd` for `source: 'resume'`. A `SessionStart` callback
+   in `Options.hooks` never fires on a resume (it is over before the control
+   channel is up); a command hook passed through `Options.settings` does, and
+   gets that input on stdin. `UserPromptSubmit` and `Stop` callbacks do fire,
+   and `UserPromptSubmit` runs before the first request: answering
+   `{ decision: 'block' }` there ends the turn with zero requests and the
+   running total unchanged. So `resumeWatch` has the command hook write the
+   quote to a temp file, reads it in the `UserPromptSubmit` callback, and asks
+   the engine (`onResumeQuote`) whether to go; 'stop' ends the turn as
+   `resume_declined`. The quote's `context_tokens` is the window of the last
+   response (input + cache read + cache write + output), the same number
+   `noteContext` reads from the stream, within a fraction of a percent.
+17. **Cache writes here use the one-hour TTL** (`usage.cache_creation.
+   ephemeral_1h_input_tokens`), so a resume within the hour reads its context
+   instead of writing it: the quote for a session last used a second ago said
+   `prompt_cache_likely_expired: false`. The port reports which TTL a turn's
+   writes used (`TurnResult.cacheTtlS`), and the engine's estimate takes the
+   cache as warm inside it.
 
 ## Engine decisions confirmed by the spike
 
