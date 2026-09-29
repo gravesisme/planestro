@@ -419,6 +419,16 @@ export const LocalConfig = z.object({
   })).default({}),
   /** Models this machine's account cannot use right now, by model id: detected usage limits and ones marked in Settings. */
   model_unavailable: z.record(z.string(), ModelUnavailable).optional(),
+  /**
+   * `serve --watch` keeping this machine's planestro checkout current (#103): `main-green` moves it to the newest
+   * main commit whose CI passed at least `min_age_hours` ago (a soak, so one project can trail another), every
+   * `poll_min` minutes, then restarts between turns. `off` leaves it where it is.
+   */
+  update: z.object({
+    channel: z.enum(['off', 'main-green']).default('off'),
+    poll_min: z.number().int().min(1).default(15),
+    min_age_hours: z.number().min(0).default(0),
+  }).default({ channel: 'off', poll_min: 15, min_age_hours: 0 }),
   engine: z.object({
     paused: z.boolean().default(false), mode: z.enum(['live', 'dry-run']).optional(),
     /** Who pulled the lever: only a `usage_guard` pause is ever resumed automatically. */
