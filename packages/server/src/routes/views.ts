@@ -50,6 +50,12 @@ export type ReleaseView = ReturnType<typeof releaseView>;
  * A question as its page shows it. `pending`: a wake about it is queued or running (the engine's
  * memory, not the file's). The list leaves out the details and the thread, which only the page reads.
  */
+/** Who closed a question, from its last "resolved by …" / "withdrawn by …" line: planestro when its item finished or was iceboxed (settleQuestions). */
+function closedBy(thread: { actor: string; text: string }[]): 'you' | 'orchestrator' | 'planestro' | undefined {
+  const m = [...thread].reverse().find((t) => t.actor === 'app' && /^(resolved|withdrawn) by /.test(t.text))?.text.match(/^(?:resolved|withdrawn) by (you|the orchestrator|planestro):/);
+  return m ? (m[1] === 'the orchestrator' ? 'orchestrator' : m[1] as 'you' | 'planestro') : undefined;
+}
+
 export function questionView(store: DataStore, q: StoredQuestion, pending: boolean, full = true) {
   const fm = q.file.frontmatter;
   const thread = parseThread(q.file);
@@ -59,6 +65,8 @@ export function questionView(store: DataStore, q: StoredQuestion, pending: boole
     item_title: item?.title, item_status: item?.status,
     summary: getQuestionSection(q.file, 'Summary'), recommendation: getQuestionSection(q.file, 'Recommendation'),
     messages: thread.length, last_at: thread.at(-1)?.at ?? fm.updated_at,
+    // Who closed it, from the thread's own line (DataStore.resolveQuestion): the chat says on the card what became of it.
+    closed_by: fm.status === 'open' ? undefined : closedBy(thread),
     ...(full ? { details: getQuestionSection(q.file, 'Details'), thread } : {}),
   };
 }

@@ -5,6 +5,7 @@ import { SCHEMA_VERSION, parseThread } from '@planestro/shared';
 import { DataStore } from '../src/store/DataStore.ts';
 import { LiveEngine } from '../src/engine/LiveEngine.ts';
 import { apiRoutes } from '../src/routes/api.ts';
+import { questionView } from '../src/routes/views.ts';
 import { migrate, importJournalQuestions } from '../src/migrations/index.ts';
 import { FakeWorld, DryRunGitPort, DryRunGhPort, DryRunProcPort } from '../src/engine/dryrun-ports.ts';
 import type { Ports, TurnResult, CustomTurnOptions } from '../src/engine/ports.ts';
@@ -65,6 +66,19 @@ describe('questions in the store', () => {
     s.reload();
     expect(s.listQuestions().map((x) => x.id)).toEqual(['Q-2', 'Q-1']);
     expect(s.invalid).toEqual([]);
+  });
+
+  it('the view says who closed a question, so the chat can mark one its item outlived as never answered', async () => {
+    const { store: s } = await setup();
+    const it = s.createItem({ title: 'Art' });
+    for (const h of ['A', 'B', 'C', 'D']) s.askQuestion({ headline: h, summary: 'x', item: it.id });
+    s.resolveQuestion('Q-1', 'resolved', 'yes', 'orchestrator');
+    s.resolveQuestion('Q-2', 'withdrawn', 'moot', 'user');
+    s.resolveQuestion('Q-3', 'resolved', `${it.id} finished`, 'engine');
+    const by = (id: string) => questionView(s, s.requireQuestion(id), false, false).closed_by;
+    expect([by('Q-1'), by('Q-2'), by('Q-3'), by('Q-4')]).toEqual(['orchestrator', 'you', 'planestro', undefined]);
+    s.reopenQuestion('Q-3');
+    expect(by('Q-3')).toBeUndefined();
   });
 
   it('an item that finishes or goes to the icebox resolves its open questions (#57)', async () => {
