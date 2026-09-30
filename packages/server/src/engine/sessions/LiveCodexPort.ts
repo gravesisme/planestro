@@ -1,7 +1,7 @@
-import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative, isAbsolute } from 'node:path';
 import type { AgentPort, AgentTurnOptions, TurnResult } from '../ports.ts';
 
 /**
@@ -11,7 +11,8 @@ import type { AgentPort, AgentTurnOptions, TurnResult } from '../ports.ts';
  * parked question. Everything here was established by spikes/codex-spike.ts (docs/notes/codex-spike.md).
  *
  * Trust model: there is no per-command permission callback. The turn runs under Codex's
- * `workspace-write` sandbox — writes confined to the worktree, no network for its commands — and
+ * `workspace-write` sandbox — writes confined to the worktree and the git dirs its commits need
+ * (gitWritableRoots), no network for its commands — and
  * planestro verifies the result afterwards like any other turn (clean tree, commits ahead).
  */
 export const FINAL_SCHEMA = {
@@ -81,6 +82,26 @@ export const IMAGE_TOOL_NOTE = [
   '- Copy each image you keep into the worktree: the final file at the path the plan names, raw generations under tmp/ when the plan asks for them. "Nothing outside the worktree" is about what your commands write.',
 ].join('\n');
 
+/**
+ * What a commit writes outside a linked worktree, as sandbox roots (HH-273, HH-281, HH-286): its own git dir
+ * (index, HEAD, rebase state) and, in the shared one, objects/, refs/heads/ and logs/refs/heads/. Never the
+ * shared dir itself: config and hooks/ stay read-only to the worker. Without them every commit failed on
+ * index.lock ("Operation not permitted"); the spike missed it because it ran under the temp dir, which the
+ * sandbox always lets a turn write. A worktree that holds its own .git needs nothing. packed-refs stays out:
+ * git only warns when it cannot tidy it.
+ */
+export function gitWritableRoots(cwd: string): string[] {
+  let gitDir: string, common: string;
+  try { [gitDir, common] = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim().split('\n'); }
+  catch { return []; }
+  const here = (() => { try { return realpathSync(cwd); } catch { return cwd; } })();
+  const inside = (p: string) => { const r = relative(here, p); return !r.startsWith('..') && !isAbsolute(r); };
+  if (!gitDir || !common || inside(gitDir)) return [];
+  const shared = ['objects', 'refs/heads', 'logs/refs/heads'].map((d) => join(common, d));
+  for (const d of shared) { try { mkdirSync(d, { recursive: true }); } catch { /* git makes it on first use; the root is then simply missing */ } }
+  return [gitDir, ...shared];
+}
+
 export class LiveCodexPort implements AgentPort<AgentTurnOptions> {
   private lastError?: string;
   constructor(private readonly codexBin = 'codex', private readonly extraArgs: string[] = []) {}
@@ -94,7 +115,9 @@ export class LiveCodexPort implements AgentPort<AgentTurnOptions> {
     // A resumed thread does NOT keep its sandbox: without the user's config it comes back read-only, and
     // `resume` has no `-s`. The config override works for both, so both get it. No `--add-dir`: that
     // grants WRITE access, and a worker must never be able to write the data dir (reads are unrestricted).
-    const shared = ['--json', '--ignore-user-config', '-c', 'sandbox_mode="workspace-write"', '--output-schema', schemaFile, '-o', lastFile, ...this.extraArgs, ...(o.model ? ['-m', o.model] : []), ...(o.images ?? []).flatMap((p) => ['-i', p])];
+    // The git dirs a commit writes, by config rather than --add-dir, which `resume` does not take.
+    const roots = gitWritableRoots(o.cwd);
+    const shared = ['--json', '--ignore-user-config', '-c', 'sandbox_mode="workspace-write"', ...(roots.length ? ['-c', `sandbox_workspace_write.writable_roots=${JSON.stringify(roots)}`] : []), '--output-schema', schemaFile, '-o', lastFile, ...this.extraArgs, ...(o.model ? ['-m', o.model] : []), ...(o.images ?? []).flatMap((p) => ['-i', p])];
     const args = o.resume
       ? ['exec', 'resume', o.resume, ...shared]
       : ['exec', '-s', 'workspace-write', '-C', o.cwd, ...shared];
