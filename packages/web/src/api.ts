@@ -23,7 +23,7 @@ export interface ReleaseView { version: string; path: string; frontmatter: Relea
 /** An orchestrator question (#75). The list leaves out `details` and `thread`; the question page has them. */
 export interface QuestionView {
   id: string; path: string; frontmatter: QuestionFrontmatter; pending: boolean; item_title?: string; item_status?: Status;
-  summary: string; recommendation: string; messages: number; last_at: string; details?: string; thread?: ThreadEntry[];
+  summary: string; recommendation: string; messages: number; last_at: string; closed_by?: 'you' | 'orchestrator' | 'planestro'; details?: string; thread?: ThreadEntry[];
 }
 export interface ReleaseFields { version?: string; title?: string | null; status?: ReleaseStatus; date?: string | null; tag?: string | null; items?: string[] }
 export interface SessionView { item: string; session_id?: string; model?: string; op?: string; started_at?: string; busy: boolean; last_output?: string }

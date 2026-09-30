@@ -1,13 +1,27 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, useLocation } from 'react-router';
 import type { JournalEntry } from '@planestro/shared';
-import { api } from '../api.ts';
+import { api, type QuestionView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 
 const SEEN_KEY = 'planestro.chat.seen';
 const readSeen = () => { try { return localStorage.getItem(SEEN_KEY) ?? ''; } catch { return ''; } };
 const writeSeen = (ts: string) => { try { localStorage.setItem(SEEN_KEY, ts); } catch { /* private window: the badge just shows again */ } };
 const text = (e: JournalEntry) => String(e.data?.text ?? e.data?.question ?? e.data?.summary ?? '');
+
+/** A pause this long, or a new day, starts a new conversation in the thread: a divider marks it, and what is above the last one is dimmed. */
+const GAP_MS = 2 * 60 * 60 * 1000;
+const startsAnew = (prev: JournalEntry | undefined, e: JournalEntry) => prev !== undefined && (e.ts.slice(0, 10) !== prev.ts.slice(0, 10) || Date.parse(e.ts) - Date.parse(prev.ts) >= GAP_MS);
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const when = (ts: string) => `${MONTHS[Number(ts.slice(5, 7)) - 1]} ${Number(ts.slice(8, 10))}, ${ts.slice(11, 16)}`;
+
+/** What became of a question that is no longer open, said on its card so nobody answers it here by mistake. */
+function settled(q: QuestionView): string {
+  const why = q.frontmatter.resolution ? `: ${q.frontmatter.resolution}` : '';
+  if (q.closed_by === 'planestro') return `never answered · no longer relevant${why}`;
+  if (q.frontmatter.status === 'withdrawn') return `withdrawn · no longer relevant${why}`;
+  return `answered${why}`;
+}
 
 /** Item ids in a message become links, when the id is one of this project's items. */
 function Linked({ children, ids }: { children: string; ids: Set<string> }) {
@@ -30,6 +44,7 @@ function Linked({ children, ids }: { children: string; ids: Set<string> }) {
 export function OrchestratorChat() {
   const chat = useStore((s) => s.chat);
   const state = useStore((s) => s.state);
+  const questions = useStore((s) => s.questions);
   const { openChat, closeChat } = useStore.getState();
   const { pathname } = useLocation();
   const here = /^\/items\/([^/]+)/.exec(pathname)?.[1];
@@ -83,6 +98,9 @@ export function OrchestratorChat() {
     if (e.type === 'orchestrator.reply') replied = true;
     return e.type !== 'orchestrator.done' || !replied;
   });
+  const anew = rows.map((e, i) => startsAnew(rows[i - 1], e));
+  const current = anew.lastIndexOf(true);
+  const byId = new Map((questions ?? []).map((q) => [q.id, q]));
   return (
     <div className="chat-panel" role="dialog" aria-label="Orchestrator chat">
       <div className="chat-head">
@@ -95,15 +113,21 @@ export function OrchestratorChat() {
           <p>Ask for what you want in plain words. It wakes with your message and the current state of the backlog, and answers here.</p>
           <p>It can add backlog items for you, explain why an item is blocked and unblock it with instructions for the worker, message a running session, and reorder the queue.</p>
         </div>}
-        {rows.map((e, i) => (
-          <div key={`${e.ts}-${i}`} className={`chat-msg ${e.type.slice('orchestrator.'.length)}`}>
-            {e.type === 'orchestrator.question' && <span className="small chat-label">{typeof e.data?.id === 'string' ? <Link to={`/questions/${e.data.id}`} title="Its page: the summary, the recommendation, and a discussion of its own">question for you ({e.data.id})</Link> : 'question for you'}{e.item ? <> · <Link to={`/items/${e.item}`}>{e.item}</Link></> : null}</span>}
+        {rows.map((e, i) => {
+          const q = e.type === 'orchestrator.question' && typeof e.data?.id === 'string' ? byId.get(e.data.id) : undefined;
+          const closed = q && q.frontmatter.status !== 'open' ? settled(q) : undefined;
+          return <Fragment key={`${e.ts}-${i}`}>
+          {anew[i] && <div className={`chat-divider ${i === current ? 'latest' : ''}`} role="separator"><span>{i === current ? `earlier conversation above · ${when(e.ts)}` : when(e.ts)}</span></div>}
+          <div className={`chat-msg ${e.type.slice('orchestrator.'.length)}${i < current ? ' old' : ''}${closed ? ' settled' : ''}`}>
+            {e.type === 'orchestrator.question' && <span className="small chat-label">{typeof e.data?.id === 'string' ? <Link to={`/questions/${e.data.id}`} title="Its page: the summary, the recommendation, and a discussion of its own">{closed ? 'question' : 'question for you'} ({e.data.id})</Link> : 'question for you'}{e.item ? <> · <Link to={`/items/${e.item}`}>{e.item}</Link></> : null}</span>}
+            {closed && <span className="small chat-settled">{closed}</span>}
             {e.type === 'orchestrator.done' && <span className="small chat-label">finished without a reply</span>}
             {e.type === 'orchestrator.user_message' && e.item && <span className="small chat-label">about <Link to={`/items/${e.item}`}>{e.item}</Link></span>}
             <div className="chat-text"><Linked ids={ids}>{text(e)}</Linked></div>
             <span className="chat-at">{e.ts.slice(5, 16).replace('T', ' ')}</span>
           </div>
-        ))}
+          </Fragment>;
+        })}
         {thinking && !paused && <div className="chat-msg reply pending"><span className="muted">…</span></div>}
       </div>
       <div className="chat-suggest">
