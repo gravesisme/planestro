@@ -121,7 +121,7 @@ export function laneOf(status: Status): Lane {
 
 export const NEEDS_YOU_AWAITING = new Set(['plan_approval', 'breakdown_approval', 'permission', 'question', 'review', 'user']);
 /** A stop the orchestrator is still triaging is not yours yet: it resolves it, or comes back with one decision. */
-export function needsYou(fm: Pick<ItemFrontmatter, 'blocked' | 'awaiting' | 'triage'> & Partial<Pick<ItemFrontmatter, 'status' | 'skip_merge' | 'ci_result' | 'op_data' | 'taken_over'>>): boolean {
+export function needsYou(fm: Pick<ItemFrontmatter, 'blocked' | 'awaiting' | 'triage'> & Partial<Pick<ItemFrontmatter, 'status' | 'skip_merge' | 'ci_result' | 'op_data' | 'taken_over' | 'op'>>): boolean {
   // You took it over: you are already on it, and nothing on it waits for anyone else.
   if (fm.triage || fm.taken_over) return false;
   if (fm.blocked || (fm.awaiting !== undefined && NEEDS_YOU_AWAITING.has(fm.awaiting))) return true;
@@ -129,7 +129,9 @@ export function needsYou(fm: Pick<ItemFrontmatter, 'blocked' | 'awaiting' | 'tri
   // green at NEEDS YOU 0). Counting it only once CI was green hid HH-242 for four and a half hours (#116): its hold was
   // "for the designer to play it", its CI went red on something unrelated, and nobody knew it was waiting. The card
   // says what CI is doing; a red run is the orchestrator's or the session's to fix meanwhile.
-  return fm.status === 'IN_REVIEW' && Boolean(fm.skip_merge);
+  // ...except while its session is making changes (review feedback sent to it, HH-280): the designer's
+  // turn comes back when that turn ends and the PR shows its new head.
+  return fm.status === 'IN_REVIEW' && Boolean(fm.skip_merge) && fm.op !== 'implement_turn';
 }
 
 export function isDone(status: Status): boolean {
