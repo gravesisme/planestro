@@ -69,6 +69,18 @@ export function classifyFailure(stderr: string): { subtype: string; error: strin
   return { subtype: 'error_during_execution', error: tail || 'codex exited with an error and no message' };
 }
 
+/**
+ * The image tool's own staging, said by the runner that has it (HH-274): workers read "write nothing outside the
+ * worktree" as covering the folder the built-in generator saves into, and blocked on their first generation. A
+ * data dir's copy of worker-system-codex predates this, so it rides with every turn here rather than in the prompt library.
+ */
+export const IMAGE_TOOL_NOTE = [
+  '## Your image tool',
+  '',
+  '- The built-in image generator saves what it makes in its own folder ($CODEX_HOME/generated_images). That is the tool working as it always does, not a write of yours: it is allowed, and it never needs anyone\'s approval.',
+  '- Copy each image you keep into the worktree: the final file at the path the plan names, raw generations under tmp/ when the plan asks for them. "Nothing outside the worktree" is about what your commands write.',
+].join('\n');
+
 export class LiveCodexPort implements AgentPort<AgentTurnOptions> {
   private lastError?: string;
   constructor(private readonly codexBin = 'codex', private readonly extraArgs: string[] = []) {}
@@ -87,7 +99,7 @@ export class LiveCodexPort implements AgentPort<AgentTurnOptions> {
       ? ['exec', 'resume', o.resume, ...shared]
       : ['exec', '-s', 'workspace-write', '-C', o.cwd, ...shared];
     // There is no system-prompt flag: the worker rules ride at the top of the prompt, every turn.
-    const prompt = `${o.systemAppend.trim()}\n\n---\n\n${o.prompt.trim()}\n\nEnd your turn with ONLY the JSON object described above: {"outcome": "done" | "blocked" | "question", "summary": "...", "parts": [...] or null, "question": "..." or null, "hold": null or "<what the pull request waits for>", "hand_off": null or {"to": "<item id that waits on this one>", "paths": ["<files in your worktree, relative>"], "note": "<what they are and how to use them>"}}. Use hand_off only when another backlog item needs files you made before your branch merges. Use hold only with "done", and only when the pull request must not merge yet because the plan or the request says it waits for something ("until TD-12 has merged"): planestro then keeps it out of the merge queue until the user releases it.`;
+    const prompt = `${o.systemAppend.trim()}\n\n${IMAGE_TOOL_NOTE}\n\n---\n\n${o.prompt.trim()}\n\nEnd your turn with ONLY the JSON object described above: {"outcome": "done" | "blocked" | "question", "summary": "...", "parts": [...] or null, "question": "..." or null, "hold": null or "<what the pull request waits for>", "hand_off": null or {"to": "<item id that waits on this one>", "paths": ["<files in your worktree, relative>"], "note": "<what they are and how to use them>"}}. Use hand_off only when another backlog item needs files you made before your branch merges. Use hold only with "done", and only when the pull request must not merge yet because the plan or the request says it waits for something ("until TD-12 has merged"): planestro then keeps it out of the merge queue until the user releases it.`;
 
     let killed = false;
     this.lastError = undefined;
