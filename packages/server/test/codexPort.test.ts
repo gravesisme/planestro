@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { LiveCodexPort, FINAL_SCHEMA, parseFinal, describeEvent, classifyFailure } from '../src/engine/sessions/LiveCodexPort.ts';
+import { LiveCodexPort, FINAL_SCHEMA, parseFinal, describeEvent, classifyFailure, gitWritableRoots } from '../src/engine/sessions/LiveCodexPort.ts';
 import type { AgentTurnOptions, TurnTools } from '../src/engine/ports.ts';
 
 /**
@@ -65,6 +66,26 @@ describe('LiveCodexPort (against a recorded fake codex)', () => {
     expect(a[a.length - 2]).toBe('--');
     expect(a.indexOf('-i')).toBeLessThan(a.indexOf('--'));
     expect(t.output).toEqual(['Drawing the icon.', "→ 'git add -A && git commit -m icon'"]);
+  });
+
+  it("a linked worktree's git dirs are writable roots on fresh and resumed turns; the shared dir itself, config and hooks are not (HH-281)", async () => {
+    const t = setup();
+    expect(gitWritableRoots(t.dir)).toEqual([]);               // not a repository: nothing to add
+    const repo = join(t.dir, 'repo'); mkdirSync(repo);
+    const g = (cwd: string, ...a: string[]) => execFileSync('git', a, { cwd, stdio: 'ignore' });
+    g(repo, 'init', '-q'); g(repo, '-c', 'user.email=a@b', '-c', 'user.name=a', 'commit', '-q', '--allow-empty', '-m', 'init');
+    expect(gitWritableRoots(repo)).toEqual([]);                // its .git is inside the workspace already
+    g(repo, 'worktree', 'add', '-q', '.claude/worktrees/w1', '-b', 'w1');
+    const wt = join(repo, '.claude/worktrees/w1');
+    const common = realpathSync(join(repo, '.git'));
+    const roots = gitWritableRoots(wt);
+    expect(roots).toEqual([join(common, 'worktrees/w1'), join(common, 'objects'), join(common, 'refs/heads'), join(common, 'logs/refs/heads')]);
+    for (const opts of [t.opts('draw it', { cwd: wt }), t.opts('draw it', { cwd: wt, resume: 'thread-9' })]) {
+      await t.port.runTurn(opts);
+      const a = t.args();
+      expect(a).toContain(`sandbox_workspace_write.writable_roots=${JSON.stringify(roots)}`);
+      expect(a).not.toContain('--add-dir');                    // resume does not take it
+    }
   });
 
   it('a hand_off in the final message reaches the tool before the outcome', async () => {
