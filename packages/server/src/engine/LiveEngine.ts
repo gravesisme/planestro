@@ -141,7 +141,7 @@ export class LiveEngine implements Engine {
     this.now = opts.now ?? isoLocal;
     this.ciWorkflow = opts.ciWorkflow ?? 'CI';
     this.orchestrator = new Orchestrator(store, ports, {
-      message: (id, text) => this.message(id, text),
+      message: (id, text) => this.message(id, text, 'orchestrator'),
       approvePlan: (id, notes, hold) => this.approvePlan(id, notes, 'orchestrator', { hold }),
       holdMerge: (id, reason) => this.orchestratorHolds(id, reason),
       convertKind: (id, to, why) => this.convertKind(id, to, 'orchestrator', why).catch((e) => (e as Error).message),
@@ -764,12 +764,21 @@ export class LiveEngine implements Engine {
     this.queueFollowUp(id, () => this.runTurnFor(id, 'plan', `${this.resumeNote(id, 'your plan review')}\n\n${ask}`));
   }
 
-  async message(id: string, text: string): Promise<void> {
+  async message(id: string, text: string, by: 'user' | 'orchestrator' = 'user'): Promise<void> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
     const phase = this.phaseFor(fm.status);
     if (!phase) throw new Error(`${id} has no session to message in status ${fm.status}`);
     if (fm.taken_over) throw new Error(`${id} is yours (taken over): hand it back before messaging its session`);
+    // Past its breakdown an epic has no session and no worktree: its children do the work. The user's
+    // word goes to the orchestrator, which instructs them; resuming a session there blocked the epic
+    // with engine_error on every message (HH-256, HH-259).
+    if (fm.kind === 'epic' && phase !== 'plan') {
+      if (by === 'orchestrator') throw new Error(`epic ${id} has no session past its breakdown; message its children (${this.store.derived(item).children.join(', ') || 'none yet'}) or annotate_item the epic`);
+      this.store.mutateItem(id, [{ activity: { actor: 'user', text: `message: ${text}` } }, { activity: { actor: 'app', text: 'an epic has no session of its own past its breakdown: passed to the orchestrator for its children' } }], 'user', { commit: `${id}: message` });
+      this.wakeOrchestrator('epic_message', id, { message: text });
+      return;
+    }
     if (this.turns.has(id) || this.jobs.has(id)) {
       const pending = [...((fm.op_data?.pending_messages as string[] | undefined) ?? []), text];
       this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), pending_messages: pending } } }, { activity: { actor: 'user', text: `message queued: ${text}` } }], 'user');

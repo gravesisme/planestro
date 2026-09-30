@@ -2576,3 +2576,20 @@ describe('dirty-tree reminders (dogfood p54, HH-215/HH-222)', () => {
     expect(reminders(ctx.store, ctx.id)).toBe(1);
   });
 });
+
+describe('a message to an epic past its breakdown (HH-256, HH-259)', () => {
+  it('goes to the orchestrator for its children instead of blocking the epic; the orchestrator is told why it cannot message one', async () => {
+    const { store, engine } = await setup();
+    const epic = store.createItem({ title: 'Surface update', description: 'x', kind: 'epic' } as any);
+    const child = store.createItem({ title: 'Authored layout', description: 'x', parent: epic.id });
+    store.mutateItem(epic.id, [{ set: { status: 'IN_PROGRESS', branch: 'feature/surface-update' } }], 'engine');
+    await engine.start();
+    await engine.message(epic.id, 'No treasure for Hometown.');
+    const fm = store.getItem(epic.id)!.file.frontmatter;
+    expect(fm.blocked).toBeFalsy();
+    expect(fm.status).toBe('IN_PROGRESS');
+    expect(store.getItem(epic.id)!.file.sections.find((s) => s.title === 'Activity')!.body).toContain('message: No treasure for Hometown.');
+    expect(store.journal.read({ item: epic.id, type: 'orchestrator.wake' }).some((w) => w.data?.event === 'epic_message')).toBe(true);
+    await expect(engine.message(epic.id, 'from the orchestrator', 'orchestrator')).rejects.toThrow(new RegExp(`no session past its breakdown; message its children \\(${child.id}\\)`));
+  });
+});

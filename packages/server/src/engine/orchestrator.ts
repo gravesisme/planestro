@@ -28,6 +28,16 @@ const CHAT_POLICY = [
 ].join('\n');
 
 /**
+ * The user messaged an epic past its breakdown (HH-256): it has no session, so the word is the
+ * orchestrator's to carry to the children that it touches.
+ */
+const EPIC_MESSAGE_POLICY = [
+  'The user sent this message to the epic itself. An epic has no session past its breakdown: its children do the work, and the message reaches them only through you.',
+  'It is the user\'s word: read the children (list_items, read_item) and carry the message to each one it changes. message_session for a child that is planning or running (it reaches that session). A child not started yet has no session to tell and its planner does not read the epic: annotate_item it, and say in your note that it still needs telling when it starts. Leave alone a child it does not touch.',
+  'Record on the epic with annotate_item which children you told and what, in a line or two. Ask the user with ask_user only if the message cannot be applied without their choice.',
+].join('\n');
+
+/**
  * The user wrote in one question's thread (#75): the same authority as the chat, but the answer
  * belongs on that question's page, and the discussion can settle or change the question itself.
  */
@@ -413,6 +423,7 @@ export class Orchestrator {
       }
     }
     if (e.type === 'user_message') lines.push(CHAT_POLICY);
+    if (e.type === 'epic_message') lines.push(EPIC_MESSAGE_POLICY);
     const q = questionOf(e);
     if (q) { lines.push(this.questionPacket(e, q)); return lines.join('\n'); }
     for (const [k, v] of Object.entries(e.data ?? {})) lines.push(`${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`.slice(0, 2000));
@@ -590,7 +601,7 @@ export class Orchestrator {
       { name: 'set_queue_order', description: 'Reorder the QUEUED items (first is admitted first).', schema: { ids: z.array(z.string()) }, handler: async (a) => { const ids = a.ids as string[]; const ranks = renormalize(ids); for (const id of ids) { const it = store.requireItem(id); if (laneOf(it.file.frontmatter.status) !== 'board') throw new Error(`${id} is not on the board`); store.mutateItem(id, [{ rank: ranks.get(id)! }], 'orchestrator'); } this.hooks.poke(); return 'queue order set'; } },
       { name: 'skip_merge', description: 'Hold an item\'s pull request out of the merge queue, with a reason: what it waits for. The reason is shown on the item. Its commits are still pushed and its CI is still read; it does not merge until the hold is released. Before the pull request exists, it is opened held.', schema: { ...idArg, reason: z.string() }, handler: async (a) => this.hooks.holdMerge(String(a.id), String(a.reason)) },
       { name: 'unskip_merge', description: 'Return a held item to the merge queue.', schema: idArg, handler: async (a) => { store.mutateItem(String(a.id), [{ unset: ['skip_merge'] }, { set: { ci_result: 'pending', op_data: { ...(store.requireItem(String(a.id)).file.frontmatter.op_data ?? {}), hold_waived: true } } }, { activity: { actor: 'orchestrator', text: 'returned to the merge queue' } }], 'orchestrator', { commit: `${a.id}: unskip merge` }); this.hooks.poke(); return 'returned'; } },
-      { name: 'message_session', description: "Send guidance to an item's worker session (queued for its next turn).", schema: { ...idArg, text: z.string() }, handler: async (a) => { await this.hooks.message(String(a.id), String(a.text)); return 'queued for the session'; } },
+      { name: 'message_session', description: "Send guidance to an item's worker session (queued for its next turn).", schema: { ...idArg, text: z.string() }, handler: async (a) => { try { await this.hooks.message(String(a.id), String(a.text)); } catch (e) { return `refused: ${(e as Error).message}`; } return 'queued for the session'; } },
       { name: 'annotate_item', description: "Append an orchestrator note to an item's activity log.", schema: { ...idArg, text: z.string() }, handler: async (a) => { store.mutateItem(String(a.id), [{ activity: { actor: 'orchestrator', text: String(a.text) } }], 'orchestrator'); return 'noted'; } },
       { name: 'submit_item', description: 'Submit a NOT_YET_SUBMITTED item. A worker item is queued for planning. An epic is never queued: its breakdown is planned, as the user\'s own action, so only in a wake where the user is talking to you (the chat, or a question\'s thread) and asked for it; in any other wake an epic is refused. To offer it outside the chat, give a decision card option the action { tool: "submit_item", args: { id } } when an item is stopped, or ask with ask_user.', schema: idArg, handler: async (a) => {
         const id = String(a.id);
