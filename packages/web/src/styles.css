@@ -371,3 +371,7 @@ input.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 /* Desktop notifications on this device (#70), on the Notifications tab */
 .desk-notify { background: #16232e; border: 1px solid #2b4a63; border-radius: var(--radius); padding: 12px 14px; max-width: 78ch; display: flex; flex-direction: column; gap: 6px; }
 .desk-notify p { margin: 0; color: #c4cad2; } .desk-notify .row { flex-wrap: wrap; align-items: center; }
+/* A small busy mark (#159): the review panel while it reads the branch */
+.spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }

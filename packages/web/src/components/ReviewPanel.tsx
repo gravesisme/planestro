@@ -28,6 +28,13 @@ export function ReviewPanel({ item, compact = false }: { item: ItemView; compact
   const awaiting = fm.status === 'IN_REVIEW' && fm.awaiting === 'review';
   const v = fm.updated_at; // a revised picture keeps its path: the version busts the cache
   useEffect(() => { let live = true; api.reviewImages(item.id).then((r) => { if (live) setImages(r); }).catch(() => { if (live) setImages([]); }); return () => { live = false; }; }, [item.id, fm.updated_at, fm.status]);
+  // Still reading the branch (#159): say so where the files will be, so nobody leaves before they show up.
+  if (!awaiting && images === null && fm.branch && ['IN_PROGRESS', 'IN_REVIEW'].includes(fm.status)) return (
+    <div className="section review-loading" aria-busy="true">
+      <h2 style={{ margin: '0 0 8px' }}><span>Files to review on this branch</span></h2>
+      <p className="small muted row"><span className="spinner" aria-hidden="true" /> Reading the branch for images, sounds and models to review…</p>
+    </div>
+  );
   if (!awaiting && !images?.length) return null;
   const px = scaled ? scaleN : 1;
   const candidate = (f: ReviewImage) => {
