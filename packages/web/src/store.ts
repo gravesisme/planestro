@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { JournalEntry } from '@planestro/shared';
 import { api, type State, type ItemView, type QuestionView } from './api.ts';
+import { showIfNotification } from './desktopNotify.ts';
 
 /** Journal entries the orchestrator chat shows (a wake's `done` only when it answered a message). */
 export const isChatEntry = (j: JournalEntry) => ['orchestrator.user_message', 'orchestrator.reply', 'orchestrator.question'].includes(j.type) || (j.type === 'orchestrator.done' && ((j.data?.events as string[] | undefined) ?? []).includes('user_message'));
@@ -81,6 +82,7 @@ export const useStore = create<Store>((set, get) => ({
         return;
       }
       if (e.type === 'journal.appended') {
+        showIfNotification(e.entry);
         if (e.entry?.type === 'orchestrator.planestro_note') set({ notes: [...get().notes.slice(-199), e.entry] });
         const c = get().chat; if (c.entries && isChatEntry(e.entry) && !c.entries.some((x) => x.ts === e.entry.ts && x.type === e.entry.type)) set({ chat: { ...c, entries: [...c.entries.slice(-199), e.entry] } });
         return;

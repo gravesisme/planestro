@@ -129,6 +129,25 @@ describe('LiveEngine lifecycle (dry-run ports)', () => {
     void world;
   });
 
+  it('a merge is journaled as a notification for the browser, and on_merge gets its title and message (#70)', async () => {
+    const { store, engine } = await setup();
+    store.updateConfig((doc) => { doc.setIn(['notifications', 'on_merge'], 'echo merged'); }, 'config: on_merge');
+    const runs: { command: string; env?: Record<string, string> }[] = [];
+    const proc = (engine as any).ports.proc; const inner = proc.run.bind(proc);
+    proc.run = async (command: string, opts: { cwd: string; env?: Record<string, string> }) => { runs.push({ command, env: opts.env }); return inner(command, opts); };
+    const item = store.createItem({ title: 'Lamps at a rhythm', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => status(store, item.id) === 'FINISHED', 10000);
+    const n = store.journal.read({ type: 'notification' });
+    expect(n).toHaveLength(1);
+    expect(n[0]).toMatchObject({ item: item.id, data: { event: 'on_merge', title: `${item.id} merged` } });
+    expect(String(n[0].data!.message)).toMatch(/^PR #\d+ merged into trunk: Lamps at a rhythm$/);
+    expect(runs.find((r) => r.command === 'echo merged')?.env).toEqual({ PLANESTRO_TITLE: `${item.id} merged`, PLANESTRO_MESSAGE: n[0].data!.message });
+  });
+
   it('the same red run re-observed is not a second failure', async () => {
     const { store, engine, world } = await setup({ ci: 'red-once' });
     world.ciMode = 'red-once';

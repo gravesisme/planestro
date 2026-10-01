@@ -7,6 +7,7 @@ import { initDataDir } from './init.ts';
 import { migrate } from './migrations/index.ts';
 import { locateDataDir, TOOL_VERSION } from './config.ts';
 import { exitCodeFor } from './exitCodes.ts';
+import { desktopNotify } from './notifier.ts';
 
 const USAGE = `planestro ${TOOL_VERSION}
 
@@ -20,6 +21,9 @@ const USAGE = `planestro ${TOOL_VERSION}
   planestro sample [dir] [--reset] [--no-serve] [--port N]
                                     build a fictional project with a full backlog and serve it in dry-run:
                                     no repo, GitHub remote or Claude login needed (default dir .planestro/sample, port 4310)
+  planestro notify <title> <message>
+                                    show a desktop notification (osascript on a Mac, notify-send on Linux); for notifications.* commands,
+                                    which also get PLANESTRO_TITLE and PLANESTRO_MESSAGE
   planestro version
 `;
 
@@ -115,6 +119,12 @@ try {
       void openWhenUp(`http://127.0.0.1:${port}`, log);
       const { startServer } = await import('./server.ts');
       await startServer({ dataDir: r.dataDir, port, host: values.host });
+      break;
+    }
+    case 'notify': {
+      const [, title, ...rest] = positionals;
+      if (!title) { log(USAGE); process.exit(1); }
+      log(`notified via ${await desktopNotify(title, rest.join(' '))}`);
       break;
     }
     case 'version': log(TOOL_VERSION); break;

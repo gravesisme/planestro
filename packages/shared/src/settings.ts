@@ -22,7 +22,7 @@ export const SETTINGS_TABS = [
   { id: 'ci', name: 'CI & merging', hint: 'checks, holds, review', file: 'planestro.yml · ci: / review: / epics:',
     intro: 'How planestro decides a pull request is safe to merge, and when it stops to show you something first.' },
   { id: 'notifications', name: 'Notifications', hint: 'what tells you, and how', file: 'planestro.yml · notifications:',
-    intro: 'Commands planestro runs on events, so you hear about merges and pauses away from the browser.' },
+    intro: 'How you hear about merges and pauses: desktop notifications from this browser, and commands planestro runs on those events.' },
   { id: 'machine', name: 'This machine', hint: 'paths, programs, keys', file: 'planestro.local.yml (not committed)',
     intro: 'Settings that are true of this computer only. They are never committed, so the same data folder works on another machine with its own paths.' },
   { id: 'data', name: 'Data & releases', hint: 'git, attachments, release sections', file: 'planestro.yml · git: / attachments: / releases:',
@@ -192,7 +192,7 @@ export const SETTINGS: readonly SettingDef[] = [
   // ---- Notifications
   C({ key: 'notifications.on_merge', tab: 'notifications', group: 'Commands', label: 'When a PR merges', summary: 'Any shell command, run in the code repository.', control: 'text', mono: true, placeholder: 'say "PR merged"' }),
   C({ key: 'notifications.on_usage_pause', tab: 'notifications', group: 'Commands', label: 'When the usage guard pauses', summary: 'Run when automation pauses before a usage limit.', control: 'text', mono: true, placeholder: 'say "planestro paused for usage"',
-    detail: ["On a Mac, osascript -e 'display notification \"…\" with title \"planestro\"' shows a notification (under Script Editor's icon)."] }),
+    detail: ['Both commands get PLANESTRO_TITLE and PLANESTRO_MESSAGE. `planestro notify "$PLANESTRO_TITLE" "$PLANESTRO_MESSAGE"` (from the planestro checkout) shows a desktop notification: osascript on a Mac, under Script Editor\'s icon. For planestro\'s own icon, turn on desktop notifications above in the installed app.'] }),
 
   // ---- This machine
   L({ key: 'code_repo_path', group: 'Paths', label: 'Code repository', summary: 'Where the repository is on this computer, if not where planestro.yml says.', control: 'text', mono: true, restart: true }),
