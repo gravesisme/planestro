@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
-import { getSection, epicFlagOf, holdShapeOf, heldReasonOf, previewOf, type HoldFlag, partsSummary, serializeItemFile, serializeQuestionFile, parseThread, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent, parseActivity } from '@planestro/shared';
+import { getSection, planToolsMissing, epicFlagOf, holdShapeOf, heldReasonOf, previewOf, type HoldFlag, partsSummary, serializeItemFile, serializeQuestionFile, parseThread, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent, parseActivity } from '@planestro/shared';
 import { parkHint } from './parks.ts';
 import { hostNote, keptPathsNote } from './hostNote.ts';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
@@ -414,6 +414,9 @@ export class Orchestrator {
         if (since.length) lines.push(`Merged since its worktree was cut: ${since.map((d) => `${d!.id} (${d!.merged_at!.slice(0, 16).replace('T', ' ')})`).join(', ')}. Its branch does not have that work yet: sync it (sync_with_base, or unblock_item with sync_first: true) before it resumes.`);
         const desc = getSection(item.file, 'Description'); if (desc) lines.push(`Description:\n${desc.slice(0, 1200)}`);
         const plan = getSection(item.file, 'Plan'); if (plan) lines.push(`Approved/submitted plan:\n${plan.slice(0, 2000)}`);
+        // A fact code knows (#155): the plan calls MCP tools its implementer's sessions will not have.
+        const lacks = e.type === 'plan_review' ? planToolsMissing(plan, findModel(this.store.config, fm.implementer), this.store.config.models) : [];
+        if (lacks.length) lines.push(`THE PLAN USES TOOLS ITS IMPLEMENTER (${fm.implementer}) DOES NOT HAVE: ${lacks.map((l) => `MCP server ${l.server} (${l.tools.join(', ')}): ${l.models.length ? `models that have it: ${l.models.join(', ')}` : 'no model in this project has it (planestro.local.yml mcp_servers and a model\'s mcp)'}`).join('; ')}. Do not approve it as is: set_item_fields implementer to a model that has it, or request_plan_changes without that tool, or, when no model has it, ask the user.`);
         const activity = getSection(item.file, 'Activity').split('\n').slice(-8).join('\n'); if (activity) lines.push(`Recent activity:\n${activity}`);
         if (fm.parts?.length) lines.push(`Parts, as the worker itself reports them (${partsSummary(fm.parts)}). Quote this; never summarise the state of the work from memory or prose:\n${fm.parts.map((p) => `- ${p.name}: ${p.state}${p.reason ? ` — ${p.reason}` : ''}`).join('\n')}`);
         if (e.type === 'plan_review') {

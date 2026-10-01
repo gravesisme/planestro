@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
-import { canPlan, decisionOf, DISCARD, dollarHint, epicFlagOf, heldReasonOf, holdShapeOf, kindConversionRefusal, previewOf, type Status } from '@planestro/shared';
+import { canPlan, decisionOf, DISCARD, planToolsMissing, dollarHint, epicFlagOf, heldReasonOf, holdShapeOf, kindConversionRefusal, previewOf, type Status } from '@planestro/shared';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { reloadText, useResumeEstimate } from '../resumeCost.ts';
@@ -88,6 +88,8 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
   const convertible = !session && !kindConversionRefusal(fm, other, d.children.length);
   const epicShaped = fm.status === 'PLAN_READY' ? epicFlagOf(fm) : undefined;
   // A plan that says its pull request must wait (#97): read from the plan as it stands, offered at approval.
+  // A plan that calls MCP tools its implementer's sessions will not get (#155, HH-338): said before it is approved.
+  const lacks = fm.status === 'PLAN_READY' && fm.kind !== 'epic' ? planToolsMissing(item.sections.Plan ?? '', implementerDef, state.config.models) : [];
   const statedHold = fm.status === 'PLAN_READY' && fm.kind !== 'epic' && !epicShaped ? holdShapeOf(item.sections.Plan ?? '') : null;
   const holdText = holdFor ?? statedHold?.reason ?? '';
   const heldFor = heldReasonOf(fm);
@@ -173,6 +175,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
                 <label className="row small">Held: <input className="grow" aria-label="What the pull request waits for" placeholder="what it waits for" value={holdText} onChange={(e) => setHoldFor(e.target.value)} /></label>
               </div>
             )}
+            {lacks.length > 0 && <div className="hold-warning" role="note"><b>This plan uses tools its implementer does not have.</b>{lacks.map((l) => <p key={l.server} className="small">MCP server <b>{l.server}</b> ({l.tools.join(', ')}): {implementerDef?.label ?? fm.implementer} has no access to it. {l.models.length ? `Switch the implementer to ${l.models.map((m) => state.config.models.find((x) => x.id === m)?.label ?? m).join(' or ')} before approving.` : 'No model in this project has it: add the server to mcp_servers in planestro.local.yml and to a model\'s mcp, or ask for a plan without it.'}</p>)}</div>}
             <textarea placeholder="Optional notes to pass to the implementer" value={approval} onChange={(e) => setApproval(e.target.value)} style={{ minHeight: 60 }} />
             <div className="row">{statedHold && <button className="primary" disabled={!holdText.trim()} onClick={() => act(() => api.approvePlan(item.id, approval || undefined, false, holdText))}>Approve and hold the PR</button>}{!epicShaped && <button className={statedHold ? '' : 'primary'} title={statedHold ? 'Without the hold: its pull request merges as soon as CI is green' : undefined} onClick={() => act(() => api.approvePlan(item.id, approval || undefined))}>Approve &amp; implement</button>}{canClose && <button title={CLOSE_HINT} onClick={closeAsDone}>Already done — close…</button>}{fm.awaiting === 'plan_approval' && state.config.orchestrator.may_approve_plans && <button title="Hand it to the orchestrator to review and approve, as a delegated plan: for one that came back to you without a decision" onClick={() => void act(() => api.reviewPlanAgain(item.id))}>Ask the orchestrator to review</button>}<span className="grow" /><input className="grow" placeholder="What should change?" value={reject} onChange={(e) => setReject(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && reject.trim()) { e.preventDefault(); void act(() => api.rejectPlan(item.id, reject)); } }} /><button className="danger" disabled={!reject.trim()} onClick={() => act(() => api.rejectPlan(item.id, reject))}>Request changes</button></div>
           </div>
