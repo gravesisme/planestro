@@ -126,8 +126,9 @@ describe('LiveCodexPort (against a recorded fake codex)', () => {
   it('abort is "killed" although codex exits 0; silence is an error; a lost thread and a missing binary say so', async () => {
     const t = setup();
     const ac = new AbortController();
-    setTimeout(() => ac.abort(), 300);
-    expect(await t.port.runTurn(t.opts('HANG', { signal: ac.signal }))).toMatchObject({ subtype: 'killed', isError: false, sessionId: 'thread-1' });
+    // Aborted once the turn is under way (its first readable line), not on a timer: under the full suite's load a
+    // 300 ms timer fired before the fake had even started its thread (#144).
+    expect(await t.port.runTurn(t.opts('HANG', { signal: ac.signal, onOutput: () => ac.abort() }))).toMatchObject({ subtype: 'killed', isError: false, sessionId: 'thread-1' });
     expect(await t.port.runTurn(t.opts('SILENT'))).toMatchObject({ subtype: 'no_final_message', isError: true });
     expect(await t.port.runTurn(t.opts('x', { resume: 'gone' }))).toMatchObject({ subtype: 'session_lost', isError: true });
     expect(await new LiveCodexPort('/nonexistent/codex').runTurn(t.opts('x'))).toMatchObject({ subtype: 'spawn_error', isError: true });

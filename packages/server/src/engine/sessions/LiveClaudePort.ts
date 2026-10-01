@@ -36,6 +36,7 @@ export class LiveClaudePort implements ClaudePort {
     const abortController = new AbortController();
     o.signal?.addEventListener('abort', () => abortController.abort(), { once: true });
     const resumed = resumeWatch(o);
+    const allow = splitAllowed(o.allowedTools);
     const q = query({
       prompt: o.prompt,
       options: {
@@ -44,12 +45,12 @@ export class LiveClaudePort implements ClaudePort {
         systemPrompt: { type: 'preset', preset: 'claude_code', append: o.systemAppend },
         ...resumed.options,
         mcpServers: { planestro: server }, strictMcpConfig: true, settingSources: ['project'],
-        allowedTools: [...o.allowedTools, ...o.mcpTools.map((t) => `mcp__planestro__${t.name}`)],
+        allowedTools: allow.rules,
         maxTurns: o.maxTurns, abortController,
         ...(this.claudeBin ? { pathToClaudeCodeExecutable: this.claudeBin } : {}),
         ...(this.apiKey ? { env: { ...process.env, ANTHROPIC_API_KEY: this.apiKey } } : {}),
         canUseTool: async (toolName, input) => {
-          if (toolName.startsWith('mcp__planestro__')) return { behavior: 'allow', updatedInput: input };
+          if (toolName.startsWith('mcp__planestro__') || allow.whole.has(toolName)) return { behavior: 'allow', updatedInput: input };
           return { behavior: 'deny', message: `${toolName} is not available in this role; use the planestro tools.` };
         },
       },
@@ -85,6 +86,7 @@ export class LiveClaudePort implements ClaudePort {
     const abortController = new AbortController();
     o.signal?.addEventListener('abort', () => abortController.abort(), { once: true });
     const resumed = resumeWatch(o);
+    const allow = splitAllowed(o.allowedTools);
     const q = query({
       prompt: o.prompt,
       options: {
@@ -94,13 +96,13 @@ export class LiveClaudePort implements ClaudePort {
         ...resumed.options,
         // The model's own servers ride along; their tools are not allow-listed, so every call reaches canUseTool and the engine's count.
         mcpServers: { planestro, ...(o.mcpServers ?? {}) } as any, strictMcpConfig: true, settingSources: ['project'],
-        allowedTools: [...o.allowedTools, 'mcp__planestro__submit_plan', 'mcp__planestro__submit_breakdown', 'mcp__planestro__add_note', 'mcp__planestro__append_activity', 'mcp__planestro__report_done', 'mcp__planestro__report_progress', 'mcp__planestro__report_blocked', 'mcp__planestro__hand_off', 'mcp__planestro__get_item'],
+        allowedTools: allow.rules,
         additionalDirectories: o.extraDirs, maxBudgetUsd: o.maxBudgetUsd, abortController,
         ...(this.claudeBin ? { pathToClaudeCodeExecutable: this.claudeBin } : {}),
         env: { ...process.env, ...PINNED, ...(this.apiKey ? { ANTHROPIC_API_KEY: this.apiKey } : {}) },
         canUseTool: async (toolName, input) => {
-          // Plan mode routes even allow-listed tools through this callback; planestro's own tools are always fine.
-          if (toolName.startsWith('mcp__planestro__')) return { behavior: 'allow', updatedInput: input };
+          // planestro's own tools, and a whole tool a rule names bare, are always fine (plan mode routes even allow-listed tools here).
+          if (toolName.startsWith('mcp__planestro__') || allow.whole.has(toolName)) return { behavior: 'allow', updatedInput: input };
           if (toolName === 'ExitPlanMode') {
             const plan = String((input as any).plan ?? '');
             if (plan) { result.planSubmitted = plan; await o.tools.submit_plan(plan); }
@@ -122,6 +124,18 @@ export class LiveClaudePort implements ClaudePort {
     await consume(q, result, o.onOutput, abortController, resumed);
     return result;
   }
+}
+
+/**
+ * allowedTools as the SDK should see it (#58). A bare entry (`Read`, `mcp__planestro__report_done`) approves the
+ * whole tool before canUseTool is consulted, and the SDK warns of it on every start
+ * (CLAUDE_SDK_CAN_USE_TOOL_SHADOWED). Only rules with a pattern (`Bash(git log*)`) go to the SDK; bare names are
+ * approved by the callback, first thing, so what is allowed is unchanged and every call is visible to it.
+ */
+export function splitAllowed(list: readonly string[]): { rules: string[]; whole: Set<string> } {
+  const rules: string[] = []; const whole = new Set<string>();
+  for (const r of list.map((x) => x.trim()).filter(Boolean)) { if (r.includes('(')) rules.push(r); else whole.add(r); }
+  return { rules, whole };
 }
 
 /**
