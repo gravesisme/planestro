@@ -40,6 +40,8 @@ export class MockEngine implements Engine {
   async closeAsDone(id: string, reason?: string): Promise<void> {
     this.store.mutateItem(id, [{ transition: { to: 'FINISHED', actor: 'user' } }, { activity: { actor: 'user', text: `closed as done without a pull request${reason?.trim() ? `: ${reason.trim()}` : ''}` } }], 'user', { commit: `${id}: close as done` });
   }
+  async discardPreview(id: string) { return { refusal: 'no engine is running', ...(this.store.requireItem(id).file.frontmatter.branch ? { branch: this.store.requireItem(id).file.frontmatter.branch } : {}), remote_sha: null }; }
+  async discard(): Promise<string> { throw new Error('no engine is running'); }
   async takeOver(id: string, note?: string): Promise<void> {
     this.store.mutateItem(id, [{ set: { taken_over: { since: isoLocal(), ...(note?.trim() ? { note: note.trim() } : {}) } } }, { activity: { actor: 'user', text: `took this item over by hand${note?.trim() ? `: ${note.trim()}` : ''}` } }], 'user', { commit: `${id}: take over` });
   }

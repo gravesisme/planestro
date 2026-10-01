@@ -92,6 +92,12 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   The second is user-only, stops at IN_REVIEW (a PR decides from there), and
   removes the worktree/branch only when they are clean with nothing ahead of
   the base — otherwise it leaves them and says so in the Activity log.
+- **Discard** (`Engine.discard`, #135) is the user's way out for work no longer wanted, QUEUED through
+  IN_REVIEW (and an iceboxed epic child): the turn stops, the PR is closed with the reason, the item
+  leaves its epic (`parent` unset, so the epic finishes without it) and goes to ICEBOX. Its remote
+  branch is deleted only when the user ticks it, leased to the tip they were shown, with the tips
+  logged first; otherwise local cleanup needs a clean tree whose HEAD the remote holds. An iceboxed
+  child still holds its epic open, and the epic says so. IN_REVIEW → ICEBOX goes only through it.
 - `kind` (item | epic) changes only through `Engine.convertKind` (the page's **Convert to
   epic / to item**, the orchestrator's `convert_item`), while nothing has run for
   implementation (`kindConversionRefusal`): the plan moves to Notes, the planning worktree

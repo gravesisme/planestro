@@ -364,3 +364,7 @@ input.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   .billing { grid-template-columns: minmax(0, 1fr); } .billing .mode { grid-row: auto; justify-self: start; }
 }
 @media (prefers-reduced-motion: reduce) { .switch span, .switch span::after { transition: none; } }
+
+/* Discard (#135): the dialog under the item's header */
+.discard-panel { display: flex; flex-direction: column; gap: 8px; margin: 8px 0; padding: 10px 12px; border: 1px solid var(--hot); border-radius: var(--radius); background: color-mix(in srgb, var(--hot) 8%, var(--panel)); }
+.discard-panel p { margin: 0; } .discard-panel label { display: flex; gap: 8px; align-items: flex-start; } .discard-panel label input { margin-top: 3px; flex: none; } .discard-panel code { overflow-wrap: anywhere; }

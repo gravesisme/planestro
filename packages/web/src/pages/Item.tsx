@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
-import { canPlan, decisionOf, dollarHint, epicFlagOf, heldReasonOf, holdShapeOf, kindConversionRefusal, type Status } from '@planestro/shared';
+import { canPlan, decisionOf, DISCARD, dollarHint, epicFlagOf, heldReasonOf, holdShapeOf, kindConversionRefusal, type Status } from '@planestro/shared';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { reloadText, useResumeEstimate } from '../resumeCost.ts';
@@ -14,6 +14,7 @@ import { BreakdownPanel } from '../components/BreakdownPanel.tsx';
 import { BlockedPanel } from '../components/BlockedPanel.tsx';
 import { WaitingPanel } from '../components/ResumeAfter.tsx';
 import { TakeOverButton, TakenOverPanel } from '../components/TakeOver.tsx';
+import { DiscardButton, DiscardPanel } from '../components/Discard.tsx';
 import { AwaitingPanels } from '../components/AwaitingPanels.tsx';
 import { PartsStrip } from '../components/PartsStrip.tsx';
 import { DecisionCard } from '../components/DecisionCard.tsx';
@@ -62,6 +63,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
   const [holdFor, setHoldFor] = useState<string | null>(null);
   const [reject, setReject] = useState('');
   const [msg, setMsg] = useState('');
+  const [discarding, setDiscarding] = useState(false);
   const [refPath, setRefPath] = useState('');
   const session = state.engine.sessions.find((s) => s.item === item.id);
   const children = d.children.map((c) => state.items.find((i) => i.id === c)).filter(Boolean) as ItemView[];
@@ -109,7 +111,8 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           {fm.taken_over && <span className="pill yours">yours · by hand</span>}
           {fm.op && <span className="pill">{fm.op.replace(/_/g, ' ')}</span>}
           <TakeOverButton item={item} />
-          {transitions.filter((t) => !(t.to === 'IN_PROGRESS' && fm.status === 'PLAN_READY') && !(t.to === 'PLAN_IN_PROGRESS' && fm.status === 'PLAN_READY')).map((t) => (
+          <DiscardButton item={item} open={discarding} onOpen={() => setDiscarding(true)} />
+          {transitions.filter((t) => t.label !== DISCARD && !(t.to === 'IN_PROGRESS' && fm.status === 'PLAN_READY') && !(t.to === 'PLAN_IN_PROGRESS' && fm.status === 'PLAN_READY')).map((t) => (
             t.to === 'FINISHED'
               ? <button key={t.to} title={CLOSE_HINT} onClick={closeAsDone}>{t.label}…</button>
               : <button key={t.to} disabled={t.to === 'QUEUED' && (!d.deps_satisfied || !!d.base_branch_error)} title={d.base_branch_error ?? (!d.deps_satisfied ? 'dependencies not merged' : '')} onClick={() => { if (confirmMove(item, t.to, t.label)) void act(() => api.transition(item.id, t.to)); }}>{t.label}</button>
@@ -117,6 +120,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           {canSyncWithBase(item, !!session) && <button title={SYNC_HINT} onClick={() => promptSyncWithBase(item)}>Sync with {d.base_branch ?? 'base'}…</button>}
           {convertible && !epicShaped && <button title={KIND_HINT[other]} onClick={() => convert(other)}>Convert to {other}…</button>}
         </div>
+        {discarding && <DiscardPanel item={item} onClose={() => setDiscarding(false)} />}
         <div className="controls">
           <label>category <select value={fm.category} onChange={(e) => field({ category: e.target.value })}>{state.config.categories.map((c) => <option key={c}>{c}</option>)}</select></label>
           {fm.kind !== 'epic' && <label>planner <select value={fm.planner ?? ''} onChange={(e) => field({ planner: e.target.value })}>{state.config.models.filter(canPlan).map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}</select></label>}

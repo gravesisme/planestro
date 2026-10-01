@@ -216,6 +216,15 @@ export class LiveGitPort implements GitPort {
   async deleteRemoteBranch(repo: string, branch: string) {
     await refLocked(() => retrying(async () => { const r = await git(repo, ['push', 'origin', '--delete', branch], true); if (r.code !== 0 && !/remote ref does not exist/.test(r.stderr)) throw new Error(`delete remote ${branch}: ${r.stderr.trim()}`); }, GIT_RETRY_MS));
   }
+  async deleteRemoteBranchAt(repo: string, branch: string, sha: string): Promise<'deleted' | 'moved' | 'gone'> {
+    return refLocked(() => retrying(async () => {
+      const r = await git(repo, ['push', `--force-with-lease=refs/heads/${branch}:${sha}`, 'origin', `:refs/heads/${branch}`], true);
+      if (r.code === 0) return 'deleted' as const;
+      if (/remote ref does not exist|unable to delete .*: remote ref does not exist/.test(r.stderr)) return 'gone' as const;
+      if (/stale info|\(stale info\)|rejected/.test(r.stderr)) return 'moved' as const;
+      throw new Error(`delete remote ${branch}: ${r.stderr.trim()}`);
+    }, GIT_RETRY_MS));
+  }
   async localBranchExists(repo: string, branch: string) { return this.refExists(repo, `refs/heads/${branch}`); }
   async deleteLocalBranch(repo: string, branch: string) { if (await this.localBranchExists(repo, branch)) await git(repo, ['branch', '-D', branch]); }
   async isAncestor(repo: string, ancestor: string, descendant: string) { return (await git(repo, ['merge-base', '--is-ancestor', ancestor, descendant], true)).code === 0; }
@@ -285,6 +294,7 @@ export class LiveGhPort implements GhPort {
     return false;
   }
   async rerunFailed(repo: string, runId: number) { await gh(['run', 'rerun', String(runId), '--repo', repo, '--failed']); }
+  async closePr(repo: string, number: number, comment: string) { await gh(['pr', 'close', String(number), '--repo', repo, '--comment', comment]); }
   async mergePr(repo: string, number: number, opts: { deleteBranch: boolean }) {
     await gh(['pr', 'merge', String(number), '--repo', repo, '--merge', ...(opts.deleteBranch ? ['--delete-branch'] : [])]);
   }

@@ -19,8 +19,10 @@ export interface CreateItemArgs { title: string; description: string; kind?: 'it
  * What an option can carry: only what the user could do on the page themselves. `submit_item` on an
  * epic plans its breakdown (an epic is never queued), so planning one needs no tool of its own.
  */
-export type DecisionAction = { tool: 'create_item'; args: CreateItemArgs } | { tool: 'submit_item'; args: { id: string } };
-export const DECISION_ACTION_TOOLS = ['create_item', 'submit_item'] as const;
+export type DecisionAction = { tool: 'create_item'; args: CreateItemArgs } | { tool: 'submit_item'; args: { id: string } } | { tool: 'discard_item'; args: DiscardItemArgs };
+/** Discard (#135): close the PR, take the item off its epic, put it in the icebox; with delete_branch, its branch on GitHub goes too. */
+export interface DiscardItemArgs { id: string; reason: string; delete_branch?: boolean }
+export const DECISION_ACTION_TOOLS = ['create_item', 'submit_item', 'discard_item'] as const;
 export interface Decision {
   question: string;
   why: string;
@@ -43,6 +45,12 @@ function parseAction(raw: unknown): { value: DecisionAction } | { error: string 
   const args = (a.args && typeof a.args === 'object' && !Array.isArray(a.args) ? a.args : {}) as Record<string, unknown>;
   const str = (k: string) => (typeof args[k] === 'string' ? (args[k] as string).trim() : '');
   if (a.tool === 'submit_item') return str('id') ? { value: { tool: 'submit_item', args: { id: str('id') } } } : { error: 'action submit_item needs args.id, the item to submit' };
+  if (a.tool === 'discard_item') {
+    if (!str('id')) return { error: 'action discard_item needs args.id, the item to discard' };
+    if (!str('reason')) return { error: 'action discard_item needs args.reason: why it is dropped, in a sentence (it goes on the closed pull request)' };
+    if (args.delete_branch !== undefined && typeof args.delete_branch !== 'boolean') return { error: 'action discard_item: delete_branch is true or false' };
+    return { value: { tool: 'discard_item', args: { id: str('id'), reason: str('reason').slice(0, 500), ...(args.delete_branch === true ? { delete_branch: true } : {}) } } };
+  }
   if (a.tool !== 'create_item') return { error: `its action's tool "${String(a.tool)}" is not one an option can carry: ${DECISION_ACTION_TOOLS.join(', ')}` };
   const title = str('title'); const description = str('description');
   if (!title) return { error: 'action create_item needs args.title' };
@@ -69,6 +77,10 @@ function parseAction(raw: unknown): { value: DecisionAction } | { error: string 
  * must be able to see what the tap really does. `lookup` names the item a submit is for.
  */
 export function describeAction(action: DecisionAction, lookup?: (id: string) => { title: string; kind?: 'item' | 'epic' } | undefined): string {
+  if (action.tool === 'discard_item') {
+    const it = lookup?.(action.args.id);
+    return `discards ${action.args.id}${it ? ` "${it.title}"` : ''}: closes its pull request, takes it off its epic and puts it in the icebox, ${action.args.delete_branch ? 'and deletes its branch on GitHub' : 'keeping its branch on GitHub'}`;
+  }
   if (action.tool === 'submit_item') {
     const it = lookup?.(action.args.id);
     const name = `${action.args.id}${it ? ` "${it.title}"` : ''}`;

@@ -100,6 +100,14 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
     const bare = it.file.frontmatter.kind === 'epic' && it.file.frontmatter.status === 'NOT_YET_SUBMITTED' && !store.derived(it).children.length;   // approving a breakdown is also → IN_PROGRESS, with no children yet
     return c.json(allowedTransitions(it.file.frontmatter.status, 'user', store.flavorOf(it.file.frontmatter)).filter((t) => !(bare && t.to === 'IN_PROGRESS')).map((t) => ({ to: t.to, label: t.label })));
   });
+  api.get('/items/:id/discard', async (c) => { try { return c.json(await engine.discardPreview(c.req.param('id'))); } catch (e) { return fail(c, e); } });
+  api.post('/items/:id/discard', async (c) => {
+    try {
+      const { reason, delete_branch, expect_sha } = z.object({ reason: z.string().min(1), delete_branch: z.boolean().optional(), expect_sha: z.string().optional() }).parse(await c.req.json());
+      const said = await engine.discard(c.req.param('id'), reason, { deleteBranch: delete_branch === true, ...(expect_sha ? { expectSha: expect_sha } : {}) });
+      return c.json({ said, item: itemView(store, store.requireItem(c.req.param('id'))) });
+    } catch (e) { return fail(c, e); }
+  });
   api.post('/items/:id/transition', async (c) => {
     try {
       const id = c.req.param('id');
@@ -108,6 +116,8 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
       // Closing without a PR goes through the engine: it decides what happens to the worktree and branch.
       if (to === 'PLAN_IN_PROGRESS' && it.file.frontmatter.kind === 'epic') { await engine.planEpic(id); return c.json(itemView(store, store.requireItem(id))); }
       if (to === 'FINISHED') { await engine.closeAsDone(id, reason); return c.json(itemView(store, store.requireItem(id))); }
+      // Out of review only by Discard (#135): it closes the pull request and says what became of the branch.
+      if (to === 'ICEBOX' && it.file.frontmatter.status === 'IN_REVIEW') throw new Error('use Discard: it closes the pull request and says what becomes of the branch');
       const d = store.derived(it);
       if (to === 'QUEUED' && !d.deps_satisfied) throw new Error('dependencies are not merged yet');
       if (to === 'QUEUED' && d.base_branch_error) throw new Error(d.base_branch_error);
