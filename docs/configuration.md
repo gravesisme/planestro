@@ -242,7 +242,10 @@ Default: **Release notes** and **Notes**.
 | `anthropic_api_key` | Bills Claude sessions to the API under the Commercial Terms instead of a claude.ai login. `ANTHROPIC_API_KEY` in the environment does the same. |
 | `model_unavailable` | Models this machine's account cannot use right now, by model id: `{ until, reason, since, manual }`. Written when a turn fails on a usage limit and by **mark unavailable** in Settings; cleared there or when `until` passes. Per machine because usage belongs to the account logged in here. |
 | `engine.paused` | The PAUSE AUTOMATION lever, persisted. |
-| `engine.paused_by` | `user` (the lever) or `usage_guard`. Only a `usage_guard` pause is ever resumed automatically. |
+| `engine.paused_by` | `user` (the lever), `usage_guard` or `disk`. A `usage_guard` pause (with `auto_resume`) and a `disk` pause resume automatically; yours never does. |
+| `engine.disk_guard.free_gib` | While the [disk guard](#disk-guard) holds automation paused: the GiB free when it tripped… |
+| `engine.disk_guard.path` | …on which volume (the repo or the worktrees root, whichever had less)… |
+| `engine.disk_guard.tripped_at` | …and when. |
 | `engine.usage_guard.window` | While the [usage guard](#usage-guard) holds automation paused: the rate-limit window that tripped it (`five_hour`, `seven_day`, …)… |
 | `engine.usage_guard.status` | …its status (`allowed`, `allowed_warning`, `rejected`)… |
 | `engine.usage_guard.utilization` | …how full it was (0–1, when reported)… |
@@ -253,6 +256,21 @@ Default: **Release notes** and **Notes**.
 | `engine.usage_guard_last.resets_at` | See `engine.usage_guard_last.window`. |
 | `engine.usage_guard_last.tripped_at` | See `engine.usage_guard_last.window`. |
 | `engine.mode` | This machine's override of `engine.mode`. |
+
+## Disk guard
+
+A full disk fails every worker one by one, each as its own stop (HH-355, #161). Once a minute planestro
+reads the free space on the volumes holding the code repo and the worktrees root. Below
+`min_free_gib` it pauses automation (`paused_by: disk`): running steps finish, nothing new starts,
+the topbar says *disk nearly full*, and `notifications.on_usage_pause` runs. At `resume_free_gib` it
+resumes by itself. A write that still fails on ENOSPC blocks as `disk_full`, which is not triaged.
+It never deletes anything: freeing space is yours.
+
+| key | default | meaning |
+|---|---|---|
+| `disk_guard.enabled` | `true` | Read the free space at all. |
+| `disk_guard.min_free_gib` | `10` | Pause below this many GiB free. |
+| `disk_guard.resume_free_gib` | `15` | Resume at this many GiB free (a margin, so it does not flap). |
 
 ## Usage guard
 

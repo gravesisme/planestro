@@ -224,10 +224,10 @@ export class LiveEngine implements Engine {
   pause(): void { this.setPaused(true, 'user'); this.note('warn', 'AUTOMATION PAUSED — running steps finish, nothing new starts'); }
   /** By hand this also dismisses a usage-guard pause (and its timer) for the rest of that window crossing. */
   resume(message = 'automation resumed'): void { this.setPaused(false); this.note('info', message); this.orchestrator.kick(); void this.tick(); }
-  private setPaused(paused: boolean, by?: 'user' | 'usage_guard', guard?: UsageGuardState): void {
+  private setPaused(paused: boolean, by?: 'user' | 'usage_guard' | 'disk', guard?: UsageGuardState, disk?: { free_gib: number; path: string; tripped_at: string }): void {
     this.cancelGuardResume?.(); this.cancelGuardResume = undefined;
     this._paused = paused;
-    this.store.updateLocal({ engine: { ...this.store.local.engine, paused, paused_by: paused ? by : undefined, usage_guard: guard, ...(guard ? { usage_guard_last: { window: guard.window, ...(guard.resets_at ? { resets_at: guard.resets_at } : {}), tripped_at: guard.tripped_at } } : {}) } });
+    this.store.updateLocal({ engine: { ...this.store.local.engine, paused, paused_by: paused ? by : undefined, usage_guard: guard, disk_guard: paused ? disk : undefined, ...(guard ? { usage_guard_last: { window: guard.window, ...(guard.resets_at ? { resets_at: guard.resets_at } : {}), tripped_at: guard.tripped_at } } : {}) } });
     this.emit({ type: 'engine.paused', paused, ...(paused && by ? { by } : {}) });
   }
 
@@ -245,6 +245,32 @@ export class LiveEngine implements Engine {
     this.note('warn', `USAGE GUARD: ${usageWindowLabel(r.window)} window ${usagePercent(r.utilization) ? `at ${usagePercent(r.utilization)}` : r.status === 'rejected' ? 'is exhausted' : 'sent a usage warning'} — automation paused ${resumeAt ? `until ${localClock(resumeAt)}` : r.resetsAt ? `(the window resets at ${localClock(r.resetsAt)}; resume by hand)` : 'until you resume it'}; running turns finish, nothing new starts`);
     this.announce('on_usage_pause', 'planestro paused', `Automation paused: the ${usageWindowLabel(r.window)} usage window ${usagePercent(r.utilization) ? `is at ${usagePercent(r.utilization)}` : 'is near its limit'}`);
     this.armGuardResume();
+  }
+
+  // ---- disk guard (#161, HH-355): a full disk fails every worker one by one; pause before it does ----
+  private diskCheckedAt = 0;
+  /** Free space on the volumes the work is written to (the repo, its worktrees), at most once a minute; `force` reads now. */
+  async checkDisk(force = false): Promise<void> {
+    const cfg = this.store.config.disk_guard;
+    if (!cfg.enabled || this.stopping || !this.ports.proc.freeBytes || (!force && Date.now() - this.diskCheckedAt < 60_000)) return;
+    this.diskCheckedAt = Date.now();
+    const paths = [...new Set([this.repo, this.store.worktreesRoot()])];
+    const reads = await Promise.all(paths.map(async (path) => ({ path, free: await this.ports.proc.freeBytes!(path) })));
+    const known = reads.filter((r): r is { path: string; free: number } => typeof r.free === 'number');
+    if (!known.length) return;
+    const low = known.reduce((a, b) => (b.free < a.free ? b : a));
+    const gib = Math.round((low.free / 2 ** 30) * 10) / 10;
+    const e = this.store.local.engine;
+    if (this._paused && e.paused_by === 'disk') {
+      if (gib >= cfg.resume_free_gib) { this.store.journal.append({ type: 'disk.guard_resumed', actor: 'engine', data: { free_gib: gib, path: low.path } }); this.resume(`automation resumed: ${gib} GiB free again on ${low.path}`); }
+      return;
+    }
+    if (this._paused || gib >= cfg.min_free_gib) return;
+    const disk = { free_gib: gib, path: low.path, tripped_at: new Date(Date.now()).toISOString() };
+    this.setPaused(true, 'disk', undefined, disk);
+    this.store.journal.append({ type: 'disk.guard_tripped', actor: 'engine', data: { ...disk, min_free_gib: cfg.min_free_gib } });
+    this.note('warn', `DISK GUARD: ${gib} GiB free on ${low.path} (under ${cfg.min_free_gib}) — automation paused; running steps finish, nothing new starts until ${cfg.resume_free_gib} GiB is free`);
+    this.announce('on_usage_pause', 'planestro paused', `Disk nearly full: ${gib} GiB free on ${low.path}. Nothing new starts until ${cfg.resume_free_gib} GiB is free.`);
   }
 
   /**
@@ -332,6 +358,7 @@ export class LiveEngine implements Engine {
     // A backstop for the guard's timer (a machine that slept through it): resume once the reset has passed.
     const due = this.guardResumeDue();
     if (due !== undefined && due <= Date.now()) { this.guardResume(); return; }
+    await this.checkDisk();
     if (this._paused) return;
     try {
       this.admit();
@@ -2515,6 +2542,9 @@ export class LiveEngine implements Engine {
   }
 
   private block(id: string, reason: string, detail: string, awaiting: 'user' | undefined = 'user'): void {
+    // No space left (#161): whatever stopped on it, the cause is the disk, which no instruction fixes. Said as such, never
+    // triaged, and the guard reads the disk at once (it pauses everything else rather than let each item fail in turn).
+    if (reason !== 'disk_full' && /\bENOSPC\b|No space left on device/i.test(detail)) { reason = 'disk_full'; void this.checkDisk(true); }
     try {
       const cur = this.store.requireItem(id).file.frontmatter;
       // The person who has the item is already looking at it: a stop is said, not raised (dogfood p28: a worker still
@@ -2549,7 +2579,7 @@ export class LiveEngine implements Engine {
 
   /** The ops that put a stop into triage, or none (with a note why) when it goes straight to the user. */
   private triageOps(fm: { status: Status; op_data?: Record<string, unknown> }, reason: string): { on: boolean; ops: ItemOp[] } {
-    if (!this.triageAvailable()) return { on: false, ops: [] };
+    if (!this.triageAvailable() || reason === 'disk_full') return { on: false, ops: [] };   // a full disk is not the orchestrator's to judge (#161)
     const rounds = fm.op_data?.triage_status === fm.status ? Number(fm.op_data?.triage_rounds ?? 0) : 0;
     if (rounds >= MAX_TRIAGE_ROUNDS) return { on: false, ops: [{ activity: { actor: 'app', text: `not triaged: the orchestrator has already looked at ${rounds} stops of this item in ${fm.status}; it needs you` } }] };
     return { on: true, ops: [

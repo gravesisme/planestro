@@ -124,6 +124,9 @@ export const SETTINGS: readonly SettingDef[] = [
   C({ key: 'usage_guard.on_warning', tab: 'budgets', group: 'Usage guard', label: 'Also pause on a warning', summary: 'Pause when Claude reports a usage warning, whatever the percentage.', control: 'toggle' }),
   C({ key: 'usage_guard.auto_resume', tab: 'budgets', group: 'Usage guard', label: 'Resume by itself', summary: 'Resume a minute after the window resets. Off: a guard pause waits for you.', control: 'toggle',
     detail: ['Off by default: resuming on its own restarts spending while nobody is watching. RESUME by hand cancels the automatic resume; a pause you pulled yourself is never resumed automatically.'] }),
+  C({ key: 'disk_guard.enabled', tab: 'budgets', group: 'Disk guard', label: 'Pause before the disk fills', summary: 'Read free space on the repo and worktrees volume once a minute, and pause automation when it runs low, instead of every worker failing on a full disk.', control: 'toggle' }),
+  C({ key: 'disk_guard.min_free_gib', tab: 'budgets', group: 'Disk guard', label: 'Pause below', summary: 'Free space under which nothing new starts. Running steps finish.', control: 'number', unit: 'GiB', min: 1 }),
+  C({ key: 'disk_guard.resume_free_gib', tab: 'budgets', group: 'Disk guard', label: 'Resume at', summary: 'Free space at which it resumes by itself: a margin above the pause, so it does not flap.', control: 'number', unit: 'GiB', min: 1 }),
 
   // ---- Orchestrator
   C({ key: 'orchestrator.model', tab: 'orchestrator', group: 'Model', label: 'Model', summary: 'The model that makes judgment calls. Only Claude models can.', control: 'model', planners: true }),
@@ -227,7 +230,7 @@ export const SETTINGS: readonly SettingDef[] = [
 export const NOT_USER_FACING: Record<SettingFile, readonly string[]> = {
   config: ['schema_version', 'tool_version'],
   // engine.paused is the header's PAUSE AUTOMATION lever; the rest is what the usage guard recorded; model_unavailable is written by the model cards' Mark unavailable.
-  local: ['engine.paused', 'engine.paused_by', 'engine.usage_guard', 'engine.usage_guard_last', 'model_unavailable'],
+  local: ['engine.paused', 'engine.paused_by', 'engine.usage_guard', 'engine.usage_guard_last', 'engine.disk_guard', 'model_unavailable'],
 };
 
 export function settingDef(file: SettingFile, key: string): SettingDef | undefined { return SETTINGS.find((s) => s.file === file && s.key === key); }

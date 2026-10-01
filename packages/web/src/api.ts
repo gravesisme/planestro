@@ -37,7 +37,7 @@ export interface State {
   billing?: BillingMode; api_key?: 'local' | 'env' | 'none';
   items: ItemView[]; prompts: PromptView[]; releases?: ReleaseView[]; invalid: { path: string; error: string }[];
   update: { channel: string; running: string; checked_at: string; state: string; detail: string; target?: string } | null;
-  engine: { mode: string; paused: boolean; paused_by?: 'user' | 'usage_guard'; usage_guard?: UsageGuardState; sessions: SessionView[]; restart?: { draining: boolean; by?: 'user' | 'update'; idle: boolean; running: string[] } };
+  engine: { mode: string; paused: boolean; paused_by?: 'user' | 'usage_guard' | 'disk'; usage_guard?: UsageGuardState; disk_guard?: { free_gib: number; path: string; tripped_at: string }; sessions: SessionView[]; restart?: { draining: boolean; by?: 'user' | 'update'; idle: boolean; running: string[] } };
   git: { dirty: string[]; branch: string; head?: string; ahead?: number };
   statuses: Status[];
 }
