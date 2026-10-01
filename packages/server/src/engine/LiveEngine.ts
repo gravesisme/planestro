@@ -238,15 +238,25 @@ export class LiveEngine implements Engine {
     this.setPaused(true, 'usage_guard', guard);
     this.store.journal.append({ type: 'usage.guard_tripped', actor: 'engine', data: { ...guard, threshold: cfg.threshold } });
     this.note('warn', `USAGE GUARD: ${usageWindowLabel(r.window)} window ${usagePercent(r.utilization) ? `at ${usagePercent(r.utilization)}` : r.status === 'rejected' ? 'is exhausted' : 'sent a usage warning'} — automation paused ${resumeAt ? `until ${localClock(resumeAt)}` : r.resetsAt ? `(the window resets at ${localClock(r.resetsAt)}; resume by hand)` : 'until you resume it'}; running turns finish, nothing new starts`);
-    const notify = this.store.config.notifications.on_usage_pause;
-    if (notify) void this.ports.proc.run(notify, { cwd: this.repo, timeoutMs: 30_000 }).catch(() => undefined);
+    this.announce('on_usage_pause', 'planestro paused', `Automation paused: the ${usageWindowLabel(r.window)} usage window ${usagePercent(r.utilization) ? `is at ${usagePercent(r.utilization)}` : 'is near its limit'}`);
     this.armGuardResume();
+  }
+
+  /**
+   * An event worth hearing about away from the browser (#70): journaled as a `notification`, which an open
+   * planestro tab shows as a desktop notification if this device opted in (under planestro's own icon once the
+   * web app is installed), and the project's notifications.* command run with PLANESTRO_TITLE / PLANESTRO_MESSAGE.
+   */
+  private announce(event: 'on_merge' | 'on_usage_pause', title: string, message: string, item?: string): void {
+    this.store.journal.append({ type: 'notification', ...(item ? { item } : {}), actor: 'engine', data: { event, title, message } });
+    const cmd = this.store.config.notifications[event];
+    if (cmd) void this.ports.proc.run(cmd, { cwd: this.repo, timeoutMs: 30_000, env: { PLANESTRO_TITLE: title, PLANESTRO_MESSAGE: message } }).catch(() => undefined);
   }
 
   async testNotification(event: 'on_merge' | 'on_usage_pause'): Promise<{ code: number; output: string }> {
     const cmd = this.store.config.notifications[event];
     if (!cmd) throw new Error(`notifications.${event} is not set`);
-    const r = await this.ports.proc.run(cmd, { cwd: this.repo, timeoutMs: 30_000 });
+    const r = await this.ports.proc.run(cmd, { cwd: this.repo, timeoutMs: 30_000, env: { PLANESTRO_TITLE: 'planestro', PLANESTRO_MESSAGE: `a test of notifications.${event}` } });
     return { code: r.code, output: `${r.stdout}${r.stderr}`.trim().slice(0, 2000) };
   }
 
@@ -1633,8 +1643,7 @@ export class LiveEngine implements Engine {
     this.store.journal.end(opId, id, 'ok', { merged: true });
     this.note('info', `${id}: PR #${fm.pr} merged into ${base}`);
     this.wakeOrchestrator('pr_merged', id);
-    const notify = this.store.config.notifications.on_merge;
-    if (notify) void this.ports.proc.run(notify, { cwd: this.repo, timeoutMs: 30_000 });
+    this.announce('on_merge', `${id} merged`, `PR #${fm.pr} merged into ${base}: ${fm.title}`, id);
     await this.cleanup(id);
   }
 
@@ -2253,8 +2262,7 @@ export class LiveEngine implements Engine {
             { set: { merged_at: pr.mergedAt ? isoLocal(new Date(pr.mergedAt)) : this.now(), ci_result: 'green' } },
             { activity: { actor: 'app', text: `observed merge of PR #${pr.number} into ${pr.baseRefName}` } },
           ], 'engine', { commit: `${item.id}: merge (observed)` });
-          const notify = this.store.config.notifications.on_merge;
-          if (notify) void this.ports.proc.run(notify, { cwd: this.repo, timeoutMs: 30_000 });
+          this.announce('on_merge', `${item.id} merged`, `PR #${pr.number} merged into ${pr.baseRefName}: ${item.file.frontmatter.title}`, item.id);
           await this.cleanup(item.id);
         } else if (pr.state === 'CLOSED') {
           this.block(item.id, 'pr_closed_externally', `PR #${pr.number} was closed without merging`);

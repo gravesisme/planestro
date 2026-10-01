@@ -5,6 +5,7 @@ import {
 } from '@planestro/shared';
 import { api, type State } from '../api.ts';
 import { act, useStore } from '../store.ts';
+import { DesktopNotifications } from '../components/DesktopNotifications.tsx';
 
 /**
  * Settings (issue #83): tabs by what you are deciding, every row rendered from the shared registry
@@ -66,6 +67,7 @@ export function SettingsPage() {
             : <div className="settings-intro"><h2>{current.name}</h2><p>{current.intro}</p><span className="file">{current.file}</span></div>}
           {!searching && tab === 'budgets' && <BillingCallout state={state} />}
           {!searching && tab === 'data' && <StorageBlock state={state} />}
+          {!searching && tab === 'notifications' && <DesktopNotifications />}
           {[...groups].map(([g, list]) => (
             <div className="settings-group" key={g}>
               <h3>{g}</h3>
