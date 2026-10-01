@@ -37,6 +37,8 @@ export interface Engine {
   releaseHold(id: string, note?: string): Promise<void>;
   /** Finish an item without a pull request: the work landed some other way. User-only. */
   closeAsDone(id: string, reason?: string): Promise<void>;
+  /** Re-run the failed jobs of the head's red CI run (#139); returns what happened or why not. */
+  rerunCi(id: string, by?: 'user' | 'orchestrator'): Promise<string>;
   /** What the Discard dialog shows: the branch, its tip on the remote (null when it is not there) and the PR; `refusal` when it cannot be discarded. */
   discardPreview(id: string): Promise<{ refusal: string | null; branch?: string; remote_sha: string | null; pr?: number }>;
   /** Drop work in progress (#135): close its PR, take it off its epic, icebox it; its remote branch goes only with deleteBranch, leased to expectSha. User-only. Returns what happened. */
