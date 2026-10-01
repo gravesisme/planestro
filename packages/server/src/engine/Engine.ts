@@ -37,6 +37,8 @@ export interface Engine {
   releaseHold(id: string, note?: string): Promise<void>;
   /** Finish an item without a pull request: the work landed some other way. User-only. */
   closeAsDone(id: string, reason?: string): Promise<void>;
+  /** Send a plan that came back to the user to the orchestrator once more (#153). */
+  reviewPlanAgain(id: string): string;
   /** Re-run the failed jobs of the head's red CI run (#139); returns what happened or why not. */
   rerunCi(id: string, by?: 'user' | 'orchestrator'): Promise<string>;
   /** What the Discard dialog shows: the branch, its tip on the remote (null when it is not there) and the PR; `refusal` when it cannot be discarded. */

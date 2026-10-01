@@ -45,7 +45,10 @@ export class LiveClaudePort implements ClaudePort {
         systemPrompt: { type: 'preset', preset: 'claude_code', append: o.systemAppend },
         ...resumed.options,
         mcpServers: { planestro: server }, strictMcpConfig: true, settingSources: ['project'],
-        allowedTools: allow.rules,
+        // dontAsk (the orchestrator) never consults canUseTool: a tool not listed here is refused outright, so its
+        // bare names and its own MCP tools are listed whole (#153; #58's split left it unable to call anything).
+        // The SDK's CAN_USE_TOOL_SHADOWED warning is accepted for this role: the callback is unused in this mode.
+        allowedTools: customAllowedTools(o),
         maxTurns: o.maxTurns, abortController,
         ...(this.claudeBin ? { pathToClaudeCodeExecutable: this.claudeBin } : {}),
         ...(this.apiKey ? { env: { ...process.env, ANTHROPIC_API_KEY: this.apiKey } } : {}),
@@ -132,6 +135,12 @@ export class LiveClaudePort implements ClaudePort {
  * (CLAUDE_SDK_CAN_USE_TOOL_SHADOWED). Only rules with a pattern (`Bash(git log*)`) go to the SDK; bare names are
  * approved by the callback, first thing, so what is allowed is unchanged and every call is visible to it.
  */
+/** allowedTools for a custom turn: in dontAsk mode (canUseTool is never called) every tool it may use, by name (#153). */
+export function customAllowedTools(o: Pick<CustomTurnOptions, 'permissionMode' | 'allowedTools' | 'mcpTools'>): string[] {
+  const allow = splitAllowed(o.allowedTools);
+  return o.permissionMode === 'dontAsk' ? [...new Set([...allow.rules, ...allow.whole, ...o.mcpTools.map((t) => `mcp__planestro__${t.name}`)])] : allow.rules;
+}
+
 export function splitAllowed(list: readonly string[]): { rules: string[]; whole: Set<string> } {
   const rules: string[] = []; const whole = new Set<string>();
   for (const r of list.map((x) => x.trim()).filter(Boolean)) { if (r.includes('(')) rules.push(r); else whole.add(r); }

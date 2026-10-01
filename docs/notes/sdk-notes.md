@@ -69,7 +69,10 @@ a live worker) would have matched it.
    `splitAllowed` (LiveClaudePort) sends the SDK only rules with a pattern and
    approves bare names (`Read`, `Grep`, `Glob`, `mcp__planestro__*`) first thing
    in `canUseTool`. What is allowed is unchanged, every call is visible to the
-   callback, and the warning no longer prints at start.
+   callback, and the warning no longer prints at start. **Except `dontAsk`** (the
+   orchestrator, #153): that mode never calls `canUseTool` and refuses anything not
+   listed, so `customAllowedTools` lists its bare names and its MCP tools whole. #58's
+   split there left every orchestrator tool refused for a morning.
 5. **User-level settings leak into worker sessions.** With default
    `settingSources` the sessions loaded the user's MCP servers (ElevenLabs)
    and hooks (`hook_started` events before `init`). Workers should run with
