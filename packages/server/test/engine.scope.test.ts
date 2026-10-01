@@ -26,7 +26,7 @@ describe('approved scope (#74)', () => {
     const world = new FakeWorld(() => {}, { 'origin/trunk': 'f'.repeat(40) });
     const git = new DryRunGitPort(world);
     const files: Record<string, string[]> = {};
-    git.changedFiles = async (_cwd: string, _base: string, head: string) => (files[head] ?? []).map((path) => ({ path, change: 'added' as const }));
+    git.changedFiles = async (_cwd: string, _base: string, head: string) => (files[head] ?? []).map((path) => ({ path, change: 'added' as const, bytes: 1 }));
     const ports: Ports = { mode: 'dry-run', git, gh: new DryRunGhPort(world), proc: new DryRunProcPort(world), agents: { claude: new DryRunClaudePort(world) } };
     engine = new LiveEngine(store, ports, () => {}, { sleep: async () => {}, tickMs: 50 });
     const e = engine as any;
