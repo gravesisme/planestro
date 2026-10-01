@@ -358,7 +358,8 @@ export class LiveEngine implements Engine {
     // A backstop for the guard's timer (a machine that slept through it): resume once the reset has passed.
     const due = this.guardResumeDue();
     if (due !== undefined && due <= Date.now()) { this.guardResume(); return; }
-    await this.checkDisk();
+    // Read off the tick, not awaited in it: an await here let overlapping ticks interleave. A pause it sets holds from the next tick.
+    void this.checkDisk().catch(() => undefined);
     if (this._paused) return;
     try {
       this.admit();
@@ -2544,7 +2545,8 @@ export class LiveEngine implements Engine {
   private block(id: string, reason: string, detail: string, awaiting: 'user' | undefined = 'user'): void {
     // No space left (#161): whatever stopped on it, the cause is the disk, which no instruction fixes. Said as such, never
     // triaged, and the guard reads the disk at once (it pauses everything else rather than let each item fail in turn).
-    if (reason !== 'disk_full' && /\bENOSPC\b|No space left on device/i.test(detail)) { reason = 'disk_full'; void this.checkDisk(true); }
+    // Only a generic stop is renamed: one with its own reason (cleanup_dirty keeps its invariant-7 story) keeps it, and the disk is still read.
+    if (/\bENOSPC\b|No space left on device/i.test(detail)) { if (['agent_blocked', 'engine_error', 'turn_error'].includes(reason)) reason = 'disk_full'; void this.checkDisk(true); }
     try {
       const cur = this.store.requireItem(id).file.frontmatter;
       // The person who has the item is already looking at it: a stop is said, not raised (dogfood p28: a worker still
