@@ -3630,11 +3630,21 @@ export class LiveEngine implements Engine {
     return true;
   }
 
+  /** By item, the list for one head and base: the page and every picture on it ask, and a branch with 23 files took seconds each time. */
+  private reviewCache = new Map<string, { key: string; files: Promise<ReviewImage[]> }>();
   async reviewImages(id: string): Promise<ReviewImage[]> {
     const refs = this.reviewRefs(id);
     if (!refs) return [];
-    const files = (await this.ports.git.changedFiles(refs.cwd, refs.base, refs.head).catch(() => [])).filter((f) => reviewKind(f.path));
-    return Promise.all(files.map(async (f) => ({ ...f, kind: reviewKind(f.path)!, ...(f.change !== 'deleted' && /\.png$/i.test(f.path) ? pngSize(await this.ports.git.readBlob(refs.cwd, refs.head, f.path)) : {}) })));
+    const [head, base] = await Promise.all([this.ports.git.revParse(refs.cwd, refs.head).catch(() => ''), this.ports.git.revParse(refs.cwd, refs.base).catch(() => '')]);
+    const key = `${head}:${base}`;
+    const hit = head && base ? this.reviewCache.get(id) : undefined;
+    if (hit?.key === key) return hit.files;
+    const files = (async () => {
+      const changed = (await this.ports.git.changedFiles(refs.cwd, refs.base, refs.head).catch(() => [])).filter((f) => reviewKind(f.path));
+      return Promise.all(changed.map(async (f) => ({ ...f, kind: reviewKind(f.path)!, ...(f.change !== 'deleted' && /\.png$/i.test(f.path) ? pngSize(await this.ports.git.readBlob(refs.cwd, refs.head, f.path)) : {}) })));
+    })();
+    if (head && base) { this.reviewCache.set(id, { key, files }); files.catch(() => this.reviewCache.delete(id)); }
+    return files;
   }
 
   /** Only files the branch actually changed can be read through here. */
