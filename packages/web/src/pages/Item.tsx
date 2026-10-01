@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
-import { canPlan, decisionOf, DISCARD, dollarHint, epicFlagOf, heldReasonOf, holdShapeOf, kindConversionRefusal, type Status } from '@planestro/shared';
+import { canPlan, decisionOf, DISCARD, dollarHint, epicFlagOf, heldReasonOf, holdShapeOf, kindConversionRefusal, previewOf, type Status } from '@planestro/shared';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { reloadText, useResumeEstimate } from '../resumeCost.ts';
@@ -91,6 +91,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
   const statedHold = fm.status === 'PLAN_READY' && fm.kind !== 'epic' && !epicShaped ? holdShapeOf(item.sections.Plan ?? '') : null;
   const holdText = holdFor ?? statedHold?.reason ?? '';
   const heldFor = heldReasonOf(fm);
+  const preview = previewOf(fm);
   const convert = (to: 'item' | 'epic') => {
     const carries = item.sections.Plan.trim() ? ` Its ${fm.kind === 'epic' ? 'breakdown' : 'plan'} moves into Notes for the new planner.` : '';
     const next = ['QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY'].includes(fm.status) ? (to === 'epic' ? ' Its breakdown is planned at once.' : ' It is queued to be planned as one item.') : '';
@@ -190,6 +191,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           <div className="approval">
             <h2 style={{ margin: '0 0 8px' }}>Held out of the merge queue</h2>
             {heldFor && <p className="small" style={{ marginTop: 0 }}><b>Held:</b> {heldFor}</p>}
+            {preview && <p className="small" style={{ marginTop: 0 }}><b>Preview:</b> <a href={preview.url} target="_blank" rel="noreferrer">{preview.url}</a> <span className="muted">({preview.sha.slice(0, 7)})</span></p>}
             {fm.op_data?.pr_draft ? <p className="small">The pull request is a <b>draft</b> while it is held: its session's commits are pushed, but CI waits. Releasing the hold syncs the branch, marks the PR ready, and CI runs once, on the head that merges.</p> : <p className="small">CI for the pushed head: <b>{fm.ci_result ?? 'pending'}</b>{fm.ci_head_sha ? ` (${fm.ci_head_sha.slice(0, 7)})` : ''}. While it is held, its session's commits are still pushed and a red run still goes to the session to fix; it just does not merge. Releasing it sends it back through sync and CI before it merges.</p>}
             <div className="row"><button className="primary" onClick={() => { const n = prompt(`Let ${item.id} merge? Optional note for the log:`); if (n !== null) void act(() => api.releaseHold(item.id, n || undefined)); }}>Release hold</button></div>
           </div>
@@ -235,6 +237,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           <dt>branch</dt><dd>{fm.branch ?? '—'}</dd>
           <dt>worktree</dt><dd>{fm.worktree ?? '—'}</dd>
           <dt>PR</dt><dd>{fm.pr ? <a href={`https://github.com/${state.config.code_repo.github}/pull/${fm.pr}`} target="_blank" rel="noreferrer">#{fm.pr}</a> : '—'}</dd>
+          {preview && <><dt>preview</dt><dd><a href={preview.url} target="_blank" rel="noreferrer">{preview.url.replace(/^https?:\/\//, '')}</a></dd></>}
           <dt>session</dt><dd>{fm.session_id ?? '—'}{Object.entries(fm.agent_sessions ?? {}).map(([r, sid]) => <div key={r}>{r}: {sid}</div>)}</dd>
           <dt>CI</dt><dd>{fm.ci_result ?? '—'}{fm.ci_failed_count ? ` (${fm.ci_failed_count} red)` : ''}</dd>
           <dt>cost</dt><dd>

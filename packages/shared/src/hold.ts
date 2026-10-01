@@ -86,3 +86,9 @@ export function holdShapeOf(plan: string): HoldFlag | null {
 export function heldReasonOf(fm: { skip_merge?: boolean; hold_reason?: string }): string | undefined {
   return fm.skip_merge ? fm.hold_reason?.trim() || undefined : undefined;
 }
+
+/** The preview deployment for an item's PR head, when one was found (#137): `op_data.preview`, read with the held poll. */
+export function previewOf(fm: { op_data?: Record<string, unknown> }): { url: string; sha: string } | undefined {
+  const p = fm.op_data?.preview as { url?: unknown; sha?: unknown } | undefined;
+  return typeof p?.url === 'string' && /^https?:\/\//.test(p.url) && typeof p.sha === 'string' ? { url: p.url, sha: p.sha } : undefined;
+}

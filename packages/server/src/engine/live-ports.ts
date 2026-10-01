@@ -295,6 +295,15 @@ export class LiveGhPort implements GhPort {
   }
   async rerunFailed(repo: string, runId: number) { await gh(['run', 'rerun', String(runId), '--repo', repo, '--failed']); }
   async rerunAll(repo: string, runId: number) { await gh(['run', 'rerun', String(runId), '--repo', repo]); }
+  async previewUrl(repo: string, sha: string): Promise<string | null> {
+    const deployments = JSON.parse(await ghRead(['api', `repos/${repo}/deployments?sha=${sha}&per_page=5`])) as { id: number }[];
+    for (const d of deployments.slice(0, 3)) {
+      const statuses = JSON.parse(await ghRead(['api', `repos/${repo}/deployments/${d.id}/statuses?per_page=5`])) as { state: string; environment_url?: string; target_url?: string }[];
+      const ok = statuses.find((x) => x.state === 'success' && (x.environment_url || x.target_url));
+      if (ok) return ok.environment_url || ok.target_url || null;
+    }
+    return null;
+  }
   async closePr(repo: string, number: number, comment: string) { await gh(['pr', 'close', String(number), '--repo', repo, '--comment', comment]); }
   async mergePr(repo: string, number: number, opts: { deleteBranch: boolean }) {
     await gh(['pr', 'merge', String(number), '--repo', repo, '--merge', ...(opts.deleteBranch ? ['--delete-branch'] : [])]);
