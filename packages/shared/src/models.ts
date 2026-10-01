@@ -179,3 +179,9 @@ export function planToolsMissing(plan: string, implementer: Pick<ModelDef, 'mcp'
   const has = (mdl: Pick<ModelDef, 'mcp'> | undefined, server: string) => (mdl?.mcp ?? []).some((x) => x.toLowerCase() === server.toLowerCase());
   return [...named].filter(([server]) => !has(implementer, server)).map(([server, tools]) => ({ server, tools: [...tools], models: models.filter((m) => has(m, server)).map((m) => m.id) }));
 }
+
+/** The number a plan states on its `MCP budget:` line (#157), offered as the budget at approval; undefined when it states none. */
+export function mcpBudgetOf(plan: string): number | undefined {
+  const m = /^\s*(?:[-*]\s*)?\**MCP budget:?\**:?\s*\**\s*(\d+)/im.exec(plan);
+  return m ? Number(m[1]) : undefined;
+}

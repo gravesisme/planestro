@@ -47,7 +47,7 @@ export type Attachment = z.infer<typeof Attachment>;
  */
 export const AUTHORITATIVE_KEYS = [
   'schema', 'id', 'kind', 'parent', 'title', 'category', 'status', 'rank',
-  'planner', 'implementer', 'allow_model_fallback', 'auto_approve_plan', 'budget_usd', 'budget_turns', 'budget_tokens', 'depends_on', 'attachments',
+  'planner', 'implementer', 'allow_model_fallback', 'auto_approve_plan', 'budget_usd', 'budget_turns', 'budget_tokens', 'mcp_budget', 'depends_on', 'attachments',
   'merge_policy', 'base_branch_override',
 ] as const;
 export const OPERATIONAL_KEYS = [
@@ -80,6 +80,8 @@ export const ItemFrontmatter = z.object({
   budget_usd: z.number().positive().optional(),
   budget_turns: z.number().int().positive().optional(),
   budget_tokens: z.number().int().positive().optional(),
+  /** Calls to its implementer's MCP servers (a sound service) this item may make, approved by a person (#157). With none, a model with `mcp` makes none. */
+  mcp_budget: z.number().int().nonnegative().optional(),
   depends_on: z.array(id).default([]),
   attachments: z.array(Attachment).default([]),
   merge_policy: z.enum(MERGE_POLICIES).optional(),
@@ -273,6 +275,8 @@ export const ModelDef = z.object({
   mcp: z.array(z.string().min(1)).default([]),
   /** How many calls to those servers one item may make in all: a spend cap that planestro can count itself. Past it the calls are refused and the worker is told. */
   mcp_calls_per_item: z.number().int().positive().optional(),
+  /** A plan for this model is a person's to approve, never the orchestrator's, and its MCP calls need a budget they set (`mcp_budget` on the item): paid generation (#157). */
+  user_approves_plans: z.boolean().optional(),
   /** planestro commits for this model's sessions when they could not (a sandbox that intermittently refuses git's lock files): work left uncommitted after a done report is committed with the summary, and a block on a git refusal is committed and resumed. Git stays planestro's either way. */
   engine_commits: z.boolean().optional(),
   external: z.boolean().default(false),
