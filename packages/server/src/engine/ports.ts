@@ -89,6 +89,8 @@ export interface GhPort {
   isBillingBlocked(repo: string, runId: number): Promise<boolean>;
   /** Re-run only the failed jobs of a completed run (same run id, next attempt). */
   rerunFailed(repo: string, runId: number): Promise<void>;
+  /** Re-run every job of a run: a cancelled run, which has no failed jobs to re-run (HH-321). */
+  rerunAll(repo: string, runId: number): Promise<void>;
   mergePr(repo: string, number: number, opts: { deleteBranch: boolean }): Promise<void>;
   /** Close a pull request without merging it, with a comment saying why (#135). */
   closePr(repo: string, number: number, comment: string): Promise<void>;

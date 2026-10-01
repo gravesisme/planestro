@@ -294,6 +294,7 @@ export class LiveGhPort implements GhPort {
     return false;
   }
   async rerunFailed(repo: string, runId: number) { await gh(['run', 'rerun', String(runId), '--repo', repo, '--failed']); }
+  async rerunAll(repo: string, runId: number) { await gh(['run', 'rerun', String(runId), '--repo', repo]); }
   async closePr(repo: string, number: number, comment: string) { await gh(['pr', 'close', String(number), '--repo', repo, '--comment', comment]); }
   async mergePr(repo: string, number: number, opts: { deleteBranch: boolean }) {
     await gh(['pr', 'merge', String(number), '--repo', repo, '--merge', ...(opts.deleteBranch ? ['--delete-branch'] : [])]);
