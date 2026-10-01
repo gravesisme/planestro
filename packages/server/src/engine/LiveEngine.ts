@@ -1803,6 +1803,8 @@ export class LiveEngine implements Engine {
     this.queueFollowUp(id, () => this.runTurnFor(id, 'fix', this.store.renderPrompt('ci-failed', this.store.requireItem(id), { ci: { attempt: String(count), run_url: ci?.url ?? '(local run)', failed_log: log } }), [], [], { fresh: 'auto' }));
   }
 
+  /** The CI wait's clock: a seam a test can drive. */
+  ciNow = (): number => Date.now();
   private ciSkipCache = new Map<string, string | null>();
   /** Why the project's CI workflow runs nothing for this head's pull request (prSkippedByPaths), or null; read once per head, from the head itself. */
   private async ciSkipsHead(id: string, sha: string): Promise<string | null> {
@@ -1845,7 +1847,8 @@ export class LiveEngine implements Engine {
       if (cur.op_data?.ci_not_run !== sha) this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), ci_not_run: sha } } }, { activity: { actor: 'app', text: `CI does not run for ${sha.slice(0, 7)}: ${notRun}; nothing to check, so it counts as green` } }], 'engine');
       return 'green';
     }
-    const started = Date.now();
+    // The wait's clock; a run planestro re-queues starts it again (HH-323, HH-326, HH-328 timed out minutes after their re-run).
+    let started = this.ciNow();
     let sawRun = false;
     let skippedPolls = 0;
     let cancelledPolls = 0;
@@ -1859,13 +1862,13 @@ export class LiveEngine implements Engine {
       const view = await this.ports.gh.prView(this.github, pr);
       if (view.state === 'MERGED') return 'green';
       if (view.headRefOid !== sha) {
-        const lagging = previousSha !== null && view.headRefOid === previousSha && Date.now() - started < HEAD_PROPAGATION_GRACE_MS;
+        const lagging = previousSha !== null && view.headRefOid === previousSha && this.ciNow() - started < HEAD_PROPAGATION_GRACE_MS;
         if (!lagging) return 'moved';
         await this.sleep(10_000);
         continue;
       }
       const ci = await this.ports.gh.ciForSha(this.github, branch, sha, this.ciWorkflow);
-      const elapsedMin = (Date.now() - started) / 60_000;
+      const elapsedMin = (this.ciNow() - started) / 60_000;
       if (ci.runId && ci.state !== 'skipped') { sawRun = true; const cur = this.store.requireItem(id).file.frontmatter; const seen = cur.op_data?.ci as { runId?: number; attempt?: number } | undefined; if (seen?.runId !== ci.runId || seen?.attempt !== ci.attempt) this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), ci: { runId: ci.runId, url: ci.url, ...(ci.attempt ? { attempt: ci.attempt } : {}) } } } }], 'engine'); }
       if (ci.state === 'success') return 'green';
       // A re-run keeps its run id: until its attempt shows up, the completed run is the old verdict.
@@ -1880,7 +1883,7 @@ export class LiveEngine implements Engine {
         const cur = this.store.requireItem(id).file.frontmatter;
         if (cur.op_data?.ci_cancel_rerun !== sha) {
           let note: string;
-          try { await this.ports.gh.rerunAll(this.github, ci.runId); need = (ci.attempt ?? 1) + 1; note = `CI run ${ci.runId} for ${sha.slice(0, 7)} was cancelled and no other run replaced it; re-running it`; }
+          try { await this.ports.gh.rerunAll(this.github, ci.runId); need = (ci.attempt ?? 1) + 1; started = this.ciNow(); note = `CI run ${ci.runId} for ${sha.slice(0, 7)} was cancelled and no other run replaced it; re-running it`; }
           catch (e) { note = `CI run ${ci.runId} for ${sha.slice(0, 7)} was cancelled and could not be re-run (${(e as Error).message.replace(/\s+/g, ' ').slice(0, 160)}); waiting for a new run`; }
           this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), ci_cancel_rerun: sha } } }, { activity: { actor: 'app', text: note } }], 'engine');
         }

@@ -148,6 +148,20 @@ describe('LiveEngine lifecycle (dry-run ports)', () => {
     expect(runs.find((r) => r.command === 'echo merged')?.env).toEqual({ PLANESTRO_TITLE: `${item.id} merged`, PLANESTRO_MESSAGE: n[0].data!.message });
   });
 
+  it("a cancelled run planestro re-runs gets the whole CI timeout again, not what was left (HH-323, HH-326, HH-328)", async () => {
+    const { store, engine, world } = await setup();
+    let t = 0; (engine as any).ciNow = () => (t += 7 * 60_000);    // seven minutes pass per look; ci.timeout_min is 45
+    world.ciCancelOnce = true;
+    const item = store.createItem({ title: 'Cancelled late', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => status(store, item.id) === 'FINISHED' || store.getItem(item.id)!.file.frontmatter.blocked === true, 12000);
+    expect(store.getItem(item.id)!.file.frontmatter.blocked_reason).toBeUndefined();   // was ci_timeout: 6 cancelled looks used 42 of the 45 minutes
+    expect(status(store, item.id)).toBe('FINISHED');
+  });
+
   it('the same red run re-observed is not a second failure', async () => {
     const { store, engine, world } = await setup({ ci: 'red-once' });
     world.ciMode = 'red-once';
