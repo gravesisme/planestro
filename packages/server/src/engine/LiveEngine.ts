@@ -525,6 +525,22 @@ export class LiveEngine implements Engine {
   }
 
   /** The decision goes back to the person, once per submitted plan: the flag stops the tick delegating it again. */
+  /**
+   * Ask the orchestrator to review a plan that came back to the user (#153): its review could not decide (a wake that
+   * failed, as every one did while dontAsk refused its tools), and `plan_handed_back` keeps it from being delegated
+   * again. The user's word sends it once more. Returns what happened, or why not.
+   */
+  reviewPlanAgain(id: string): string {
+    const item = this.store.requireItem(id); const fm = item.file.frontmatter;
+    if (fm.status !== 'PLAN_READY' || fm.awaiting !== 'plan_approval') return `not possible: ${id} has no plan waiting for your approval`;
+    if (fm.kind === 'epic') return `not possible: an epic's breakdown is yours to approve`;
+    if (!this.store.config.orchestrator.may_approve_plans || !this.orchestrator.enabled) return 'not possible: this project does not let the orchestrator approve plans (orchestrator.may_approve_plans)';
+    const { plan_handed_back: _spent, ...od } = fm.op_data ?? {};
+    this.store.mutateItem(id, [{ set: { auto_approve_plan: true, awaiting: 'orchestrator', op_data: od } }, { activity: { actor: 'user', text: 'asked the orchestrator to review the plan again' } }], 'user', { commit: `${id}: plan review again` });
+    this.wakeOrchestrator('plan_review', id);
+    return `the orchestrator is reviewing ${id}'s plan`;
+  }
+
   private handPlanToUser(id: string, why: string): void {
     const fm = this.store.requireItem(id).file.frontmatter;
     if (fm.status !== 'PLAN_READY' || fm.awaiting !== 'orchestrator') return;

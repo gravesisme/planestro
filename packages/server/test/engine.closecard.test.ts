@@ -52,3 +52,18 @@ describe('close_as_done on a decision card (#126)', () => {
     expect(describeAction({ tool: 'close_as_done', args: { id: it.id, reason: 'x' } })).toMatch(/^closes .* as done without a pull request/);
   });
 });
+
+describe('a plan handed back is reviewed again on the user\'s word (#153)', () => {
+  it('reviewPlanAgain clears the hand-back, delegates it and wakes the orchestrator; refused off a plan waiting for you', async () => {
+    const { store, engine } = await setup();
+    store.updateConfig((doc) => { doc.setIn(['orchestrator', 'may_approve_plans'], true); }, 'config: delegate');
+    const it = store.createItem({ title: 'Desert roads', description: 'x' });
+    store.mutateItem(it.id, [{ set: { status: 'PLAN_READY', awaiting: 'plan_approval', op_data: { plan_handed_back: true } } }], 'engine');
+    expect((engine as any).reviewPlanAgain(it.id)).toBe(`the orchestrator is reviewing ${it.id}'s plan`);
+    const fm = store.requireItem(it.id).file.frontmatter;
+    expect(fm).toMatchObject({ awaiting: 'orchestrator', auto_approve_plan: true });
+    expect((fm.op_data as any)?.plan_handed_back).toBeUndefined();
+    expect(store.journal.read({ item: it.id, type: 'orchestrator.wake' }).some((w) => w.data?.event === 'plan_review')).toBe(true);
+    expect((engine as any).reviewPlanAgain(it.id)).toMatch(/^not possible: .* no plan waiting for your approval/);
+  });
+});
