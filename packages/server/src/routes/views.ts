@@ -75,7 +75,7 @@ export type QuestionView = ReturnType<typeof questionView>;
 /** Who paused automation and, for a usage-guard pause, the window reading that did it. */
 export function guardView(store: DataStore, paused: boolean) {
   const e = store.local.engine;
-  return paused ? { paused_by: e.paused_by, ...(e.paused_by === 'usage_guard' && e.usage_guard ? { usage_guard: e.usage_guard } : {}) } : {};
+  return paused ? { paused_by: e.paused_by, ...(e.paused_by === 'usage_guard' && e.usage_guard ? { usage_guard: e.usage_guard } : {}), ...(e.paused_by === 'disk' && e.disk_guard ? { disk_guard: e.disk_guard } : {}) } : {};
 }
 
 /** ANTHROPIC_API_KEY as the server started with it: the sessions it starts inherit this, not a later shell's. */

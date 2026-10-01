@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { statfs } from 'node:fs/promises';
 import { existsSync, mkdirSync, renameSync, copyFileSync, unlinkSync, lstatSync, readdirSync, readFileSync, statSync, constants as fsConstants } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { matchesPathPattern } from './ports.ts';
@@ -318,6 +319,7 @@ export class LiveGhPort implements GhPort {
 }
 
 export class LiveProcPort implements ProcPort {
+  async freeBytes(path: string) { try { const s = await statfs(path); return Number(s.bavail) * Number(s.bsize); } catch { return undefined; } }
   async run(command: string, opts: { cwd: string; timeoutMs?: number; env?: Record<string, string> }) {
     return new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
       execFile('/bin/bash', ['-lc', command], { cwd: opts.cwd, timeout: opts.timeoutMs ?? 60 * 60_000, maxBuffer: 64 * 1024 * 1024, env: { ...process.env, ...opts.env } }, (err, stdout, stderr) => {

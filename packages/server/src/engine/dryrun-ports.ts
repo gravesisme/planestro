@@ -25,6 +25,8 @@ export class FakeWorld {
   rerunFailsAgain = false;
   /** The next PR's first run is cancelled and nothing replaces it (HH-321), until its failed jobs are re-run. */
   ciCancelOnce = false;
+  /** Free space the disk guard reads (#161): undefined is "cannot tell", which never pauses. */
+  freeBytes: number | undefined = undefined;
   /** Preview deployments by commit (#137): what previewUrl reports. */
   previews = new Map<string, string>();
   /** Untracked files by worktree, and the paths the base branch tracks (for regenerated files that collide with it). */
@@ -213,6 +215,8 @@ export class DryRunGhPort implements GhPort {
 export class DryRunProcPort implements ProcPort {
   constructor(private readonly w: FakeWorld) {}
   async run(command: string, opts: { cwd: string }) { this.w.log(`Would run \`${command}\` in ${opts.cwd}`); return { code: 0, stdout: '', stderr: '' }; }
+  /** A test sets `freeBytes` on the world to fill the disk (#161); otherwise there is plenty. */
+  async freeBytes() { return this.w.freeBytes; }
 }
 
 /** The Codex runner's stand-in: implements only, reports through its result like the live port's closing JSON. */

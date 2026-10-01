@@ -388,6 +388,14 @@ export const Config = z.object({
     /** Resume a guard-made pause a minute after the window resets. */
     auto_resume: z.boolean().default(false),
   }).default({ enabled: true, threshold: 0.85, on_warning: true, auto_resume: false }),
+  /** Pause automation before the disk fills (#161, HH-355): free space on the repo's and worktrees' volume, read once a minute. */
+  disk_guard: z.object({
+    enabled: z.boolean().default(true),
+    /** Below this many GiB free, nothing new starts; running steps finish. */
+    min_free_gib: z.number().positive().default(10),
+    /** It resumes by itself at this many GiB free (a margin above min_free_gib, so it does not flap). */
+    resume_free_gib: z.number().positive().default(15),
+  }).default({ enabled: true, min_free_gib: 10, resume_free_gib: 15 }),
   notifications: z.object({ on_merge: z.string().optional(), on_usage_pause: z.string().optional() }).default({}),
   git: z.object({
     auto_commit: z.boolean().default(true),
@@ -450,7 +458,9 @@ export const LocalConfig = z.object({
   engine: z.object({
     paused: z.boolean().default(false), mode: z.enum(['live', 'dry-run']).optional(),
     /** Who pulled the lever: only a `usage_guard` pause is ever resumed automatically. */
-    paused_by: z.enum(['user', 'usage_guard']).optional(),
+    paused_by: z.enum(['user', 'usage_guard', 'disk']).optional(),
+    /** Set while the disk guard holds automation paused (#161). */
+    disk_guard: z.object({ free_gib: z.number(), path: z.string(), tripped_at: z.string() }).optional(),
     /** Set while the usage guard holds automation paused. */
     usage_guard: UsageGuardState.optional(),
     /** The window crossing the guard last tripped on, so it trips once per crossing (a manual resume inside it is respected). */

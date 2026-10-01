@@ -2687,3 +2687,33 @@ describe('a message to an epic past its breakdown (HH-256, HH-259)', () => {
     await expect(engine.message(epic.id, 'from the orchestrator', 'orchestrator')).rejects.toThrow(new RegExp(`no session past its breakdown; message its children \\(${child.id}\\)`));
   });
 });
+
+describe('the disk guard (#161, HH-355)', () => {
+  it('pauses below min_free_gib so nothing new starts, resumes at resume_free_gib, and an ENOSPC stop is disk_full, not triaged', async () => {
+    const { store, engine, world } = await setup();
+    world.freeBytes = 3 * 2 ** 30;                                   // 3 GiB: under the 10 GiB default
+    await engine.start();
+    await (engine as any).checkDisk(true);
+    expect(store.local.engine).toMatchObject({ paused: true, paused_by: 'disk', disk_guard: { free_gib: 3 } });
+    expect(store.journal.read({ type: 'disk.guard_tripped' })).toHaveLength(1);
+    const item = store.createItem({ title: 'Waits for disk', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.tick(); await sleep(150);
+    expect(status(store, item.id)).toBe('QUEUED');                    // nothing new started
+    world.freeBytes = 12 * 2 ** 30;                                  // above min, under the resume margin
+    await (engine as any).checkDisk(true);
+    expect(engine.paused).toBe(true);
+    world.freeBytes = 20 * 2 ** 30;
+    await (engine as any).checkDisk(true);
+    expect(engine.paused).toBe(false);
+    expect(store.local.engine.disk_guard).toBeUndefined();
+    await waitFor(() => status(store, item.id) !== 'QUEUED');
+    // a worker that hit the full disk anyway: its stop is said as disk_full and goes to no one's triage
+    const other = store.createItem({ title: 'Hit it', description: 'x' });
+    store.mutateItem(other.id, [{ set: { status: 'IN_PROGRESS' } }], 'engine');
+    (engine as any).block(other.id, 'agent_blocked', 'cp: write error: No space left on device');
+    const fm = store.getItem(other.id)!.file.frontmatter;
+    expect(fm.blocked_reason).toBe('disk_full');
+    expect(fm.triage).toBeUndefined();
+  });
+});

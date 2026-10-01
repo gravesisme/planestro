@@ -102,6 +102,8 @@ export interface GhPort {
 
 export interface ProcPort {
   run(command: string, opts: { cwd: string; timeoutMs?: number; env?: Record<string, string> }): Promise<{ code: number; stdout: string; stderr: string }>;
+  /** Bytes free to this user on the volume holding `path` (#161), or undefined when it cannot be read. */
+  freeBytes?(path: string): Promise<number | undefined>;
 }
 
 export type TurnPhase = 'plan' | 'implement' | 'fix';
