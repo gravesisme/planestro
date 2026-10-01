@@ -65,7 +65,11 @@ a live worker) would have matched it.
 4. **Bare `allowedTools` entries shadow `canUseTool`** (SDK warning
    `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED`). Listing `mcp__planestro__report_done`
    bare means the callback never sees it — fine for planestro's own tools,
-   but never list `Bash` bare.
+   but never list `Bash` bare. **Since #58 (2026-10-01) nothing is passed bare:**
+   `splitAllowed` (LiveClaudePort) sends the SDK only rules with a pattern and
+   approves bare names (`Read`, `Grep`, `Glob`, `mcp__planestro__*`) first thing
+   in `canUseTool`. What is allowed is unchanged, every call is visible to the
+   callback, and the warning no longer prints at start.
 5. **User-level settings leak into worker sessions.** With default
    `settingSources` the sessions loaded the user's MCP servers (ElevenLabs)
    and hooks (`hook_started` events before `init`). Workers should run with
