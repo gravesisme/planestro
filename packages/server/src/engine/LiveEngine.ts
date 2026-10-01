@@ -463,7 +463,9 @@ export class LiveEngine implements Engine {
 
   // ---- plan approval delegated to the orchestrator ----
   /** The item opted in, the project allows it, and there is an orchestrator to ask. Never an epic's breakdown. */
-  private planDelegated(fm: { kind?: string; auto_approve_plan?: boolean }): boolean {
+  private planDelegated(fm: { kind?: string; auto_approve_plan?: boolean; implementer?: string }): boolean {
+    // A paid-tool model's plan carries a budget a person approves (#157): never delegated.
+    if (findModel(this.store.config, fm.implementer)?.user_approves_plans) return false;
     return Boolean(fm.auto_approve_plan) && fm.kind !== 'epic' && this.store.config.orchestrator.may_approve_plans && this.orchestrator.enabled;
   }
 
@@ -534,6 +536,7 @@ export class LiveEngine implements Engine {
     const item = this.store.requireItem(id); const fm = item.file.frontmatter;
     if (fm.status !== 'PLAN_READY' || fm.awaiting !== 'plan_approval') return `not possible: ${id} has no plan waiting for your approval`;
     if (fm.kind === 'epic') return `not possible: an epic's breakdown is yours to approve`;
+    if (findModel(this.store.config, fm.implementer)?.user_approves_plans) return `not possible: ${fm.implementer}'s plans and their MCP budget are yours to approve`;
     if (!this.store.config.orchestrator.may_approve_plans || !this.orchestrator.enabled) return 'not possible: this project does not let the orchestrator approve plans (orchestrator.may_approve_plans)';
     const { plan_handed_back: _spent, ...od } = fm.op_data ?? {};
     this.store.mutateItem(id, [{ set: { auto_approve_plan: true, awaiting: 'orchestrator', op_data: od } }, { activity: { actor: 'user', text: 'asked the orchestrator to review the plan again' } }], 'user', { commit: `${id}: plan review again` });
@@ -775,8 +778,11 @@ export class LiveEngine implements Engine {
    * reason (#97). A plan that states a hold (holdShapeOf) is held when the orchestrator approves it,
    * with or without the argument; the user chooses, and approving without it is on the record.
    */
-  async approvePlan(id: string, notes?: string, by: 'user' | 'orchestrator' = 'user', { asItem = false, hold }: { asItem?: boolean; hold?: string } = {}): Promise<void> {
+  async approvePlan(id: string, notes?: string, by: 'user' | 'orchestrator' = 'user', { asItem = false, hold, mcpBudget }: { asItem?: boolean; hold?: string; mcpBudget?: number } = {}): Promise<void> {
     const item = this.store.requireItem(id);
+    const impl = findModel(this.store.config, item.file.frontmatter.implementer);
+    if (impl?.user_approves_plans && by !== 'user') throw new Error(`${id} is implemented by ${impl.label}, whose plans and their MCP budget are the user's to approve`);
+    if (mcpBudget !== undefined && by !== 'user') throw new Error('an MCP budget is set by the user');
     if (item.file.frontmatter.kind === 'epic') { if (by !== 'user') throw new Error(`${id} is an epic: its breakdown is the user's to approve`); await this.approveBreakdown(id); return; }
     if (item.file.frontmatter.status !== 'PLAN_READY') throw new Error(`${id} is ${item.file.frontmatter.status}, not PLAN_READY`);
     // An epic approved as an item goes to one implementer, who has to stop and ask (#69, HH-198).
@@ -790,6 +796,7 @@ export class LiveEngine implements Engine {
     this.store.mutateItem(id, [
       { transition: { to: 'IN_PROGRESS', actor: by } },
       { set: { op_data: { ...opData, approval_notes: notes ?? '', ...(waived ? { hold_waived: true } : {}) } } },
+      ...(mcpBudget !== undefined ? [{ set: { mcp_budget: mcpBudget } } as ItemOp, { activity: { actor: 'user' as const, text: `MCP budget approved: ${mcpBudget} call${mcpBudget === 1 ? '' : 's'} to ${impl?.mcp.join(', ') || 'its MCP servers'}` } }] : []),
       ...(holdFor ? this.holdOps(holdFor, by) : []),
       ...(waived ? [{ activity: { actor: by, text: `approved without the hold its plan states: "${stated!.quote}"` } }] : []),
       ...(epicShaped ? [{ activity: { actor: by, text: `approved as one item although ${epicShaped.reason}` } }] : []),
@@ -1052,7 +1059,9 @@ export class LiveEngine implements Engine {
       if (!spec || (!spec.command && !spec.url)) { this.block(id, 'mcp_missing', `${def.label} names the MCP server "${name}", which planestro.local.yml on this machine does not define (mcp_servers.${name} needs a command or a url)`); return undefined; }
       mcpServers[name] = spec.url ? { type: 'http', url: spec.url, headers: spec.headers } : { command: spec.command!, args: spec.args, env: spec.env };
     }
-    const mcpCap = def.mcp_calls_per_item;
+    // A person's budget for this item first (#157); a model whose plans are theirs to approve makes no paid call without one.
+    const mcpCap = fm.mcp_budget ?? (def.user_approves_plans ? 0 : def.mcp_calls_per_item);
+    const capWhat = fm.mcp_budget !== undefined ? 'the budget approved for this item (mcp_budget)' : def.user_approves_plans ? 'no budget approved for this item yet (mcp_budget)' : `mcp_calls_per_item on ${def.label}`;
     const op = phase === 'plan' ? 'planning_turn' : 'implement_turn';
     // Where the branch stood, so a turn that fails after committing is still checked (below).
     const headBefore = phase === 'plan' ? undefined : await this.ports.git.revParse(cwd, 'HEAD').catch(() => undefined);
@@ -1103,8 +1112,8 @@ export class LiveEngine implements Engine {
             const calls = { ...((cur.op_data?.mcp_calls as Record<string, number> | undefined) ?? {}) };
             calls[server] = (calls[server] ?? 0) + 1;
             if (mcpCap !== undefined && calls[server] > mcpCap) {
-              if (calls[server] === mcpCap + 1) this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), mcp_calls: calls } } }, { activity: { actor: 'app', text: `${server}: the item's ${mcpCap} calls (mcp_calls_per_item on ${def.label}) are spent; further calls are refused` } }], 'engine');
-              return { action: 'deny', message: `Not allowed: this item has used its ${mcpCap} ${server} calls (mcp_calls_per_item). Finish with what you have, or report_blocked saying how many more you need.` };
+              if (calls[server] === mcpCap + 1) this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), mcp_calls: calls } } }, { activity: { actor: 'app', text: `${server}: the item's ${mcpCap} calls (${capWhat}) are spent; further calls are refused` } }], 'engine');
+              return { action: 'deny', message: mcpCap === 0 ? `Not allowed: no ${server} budget has been approved for this item. Stop and report_blocked saying how many ${server} calls the work needs; the user sets the budget.` : `Not allowed: this item has used its ${mcpCap} ${server} calls (${capWhat}). Finish with what you have, or report_blocked saying how many more you need.` };
             }
             this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), mcp_calls: calls } } }], 'engine');
             return { action: 'allow' };
@@ -3565,6 +3574,8 @@ export class LiveEngine implements Engine {
     if (!impl || fm.kind === 'epic') return rendered;
     const runner = impl.runner ?? 'claude';
     const lines = [`## Who implements this plan`, '', `${impl.label} (\`${impl.id}\`, ${runner} runner) carries out the approved plan, not you.${impl.description ? ` ${impl.description}` : ''}`];
+    // Paid tools (#157): the plan states what they will cost in calls, and a person approves that number.
+    if (impl.mcp.length) lines.push('', `It has ${impl.mcp.join(', ')} (MCP), and each call there costs money. State in the plan, under a line that starts \`MCP budget:\`, how many ${impl.mcp.join(' / ')} calls the work needs in all, generations and retries included, with a sentence of why. ${impl.user_approves_plans ? 'The user approves that number with the plan; past it the calls are refused.' : 'Past it the calls are refused.'}`);
     if (fm.planner !== fm.implementer) lines.push('', `You are writing the brief it follows. Plan for what ${impl.label} can do${runner === 'claude' ? '' : ', and do not plan to do its work yourself (for example drawing images in code because you cannot generate them)'}: name the files it must produce, the checks that prove them, and anything it must not touch.`);
     return `${rendered}\n\n${lines.join('\n')}`;
   }

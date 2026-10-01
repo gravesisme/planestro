@@ -18,7 +18,7 @@ const EDITABLE_FIELDS = z.object({
   merge_policy: z.enum(['app', 'watch']).nullable().optional(), base_branch_override: z.string().nullable().optional(),
   branch: z.string().nullable().optional(), pr: z.number().int().positive().nullable().optional(),
   skip_merge: z.boolean().nullable().optional(),
-  budget_usd: z.number().positive().nullable().optional(), budget_turns: z.number().int().positive().nullable().optional(), budget_tokens: z.number().int().positive().nullable().optional(),
+  budget_usd: z.number().positive().nullable().optional(), budget_turns: z.number().int().positive().nullable().optional(), budget_tokens: z.number().int().positive().nullable().optional(), mcp_budget: z.number().int().nonnegative().nullable().optional(),
 }).strict();
 
 const CHAT_TYPES = new Set(['orchestrator.user_message', 'orchestrator.reply', 'orchestrator.question', 'orchestrator.done']);
@@ -141,7 +141,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   // as_item: a plan that reads as an epic breakdown is refused unless the user approves it as one item on purpose (#69).
   // hold: the pull request it opens stays out of the merge queue until released, for this reason (#97).
   api.post('/items/:id/plan/review', (c) => { try { const said = engine.reviewPlanAgain(c.req.param('id')); if (/^not possible/.test(said)) throw new Error(said); return c.json({ said, item: itemView(store, store.requireItem(c.req.param('id'))) }); } catch (e) { return fail(c, e); } });
-  api.post('/items/:id/plan/approve', async (c) => { try { const { notes, as_item, hold } = z.object({ notes: z.string().optional(), as_item: z.boolean().optional(), hold: z.string().trim().min(1).optional() }).parse(await c.req.json().catch(() => ({}))); await engine.approvePlan(c.req.param('id'), notes, 'user', { asItem: as_item === true, hold }); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
+  api.post('/items/:id/plan/approve', async (c) => { try { const { notes, as_item, hold, mcp_budget } = z.object({ notes: z.string().optional(), as_item: z.boolean().optional(), hold: z.string().trim().min(1).optional(), mcp_budget: z.number().int().nonnegative().optional() }).parse(await c.req.json().catch(() => ({}))); await engine.approvePlan(c.req.param('id'), notes, 'user', { asItem: as_item === true, hold, ...(mcp_budget !== undefined ? { mcpBudget: mcp_budget } : {}) }); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
   // Item ↔ epic while nothing has run for implementation (#69, HH-198).
   api.post('/items/:id/convert', async (c) => { try { const { to, reason } = z.object({ to: z.enum(['item', 'epic']), reason: z.string().optional() }).parse(await c.req.json()); await engine.convertKind(c.req.param('id'), to, 'user', reason); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
   api.post('/items/:id/epic/plan', async (c) => { try { await engine.planEpic(c.req.param('id')); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });

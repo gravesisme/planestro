@@ -504,6 +504,51 @@ describe('tools from outside: MCP servers per model (f5)', () => {
     expect(activityOf(store, item.id)).toContain("sounds: the item's 2 calls (mcp_calls_per_item on Sound worker) are spent; further calls are refused");
   });
 
+  it('a paid-tool model (user_approves_plans): the orchestrator may not approve, the user sets the budget, and no budget means no calls (#157)', async () => {
+    const PAID = (yml: string) => MCP(yml).replace('mcp: [sounds], mcp_calls_per_item: 2, hold_for_review: true }', 'mcp: [sounds], user_approves_plans: true, hold_for_review: true }');
+    const seen: string[] = []; let prompt = '';
+    const claude = (world: FakeWorld) => { const inner = new DryRunClaudePort(world); return { async runTurn(o: any): Promise<TurnResult> {
+      if (o.phase === 'plan') { prompt = o.prompt; return inner.runTurn(o); }
+      for (let i = 0; i < 4; i++) seen.push((await o.onPermission({ tool: 'mcp__sounds__text_to_sound_effects', input: { text: 'a siren' } })).action);
+      return inner.runTurn(o);
+    }, runCustomTurn: inner.runCustomTurn.bind(inner) }; };
+    const { store, engine } = await setup({ claude, config: PAID });
+    store.updateLocal({ mcp_servers: { sounds: { command: 'uvx', args: ['sounds-mcp'] } } } as any);
+    const item = store.createItem({ title: 'Siren sound', description: 'x', implementer: 'sfx' });
+    store.mutateItem(item.id, [{ set: { auto_approve_plan: true } }], 'user');
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => fmOf(store, item.id).status === 'PLAN_READY');
+    expect(fmOf(store, item.id).awaiting).toBe('plan_approval');                       // never delegated, whatever the item says
+    expect(prompt).toContain('under a line that starts `MCP budget:`');
+    await expect(engine.approvePlan(item.id, undefined, 'orchestrator')).rejects.toThrow(/the user's to approve/);
+    await engine.approvePlan(item.id, undefined, 'user', { mcpBudget: 3 });
+    await waitFor(() => seen.length === 4);
+    expect(seen).toEqual(['allow', 'allow', 'allow', 'deny']);
+    expect(fmOf(store, item.id).mcp_budget).toBe(3);
+    expect(activityOf(store, item.id)).toContain('MCP budget approved: 3 calls to sounds');
+    expect(activityOf(store, item.id)).toContain("sounds: the item's 3 calls (the budget approved for this item (mcp_budget)) are spent");
+  });
+
+  it('with no approved budget, a paid-tool model makes no call at all', async () => {
+    const PAID = (yml: string) => MCP(yml).replace('mcp: [sounds], mcp_calls_per_item: 2, hold_for_review: true }', 'mcp: [sounds], user_approves_plans: true, hold_for_review: true }');
+    const seen: { action: string; message?: string }[] = [];
+    const claude = (world: FakeWorld) => { const inner = new DryRunClaudePort(world); return { async runTurn(o: any): Promise<TurnResult> {
+      if (o.phase !== 'plan') seen.push(await o.onPermission({ tool: 'mcp__sounds__text_to_sound_effects', input: {} }));
+      return inner.runTurn(o);
+    }, runCustomTurn: inner.runCustomTurn.bind(inner) }; };
+    const { store, engine } = await setup({ claude, config: PAID });
+    store.updateLocal({ mcp_servers: { sounds: { command: 'uvx' } } } as any);
+    const item = store.createItem({ title: 'Siren', description: 'x', implementer: 'sfx' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => fmOf(store, item.id).status === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => seen.length === 1);
+    expect(seen[0].action).toBe('deny');
+    expect(seen[0].message).toMatch(/no sounds budget has been approved for this item/);
+  });
+
   it('a model naming a server this machine does not define stops the item as mcp_missing', async () => {
     const { store, engine } = await setup({ config: MCP });
     const item = store.createItem({ title: 'Nowhere', description: 'x', implementer: 'lonely' });

@@ -100,3 +100,12 @@ describe('a plan that calls MCP tools its implementer lacks (#155, HH-338)', () 
     expect(planToolsMissing('No tools named here.', models[0], models)).toEqual([]);
   });
 });
+
+describe("a plan's MCP budget line (#157)", () => {
+  it('reads the number on a `MCP budget:` line, bold or bulleted; none when absent', async () => {
+    const { mcpBudgetOf } = await import('../src/models.ts');
+    expect(mcpBudgetOf('## Steps\n\nMCP budget: 12 (four sounds, three tries each)')).toBe(12);
+    expect(mcpBudgetOf('- **MCP budget:** 6 calls')).toBe(6);
+    expect(mcpBudgetOf('No budget stated.')).toBeUndefined();
+  });
+});
