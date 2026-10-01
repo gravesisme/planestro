@@ -91,6 +91,8 @@ const HELD_POLL_MS = 60_000;
  * but skipped runs means the event landed on another head, and no run is coming by itself.
  */
 const SKIPPED_REFIRE_POLLS = 6;
+/** Polls in a row that the head's newest run stays cancelled before planestro re-runs it (about a minute at the start). */
+const CANCELLED_RERUN_POLLS = 6;
 /** Looks (5 s apart) at a just-pushed PR's head before it is marked ready anyway. */
 const READY_AFTER_PUSH_POLLS = 6;
 /** A guard-made pause resumes this long after its window's reset, so the first turn lands in the fresh window. */
@@ -1734,6 +1736,8 @@ export class LiveEngine implements Engine {
     const started = Date.now();
     let sawRun = false;
     let skippedPolls = 0;
+    let cancelledPolls = 0;
+    let need = minAttempt;
     while (true) {
       if (this.stopping) return 'stopping';
       // A person took the item over while its CI ran: the merge chain is not held for them.
@@ -1751,9 +1755,22 @@ export class LiveEngine implements Engine {
       if (ci.runId && ci.state !== 'skipped') { sawRun = true; const cur = this.store.requireItem(id).file.frontmatter; const seen = cur.op_data?.ci as { runId?: number; attempt?: number } | undefined; if (seen?.runId !== ci.runId || seen?.attempt !== ci.attempt) this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), ci: { runId: ci.runId, url: ci.url, ...(ci.attempt ? { attempt: ci.attempt } : {}) } } } }], 'engine'); }
       if (ci.state === 'success') return 'green';
       // A re-run keeps its run id: until its attempt shows up, the completed run is the old verdict.
-      const stale = minAttempt > 0 && (ci.attempt ?? 0) < minAttempt;
+      const stale = need > 0 && (ci.attempt ?? 0) < need;
       if (ci.state === 'failure' && !stale) return (ci.runId && await this.ports.gh.isBillingBlocked(this.github, ci.runId)) ? 'blocked' : 'red';
-      if (ci.state === 'cancelled') { /* superseded; keep polling for the new run */ }
+      // Cancelled is usually superseded: a newer run for this head takes its place, and ciForSha reads the newest.
+      // When the newest stays cancelled nothing is coming (HH-321: a concurrency group cancelled it, and two
+      // 45-minute waits followed). Its jobs are re-run once per head, and that attempt is what is waited for.
+      cancelledPolls = ci.state === 'cancelled' && !stale ? cancelledPolls + 1 : 0;
+      if (cancelledPolls >= CANCELLED_RERUN_POLLS && ci.runId) {
+        cancelledPolls = 0;
+        const cur = this.store.requireItem(id).file.frontmatter;
+        if (cur.op_data?.ci_cancel_rerun !== sha) {
+          let note: string;
+          try { await this.ports.gh.rerunAll(this.github, ci.runId); need = (ci.attempt ?? 1) + 1; note = `CI run ${ci.runId} for ${sha.slice(0, 7)} was cancelled and no other run replaced it; re-running it`; }
+          catch (e) { note = `CI run ${ci.runId} for ${sha.slice(0, 7)} was cancelled and could not be re-run (${(e as Error).message.replace(/\s+/g, ' ').slice(0, 160)}); waiting for a new run`; }
+          this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), ci_cancel_rerun: sha } } }, { activity: { actor: 'app', text: note } }], 'engine');
+        }
+      }
       // Only skipped runs (a draft guard skipped every job) checked nothing: not red, and on a ready PR
       // not coming by itself either, when ready_for_review landed on the head the push replaced.
       skippedPolls = ci.state === 'skipped' ? skippedPolls + 1 : 0;

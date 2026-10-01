@@ -18,11 +18,13 @@ export class FakeWorld {
   dirty = new Set<string>();
   /** Shas the fake base does not contain (isAncestor answers false for them). */
   unreachable = new Set<string>();
-  prs = new Map<number, PrInfo & { polls: number; failOnce: boolean; attempt?: number; staleFailures?: number }>();
+  prs = new Map<number, PrInfo & { polls: number; failOnce: boolean; attempt?: number; staleFailures?: number; cancelled?: boolean }>();
   /** Polls after a re-run request that still report the old, failed attempt (GitHub's lag). */
   rerunLagPolls = 0;
   /** A re-run of failed jobs fails again (a real failure, not a flake). */
   rerunFailsAgain = false;
+  /** The next PR's first run is cancelled and nothing replaces it (HH-321), until its failed jobs are re-run. */
+  ciCancelOnce = false;
   /** Untracked files by worktree, and the paths the base branch tracks (for regenerated files that collide with it). */
   untracked = new Map<string, string[]>();
   baseFiles = new Set<string>();
@@ -154,7 +156,8 @@ export class DryRunGhPort implements GhPort {
   async createPr(repo: string, a: { base: string; head: string; title: string; draft?: boolean }) {
     const number = this.w.nextPr++;
     this.say(`gh pr create --base ${a.base} --head ${a.head} --title "${a.title}"${a.draft ? ' --draft' : ''}`);
-    this.w.prs.set(number, { number, url: `https://github.com/${repo}/pull/${number}`, state: 'OPEN', isDraft: Boolean(a.draft), headRefOid: this.w.remoteBranches.get(a.head) ?? this.w.sha(), headRefName: a.head, baseRefName: a.base, polls: 0, failOnce: this.w.ciMode === 'red-once' });
+    this.w.prs.set(number, { number, url: `https://github.com/${repo}/pull/${number}`, state: 'OPEN', isDraft: Boolean(a.draft), headRefOid: this.w.remoteBranches.get(a.head) ?? this.w.sha(), headRefName: a.head, baseRefName: a.base, polls: 0, failOnce: this.w.ciMode === 'red-once', cancelled: this.w.ciCancelOnce });
+    this.w.ciCancelOnce = false;
     return { number, url: `https://github.com/${repo}/pull/${number}` };
   }
   async setDraft(_repo: string, number: number, draft: boolean) {
@@ -181,6 +184,7 @@ export class DryRunGhPort implements GhPort {
     p.polls += 1;
     const attempt = p.attempt ?? 1;
     if (p.staleFailures) { p.staleFailures -= 1; return { state: 'failure', runId: 2, sha, url: 'https://example/run/2', attempt: attempt - 1 }; }
+    if (p.cancelled) return { state: 'cancelled', runId: 5, sha, url: 'https://example/run/5', attempt };
     if (p.polls < 2) return { state: 'pending', runId: 1, sha, url: 'https://example/run/1', attempt };
     if (p.failOnce) { p.failOnce = false; p.polls = 0; return { state: 'failure', runId: 2, sha, url: 'https://example/run/2', attempt }; }
     return { state: 'success', runId: 3, sha, url: 'https://example/run/3', attempt };
@@ -191,6 +195,7 @@ export class DryRunGhPort implements GhPort {
     this.say(`gh run rerun ${runId} --failed`);
     for (const p of this.w.prs.values()) { p.attempt = (p.attempt ?? 1) + 1; p.polls = 0; p.staleFailures = this.w.rerunLagPolls; if (this.w.rerunFailsAgain) { p.failOnce = true; this.w.rerunFailsAgain = false; } }
   }
+  async rerunAll(_repo: string, runId: number) { this.say(`gh run rerun ${runId}`); for (const p of this.w.prs.values()) if (p.cancelled) { p.cancelled = false; p.attempt = (p.attempt ?? 1) + 1; p.polls = 0; } }
   async closePr(_repo: string, number: number, comment: string) { this.say(`gh pr close ${number} --comment "${comment}"`); const p = this.w.prs.get(number); if (p) p.state = 'CLOSED'; }
   async mergePr(_repo: string, number: number, opts: { deleteBranch: boolean }) {
     this.say(`gh pr merge ${number} --merge${opts.deleteBranch ? ' --delete-branch' : ''}`);

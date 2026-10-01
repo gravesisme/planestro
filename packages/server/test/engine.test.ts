@@ -95,6 +95,21 @@ describe('LiveEngine lifecycle (dry-run ports)', () => {
     expect(JSON.stringify(store.journal.read({ item: item.id }))).not.toContain('head_moved');
   });
 
+  it('a cancelled run that nothing replaces is re-run once, and its new attempt merges the PR (HH-321)', async () => {
+    const { store, engine, world } = await setup();
+    world.ciCancelOnce = true;
+    const item = store.createItem({ title: 'Cancelled', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => status(store, item.id) === 'FINISHED', 12000);
+    const activity = store.getItem(item.id)!.file.sections.find((s) => s.title === 'Activity')!.body;
+    expect(activity).toMatch(/CI run 5 for \w{7} was cancelled and no other run replaced it; re-running it/);
+    expect(activity).not.toContain('did not finish within');
+    expect(activity.match(/re-running it/g)).toHaveLength(1);   // once per head
+  });
+
   it('the same red run re-observed is not a second failure', async () => {
     const { store, engine, world } = await setup({ ci: 'red-once' });
     world.ciMode = 'red-once';
