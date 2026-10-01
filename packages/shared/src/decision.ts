@@ -19,10 +19,11 @@ export interface CreateItemArgs { title: string; description: string; kind?: 'it
  * What an option can carry: only what the user could do on the page themselves. `submit_item` on an
  * epic plans its breakdown (an epic is never queued), so planning one needs no tool of its own.
  */
-export type DecisionAction = { tool: 'create_item'; args: CreateItemArgs } | { tool: 'submit_item'; args: { id: string } } | { tool: 'discard_item'; args: DiscardItemArgs };
+export type DecisionAction = { tool: 'create_item'; args: CreateItemArgs } | { tool: 'submit_item'; args: { id: string } } | { tool: 'discard_item'; args: DiscardItemArgs } | { tool: 'close_as_done'; args: { id: string; reason: string } };
 /** Discard (#135): close the PR, take the item off its epic, put it in the icebox; with delete_branch, its branch on GitHub goes too. */
 export interface DiscardItemArgs { id: string; reason: string; delete_branch?: boolean }
-export const DECISION_ACTION_TOOLS = ['create_item', 'submit_item', 'discard_item'] as const;
+/** close_as_done (#126): the work landed some other way, or was never needed (a verify-only item that changed nothing). */
+export const DECISION_ACTION_TOOLS = ['create_item', 'submit_item', 'discard_item', 'close_as_done'] as const;
 export interface Decision {
   question: string;
   why: string;
@@ -45,6 +46,11 @@ function parseAction(raw: unknown): { value: DecisionAction } | { error: string 
   const args = (a.args && typeof a.args === 'object' && !Array.isArray(a.args) ? a.args : {}) as Record<string, unknown>;
   const str = (k: string) => (typeof args[k] === 'string' ? (args[k] as string).trim() : '');
   if (a.tool === 'submit_item') return str('id') ? { value: { tool: 'submit_item', args: { id: str('id') } } } : { error: 'action submit_item needs args.id, the item to submit' };
+  if (a.tool === 'close_as_done') {
+    if (!str('id')) return { error: 'action close_as_done needs args.id, the item to close' };
+    if (!str('reason')) return { error: 'action close_as_done needs args.reason: why nothing is left to merge, in a sentence (it goes in the Activity log)' };
+    return { value: { tool: 'close_as_done', args: { id: str('id'), reason: str('reason').slice(0, 500) } } };
+  }
   if (a.tool === 'discard_item') {
     if (!str('id')) return { error: 'action discard_item needs args.id, the item to discard' };
     if (!str('reason')) return { error: 'action discard_item needs args.reason: why it is dropped, in a sentence (it goes on the closed pull request)' };
@@ -77,6 +83,10 @@ function parseAction(raw: unknown): { value: DecisionAction } | { error: string 
  * must be able to see what the tap really does. `lookup` names the item a submit is for.
  */
 export function describeAction(action: DecisionAction, lookup?: (id: string) => { title: string; kind?: 'item' | 'epic' } | undefined): string {
+  if (action.tool === 'close_as_done') {
+    const it = lookup?.(action.args.id);
+    return `closes ${action.args.id}${it ? ` "${it.title}"` : ''} as done without a pull request (its worktree and branch go only if they hold no changes)`;
+  }
   if (action.tool === 'discard_item') {
     const it = lookup?.(action.args.id);
     return `discards ${action.args.id}${it ? ` "${it.title}"` : ''}: closes its pull request, takes it off its epic and puts it in the icebox, ${action.args.delete_branch ? 'and deletes its branch on GitHub' : 'keeping its branch on GitHub'}`;

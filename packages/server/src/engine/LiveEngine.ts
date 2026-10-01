@@ -2883,6 +2883,7 @@ export class LiveEngine implements Engine {
   private actionRefusal(action: DecisionAction): string | null {
     const cfg = this.store.config;
     if (action.tool === 'discard_item') return this.discardRefusal(action.args.id);
+    if (action.tool === 'close_as_done') return this.closeAsDoneRefusal(action.args.id);
     if (action.tool === 'submit_item') {
       const item = this.store.getItem(action.args.id);
       if (!item) return `there is no item ${action.args.id}`;
@@ -2931,7 +2932,7 @@ export class LiveEngine implements Engine {
    */
   private performAction(action: DecisionAction, from: string): string {
     const why = `you chose it on ${from}'s decision card`;
-    if (action.tool === 'discard_item') throw new Error('discard_item is carried out by answerDecision');
+    if (action.tool === 'discard_item' || action.tool === 'close_as_done') throw new Error(`${action.tool} is carried out by answerDecision`);
     if (action.tool === 'submit_item') return this.submitAsUser(action.args.id, why) === 'planning' ? `epic ${action.args.id} is having its breakdown planned` : `${action.args.id} is queued for planning`;
     const a = action.args; const epic = a.kind === 'epic';
     const planner = findModel(this.store.config, a.planner)?.id; const implementer = findModel(this.store.config, a.implementer)?.id;
@@ -2996,12 +2997,15 @@ export class LiveEngine implements Engine {
     const refusal = chosen?.action ? this.actionRefusal(chosen.action) : null;
     if (refusal) throw new Error(`"${choice}" cannot be carried out any more: ${refusal}. Pick another option, or answer in your own words.`);
     // A discard closes a pull request and may delete a branch: async, and it can leave this card's own item in the icebox.
-    const discard = chosen?.action?.tool === 'discard_item' ? chosen.action.args : undefined;
-    const done = discard ? await this.discard(discard.id, discard.reason, { deleteBranch: discard.delete_branch === true, from: `your answer on ${id}'s decision card` })
-      : chosen?.action ? this.performAction(chosen.action, id) : undefined;
-    if (discard && !decisionOf(this.store.requireItem(id).file.frontmatter)) {
+    // So does closing one as done (#126): both are async, and both can end this card's own item (icebox, FINISHED).
+    const act = chosen?.action;
+    const ends = act?.tool === 'discard_item' || act?.tool === 'close_as_done';
+    const done = act?.tool === 'discard_item' ? await this.discard(act.args.id, act.args.reason, { deleteBranch: act.args.delete_branch === true, from: `your answer on ${id}'s decision card` })
+      : act?.tool === 'close_as_done' ? (await this.closeAsDone(act.args.id, `${act.args.reason} (your answer on ${id}'s decision card)`), `${act.args.id} closed as done`)
+      : act ? this.performAction(act, id) : undefined;
+    if (ends && !decisionOf(this.store.requireItem(id).file.frontmatter)) {
       this.store.mutateItem(id, [{ activity: { actor: 'user', text: `decided: ${decision.question} → ${said} (done for you: ${done})` } }], 'user', { commit: `${id}: decision answered` });
-      this.store.journal.append({ type: 'orchestrator.decision_answered', item: id, actor: 'user', data: { question: decision.question, choice: choice ?? null, text: text ?? null, action: 'discard_item', action_result: done } });
+      this.store.journal.append({ type: 'orchestrator.decision_answered', item: id, actor: 'user', data: { question: decision.question, choice: choice ?? null, text: text ?? null, action: act!.tool, action_result: done } });
       return;
     }
     const raisedTo = raise ? Math.round((Math.max(this.budgetOf(fm).usd, fm.cost_usd ?? 0) + raise) * 100) / 100 : undefined;
@@ -3709,13 +3713,23 @@ export class LiveEngine implements Engine {
     } finally { this.jobs.delete(id); release(); void this.tick(); }
   }
 
+  /** Why this item cannot be closed as done, or null: what closeAsDone would throw. A card option that closes it is checked with it (#126). */
+  closeAsDoneRefusal(id: string): string | null {
+    const item = this.store.getItem(id);
+    if (!item) return `there is no item ${id}`;
+    const fm = item.file.frontmatter;
+    if (!findTransition(fm.status, 'FINISHED', 'user', this.store.derived(item).flavor)) return `${id} is ${fm.status}; it cannot be closed as done from there`;
+    if (fm.pr) return `${id} has pull request #${fm.pr}; merge or close that instead`;
+    if (this.turns.has(id) || this.jobs.has(id)) return `${id} has a step running; wait for it to park, then close it`;
+    return null;
+  }
+
   async closeAsDone(id: string, reason?: string): Promise<void> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
     const d = this.store.derived(item);
-    if (!findTransition(fm.status, 'FINISHED', 'user', d.flavor)) throw new Error(`${id} is ${fm.status}; it cannot be closed as done from there`);
-    if (fm.pr) throw new Error(`${id} has pull request #${fm.pr}; merge or close that instead`);
-    if (this.turns.has(id) || this.jobs.has(id)) throw new Error(`${id} has a step running; wait for it to park, then close it`);
+    const refusal = this.closeAsDoneRefusal(id);
+    if (refusal) throw new Error(refusal);
     const left = d.flavor === 'worker' && fm.worktree && fm.branch ? await this.releaseUnusedWorktree(this.absWorktree(fm.worktree), fm.branch, d.base_branch) : undefined;
     this.store.mutateItem(id, [
       { transition: { to: 'FINISHED', actor: 'user' } },
