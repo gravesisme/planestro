@@ -169,6 +169,8 @@ export class LiveEngine implements Engine {
       setItemFields: (id, fields) => this.orchestratorSetsFields(id, fields),
       recreateWorktree: (id, message) => this.recreateWorktree(id, message),
       retryOp: (id) => this.retryOp(id),
+      rerunCi: (id) => this.rerunCi(id, 'orchestrator'),
+      busyWith: (id) => this.busyWith(id),
       resumeAfter: (id, items, message) => this.resumeAfter(id, items, message, 'orchestrator'),
       finishFromWorktree: (id) => this.finishFromWorktree(id, 'orchestrator'),
       askUserDecision: (id, input) => this.askUserDecision(id, input),
@@ -1768,7 +1770,9 @@ export class LiveEngine implements Engine {
     let sawRun = false;
     let skippedPolls = 0;
     let cancelledPolls = 0;
-    let need = minAttempt;
+    // A re-run asked for by rerun_ci (#139) keeps its run id: only its new attempt is the verdict, whoever waits.
+    const asked = this.store.getItem(id)?.file.frontmatter.op_data?.ci_rerun as { sha?: string; attempt?: number } | undefined;
+    let need = Math.max(minAttempt, asked?.sha === sha ? asked.attempt ?? 0 : 0);
     while (true) {
       if (this.stopping) return 'stopping';
       // A person took the item over while its CI ran: the merge chain is not held for them.
@@ -2655,6 +2659,38 @@ export class LiveEngine implements Engine {
   }
 
   /** Re-run what a transient failure stopped, by the same doors the pipeline itself uses. */
+  /**
+   * Re-run the failed jobs of the head's red CI run (#139, HH-307, HH-284): a suspected flake, with nothing to fix in
+   * the branch. Only that run for an unchanged head; the orchestrator gets one per head (a real failure is not retried
+   * in a loop), the user as many as they like. The block or triage clears, and the CI wait counts only the new attempt
+   * (`op_data.ci_rerun`); a red attempt counts as a failure again. Returns what happened, or why not, in words.
+   */
+  async rerunCi(id: string, by: 'user' | 'orchestrator' = 'user'): Promise<string> {
+    const item = this.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    if (by === 'orchestrator' && fm.taken_over) return `not now: the user has taken ${id} over`;
+    if (fm.status !== 'IN_REVIEW' || !fm.pr || !fm.branch) return `not possible: ${id} has no pull request in review`;
+    const busy = this.busyWith(id); if (busy) return `not now: ${busy} (a CI wait that is still running is not red)`;
+    const red = fm.op_data?.last_red as { runId?: number; sha?: string } | undefined;
+    if (!red?.runId || !red.sha) return `not possible: ${id} has no red CI run on record`;
+    const view = await this.ports.gh.prView(this.github, fm.pr);
+    if (view.headRefOid !== red.sha) return `not possible: the head moved to ${view.headRefOid.slice(0, 7)} after run ${red.runId} (${red.sha.slice(0, 7)}); the new head's own run is what counts`;
+    const ci = await this.ports.gh.ciForSha(this.github, fm.branch, red.sha, this.ciWorkflow);
+    if (ci.runId !== red.runId || ci.state !== 'failure') return `not possible: run ${red.runId} is not the head's red run any more (it is ${ci.state}${ci.runId && ci.runId !== red.runId ? `, run ${ci.runId}` : ''})`;
+    const prev = fm.op_data?.ci_rerun as { sha?: string } | undefined;
+    if (by === 'orchestrator' && prev?.sha === red.sha) return `not possible: you already re-ran CI once for ${red.sha.slice(0, 7)}; a second red on the same head is the user's to judge (or the session's to fix)`;
+    await this.ports.gh.rerunFailed(this.github, red.runId);
+    const attempt = (ci.attempt ?? 1) + 1;
+    const { last_red: _red, ...od } = fm.op_data ?? {};
+    this.store.mutateItem(id, [
+      { unset: ['blocked', 'blocked_reason', 'triage', ...(fm.awaiting === 'user' ? ['awaiting', 'awaiting_data'] : [])] },
+      { set: { ci_result: 'pending', ci_head_sha: red.sha, op: 'awaiting_ci', op_started_at: this.now(), op_data: { ...od, ci_rerun: { sha: red.sha, runId: red.runId, attempt, by } } } },
+      { activity: { actor: by, text: `re-ran the failed jobs of CI run ${red.runId} for ${red.sha.slice(0, 7)} (attempt ${attempt}); waiting for that attempt` } },
+    ], by, { commit: `${id}: re-run CI` });
+    this.poke();
+    return `re-running the failed jobs of run ${red.runId} (attempt ${attempt}); its verdict is the one that counts`;
+  }
+
   async retryOp(id: string, by: 'user' | 'orchestrator' = 'orchestrator'): Promise<string> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
@@ -2669,7 +2705,7 @@ export class LiveEngine implements Engine {
       ? `The last step stopped on a transient failure (${reason}), which has been retried. Nothing of yours was lost: check your worktree and continue where you left off.`
       : `The user unblocked this item (it had stopped: ${reason}). Nothing of yours was lost: check your worktree and continue where you left off.`;
     // A conflict once handed to a session that never finished it is the pipeline's again: it re-syncs, and a conflict comes back to a session.
-    if (fm.status === 'IN_REVIEW') { clear(`retrying the merge pipeline after ${reason}`, [{ set: { ci_result: 'pending', op_data: { ...(opData ?? {}), needs_session_rebase: false } } }]); this.poke(); return 'retrying: it re-enters the merge pipeline'; }
+    if (fm.status === 'IN_REVIEW') { clear(`retrying the merge pipeline after ${reason}`, [{ set: { ci_result: 'pending', op_data: { ...(opData ?? {}), needs_session_rebase: false } } }]); this.poke(); return /^ci_red/.test(reason) ? 'retrying: it re-enters the merge pipeline, which reads the same CI run again (it does not run CI again: use rerun_ci to re-run its failed jobs)' : 'retrying: it re-enters the merge pipeline'; }
     if (fm.status === 'MERGED') { clear(`retrying cleanup after ${reason}`); this.runJob(id, () => this.cleanup(id)); return 'retrying the cleanup (it still needs positive evidence before deleting anything)'; }
     if (this.store.derived(item).flavor !== 'worker' || !fm.worktree) return `not possible: nothing in ${fm.status} to retry for ${id}; use unblock_item`;
     const dir = this.absWorktree(fm.worktree);
