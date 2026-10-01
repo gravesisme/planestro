@@ -9,6 +9,7 @@ import { commandShape } from './parks.ts';
 import { hostNote, keptPathsNote, cwdNote } from './hostNote.ts';
 import { Orchestrator } from './orchestrator.ts';
 import { pngSize } from './placeholderPng.ts';
+import { findWorkflow, prSkippedByPaths } from './ciFilters.ts';
 import type { ReviewImage } from './Engine.ts';
 
 const IMAGE_FILE = /\.(png|jpe?g|webp|gif|svg)$/i;
@@ -1721,6 +1722,29 @@ export class LiveEngine implements Engine {
     this.queueFollowUp(id, () => this.runTurnFor(id, 'fix', this.store.renderPrompt('ci-failed', this.store.requireItem(id), { ci: { attempt: String(count), run_url: ci?.url ?? '(local run)', failed_log: log } }), [], [], { fresh: 'auto' }));
   }
 
+  private ciSkipCache = new Map<string, string | null>();
+  /** Why the project's CI workflow runs nothing for this head's pull request (prSkippedByPaths), or null; read once per head, from the head itself. */
+  private async ciSkipsHead(id: string, sha: string): Promise<string | null> {
+    const key = `${id}@${sha}`;
+    if (this.ciSkipCache.has(key)) return this.ciSkipCache.get(key)!;
+    let why: string | null = null;
+    try {
+      const item = this.store.requireItem(id); const fm = item.file.frontmatter; const base = this.store.derived(item).base_branch;
+      if (fm.worktree && base) {
+        const cwd = this.absWorktree(fm.worktree);
+        const paths = (await this.ports.git.trackedAt(cwd, sha, ['.github/workflows'])).filter((p) => /\.ya?ml$/.test(p));
+        const texts = await Promise.all(paths.map(async (path) => ({ path, text: (await this.ports.git.readBlob(cwd, sha, path))?.toString('utf8') ?? '' })));
+        const wf = findWorkflow(texts, this.ciWorkflow);
+        if (wf) {
+          const r = prSkippedByPaths(wf.doc, (await this.ports.git.changedFiles(cwd, `origin/${base}`, sha)).map((f) => f.path));
+          why = r ? `${wf.path} ${r}` : null;
+        }
+      }
+    } catch { why = null; }   // cannot tell: wait for a run as before
+    this.ciSkipCache.set(key, why);
+    return why;
+  }
+
   /**
    * Poll the named workflow for `sha`. 10 s cadence for the first 2 min, then 30 s.
    *
@@ -1733,6 +1757,13 @@ export class LiveEngine implements Engine {
    */
   private async waitForCi(id: string, branch: string, sha: string, pr: number, previousSha: string | null = null, minAttempt = 0): Promise<'green' | 'red' | 'blocked' | 'moved' | 'timeout' | 'stopping' | 'taken_over' | 'skipped'> {
     const cfg = this.store.config.ci;
+    // The project's CI runs nothing for this change (its own path filters): there is nothing to wait for, and nothing to stand in for (HH-324).
+    const notRun = await this.ciSkipsHead(id, sha);
+    if (notRun) {
+      const cur = this.store.requireItem(id).file.frontmatter;
+      if (cur.op_data?.ci_not_run !== sha) this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), ci_not_run: sha } } }, { activity: { actor: 'app', text: `CI does not run for ${sha.slice(0, 7)}: ${notRun}; nothing to check, so it counts as green` } }], 'engine');
+      return 'green';
+    }
     const started = Date.now();
     let sawRun = false;
     let skippedPolls = 0;

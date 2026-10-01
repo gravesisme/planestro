@@ -110,6 +110,25 @@ describe('LiveEngine lifecycle (dry-run ports)', () => {
     expect(activity.match(/re-running it/g)).toHaveLength(1);   // once per head
   });
 
+  it("a PR the project's CI skips by its own path filters counts as green at once, with no local gate (HH-324)", async () => {
+    const { store, engine, world } = await setup();
+    const git = (engine as any).ports.git; const gh = (engine as any).ports.gh;
+    git.trackedAt = async (_cwd: string, _ref: string, paths: string[]) => paths[0] === '.github/workflows' ? ['.github/workflows/ci.yml'] : [];
+    git.readBlob = async (_cwd: string, _ref: string, path: string) => path.endsWith('ci.yml') ? Buffer.from("name: CI\non:\n  pull_request:\n    paths-ignore: ['**.md', 'docs/**']\n") : null;
+    git.changedFiles = async () => [{ path: 'docs/design.md', change: 'added' }];
+    gh.ciForSha = async (_r: string, _b: string, sha: string) => ({ state: 'none', sha });   // GitHub never starts a run
+    const item = store.createItem({ title: 'Docs only', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => status(store, item.id) === 'FINISHED', 10000);
+    const activity = store.getItem(item.id)!.file.sections.find((s) => s.title === 'Activity')!.body;
+    expect(activity).toMatch(/CI does not run for \w{7}: \.github\/workflows\/ci\.yml every changed file matches its paths-ignore \(\*\*\.md, docs\/\*\*\); nothing to check, so it counts as green/);
+    expect(activity).not.toContain('GitHub Actions is blocked');
+    void world;
+  });
+
   it('the same red run re-observed is not a second failure', async () => {
     const { store, engine, world } = await setup({ ci: 'red-once' });
     world.ciMode = 'red-once';
