@@ -164,3 +164,18 @@ export function fallbackProblems(config: Pick<Config, 'models'>): string[] {
   }
   return [...new Set(out)];
 }
+
+/**
+ * MCP servers a plan calls on (`mcp__<server>__<tool>`) that its implementer's sessions do not get (#155, HH-338: a plan
+ * built on mcp__ElevenLabs__text_to_sound_effects went to Opus, which has no MCP servers, and the sound phase went undone).
+ * Each with the models that do have it. planestro's own tools are never missing. Server names compare case-insensitively.
+ */
+export function planToolsMissing(plan: string, implementer: Pick<ModelDef, 'mcp'> | undefined, models: readonly Pick<ModelDef, 'id' | 'mcp'>[]): { server: string; tools: string[]; models: string[] }[] {
+  const named = new Map<string, Set<string>>();
+  for (const m of plan.matchAll(/\bmcp__([A-Za-z0-9-]+)__([A-Za-z0-9_-]+)/g)) {
+    if (m[1].toLowerCase() === 'planestro') continue;
+    const k = m[1]; if (!named.has(k)) named.set(k, new Set()); named.get(k)!.add(m[2]);
+  }
+  const has = (mdl: Pick<ModelDef, 'mcp'> | undefined, server: string) => (mdl?.mcp ?? []).some((x) => x.toLowerCase() === server.toLowerCase());
+  return [...named].filter(([server]) => !has(implementer, server)).map(([server, tools]) => ({ server, tools: [...tools], models: models.filter((m) => has(m, server)).map((m) => m.id) }));
+}

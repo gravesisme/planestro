@@ -86,3 +86,17 @@ describe('model fallback', () => {
     expect(resetTime(undefined)).toBeUndefined(); expect(resetTime('x')).toBeUndefined(); expect(resetTime(0)).toBeUndefined();
   });
 });
+
+describe('a plan that calls MCP tools its implementer lacks (#155, HH-338)', () => {
+  it('names the server, its tools and the models that have it; planestro and servers the implementer has are not missing', async () => {
+    const { planToolsMissing } = await import('../src/models.ts');
+    const models = [{ id: 'opus-5-5', mcp: [] }, { id: 'sound', mcp: ['elevenlabs'] }];
+    const plan = '1. Generate the siren with mcp__ElevenLabs__text_to_sound_effects.\n2. Report with mcp__planestro__report_done.\n3. A 3D prop via mcp__meshy__meshy_text_to_3d.';
+    expect(planToolsMissing(plan, models[0], models)).toEqual([
+      { server: 'ElevenLabs', tools: ['text_to_sound_effects'], models: ['sound'] },
+      { server: 'meshy', tools: ['meshy_text_to_3d'], models: [] },
+    ]);
+    expect(planToolsMissing(plan, models[1], models).map((l) => l.server)).toEqual(['meshy']);
+    expect(planToolsMissing('No tools named here.', models[0], models)).toEqual([]);
+  });
+});
