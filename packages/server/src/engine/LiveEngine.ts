@@ -170,6 +170,7 @@ export class LiveEngine implements Engine {
       recreateWorktree: (id, message) => this.recreateWorktree(id, message),
       retryOp: (id) => this.retryOp(id),
       rerunCi: (id) => this.rerunCi(id, 'orchestrator'),
+      acceptScope: (id) => this.acceptScope(id),
       busyWith: (id) => this.busyWith(id),
       resumeAfter: (id, items, message, prs) => this.resumeAfter(id, items, message, 'orchestrator', prs ?? []),
       finishFromWorktree: (id) => this.finishFromWorktree(id, 'orchestrator'),
@@ -1628,6 +1629,16 @@ export class LiveEngine implements Engine {
   /** 4. merge, inside the chain, on a head the chain has just seen green on the base tip. */
   private async merge(id: string, opId: string, base: string): Promise<void> {
     const fm = this.store.requireItem(id).file.frontmatter;
+    // Commits made after the review touch something the reviewer never saw: held for the orchestrator to accept or send back (#74).
+    const extra = fm.ci_head_sha ? await this.outsideApprovedScope(id, fm.ci_head_sha) : [];
+    if (extra.length) {
+      const list = extra.slice(0, 8).join(', ') + (extra.length > 8 ? `, and ${extra.length - 8} more` : '');
+      const why = `commits after your approval touched ${extra.length} path${extra.length === 1 ? '' : 's'} the approved change did not: ${list}`;
+      this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, ...this.holdOps(why, 'app')], 'engine', { commit: `${id}: held (changed after approval)` });
+      this.store.journal.end(opId, id, 'aborted', { reason: 'outside_approved_scope', paths: extra.slice(0, 50) });
+      this.wakeOrchestrator('scope_changed', id, { paths: extra.slice(0, 50).join('\n'), policy: 'Release the hold (unskip_merge) if these belong to the change: that approves them. Otherwise message_session to revert them, and the PR is checked again before it merges.' });
+      return;
+    }
     // Record what this branch changed while it still exists: dependents are told from this, not from a summary.
     const delivered = await this.deliveredBy(id).catch(() => undefined);
     this.store.mutateItem(id, [{ set: { op: 'merging', op_started_at: this.now(), ci_result: 'green', ...(delivered ? { delivered } : {}) } }], 'engine');
@@ -3610,6 +3621,36 @@ export class LiveEngine implements Engine {
    * have moved while it waited. A green run is kept only on evidence that it still describes what
    * would merge (dogfood p15: releases reset it to pending by reflex); anything else is asked again.
    */
+  /** The PR head's changed paths against its base (three-dot), with that head: what a review approves. */
+  private async changedPaths(id: string): Promise<{ sha: string; paths: string[] } | undefined> {
+    const item = this.store.requireItem(id); const fm = item.file.frontmatter; const base = this.store.derived(item).base_branch;
+    if (!fm.worktree || !base || !fm.branch) return undefined;
+    const cwd = this.absWorktree(fm.worktree);
+    const sha = (await this.ports.git.remoteBranchSha(this.repo, fm.branch)) ?? await this.ports.git.revParse(cwd, 'HEAD');
+    const paths = (await this.ports.git.changedFiles(cwd, `origin/${base}`, sha)).map((f) => f.path).sort();
+    return { sha, paths };
+  }
+
+  /** The orchestrator released a hold: an approved set the item had now covers its head, so the same paths are not held twice. */
+  private async acceptScope(id: string): Promise<string> {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    if (!fm.op_data?.approved_scope) return '';
+    const now = await this.changedPaths(id).catch(() => undefined);
+    if (!now) return '';
+    this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), approved_scope: now } } }], 'orchestrator');
+    return `its approved change is now ${now.paths.length} path${now.paths.length === 1 ? '' : 's'} at ${now.sha.slice(0, 7)}`;
+  }
+
+  /** Paths the head about to merge changes that the approved head did not (#74), or none: a CI fix turn or an engine commit after approval. */
+  private async outsideApprovedScope(id: string, sha: string): Promise<string[]> {
+    const approved = this.store.requireItem(id).file.frontmatter.op_data?.approved_scope as { sha?: string; paths?: string[] } | undefined;
+    if (!approved?.paths || approved.sha === sha) return [];
+    const now = await this.changedPaths(id).catch(() => undefined);
+    if (!now) return [];
+    const ok = new Set(approved.paths);
+    return now.paths.filter((p) => !ok.has(p));
+  }
+
   async releaseHold(id: string, note?: string): Promise<void> {
     const fm = this.store.requireItem(id).file.frontmatter;
     // A hold put on at approval, or by the worker, before there is a pull request to let through: it is simply dropped (#97).
@@ -3621,10 +3662,13 @@ export class LiveEngine implements Engine {
     if (!fm.review_hold && !fm.skip_merge) throw new Error(`${id} is not held`);
     if (fm.awaiting && fm.awaiting !== 'review') throw new Error(`${id} is awaiting ${fm.awaiting}; answer that first`);
     const keep = fm.ci_result === 'green' && await this.greenStillCurrent(id).catch(() => false);
+    // What was approved (#74, HH-214): the reviewed head's changed paths. A later commit outside them is held before it
+    // merges (outsideApprovedScope); releasing that hold approves the new set. Only an item that waited for review has one.
+    const scope = fm.review_hold || fm.op_data?.approved_scope ? await this.changedPaths(id).catch(() => undefined) : undefined;
     this.store.mutateItem(id, [
       { unset: ['review_hold', 'skip_merge', ...(fm.awaiting === 'review' ? ['awaiting', 'awaiting_data'] : [])] },
       ...(keep ? [] : [{ set: { ci_result: 'pending' as const } }]),
-      { set: { op_data: { ...(fm.op_data ?? {}), hold_waived: true } } },
+      { set: { op_data: { ...(fm.op_data ?? {}), hold_waived: true, ...(scope ? { approved_scope: scope } : {}) } } },
       { activity: { actor: 'user', text: `approved for merge${note?.trim() ? `: ${note.trim()}` : ''}` } },
       ...(keep ? [{ activity: { actor: 'app' as const, text: `CI stays green: ${fm.ci_head_sha!.slice(0, 7)} is still the PR's head and on its base's tip, so it merges without a new run` } }] : []),
     ], 'user', { commit: `${id}: release hold` });
