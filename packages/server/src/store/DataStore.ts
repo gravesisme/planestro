@@ -722,6 +722,19 @@ export class DataStore {
     try { return parsePromptFile(readFileSync(new URL(`../../prompts/${name}.md`, import.meta.url), 'utf8')).body; } catch { return undefined; }
   }
 
+  /**
+   * An item's Notes, and its epic's after them (#128, HH-256): the designer's decisions for a whole epic are written on
+   * the epic, and a child planner or worker read only its own item, so a child not started yet never heard them. In
+   * `item.notes`, so a data dir's own copy of the prompts carries them too.
+   */
+  private notesWithEpic(item: StoredItem): string {
+    const own = getSection(item.file, 'Notes');
+    const epic = item.file.frontmatter.parent ? this.items.get(item.file.frontmatter.parent) : undefined;
+    const theirs = epic ? getSection(epic.file, 'Notes').trim() : '';
+    if (!theirs) return own;
+    return `${own.trim() ? `${own.trim()}\n\n` : ''}From its epic ${epic!.file.frontmatter.id} ("${epic!.file.frontmatter.title}"), which these apply to as well:\n\n${theirs}`;
+  }
+
   promptContext(item: StoredItem | undefined, extra: Record<string, unknown> = {}): Record<string, unknown> {
     const repo = { path: this.codeRepoPath(), default_branch: this.defaultBranch(), release_branch: this.config.code_repo.release_branch ?? '(none)', github: this.config.code_repo.github ?? '(none)' };
     const base: Record<string, unknown> = { repo, data_dir: this.dataDir, project: this.config.project };
@@ -730,7 +743,7 @@ export class DataStore {
       const d = this.derived(item);
       base.item = {
         id: fm.id, number: idNumber(fm.id), slug: slugify(fm.title), title: fm.title, file: item.path, category: fm.category, status: fm.status,
-        description: getSection(item.file, 'Description'), notes: getSection(item.file, 'Notes'), plan: getSection(item.file, 'Plan'),
+        description: getSection(item.file, 'Description'), notes: this.notesWithEpic(item), plan: getSection(item.file, 'Plan'),
         branch: fm.branch, worktree: fm.worktree, pr: fm.pr, planner: fm.planner, implementer: fm.implementer,
       };
       base.base_branch = d.base_branch;
