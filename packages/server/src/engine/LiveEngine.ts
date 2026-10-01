@@ -2121,7 +2121,13 @@ export class LiveEngine implements Engine {
       const d = this.store.derived(item);
       if (!d.children.length) continue;
       const children = d.children.map((c) => this.store.requireItem(c).file.frontmatter);
-      if (!children.every((c) => c.status === 'MERGED' || c.status === 'FINISHED')) continue;
+      if (!children.every((c) => c.status === 'MERGED' || c.status === 'FINISHED')) {
+        // Iceboxed is "not now", not "not in this epic": it still waits on them, and says so once (#135).
+        const iced = children.filter((c) => c.status === 'ICEBOX').map((c) => c.id);
+        const note = iced.join(',');
+        if (iced.length && children.every((c) => c.status === 'MERGED' || c.status === 'FINISHED' || c.status === 'ICEBOX') && fm.op_data?.epic_iceboxed_noted !== note) this.store.mutateItem(item.id, [{ set: { op_data: { ...(fm.op_data ?? {}), epic_iceboxed_noted: note } } }, { activity: { actor: 'app', text: `every other child has merged; still waiting on ${iced.join(', ')} (iceboxed). Discard ${iced.length === 1 ? 'it' : 'them'} to let the epic finish without ${iced.length === 1 ? 'it' : 'them'}, or bring ${iced.length === 1 ? 'it' : 'them'} back` } }], 'engine');
+        continue;
+      }
       if (!this.store.config.epics.auto_submit) { if (!fm.op_data?.epic_ready_noted) this.store.mutateItem(item.id, [{ set: { op_data: { ...(fm.op_data ?? {}), epic_ready_noted: true } } }, { activity: { actor: 'app', text: 'all children merged — submit the epic PR when ready (epics.auto_submit is off)' } }], 'engine'); continue; }
       this.runJob(item.id, () => this.submitEpic(item.id));
     }
@@ -2792,6 +2798,7 @@ export class LiveEngine implements Engine {
    */
   private actionRefusal(action: DecisionAction): string | null {
     const cfg = this.store.config;
+    if (action.tool === 'discard_item') return this.discardRefusal(action.args.id);
     if (action.tool === 'submit_item') {
       const item = this.store.getItem(action.args.id);
       if (!item) return `there is no item ${action.args.id}`;
@@ -2840,6 +2847,7 @@ export class LiveEngine implements Engine {
    */
   private performAction(action: DecisionAction, from: string): string {
     const why = `you chose it on ${from}'s decision card`;
+    if (action.tool === 'discard_item') throw new Error('discard_item is carried out by answerDecision');
     if (action.tool === 'submit_item') return this.submitAsUser(action.args.id, why) === 'planning' ? `epic ${action.args.id} is having its breakdown planned` : `${action.args.id} is queued for planning`;
     const a = action.args; const epic = a.kind === 'epic';
     const planner = findModel(this.store.config, a.planner)?.id; const implementer = findModel(this.store.config, a.implementer)?.id;
@@ -2903,7 +2911,15 @@ export class LiveEngine implements Engine {
     // again first, since the backlog may have moved since the card was made; a refusal leaves the card as it was.
     const refusal = chosen?.action ? this.actionRefusal(chosen.action) : null;
     if (refusal) throw new Error(`"${choice}" cannot be carried out any more: ${refusal}. Pick another option, or answer in your own words.`);
-    const done = chosen?.action ? this.performAction(chosen.action, id) : undefined;
+    // A discard closes a pull request and may delete a branch: async, and it can leave this card's own item in the icebox.
+    const discard = chosen?.action?.tool === 'discard_item' ? chosen.action.args : undefined;
+    const done = discard ? await this.discard(discard.id, discard.reason, { deleteBranch: discard.delete_branch === true, from: `your answer on ${id}'s decision card` })
+      : chosen?.action ? this.performAction(chosen.action, id) : undefined;
+    if (discard && !decisionOf(this.store.requireItem(id).file.frontmatter)) {
+      this.store.mutateItem(id, [{ activity: { actor: 'user', text: `decided: ${decision.question} → ${said} (done for you: ${done})` } }], 'user', { commit: `${id}: decision answered` });
+      this.store.journal.append({ type: 'orchestrator.decision_answered', item: id, actor: 'user', data: { question: decision.question, choice: choice ?? null, text: text ?? null, action: 'discard_item', action_result: done } });
+      return;
+    }
     const raisedTo = raise ? Math.round((Math.max(this.budgetOf(fm).usd, fm.cost_usd ?? 0) + raise) * 100) / 100 : undefined;
     this.store.mutateItem(id, [
       Object.keys(rest).length ? { set: { awaiting_data: rest } } : { unset: ['awaiting_data'] },
@@ -3498,6 +3514,117 @@ export class LiveEngine implements Engine {
    * nothing (invariant 7: a clean tree and no commit ahead of a freshly fetched base); anything
    * else is left in place and named in the Activity log — closing never discards work.
    */
+  // ---- discard (#135, HH-286) ----
+  /** Why this item cannot be discarded, or null. Only work planestro is doing on a worker item: an epic, an external item and finished work are not. */
+  discardRefusal(id: string): string | null {
+    const item = this.store.getItem(id);
+    if (!item) return `there is no item ${id}`;
+    const fm = item.file.frontmatter; const d = this.store.derived(item);
+    if (d.flavor === 'epic') return `${id} is an epic: discard its children, or icebox it before it opens`;
+    if (d.flavor === 'external') return `${id} is implemented outside planestro: icebox it, or close it as done`;
+    // An iceboxed child is discarded to let its epic finish without it: that only takes it off the epic.
+    const icedChild = fm.status === 'ICEBOX' && Boolean(fm.parent);
+    if (!icedChild && (!findTransition(fm.status, 'ICEBOX', 'user', d.flavor) || fm.status === 'NOT_YET_SUBMITTED')) return `${id} is ${fm.status}; only work in progress (queued through in review), or an iceboxed epic child, is discarded`;
+    if (this.jobs.has(id) && !this.turns.has(id)) return `${id} has a step running (${fm.op?.replace(/_/g, ' ') ?? 'an engine step'}); discard it when that ends`;
+    return null;
+  }
+
+  /** What the Discard dialog shows: its branch, whether that is on the remote and at which tip (the delete is leased to it), and its pull request. */
+  async discardPreview(id: string): Promise<{ refusal: string | null; branch?: string; remote_sha: string | null; pr?: number }> {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    const refusal = this.discardRefusal(id);
+    const remote = !refusal && fm.branch ? await this.ports.git.remoteBranchSha(this.repo, fm.branch).catch(() => null) : null;
+    return { refusal, ...(fm.branch ? { branch: fm.branch } : {}), remote_sha: remote, ...(fm.pr ? { pr: fm.pr } : {}) };
+  }
+
+  /**
+   * Discard (#135): the user drops work planestro is doing. A live turn is stopped (and waited for), the pull
+   * request closed with the reason, and the item taken off its epic and put in the icebox, so the epic does not
+   * wait on it. The branch on the remote is deleted only on the user's word (`deleteBranch`), and only at the
+   * tip they were shown (`expectSha`, leased): a commit since then keeps it. The tips go in the Activity log
+   * first, so a deleted branch can be restored. Uncommitted files are set aside in .displaced/, never deleted.
+   * Without deleteBranch the local worktree and branch go only on positive evidence (invariant 7): a clean tree
+   * whose HEAD is what the remote holds. Returns what happened, in words; throws only before anything is changed.
+   */
+  async discard(id: string, reason: string, opts: { deleteBranch?: boolean; expectSha?: string; from?: string } = {}): Promise<string> {
+    const why = reason.trim();
+    if (!why) throw new Error('say why it is discarded: it goes on the closed pull request');
+    let refusal = this.discardRefusal(id);
+    if (refusal) throw new Error(refusal);
+    // A live turn is stopped and waited for: nothing is removed under a running session.
+    if (this.turns.has(id)) {
+      const { ops, said } = this.stopSessionWork(id, 'you discarded this item');
+      if (ops.length || said.length) this.store.mutateItem(id, [...ops, { activity: { actor: 'app', text: `discarding: stopped ${said.join(', ')}` } }], 'engine');
+      await this.jobs.get(id)?.catch(() => undefined);
+      refusal = this.discardRefusal(id);
+      if (refusal) throw new Error(refusal);
+    }
+    let release!: () => void;
+    this.jobs.set(id, new Promise<void>((r) => { release = r; }));
+    try {
+      const fm = this.store.requireItem(id).file.frontmatter;
+      const said: string[] = [];
+      const brief = (e: unknown) => (e as Error).message.replace(/\s+/g, ' ').slice(0, 200);
+      if (fm.pr) {
+        const pr = await this.ports.gh.prView(this.github, fm.pr);
+        if (pr.state === 'MERGED') throw new Error(`its pull request #${fm.pr} has merged: it is not discarded`);
+        if (pr.state === 'OPEN') { await this.ports.gh.closePr(this.github, fm.pr, `Discarded in planestro: ${why}`); said.push(`closed pull request #${fm.pr}`); }
+        else said.push(`pull request #${fm.pr} was already closed`);
+      }
+      const { ops } = this.stopSessionWork(id, 'you discarded this item');
+      const unset = ['blocked', 'blocked_reason', 'parent', 'resume_after'];
+      let removed = false;
+      if (fm.worktree && fm.branch) {
+        const cwd = this.absWorktree(fm.worktree); const branch = fm.branch;
+        const remote = await this.ports.git.remoteBranchSha(this.repo, branch).catch(() => null);
+        const head = await this.ports.git.revParse(cwd, 'HEAD').catch(() => null);
+        if (opts.deleteBranch && remote) {
+          if (opts.expectSha && remote !== opts.expectSha) said.push(`kept branch ${branch}: it moved to ${remote.slice(0, 7)} after you looked (${opts.expectSha.slice(0, 7)}), and nothing on it was deleted`);
+          else {
+            // The tips first: a deleted branch is restored from these (GitHub's "Restore branch", or git push origin <sha>:refs/heads/<branch>).
+            this.store.mutateItem(id, [{ activity: { actor: 'app', text: `deleting branch ${branch}: remote tip ${remote}${head && head !== remote ? `, local tip ${head}` : ''}` } }], 'engine');
+            const r = await this.ports.git.deleteRemoteBranchAt(this.repo, branch, remote);
+            if (r === 'moved') said.push(`kept branch ${branch}: it moved on the remote while it was being deleted`);
+            else {
+              said.push(r === 'deleted' ? `deleted branch ${branch} on the remote (tip ${remote.slice(0, 7)})` : `branch ${branch} was already gone from the remote`);
+              try {
+                const w = await this.worktreeDirt(cwd); const dirty = [...w.dirty, ...w.byproducts];
+                const aside = dirty.length ? join(this.store.worktreesRoot(), '.displaced', `${branch.replace(/[\/\\]/g, '-')}-${this.now().replace(/[:+]/g, '-')}`) : undefined;
+                if (aside) { await this.ports.git.moveAside(cwd, dirty, aside); said.push(`set ${dirty.length} uncommitted file${dirty.length === 1 ? '' : 's'} aside in ${relative(this.repo, aside)}`); }
+                await this.ports.git.worktreeRemove(this.repo, cwd, true);
+                await this.ports.git.worktreePrune(this.repo);
+                await this.ports.git.deleteLocalBranch(this.repo, branch);
+                removed = true; said.push('removed its worktree and local branch');
+              } catch (e) { said.push(`removing its worktree stopped partway (${brief(e)}); finish it by hand`); }
+            }
+          }
+        } else {
+          const clean = await this.worktreeDirt(cwd).then((w) => w.clean).catch(() => false);
+          if (!remote) said.push(`kept its worktree and branch ${branch}: the branch is not on the remote, so they are the only copy`);
+          else if (!clean) said.push(`kept its worktree and branch ${branch}: it has uncommitted changes`);
+          else if (head !== remote) said.push(`kept its worktree and branch ${branch}: its local commits are not all on the remote`);
+          else {
+            try { await this.ports.git.worktreeRemove(this.repo, cwd, false); await this.ports.git.worktreePrune(this.repo); await this.ports.git.deleteLocalBranch(this.repo, branch); removed = true; said.push(`removed its worktree and local branch (everything is on the remote branch ${branch}, which is kept)`); }
+            catch (e) { said.push(`removing its worktree stopped partway (${brief(e)}); finish it by hand`); }
+          }
+        }
+      }
+      if (removed) unset.push('worktree', 'branch', 'session_id', 'session_context', 'pr', 'ci_result');
+      else if (fm.pr) unset.push('pr', 'ci_result');
+      const from = fm.parent;
+      this.store.mutateItem(id, [
+        ...ops,
+        ...(fm.status === 'ICEBOX' ? [] : [{ transition: { to: 'ICEBOX', actor: 'user' } } as ItemOp]),
+        { unset },
+        { activity: { actor: 'user', text: `discarded${opts.from ? ` by ${opts.from}` : ''}: ${why}` } },
+        { activity: { actor: 'app', text: [...(from ? [`taken off epic ${from}`] : []), ...said].join('; ') || 'nothing else to undo' } },
+      ], 'user', { commit: `${id}: discard` });
+      if (from && this.store.getItem(from)) this.store.mutateItem(from, [{ activity: { actor: 'app', text: `${id} discarded: ${why}. It is no longer one of this epic's children.` } }], 'engine', { commit: `${from}: ${id} discarded` });
+      this.note('info', `${id}: discarded`);
+      return [`${id} discarded`, ...(from ? [`taken off epic ${from}`] : []), ...said].join('; ');
+    } finally { this.jobs.delete(id); release(); void this.tick(); }
+  }
+
   async closeAsDone(id: string, reason?: string): Promise<void> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;

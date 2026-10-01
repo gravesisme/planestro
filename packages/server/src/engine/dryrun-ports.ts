@@ -136,6 +136,12 @@ export class DryRunGitPort implements GitPort {
   async remoteHeads(): Promise<Map<string, string>> { return new Map(this.w.remoteBranches); }
   async remoteBranchSha(_repo: string, branch: string) { return this.w.remoteBranches.get(branch) ?? null; }
   async deleteRemoteBranch(_repo: string, branch: string) { this.say(`git push origin --delete ${branch}`); this.w.remoteBranches.delete(branch); }
+  async deleteRemoteBranchAt(_repo: string, branch: string, sha: string): Promise<'deleted' | 'moved' | 'gone'> {
+    const now = this.w.remoteBranches.get(branch);
+    if (now === undefined) return 'gone';
+    if (now !== sha) return 'moved';
+    this.say(`git push --force-with-lease=refs/heads/${branch}:${sha} origin :refs/heads/${branch}`); this.w.remoteBranches.delete(branch); return 'deleted';
+  }
   async localBranchExists(_repo: string, branch: string) { return this.w.localBranches.has(branch); }
   async deleteLocalBranch(_repo: string, branch: string) { this.say(`git branch -D ${branch}`); this.w.localBranches.delete(branch); }
   async isAncestor(_repo: string, ancestor: string) { return !this.w.unreachable.has(ancestor); }
@@ -185,6 +191,7 @@ export class DryRunGhPort implements GhPort {
     this.say(`gh run rerun ${runId} --failed`);
     for (const p of this.w.prs.values()) { p.attempt = (p.attempt ?? 1) + 1; p.polls = 0; p.staleFailures = this.w.rerunLagPolls; if (this.w.rerunFailsAgain) { p.failOnce = true; this.w.rerunFailsAgain = false; } }
   }
+  async closePr(_repo: string, number: number, comment: string) { this.say(`gh pr close ${number} --comment "${comment}"`); const p = this.w.prs.get(number); if (p) p.state = 'CLOSED'; }
   async mergePr(_repo: string, number: number, opts: { deleteBranch: boolean }) {
     this.say(`gh pr merge ${number} --merge${opts.deleteBranch ? ' --delete-branch' : ''}`);
     const p = this.w.prs.get(number)!; p.state = 'MERGED'; p.mergedAt = new Date().toISOString(); p.mergeCommit = this.w.sha();

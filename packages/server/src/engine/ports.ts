@@ -58,6 +58,8 @@ export interface GitPort {
   remoteBranchSha(repo: string, branch: string): Promise<string | null>;
   remoteHeads(repo: string): Promise<Map<string, string>>;
   deleteRemoteBranch(repo: string, branch: string): Promise<void>;
+  /** Delete the remote branch only while its tip is still `sha` (#135): 'moved' when it is not, nothing deleted; 'gone' when it no longer exists. */
+  deleteRemoteBranchAt(repo: string, branch: string, sha: string): Promise<'deleted' | 'moved' | 'gone'>;
   localBranchExists(repo: string, branch: string): Promise<boolean>;
   deleteLocalBranch(repo: string, branch: string): Promise<void>;
   isAncestor(repo: string, ancestor: string, descendant: string): Promise<boolean>;
@@ -88,6 +90,8 @@ export interface GhPort {
   /** Re-run only the failed jobs of a completed run (same run id, next attempt). */
   rerunFailed(repo: string, runId: number): Promise<void>;
   mergePr(repo: string, number: number, opts: { deleteBranch: boolean }): Promise<void>;
+  /** Close a pull request without merging it, with a comment saying why (#135). */
+  closePr(repo: string, number: number, comment: string): Promise<void>;
   /** Latest run of the workflow on a branch (base health). */
   branchCi(repo: string, branch: string, workflow: string): Promise<CiStatus>;
 }

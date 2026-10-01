@@ -13,6 +13,8 @@ const UO: readonly Actor[] = ['user', 'orchestrator'];
 const E: readonly Actor[] = ['engine'];
 const UE: readonly Actor[] = ['user', 'engine'];
 export const CLOSE_AS_DONE = 'close as done';
+/** Discard (#135): the user drops work planestro is doing. Only through Engine.discard, which closes the PR and says what became of the branch. */
+export const DISCARD = 'discard';
 
 export const TRANSITIONS: readonly Transition[] = [
   { from: 'NOT_YET_SUBMITTED', to: 'QUEUED', by: UO, flavors: ['worker'], sets: 'queued_at', label: 'queue' },
@@ -35,6 +37,7 @@ export const TRANSITIONS: readonly Transition[] = [
   { from: 'IN_PROGRESS', to: 'IN_REVIEW', by: UE, flavors: ALL, sets: 'pr_created_at', label: 'open PR' },
   { from: 'IN_PROGRESS', to: 'ICEBOX', by: U, flavors: ['worker'], sets: 'iceboxed_at', label: 'icebox' },
   { from: 'IN_REVIEW', to: 'MERGED', by: E, flavors: ALL, sets: 'merged_at', label: 'merge' },
+  { from: 'IN_REVIEW', to: 'ICEBOX', by: U, flavors: ['worker'], sets: 'iceboxed_at', label: DISCARD },
   { from: 'MERGED', to: 'FINISHED', by: E, flavors: ALL, sets: 'finished_at', label: 'finish' },
   { from: 'FINISHED', to: 'NOT_YET_SUBMITTED', by: U, flavors: ALL, label: 'reopen' },
   // "Close as done": the work landed some other way (or was never needed), so there is no PR to

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
-import { epicFlagOf, holdShapeOf, type Status } from '@planestro/shared';
+import { DISCARD, epicFlagOf, holdShapeOf, type Status } from '@planestro/shared';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { canTakeOver, TakeOverButton } from './TakeOver.tsx';
@@ -67,7 +67,7 @@ export function QuickActions({ item, onActed }: { item: ItemView; onActed?: () =
   // A plan that says its pull request must wait is approved on its page, where the hold is offered (#97).
   const statedHold = planReady ? holdShapeOf(item.sections.Plan ?? '') : null;
   // Approve / request-changes have their own endpoints (they start a session turn); the bare transition would not.
-  const plain = transitions.filter((t) => !(fm.status === 'PLAN_READY' && (t.to === 'IN_PROGRESS' || t.to === 'PLAN_IN_PROGRESS')));
+  const plain = transitions.filter((t) => t.label !== DISCARD && !(fm.status === 'PLAN_READY' && (t.to === 'IN_PROGRESS' || t.to === 'PLAN_IN_PROGRESS')));
   if (!plain.length && !planReady && !fm.blocked && !sync && fm.status !== 'IN_PROGRESS' && !canTakeOver(item) && !(fm.status === 'IN_REVIEW' && (fm.awaiting === 'review' || fm.skip_merge))) return null;
   return (
     <div className="row quick-actions">
