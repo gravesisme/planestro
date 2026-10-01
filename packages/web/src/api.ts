@@ -107,7 +107,7 @@ export const api = {
   reload: () => req<{ ok: true }>('POST', '/api/reload'),
   reconcile: () => req<{ corrections: string[] }>('POST', '/api/reconcile'),
   queueOrder: (ids: string[]) => req<{ ok: true }>('POST', '/api/queue/order', { ids }),
-  resumeAfter: (id: string, items: string[], message: string) => req<ItemView>('POST', `/api/items/${encodeURIComponent(id)}/resume-after`, { items, message }),
+  resumeAfter: (id: string, items: string[], message: string, prs: number[] = []) => req<ItemView>('POST', `/api/items/${encodeURIComponent(id)}/resume-after`, { items, message, prs }),
   cancelResumeAfter: (id: string) => req<ItemView>('DELETE', `/api/items/${encodeURIComponent(id)}/resume-after`),
   orchestratorMessage: (text: string, item?: string) => req<{ ok: true }>('POST', '/api/orchestrator/message', { text, item }),
   orchestratorChat: () => req<{ enabled: boolean; entries: JournalEntry[] }>('GET', '/api/orchestrator/chat'),

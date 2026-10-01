@@ -1685,6 +1685,33 @@ describe('resume when other items merge (p14)', () => {
     expect(activityOf(store, art)).toContain('rebased onto origin/trunk before resuming');
   });
 
+  it('waits on a pull request a person opened, by number: resumes when it merges, blocks when it closes unmerged (#136, HH-298)', async () => {
+    const { store, engine, world, art, prompts } = await parked();
+    const pr = (n: number, state: 'OPEN' | 'MERGED' | 'CLOSED') => world.prs.set(n, { number: n, url: `u${n}`, state, headRefOid: world.sha(), headRefName: `hand/${n}`, baseRefName: 'trunk', polls: 0, failOnce: false });
+    expect(await engine.resumeAfter(art, [], 'x', 'user', [999])).toMatch(/no pull request #999/);
+    pr(471, 'CLOSED');
+    expect(await engine.resumeAfter(art, [], 'x', 'user', [471])).toMatch(/PR #471 was closed without merging/);
+    pr(468, 'OPEN');
+    expect(await engine.resumeAfter(art, [], 'Wire the new road.', 'user', [468])).toBe(`parked: ${art} resumes when PR #468 has merged`);
+    expect(store.derived(store.getItem(art)!).needs_you).toBe(false);
+    expect(activityOf(store, art)).toContain('waits for PR #468 to merge, then resumes with: Wire the new road.');
+    await sleep(200);
+    expect(prompts).toHaveLength(0);
+    world.prs.get(468)!.state = 'MERGED';
+    (engine as any).waitedPrs.clear();                                // a minute later, as the tick reads it again
+    await waitFor(() => prompts.length === 1);
+    expect(prompts[0].prompt).toContain('PR #468 has merged.');
+    expect(prompts[0].prompt).toContain('Wire the new road.');
+    // closed without merging: the wait ends in a block that says so
+    store.mutateItem(art, [{ set: { blocked: true, blocked_reason: 'agent_blocked', awaiting: 'user' } }], 'engine');
+    await waitFor(() => !(engine as any).jobs.has(art));
+    pr(470, 'OPEN');
+    expect(await engine.resumeAfter(art, [], 'y', 'user', [470])).toContain('parked');
+    world.prs.get(470)!.state = 'CLOSED'; (engine as any).waitedPrs.clear();
+    await waitFor(() => store.getItem(art)!.file.frontmatter.blocked_reason === 'waited_on_gone');
+    expect(activityOf(store, art)).toContain('it was waiting for PR #470, closed without merging');
+  });
+
   it('a rebase conflict on resume goes to a fix turn that also carries the message', async () => {
     const { store, engine, flag, art, prompts } = await parked({ conflict: true });
     await engine.resumeAfter(art, [flag], 'Now wire the flag in.');
