@@ -191,10 +191,10 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   });
   api.post('/items/:id/resume-after', async (c) => {
     try {
-      const { items, message } = z.object({ items: z.array(z.string()).min(1), message: z.string().min(1) }).parse(await c.req.json());
-      const e = engine as Engine & { resumeAfter?: (id: string, items: string[], message: string) => Promise<string> };
+      const { items, prs, message } = z.object({ items: z.array(z.string()).default([]), prs: z.array(z.number().int().positive()).default([]), message: z.string().min(1) }).parse(await c.req.json());
+      const e = engine as Engine & { resumeAfter?: (id: string, items: string[], message: string, by?: 'user', prs?: number[]) => Promise<string> };
       if (!e.resumeAfter) throw new Error('this engine cannot resume items');
-      const r = await e.resumeAfter(c.req.param('id'), items, message);
+      const r = await e.resumeAfter(c.req.param('id'), items, message, 'user', prs);
       if (!r.startsWith('parked')) throw new Error(r);
       return c.json(itemView(store, store.requireItem(c.req.param('id'))));
     } catch (e) { return fail(c, e); }

@@ -1,6 +1,6 @@
 import { join, relative, isAbsolute, extname, basename, matchesGlob } from 'node:path';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
-import { resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1 } from '@planestro/shared';
+import { resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1 } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote } from './ports.ts';
@@ -171,7 +171,7 @@ export class LiveEngine implements Engine {
       retryOp: (id) => this.retryOp(id),
       rerunCi: (id) => this.rerunCi(id, 'orchestrator'),
       busyWith: (id) => this.busyWith(id),
-      resumeAfter: (id, items, message) => this.resumeAfter(id, items, message, 'orchestrator'),
+      resumeAfter: (id, items, message, prs) => this.resumeAfter(id, items, message, 'orchestrator', prs ?? []),
       finishFromWorktree: (id) => this.finishFromWorktree(id, 'orchestrator'),
       askUserDecision: (id, input) => this.askUserDecision(id, input),
       withdrawDecision: (id, reason) => this.withdrawDecision(id, reason),
@@ -3040,30 +3040,51 @@ export class LiveEngine implements Engine {
    * block, question or triage it had is answered by the park, so it no longer needs anyone; the tick
    * resumes it when they have all merged. Items already merged need no wait: it resumes now.
    */
-  async resumeAfter(id: string, items: string[], message: string, by: 'user' | 'orchestrator' = 'user'): Promise<string> {
+  async resumeAfter(id: string, items: string[], message: string, by: 'user' | 'orchestrator' = 'user', prs: number[] = []): Promise<string> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
     if (!this.phaseFor(fm.status) || this.store.derived(item).flavor !== 'worker') return `not possible: ${id} is ${fm.status}; only a worker item planning or in progress can wait to resume`;
     if (fm.taken_over) return `not possible: the user has taken ${id} over`;
     const busy = this.busyWith(id); if (busy) return `not now: ${busy}`;
     const ids = [...new Set(items.map((x) => x.trim()).filter(Boolean))];
-    if (!ids.length || !message.trim()) return 'not recorded: name at least one item to wait for, and the message to resume with';
+    const nums = [...new Set(prs.filter((n) => Number.isInteger(n) && n > 0))];
+    if ((!ids.length && !nums.length) || !message.trim()) return 'not recorded: name at least one item or pull request to wait for, and the message to resume with';
     const missing = ids.filter((x) => x === id || !this.store.getItem(x));
     if (missing.length) return `not recorded: ${missing.join(', ')} ${missing.includes(id) ? '(an item cannot wait for itself) ' : ''}is not an item to wait for`;
+    // A pull request by number (#136, HH-298): one a person opened, which no item stands for. It must exist and still be open.
+    for (const n of nums) {
+      if (n === fm.pr) return `not recorded: PR #${n} is ${id}'s own pull request`;
+      const pr = await this.ports.gh.prView(this.github, n).catch(() => undefined);
+      if (!pr) return `not recorded: there is no pull request #${n} in ${this.github}`;
+      if (pr.state === 'CLOSED') return `not recorded: PR #${n} was closed without merging`;
+    }
+    const what = waitsFor({ items: ids, prs: nums });
     this.store.mutateItem(id, [
       { unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] },
-      { set: { resume_after: { items: ids, message: message.trim(), since: this.now() } } },
-      { activity: { actor: by, text: `waits for ${ids.join(', ')} to merge, then resumes with: ${message.trim()}` } },
-    ], by, { commit: `${id}: resume after ${ids.join(', ')}` });
+      { set: { resume_after: { items: ids, ...(nums.length ? { prs: nums } : {}), message: message.trim(), since: this.now() } } },
+      { activity: { actor: by, text: `waits for ${what} to merge, then resumes with: ${message.trim()}` } },
+    ], by, { commit: `${id}: resume after ${what}` });
     void this.tick();
-    return `parked: ${id} resumes when ${ids.join(', ')} ${ids.length === 1 ? 'has' : 'have'} merged`;
+    return `parked: ${id} resumes when ${what} ${ids.length + nums.length === 1 ? 'has' : 'have'} merged`;
   }
 
   /** Stop waiting without resuming: the item is the user's again, as a plain block. */
   cancelResumeAfter(id: string): void {
     const fm = this.store.requireItem(id).file.frontmatter;
     if (!fm.resume_after) return;
-    this.store.mutateItem(id, [{ unset: ['resume_after'] }, { set: { blocked: true, blocked_reason: 'agent_blocked', awaiting: 'user' } }, { activity: { actor: 'user', text: `stopped waiting for ${fm.resume_after.items.join(', ')}` } }], 'user', { commit: `${id}: stop waiting` });
+    this.store.mutateItem(id, [{ unset: ['resume_after'] }, { set: { blocked: true, blocked_reason: 'agent_blocked', awaiting: 'user' } }, { activity: { actor: 'user', text: `stopped waiting for ${waitsFor(fm.resume_after)}` } }], 'user', { commit: `${id}: stop waiting` });
+  }
+
+  private waitedPrs = new Map<number, { state?: 'OPEN' | 'MERGED' | 'CLOSED'; at: number; reading?: boolean }>();
+  /** A waited-on pull request's last known state, refreshed at most once a minute (one gh call each); undefined until first read. */
+  private waitedPrState(n: number): 'OPEN' | 'MERGED' | 'CLOSED' | undefined {
+    const cur = this.waitedPrs.get(n) ?? { at: 0 };
+    if (!cur.reading && cur.state !== 'MERGED' && cur.state !== 'CLOSED' && Date.now() - cur.at > 60_000) {
+      this.waitedPrs.set(n, { ...cur, reading: true });
+      void this.ports.gh.prView(this.github, n).then((pr) => { this.waitedPrs.set(n, { state: pr.state, at: Date.now() }); if (pr.state !== 'OPEN') this.poke(); },
+        () => { this.waitedPrs.set(n, { ...cur, at: Date.now(), reading: false }); });
+    }
+    return this.waitedPrs.get(n)?.state;
   }
 
   private driveResumeAfter(): void {
@@ -3074,8 +3095,15 @@ export class LiveEngine implements Engine {
       const gone = wait.items.filter((x) => !this.store.getItem(x));
       if (gone.length) { this.store.mutateItem(item.id, [{ unset: ['resume_after'] }], 'engine'); this.block(item.id, 'waited_on_gone', `it was waiting for ${gone.join(', ')}, which no longer exist${gone.length === 1 ? 's' : ''}; its message was: ${wait.message}`); continue; }
       if (!wait.items.every((x) => ['MERGED', 'FINISHED'].includes(this.store.requireItem(x).file.frontmatter.status))) continue;
-      this.store.mutateItem(item.id, [{ unset: ['resume_after'] }, { activity: { actor: 'app', text: `${wait.items.join(', ')} merged; resuming` } }], 'engine', { commit: `${item.id}: resume after ${wait.items.join(', ')}` });
-      this.runJob(item.id, () => this.resumeWaited(item.id, wait.items, wait.message));
+      // Pull requests by number (#136): their state is GitHub's, read off the tick (waitedPrState) and looked up here.
+      const prs = wait.prs ?? [];
+      const states = prs.map((n) => this.waitedPrState(n));
+      const closed = prs.filter((_, i) => states[i] === 'CLOSED');
+      if (closed.length) { this.store.mutateItem(item.id, [{ unset: ['resume_after'] }], 'engine'); this.block(item.id, 'waited_on_gone', `it was waiting for ${closed.map((n) => `PR #${n}`).join(', ')}, closed without merging; its message was: ${wait.message}`); continue; }
+      if (!states.every((x) => x === 'MERGED')) continue;
+      const what = waitsFor(wait);
+      this.store.mutateItem(item.id, [{ unset: ['resume_after'] }, { activity: { actor: 'app', text: `${what} merged; resuming` } }], 'engine', { commit: `${item.id}: resume after ${what}` });
+      this.runJob(item.id, () => this.resumeWaited(item.id, [...wait.items, ...prs.map((n) => `PR #${n}`)], wait.message));
     }
   }
 
@@ -3865,7 +3893,7 @@ export class LiveEngine implements Engine {
     this.idleSince.delete(id);
     const pending = (fm.op_data?.pending_messages as string[] | undefined) ?? [];
     if (pending.length) said.push(`${pending.length} queued message${pending.length === 1 ? '' : 's'}`);
-    if (fm.resume_after) said.push(`the resume after ${fm.resume_after.items.join(', ')}`);
+    if (fm.resume_after) said.push(`the resume after ${waitsFor(fm.resume_after)}`);
     const parked = fm.awaiting === 'permission' || fm.awaiting === 'question' || (fm.awaiting === 'orchestrator' && fm.awaiting_data?.kind === 'permission');
     if (parked) said.push(`its parked ${fm.awaiting === 'question' ? 'question' : 'permission request'}`);
     if (fm.triage) said.push('triage');

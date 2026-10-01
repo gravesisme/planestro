@@ -156,3 +156,8 @@ export function depsSatisfied(fm: Pick<ItemFrontmatter, 'depends_on'>, lookup: (
 }
 
 export const ACTIVE_STATUSES: readonly Status[] = ['PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW', 'MERGED'];
+
+/** What a parked item waits for, in words: its items and pull requests (#136), e.g. "HH-272, PR #468". */
+export function waitsFor(r: { items: readonly string[]; prs?: readonly number[] }): string {
+  return [...r.items, ...(r.prs ?? []).map((n) => `PR #${n}`)].join(', ');
+}

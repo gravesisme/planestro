@@ -20,18 +20,22 @@ function ResumeAfterDialog({ item, onClose }: { item: ItemView; onClose: () => v
   const open = items.filter((i) => i.id !== item.id && !['MERGED', 'FINISHED'].includes(i.frontmatter.status) && i.derived.lane === 'board');
   const [picked, setPicked] = useState<string[]>([]);
   const [message, setMessage] = useState('');
+  // Pull requests no item stands for (#136): typed as numbers, "468, 470" or "#468".
+  const [prText, setPrText] = useState('');
+  const prs = [...new Set((prText.match(/\d+/g) ?? []).map(Number).filter((n) => n > 0))];
   const toggle = (id: string) => setPicked((p) => p.includes(id) ? p.filter((x) => x !== id) : [...p, id]);
   return (
     <div className="dialog" onClick={onClose}>
-      <form onClick={(e) => e.stopPropagation()} onSubmit={async (e) => { e.preventDefault(); if (await act(() => api.resumeAfter(item.id, picked, message))) onClose(); }}>
+      <form onClick={(e) => e.stopPropagation()} onSubmit={async (e) => { e.preventDefault(); if (await act(() => api.resumeAfter(item.id, picked, message, prs))) onClose(); }}>
         <h2 style={{ margin: 0 }}>Resume {item.id} when…</h2>
-        <p className="small muted" style={{ margin: 0 }}>It stops needing you. Once every item you tick has merged, planestro rebases its branch onto the base and resumes its session with your message.</p>
+        <p className="small muted" style={{ margin: 0 }}>It stops needing you. Once every item you tick and every pull request you name has merged, planestro rebases its branch onto the base and resumes its session with your message.</p>
         <div className="resume-pick">
           {open.map((i) => <label key={i.id} className="row small"><input type="checkbox" checked={picked.includes(i.id)} onChange={() => toggle(i.id)} /> <b>{i.id}</b> {i.frontmatter.title} <span className="muted">{i.frontmatter.status.replace(/_/g, ' ')}</span></label>)}
           {!open.length && <p className="muted small">No other open items to wait for.</p>}
         </div>
+        <label className="small">Pull requests no item stands for <input placeholder="e.g. 468, 470" value={prText} onChange={(e) => setPrText(e.target.value)} /></label>
         <textarea placeholder="What should the session do once they have merged?" value={message} onChange={(e) => setMessage(e.target.value)} rows={4} />
-        <div className="row"><span className="grow" /><button type="button" onClick={onClose}>Cancel</button><button className="primary" type="submit" disabled={!picked.length || !message.trim()}>Park it</button></div>
+        <div className="row"><span className="grow" /><button type="button" onClick={onClose}>Cancel</button><button className="primary" type="submit" disabled={(!picked.length && !prs.length) || !message.trim()}>Park it</button></div>
       </form>
     </div>
   );
@@ -45,7 +49,7 @@ export function WaitingPanel({ item }: { item: ItemView }) {
   return (
     <div className="approval">
       <h2 style={{ margin: '0 0 8px' }}>Waiting to resume</h2>
-      <p className="small" style={{ marginTop: 0 }}>Resumes when {wait.items.map((id, n) => { const s = items.find((i) => i.id === id)?.frontmatter.status; return <span key={id}>{n ? ', ' : ''}<Link to={`/items/${id}`}>{id}</Link>{s ? ` (${s.replace(/_/g, ' ')})` : ''}</span>; })} {wait.items.length === 1 ? 'has' : 'have'} merged, with:</p>
+      <p className="small" style={{ marginTop: 0 }}>Resumes when {wait.items.map((id, n) => { const s = items.find((i) => i.id === id)?.frontmatter.status; return <span key={id}>{n ? ', ' : ''}<Link to={`/items/${id}`}>{id}</Link>{s ? ` (${s.replace(/_/g, ' ')})` : ''}</span>; })} {(wait.prs ?? []).map((n, k) => <span key={n}>{wait.items.length || k ? ', ' : ''}PR #{n}</span>)} {wait.items.length + (wait.prs?.length ?? 0) === 1 ? 'has' : 'have'} merged, with:</p>
       <p className="blocked-said">{wait.message}</p>
       <div className="row"><button onClick={() => { if (confirm(`Stop waiting? ${item.id} becomes blocked for you again.`)) void act(() => api.cancelResumeAfter(item.id)); }}>Stop waiting</button><span className="small muted">since {wait.since.slice(0, 16).replace('T', ' ')}</span></div>
     </div>
