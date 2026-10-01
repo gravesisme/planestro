@@ -2769,6 +2769,15 @@ export class LiveEngine implements Engine {
    * in a loop), the user as many as they like. The block or triage clears, and the CI wait counts only the new attempt
    * (`op_data.ci_rerun`); a red attempt counts as a failure again. Returns what happened, or why not, in words.
    */
+  /** What rerunCi would refuse that the store can tell without GitHub: checked when a card offering it is filed (#162). */
+  private rerunRefusal(id: string): string | null {
+    const fm = this.store.getItem(id)?.file.frontmatter;
+    if (!fm) return `there is no item ${id}`;
+    if (fm.status !== 'IN_REVIEW' || !fm.pr) return `${id} has no pull request in review`;
+    if (!(fm.op_data?.last_red as { runId?: number } | undefined)?.runId) return `${id} has no red CI run on record`;
+    return null;
+  }
+
   async rerunCi(id: string, by: 'user' | 'orchestrator' = 'user'): Promise<string> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
@@ -2782,7 +2791,7 @@ export class LiveEngine implements Engine {
     const ci = await this.ports.gh.ciForSha(this.github, fm.branch, red.sha, this.ciWorkflow);
     if (ci.runId !== red.runId || ci.state !== 'failure') return `not possible: run ${red.runId} is not the head's red run any more (it is ${ci.state}${ci.runId && ci.runId !== red.runId ? `, run ${ci.runId}` : ''})`;
     const prev = fm.op_data?.ci_rerun as { sha?: string } | undefined;
-    if (by === 'orchestrator' && prev?.sha === red.sha) return `not possible: you already re-ran CI once for ${red.sha.slice(0, 7)}; a second red on the same head is the user's to judge (or the session's to fix)`;
+    if (by === 'orchestrator' && prev?.sha === red.sha) return `not possible: you already re-ran CI once for ${red.sha.slice(0, 7)}; a second red on the same head is the user's to judge (or the session's to fix). If something has changed since (a runner's full disk freed, a fix landed), leave ask_user_decision with an option carrying action { tool: "rerun_ci", args: { id: "${id}" } }: their tap re-runs it`;
     await this.ports.gh.rerunFailed(this.github, red.runId);
     const attempt = (ci.attempt ?? 1) + 1;
     const { last_red: _red, ...od } = fm.op_data ?? {};
@@ -2988,6 +2997,7 @@ export class LiveEngine implements Engine {
     const cfg = this.store.config;
     if (action.tool === 'discard_item') return this.discardRefusal(action.args.id);
     if (action.tool === 'close_as_done') return this.closeAsDoneRefusal(action.args.id);
+    if (action.tool === 'rerun_ci') return this.rerunRefusal(action.args.id);
     if (action.tool === 'submit_item') {
       const item = this.store.getItem(action.args.id);
       if (!item) return `there is no item ${action.args.id}`;
@@ -3036,7 +3046,7 @@ export class LiveEngine implements Engine {
    */
   private performAction(action: DecisionAction, from: string): string {
     const why = `you chose it on ${from}'s decision card`;
-    if (action.tool === 'discard_item' || action.tool === 'close_as_done') throw new Error(`${action.tool} is carried out by answerDecision`);
+    if (action.tool === 'discard_item' || action.tool === 'close_as_done' || action.tool === 'rerun_ci') throw new Error(`${action.tool} is carried out by answerDecision`);
     if (action.tool === 'submit_item') return this.submitAsUser(action.args.id, why) === 'planning' ? `epic ${action.args.id} is having its breakdown planned` : `${action.args.id} is queued for planning`;
     const a = action.args; const epic = a.kind === 'epic';
     const planner = findModel(this.store.config, a.planner)?.id; const implementer = findModel(this.store.config, a.implementer)?.id;
@@ -3103,9 +3113,11 @@ export class LiveEngine implements Engine {
     // A discard closes a pull request and may delete a branch: async, and it can leave this card's own item in the icebox.
     // So does closing one as done (#126): both are async, and both can end this card's own item (icebox, FINISHED).
     const act = chosen?.action;
-    const ends = act?.tool === 'discard_item' || act?.tool === 'close_as_done';
+    // A re-run clears the block and the card with it (#162): the same ending as the two that move the item.
+    const ends = act?.tool === 'discard_item' || act?.tool === 'close_as_done' || act?.tool === 'rerun_ci';
     const done = act?.tool === 'discard_item' ? await this.discard(act.args.id, act.args.reason, { deleteBranch: act.args.delete_branch === true, from: `your answer on ${id}'s decision card` })
       : act?.tool === 'close_as_done' ? (await this.closeAsDone(act.args.id, `${act.args.reason} (your answer on ${id}'s decision card)`), `${act.args.id} closed as done`)
+      : act?.tool === 'rerun_ci' ? await (async () => { const r = await this.rerunCi(act.args.id, 'user'); if (/^not (possible|now)/.test(r)) throw new Error(r); return r; })()
       : act ? this.performAction(act, id) : undefined;
     if (ends && !decisionOf(this.store.requireItem(id).file.frontmatter)) {
       this.store.mutateItem(id, [{ activity: { actor: 'user', text: `decided: ${decision.question} → ${said} (done for you: ${done})` } }], 'user', { commit: `${id}: decision answered` });

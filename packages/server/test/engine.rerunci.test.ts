@@ -100,4 +100,24 @@ describe('rerun_ci (#139)', () => {
     const ok = await app.request(`/items/${h.id}/rerun-ci`, { method: 'POST' });
     expect(ok.status).toBe(200); expect((await ok.json()).said).toMatch(/^re-running/);
   });
+
+  it('past its one re-run, the orchestrator offers it on a card and the user\'s tap re-runs it (#162)', async () => {
+    const { engine, run, redTwice } = await setup();
+    run.second = 'failure';
+    const h = redTwice();
+    await engine.rerunCi(h.id, 'orchestrator');
+    await engine.start();
+    await until(() => fm(h.id).blocked === true && fm(h.id).ci_failed_count === 3);
+    await until(() => !(engine as any).jobs.has(h.id));
+    expect(await engine.rerunCi(h.id, 'orchestrator')).toMatch(/action \{ tool: "rerun_ci"/);
+    await (engine as any).askUserDecision(h.id, { question: 'Re-run CI now that the runner has disk space?', why: 'Both reds came while its disk was full.', options: [
+      { label: 'Re-run CI', description: 'The runner has 78 GiB free now', recommended: true, action: { tool: 'rerun_ci', args: { id: h.id } } },
+      { label: 'Leave it', description: 'Look at the logs first' },
+    ] });
+    await engine.answerDecision(h.id, { choice: 'Re-run CI' });
+    expect(fm(h.id).blocked).toBeUndefined();
+    expect(fm(h.id).op).toBe('awaiting_ci');
+    expect(run.reruns).toBe(2);
+    expect(activity(h.id)).toMatch(/decided: Re-run CI now that the runner has disk space\? → Re-run CI \(done for you: re-running the failed jobs of run 7/);
+  });
 });
