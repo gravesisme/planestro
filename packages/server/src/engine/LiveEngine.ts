@@ -789,6 +789,14 @@ export class LiveEngine implements Engine {
       this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), pending_messages: pending } } }, { activity: { actor: 'user', text: `message queued: ${text}` } }], 'user');
       return;
     }
+    // A session parked on its question (or a permission) takes the message with the answer (#128, HH-259): a designer
+    // decision that changes the brief is not held back until someone answers, and does not wake it a second time.
+    const parked = fm.awaiting === 'question' || fm.awaiting === 'permission' || (fm.awaiting === 'orchestrator' && ['question', 'permission'].includes(String(fm.awaiting_data?.kind ?? '')));
+    if (parked) {
+      const pending = [...((fm.op_data?.pending_messages as string[] | undefined) ?? []), text];
+      this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), pending_messages: pending } } }, { activity: { actor: by === 'orchestrator' ? 'orchestrator' : 'user', text: `message queued: ${text} (it reaches the session with the answer to its ${fm.awaiting === 'question' || fm.awaiting_data?.kind === 'question' ? 'question' : 'permission request'})` } }], by === 'orchestrator' ? 'orchestrator' : 'user');
+      return;
+    }
     if (fm.awaiting && fm.awaiting !== 'user') throw new Error(`${id} is awaiting ${fm.awaiting}; answer that first`);
     // A message that resumes a blocked session is the answer to the block (unblock-with-message
     // by another door). Leaving the flag set made afterTurn skip the finished turn, so a worker
@@ -808,8 +816,11 @@ export class LiveEngine implements Engine {
       const answers = payload.answers as Record<string, string>;
       const text = Object.entries(answers).map(([q, a]) => `- Q: ${q}\n  A: ${a}`).join('\n');
       this.recordAnswer(id, fm, by, 'answered');
-      this.store.mutateItem(id, [{ unset: ['awaiting', 'awaiting_data', 'triage'] }, { activity: { actor: by, text: `answered: ${Object.values(answers).join(' / ')}` } }], by, { commit: `${id}: answer questions${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
-      this.queueFollowUp(id, () => this.runTurnFor(id, phase, `${this.resumeNote(id, 'your questions')}\n\nAnswers to your questions:\n\n${text}\n\nContinue.`));
+      // Messages queued while it waited go with the answer (#128), and leave the queue with it.
+      const pending = (fm.op_data?.pending_messages as string[] | undefined) ?? [];
+      const also = pending.length ? `\n\nAlso, from the user while you waited (these may change the brief):\n\n${pending.map((m) => `- ${m}`).join('\n')}` : '';
+      this.store.mutateItem(id, [{ unset: ['awaiting', 'awaiting_data', 'triage'] }, ...(pending.length ? [{ set: { op_data: { ...(fm.op_data ?? {}), pending_messages: [] } } } as ItemOp] : []), { activity: { actor: by, text: `answered: ${Object.values(answers).join(' / ')}${pending.length ? ` (with ${pending.length} queued message${pending.length === 1 ? '' : 's'})` : ''}` } }], by, { commit: `${id}: answer questions${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
+      this.queueFollowUp(id, () => this.runTurnFor(id, phase, `${this.resumeNote(id, 'your questions')}\n\nAnswers to your questions:\n\n${text}${also}\n\nContinue.`));
       return;
     }
     if (payload.kind === 'permission') {
