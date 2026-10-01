@@ -25,6 +25,8 @@ export class FakeWorld {
   rerunFailsAgain = false;
   /** The next PR's first run is cancelled and nothing replaces it (HH-321), until its failed jobs are re-run. */
   ciCancelOnce = false;
+  /** Preview deployments by commit (#137): what previewUrl reports. */
+  previews = new Map<string, string>();
   /** Untracked files by worktree, and the paths the base branch tracks (for regenerated files that collide with it). */
   untracked = new Map<string, string[]>();
   baseFiles = new Set<string>();
@@ -196,6 +198,7 @@ export class DryRunGhPort implements GhPort {
     for (const p of this.w.prs.values()) { p.attempt = (p.attempt ?? 1) + 1; p.polls = 0; p.staleFailures = this.w.rerunLagPolls; if (this.w.rerunFailsAgain) { p.failOnce = true; this.w.rerunFailsAgain = false; } }
   }
   async rerunAll(_repo: string, runId: number) { this.say(`gh run rerun ${runId}`); for (const p of this.w.prs.values()) if (p.cancelled) { p.cancelled = false; p.attempt = (p.attempt ?? 1) + 1; p.polls = 0; } }
+  async previewUrl(_repo: string, sha: string): Promise<string | null> { return this.w.previews.get(sha) ?? null; }
   async closePr(_repo: string, number: number, comment: string) { this.say(`gh pr close ${number} --comment "${comment}"`); const p = this.w.prs.get(number); if (p) p.state = 'CLOSED'; }
   async mergePr(_repo: string, number: number, opts: { deleteBranch: boolean }) {
     this.say(`gh pr merge ${number} --merge${opts.deleteBranch ? ' --delete-branch' : ''}`);

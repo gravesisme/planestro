@@ -94,6 +94,10 @@ const HELD_POLL_MS = 60_000;
 const SKIPPED_REFIRE_POLLS = 6;
 /** Polls in a row that the head's newest run stays cancelled before planestro re-runs it (about a minute at the start). */
 const CANCELLED_RERUN_POLLS = 6;
+/** Held polls (one a minute) a new head's preview deployment is looked for before planestro stops asking. */
+const PREVIEW_TRIES = 10;
+/** What a worker may put on its item for the user to see (#137): pictures and videos. */
+const ATTACHABLE = /\.(png|jpe?g|gif|webp|svg|mp4|webm|mov)$/i;
 /** Looks (5 s apart) at a just-pushed PR's head before it is marked ready anyway. */
 const READY_AFTER_PUSH_POLLS = 6;
 /** A guard-made pause resumes this long after its window's reset, so the first turn lands in the fresh window. */
@@ -618,6 +622,24 @@ export class LiveEngine implements Engine {
     ], 'engine');
   }
 
+  /**
+   * The preview a held PR is played on (#137, LM-38): the newest successful deployment for its head, as GitHub
+   * records it (Vercel, Netlify and the like post one). Read with the held poll, for each new head until found or
+   * PREVIEW_TRIES polls have passed, kept in `op_data.preview`, and said once in Activity.
+   */
+  private async readPreview(id: string, head: string): Promise<void> {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    const seen = fm.op_data?.preview as { sha?: string; url?: string; tries?: number } | undefined;
+    if (seen?.sha === head && (seen.url || (seen.tries ?? 0) >= PREVIEW_TRIES)) return;
+    const url = await this.ports.gh.previewUrl(this.github, head).catch(() => null);
+    const tries = (seen?.sha === head ? seen.tries ?? 0 : 0) + 1;
+    const cur = this.store.requireItem(id).file.frontmatter;
+    this.store.mutateItem(id, [
+      { set: { op_data: { ...(cur.op_data ?? {}), preview: { sha: head, tries, ...(url ? { url } : {}) } } } },
+      ...(url ? [{ activity: { actor: 'app' as const, text: `preview for ${head.slice(0, 7)}: ${url}` } }] : []),
+    ], 'engine');
+  }
+
   private async heldStep(id: string): Promise<void> {
     let fm = this.store.requireItem(id).file.frontmatter;
     if (this.store.config.ci.draft_while_held && !fm.op_data?.pr_draft) {
@@ -638,6 +660,7 @@ export class LiveEngine implements Engine {
       return;
     }
     if (!remote) return;
+    await this.readPreview(id, remote);
     const ci = await this.ports.gh.ciForSha(this.github, fm.branch!, remote, this.ciWorkflow);
     const cur = this.store.requireItem(id).file.frontmatter;
     if (ci.runId && (cur.op_data?.ci as { runId?: number } | undefined)?.runId !== ci.runId) this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), ci: { runId: ci.runId, url: ci.url } } } }], 'engine');
@@ -2340,11 +2363,12 @@ export class LiveEngine implements Engine {
         const shape = epicShapeOf(plan);
         return handIn(plan, shape ? { reason: shape, source: 'plan' } : undefined);
       },
-      add_note: async (markdown) => { const cur = getSection(s.requireItem(id).file, 'Notes'); s.mutateItem(id, [{ section: 'Notes', body: cur ? `${cur}\n\n${markdown}` : markdown }], 'engine', { commit: `${id}: worker note` }); return 'Note recorded.'; },
+      add_note: async (markdown, attach) => { const cur = getSection(s.requireItem(id).file, 'Notes'); s.mutateItem(id, [{ section: 'Notes', body: cur ? `${cur}\n\n${markdown}` : markdown }], 'engine', { commit: `${id}: worker note` }); const att = this.attachFromWorktree(id, attach); return `Note recorded.${att ? ` ${att}` : ''}`; },
       append_activity: async (text) => { s.mutateItem(id, [{ activity: { actor: 'worker', text } }], 'engine'); return 'Recorded.'; },
       report_progress: async (parts) => this.recordParts(id, parts) ?? 'Recorded.',
-      report_done: async (summary, parts, hold) => {
+      report_done: async (summary, parts, hold, attach) => {
         const bad = parts === undefined ? undefined : this.recordParts(id, parts);
+        const att = this.attachFromWorktree(id, attach);
         const cur = s.requireItem(id).file.frontmatter;
         const ops: ItemOp[] = [{ set: { op_data: { ...(cur.op_data ?? {}), done_summary: summary } } }, { activity: { actor: 'worker', text: `done: ${summary.slice(0, 300)}` } }];
         // The worker that knows its pull request must wait says so (#97). Recorded here, with the done: the pull
@@ -2356,7 +2380,7 @@ export class LiveEngine implements Engine {
         else if (asked) ops.push({ activity: { actor: 'app', text: `the worker asked for a hold (${asked.slice(0, 200)}); not held: you released this item's hold, or approved its plan without one` } });
         s.mutateItem(id, ops, 'engine', held ? { commit: `${id}: skip merge` } : {});
         if (held) this.note('info', `${id}: its worker asked for the pull request to be held: ${asked.slice(0, 200)}`);
-        return `Recorded${held ? ': planestro keeps the pull request out of the merge queue until the user releases the hold' : ''}${bad ? `, but ${bad}` : '.'} End your turn now.`;
+        return `Recorded${held ? ': planestro keeps the pull request out of the merge queue until the user releases the hold' : ''}${bad ? `, but ${bad}` : '.'}${att ? ` ${att}` : ''} End your turn now.`;
       },
       report_blocked: async (reason, parts) => {
         if (parts !== undefined) this.recordParts(id, parts);
@@ -2367,6 +2391,31 @@ export class LiveEngine implements Engine {
       hand_off: async (to, paths, note) => this.handOff(id, to, paths, note, 'worker'),
       get_item: async () => serializeItemFile(s.requireItem(id).file),
     };
+  }
+
+  /**
+   * What a worker shows the user (#137, LM-38): images and videos from its worktree, its ignored cache included,
+   * copied onto the item as managed attachments (the item page shows them). Only files inside the worktree, of a
+   * picture or video type, within attachments.managed_max_bytes. Returns what it did and skipped, for the worker.
+   */
+  private attachFromWorktree(id: string, paths: string[] | undefined): string {
+    if (!paths?.length) return '';
+    const fm = this.store.requireItem(id).file.frontmatter;
+    if (!fm.worktree) return 'Nothing attached: this item has no worktree.';
+    const root = this.absWorktree(fm.worktree);
+    const done: string[] = []; const skipped: string[] = [];
+    for (const p of paths.slice(0, 12)) {
+      const abs = join(root, p); const rel = relative(root, abs);
+      if (!rel || rel.startsWith('..') || isAbsolute(rel)) { skipped.push(`${p} (outside your worktree)`); continue; }
+      if (!ATTACHABLE.test(p)) { skipped.push(`${p} (not an image or video)`); continue; }
+      try {
+        const data = readFileSync(abs);
+        this.store.addManagedAttachment(id, rel.replace(/[\/\\]/g, '-'), data, 'engine');
+        done.push(p);
+      } catch (e) { skipped.push(`${p} (${(e as Error).message.replace(/\s+/g, ' ').slice(0, 120)})`); }
+    }
+    if (paths.length > 12) skipped.push(`${paths.length - 12} more (at most 12 a call)`);
+    return [done.length ? `Attached for the user: ${done.join(', ')}.` : '', skipped.length ? `Not attached: ${skipped.join('; ')}.` : ''].filter(Boolean).join(' ');
   }
 
   // ---- hand-off: one item's files, given to another before any branch merges ----

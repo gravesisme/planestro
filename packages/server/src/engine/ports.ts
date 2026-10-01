@@ -94,6 +94,8 @@ export interface GhPort {
   mergePr(repo: string, number: number, opts: { deleteBranch: boolean }): Promise<void>;
   /** Close a pull request without merging it, with a comment saying why (#135). */
   closePr(repo: string, number: number, comment: string): Promise<void>;
+  /** The URL of the newest successful deployment for this commit (a Vercel or Netlify preview), or null (#137). */
+  previewUrl(repo: string, sha: string): Promise<string | null>;
   /** Latest run of the workflow on a branch (base health). */
   branchCi(repo: string, branch: string, workflow: string): Promise<CiStatus>;
 }
@@ -107,10 +109,10 @@ export interface TurnTools {
   submit_plan(plan: string): Promise<string>;
   /** An epic's plan and its proposed children (a rejection is returned as text for the planner to fix); on a plain item, a flagged plan that says it is really an epic (#69). */
   submit_breakdown(plan: string, children: unknown): Promise<string>;
-  add_note(markdown: string): Promise<string>;
+  add_note(markdown: string, attach?: string[]): Promise<string>;
   append_activity(text: string): Promise<string>;
   /** `hold`: the pull request must not merge yet, and why ("until the release is cut"); it is held out of the merge queue until the user releases it (#97). */
-  report_done(summary: string, parts?: unknown, hold?: string): Promise<string>;
+  report_done(summary: string, parts?: unknown, hold?: string, attach?: string[]): Promise<string>;
   report_blocked(reason: string, parts?: unknown): Promise<string>;
   /** Multi-part work: each part's state (accepted | pending | rejected) with the gate reason, replacing the last report. */
   report_progress(parts: unknown): Promise<string>;

@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
-import { getSection, epicFlagOf, holdShapeOf, heldReasonOf, type HoldFlag, partsSummary, serializeItemFile, serializeQuestionFile, parseThread, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent, parseActivity } from '@planestro/shared';
+import { getSection, epicFlagOf, holdShapeOf, heldReasonOf, previewOf, type HoldFlag, partsSummary, serializeItemFile, serializeQuestionFile, parseThread, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent, parseActivity } from '@planestro/shared';
 import { parkHint } from './parks.ts';
 import { hostNote, keptPathsNote } from './hostNote.ts';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
@@ -406,6 +406,7 @@ export class Orchestrator {
         if (fm.taken_over) lines.push(`Taken over: the user is finishing this item by hand (since ${fm.taken_over.since}${fm.taken_over.note ? `: ${fm.taken_over.note}` : ''}). Do not act on it (no messages, unblocks, retries, cards or merge order; those tools refuse it) until they hand it back. You may read it and annotate it.`);
         if (fm.pr) lines.push(`PR: #${fm.pr} · CI ${fm.ci_result ?? '—'} · red count ${fm.ci_failed_count ?? 0}`);
         if (fm.skip_merge) lines.push(`Held out of the merge queue${heldReasonOf(fm) ? `: ${heldReasonOf(fm)}` : ''}. Its commits are pushed and its CI is read, but it does not merge until the hold is released (the user's Release hold, or unskip_merge once what it waits for has happened).`);
+        const preview = previewOf(fm); if (preview) lines.push(`Preview deployment for ${preview.sha.slice(0, 7)}: ${preview.url} (give the user this link when you ask them to try it).`);
         // Facts the state machine knows (#64): what is left, and what a resume costs before it does anything.
         const budget = this.hooks.budgetLine?.(fm.id); if (budget) lines.push(budget);
         // A fact the state machine knows (p29): what it depends on merged after its worktree was cut, so its branch lacks it until synced.

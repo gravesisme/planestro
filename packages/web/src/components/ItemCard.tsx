@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { confirmMove } from './QuickActions.tsx';
-import { decisionOf, heldReasonOf, waitsFor } from '@planestro/shared';
+import { decisionOf, heldReasonOf, previewOf, waitsFor } from '@planestro/shared';
 
 export function statusLabel(s: string): string { return s.replace(/_/g, ' '); }
 
@@ -32,6 +32,7 @@ export function ItemCard({ item, sortable = true, onSelect }: { item: ItemView; 
             {fm.parent && <span className="tag">↳ {fm.parent}</span>}
             {d.external ? <span className="tag">{modelLabel(fm.implementer)} (external)</span> : <span className="tag">{modelLabel(fm.planner)} → {modelLabel(fm.implementer)}</span>}
             {fm.pr && <span className="tag ok">PR #{fm.pr}</span>}
+            {previewOf(fm) && <span className="tag" title={`Preview deployment: ${previewOf(fm)!.url}`}>preview</span>}
             {fm.status === 'IN_REVIEW' && fm.skip_merge && <span className={`tag ${fm.ci_result === 'red' ? 'hot' : ''}`} title={`Held out of the merge queue${heldReasonOf(fm) ? ` (${heldReasonOf(fm)})` : ''}: it waits for you to release the hold. Its commits are pushed and its CI is watched${fm.ci_result === 'red' ? '; the red run is being fixed meanwhile (its session, or the orchestrator for an epic)' : ''}, but it does not merge`}>{fm.op_data?.pr_draft ? 'held for you · draft PR' : `held for you · CI ${fm.ci_result ?? 'pending'}`}</span>}
             {fm.status === 'IN_PROGRESS' && fm.skip_merge && <span className="tag" title={`Its pull request will be held out of the merge queue${heldReasonOf(fm) ? `: ${heldReasonOf(fm)}` : ''}`}>PR will be held</span>}
             {fm.triage && <span className="tag triage" title={`It stopped (${fm.triage.reason}); the orchestrator fixes it or asks you one question`}>orchestrator triaging</span>}
