@@ -170,6 +170,52 @@ adds nothing project-specific.
 the UI and open pages reload; server changes restart it between agent turns
 (automation is paused until running turns finish, then resumed).
 
+### Running it in the background
+
+`serve` runs in the foreground. For a server that should keep running after
+the terminal (or the Claude Code session) that started it is gone, use `start`:
+
+```sh
+npm run planestro -- start ../myproject-planning --port 4300 --host 0.0.0.0 --watch
+npm run planestro -- status
+npm run planestro -- stop ../myproject-planning
+```
+
+- **`start [data_dir] [--port N] [--host H] [--watch]`** runs `serve` in a
+  session of its own, logging to `<data_dir>/.planestro/serve.log`. It returns
+  once the server answers, after reconciling items against their branches and
+  worktrees, and prints the URL, the log path and any corrections. A server
+  started as a Claude Code background task is killed at that task's time cap,
+  along with the worker turns it is driving. A server from `start` is not. It
+  refuses a data dir that already has a server, or a port something else
+  listens on, and says what holds it. It never stops or takes over another server.
+- **`stop <data_dir> | --port N | --all`** sends SIGTERM to the server's whole
+  process group (npm, tsx, the server, and a `--watch` supervisor with whatever
+  child it last restarted), then SIGKILL after 15 s. With no argument it stops
+  the data dir in the current directory, and refuses rather than guessing when
+  there is none. A server started some other way is found by its port or its
+  data-dir lock and stopped on its own, never by its group, which may be a shell's.
+  Anything that is not `planestro serve` is left alone.
+- **`status [data_dir]`** lists every running instance on the machine (data
+  dir, URL, pid and process group, uptime, log) and drops records whose process
+  has gone.
+
+Each instance is recorded in its data dir (`.planestro/instance.json`), with a
+pointer in `~/.planestro/instances/`, so several projects can run side by side
+on different ports, and stopping one never reaches another. A `--watch` instance
+restarts whenever planestro's own source changes, so **editing or pulling the
+planestro checkout restarts every instance on the machine that was started from
+it with `--watch`**. A restart stays in the same process group, so `stop` still
+catches it.
+
+A consumer repo's scripts can be one line each. From a repo whose backlog is its
+`planning/` directory, with planestro checked out beside it:
+
+```sh
+npm --prefix ../planestro run -s planestro -- start "$PWD/planning" --port 4300 --host 0.0.0.0 --watch
+npm --prefix ../planestro run -s planestro -- stop "$PWD/planning"
+```
+
 > **The web UI has no authentication.** It binds to `127.0.0.1` by default and
 > can start agents that edit and push code. Requests from other websites and
 > DNS-rebinding tricks are refused, but `--host 0.0.0.0` exposes the UI to your
