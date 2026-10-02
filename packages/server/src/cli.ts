@@ -1,11 +1,12 @@
 #!/usr/bin/env -S npx tsx
 import { parseArgs } from 'node:util';
-import { resolve } from 'node:path';
+import { resolve, join } from 'node:path';
+import { existsSync } from 'node:fs';
 import { SCHEMA_VERSION } from '@planestro/shared';
 import { DataStore } from './store/DataStore.ts';
 import { initDataDir } from './init.ts';
 import { migrate } from './migrations/index.ts';
-import { locateDataDir, TOOL_VERSION } from './config.ts';
+import { locateDataDir, TOOL_VERSION, CONFIG_FILE } from './config.ts';
 import { exitCodeFor } from './exitCodes.ts';
 import { desktopNotify } from './notifier.ts';
 
@@ -18,6 +19,15 @@ const USAGE = `planestro ${TOOL_VERSION}
                                     run the web UI + engine (default host 127.0.0.1; use 0.0.0.0 for LAN access)
                                     --watch  restart on planestro source changes (between agent turns) and rebuild the UI
                                     --open   open the UI in a browser once it is up
+  planestro start [data_dir] [--port N] [--host H] [--watch]
+                                    run serve in the background, in a session of its own (it outlives this terminal and a
+                                    Claude Code task's time cap); returns once it answers, then reconciles and prints the corrections.
+                                    Already running there: prints it and exits 0. Refuses a data dir or port held by anything else.
+                                    Log: <data_dir>/.planestro/serve.log
+  planestro stop [data_dir] | --port N | --all
+                                    stop that server's whole process group (SIGTERM, SIGKILL after 15 s); with no argument, the
+                                    data dir in this directory. Never stops anything it cannot identify as the server asked for
+  planestro status [data_dir]       every running instance on this machine: data dir, URL, pid / process group, uptime, log
   planestro sample [dir] [--reset] [--no-serve] [--port N]
                                     build a fictional project with a full backlog and serve it in dry-run:
                                     no repo, GitHub remote or Claude login needed (default dir .planestro/sample, port 4310)
@@ -33,7 +43,7 @@ const { values, positionals } = parseArgs({
     repo: { type: 'string' }, name: { type: 'string' }, prefix: { type: 'string' }, 'default-branch': { type: 'string' },
     'release-branch': { type: 'string' }, github: { type: 'string' }, layout: { type: 'string' }, 'no-commit': { type: 'boolean' },
     commit: { type: 'boolean' }, 'copy-small': { type: 'boolean' }, data: { type: 'string' },
-    help: { type: 'boolean', short: 'h' }, port: { type: 'string' }, host: { type: 'string' }, mock: { type: 'boolean' }, watch: { type: 'boolean' }, open: { type: 'boolean' }, reset: { type: 'boolean' }, 'no-serve': { type: 'boolean' },
+    help: { type: 'boolean', short: 'h' }, port: { type: 'string' }, host: { type: 'string' }, mock: { type: 'boolean' }, watch: { type: 'boolean' }, open: { type: 'boolean' }, reset: { type: 'boolean' }, 'no-serve': { type: 'boolean' }, all: { type: 'boolean' },
   },
 });
 const [cmd, arg] = positionals;
@@ -108,6 +118,66 @@ try {
       await startServer({ dataDir: dir, port: values.port ? Number(values.port) : undefined, host: values.host, mock: values.mock });
       break;
     }
+    case 'start': {
+      const { startInstance, uptime } = await import('./instances.ts');
+      const dir = locateDataDir(arg);
+      const port = values.port ? Number(values.port) : 4300;
+      if (!Number.isInteger(port) || port <= 0) throw new Error(`--port ${values.port} is not a port number`);
+      log(`starting planestro for ${dir} on port ${port}…`);
+      const r = await startInstance({ dataDir: dir, port, host: values.host, watch: values.watch, log });
+      const i = r.instance;
+      if (r.already) { log(`already running: ${i.url}${i.host === '0.0.0.0' ? ' (listening on 0.0.0.0)' : ''}  pid ${i.pid}, process group ${i.pgid}${i.watch ? ', --watch' : ''}, up ${uptime(i.started_at)}\nlog: ${i.log}`); break; }
+      if (r.clearedLock) log(`removed a stale data-dir lock: its pid ${r.clearedLock.pid} now runs something else (${r.clearedLock.command})`);
+      log(`up: ${i.url}${i.host === '0.0.0.0' ? ' (listening on 0.0.0.0)' : ''}  pid ${i.pid}, process group ${i.pgid}${i.watch ? ', --watch' : ''}`);
+      log(`log: ${i.log}`);
+      if (r.corrections) { log(`reconcile: ${r.corrections.length ? `${r.corrections.length} correction(s)` : 'everything matches'}`); for (const cx of r.corrections) log(`  ${cx}`); }
+      else log(`reconcile failed: ${r.reconcileError} (the server is up; reconcile from the UI or POST ${i.url}/api/reconcile)`);
+      log(`stop it with: planestro stop ${i.data_dir}`);
+      break;
+    }
+    case 'stop': {
+      const { liveInstance, listInstances, stopInstance, stopUnrecorded, unrecordedHolder, portListener } = await import('./instances.ts');
+      const said = (how: string, what: string) => log(`${how === 'killed' ? 'stopped (SIGKILL after the grace period)' : how === 'not_running' ? 'was already gone' : 'stopped'}: ${what}`);
+      if (values.all) {
+        const { live } = listInstances();
+        if (!live.length) { log('no recorded planestro instance is running'); break; }
+        for (const r of live) said(await stopInstance(r, { log }), `${r.data_dir} (${r.url}, process group ${r.pgid})`);
+        break;
+      }
+      if (values.port) {
+        const port = Number(values.port);
+        const rec = listInstances().live.find((r) => r.port === port);
+        if (rec) { said(await stopInstance(rec, { log }), `${rec.data_dir} (${rec.url}, process group ${rec.pgid})`); break; }
+        const pid = portListener(port);
+        if (!pid) { log(`nothing is listening on port ${port}`); break; }
+        const r = await stopUnrecorded(pid, { log });
+        if ('refused' in r) throw new Error(`port ${port}: ${r.refused}`);
+        log(`stopped: pid ${r.pid} on port ${port}, started outside \`planestro start\` (${r.command})`);
+        break;
+      }
+      // No argument: only the data dir this directory names. Guessing among several servers is how a neighbour gets stopped.
+      const dir = arg ? resolve(arg) : process.env.PLANESTRO_DATA_DIR ? resolve(process.env.PLANESTRO_DATA_DIR) : existsSync(join(process.cwd(), CONFIG_FILE)) ? process.cwd() : undefined;
+      if (!dir) {
+        const { live } = listInstances();
+        throw new Error(`no data dir here; say which server to stop: planestro stop <data_dir> | --port N | --all${live.length ? `\nrunning:\n${live.map((r) => `  ${r.data_dir}  ${r.url}`).join('\n')}` : ''}`);
+      }
+      const rec = liveInstance(dir);
+      if (rec) { said(await stopInstance(rec, { log }), `${dir} (${rec.url}, process group ${rec.pgid})`); break; }
+      const holder = unrecordedHolder(dir);
+      if (!holder) { log(`not running: ${dir}`); break; }
+      const r = await stopUnrecorded(holder, { log });
+      if ('refused' in r) throw new Error(r.refused);
+      log(`stopped: ${dir}, pid ${r.pid}, started outside \`planestro start\` (${r.command})`);
+      break;
+    }
+    case 'status': {
+      const { listInstances, liveInstance, describeInstance } = await import('./instances.ts');
+      if (arg) { const r = liveInstance(resolve(arg)); log(r ? describeInstance(r) : `not running: ${resolve(arg)}`); if (!r) process.exitCode = 3; break; }
+      const { live, pruned } = listInstances();
+      for (const d of pruned) log(`(pruned a stale record: ${d})`);
+      log(live.length ? live.map(describeInstance).join('\n') : 'no planestro instance is running (servers started with `serve` instead of `start` are not listed)');
+      break;
+    }
     case 'sample': {
       const { seedSample } = await import('./sample.ts');
       const r = await seedSample(arg ?? '.planestro/sample', { reset: values.reset, log });
@@ -132,6 +202,7 @@ try {
   }
 } catch (e) {
   console.error(`error: ${(e as Error).message}`);
+  if (e instanceof Error && 'exitCode' in e && typeof e.exitCode === 'number') process.exit(e.exitCode);
   // A data dir or port someone else holds gets its own code: `serve --watch` stops on it (#85).
   process.exit(exitCodeFor(e));
 }
