@@ -4,6 +4,8 @@ import { resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD,
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote, type CiQueue } from './ports.ts';
+import { operatorMcpUrl } from '../routes/mcp.ts';
+import { listInstances } from '../instances.ts';
 import { makePolicy, ruleFor, allowedByRules, sdkRules, BASE_ALLOWED } from './policy.ts';
 import { commandShape } from './parks.ts';
 import { hostNote, keptPathsNote, cwdNote } from './hostNote.ts';
@@ -1095,6 +1097,8 @@ export class LiveEngine implements Engine {
     for (const name of metered ? def.mcp : []) {
       const spec = this.store.local.mcp_servers[name];
       if (!spec || (!spec.command && !spec.url)) { this.block(id, 'mcp_missing', `${def.label} names the MCP server "${name}", which planestro.local.yml on this machine does not define (mcp_servers.${name} needs a command or a url)`); return undefined; }
+      // Workers never touch planning state (invariant 1): a planestro server's operator endpoint is not a worker's tool (#175).
+      if (spec.url && operatorMcpUrl(spec.url, listInstances({ prune: false }).live)) { this.block(id, 'mcp_missing', `${def.label} names the MCP server "${name}", whose url (${spec.url}) is a planestro server's operator endpoint; workers never get that one: remove it from the model's mcp list`); return undefined; }
       mcpServers[name] = spec.url ? { type: 'http', url: spec.url, headers: spec.headers } : { command: spec.command!, args: spec.args, env: spec.env };
     }
     // A person's budget for this item first (#157); a model whose plans are theirs to approve makes no paid call without one.

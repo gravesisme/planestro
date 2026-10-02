@@ -282,5 +282,5 @@ export function uptime(startedAt: string, now = Date.now()): string {
 export function describeInstance(r: Instance): string {
   let size = '';
   try { size = ` (${Math.round(statSync(r.log).size / 1024)} KB)`; } catch { /* no log */ }
-  return `${r.data_dir}\n  ${r.url}${r.host === '0.0.0.0' ? ' (listening on 0.0.0.0)' : ''}  pid ${r.pid}  process group ${r.pgid}  up ${uptime(r.started_at)}${r.watch ? '  --watch' : ''}\n  log ${r.log}${size}`;
+  return `${r.data_dir}\n  ${r.url}${r.host === '0.0.0.0' ? ' (listening on 0.0.0.0)' : ''}  pid ${r.pid}  process group ${r.pgid}  up ${uptime(r.started_at)}${r.watch ? '  --watch' : ''}\n  mcp ${r.url}/mcp\n  log ${r.log}${size}`;
 }

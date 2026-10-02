@@ -130,6 +130,7 @@ try {
       if (r.clearedLock) log(`removed a stale data-dir lock: its pid ${r.clearedLock.pid} now runs something else (${r.clearedLock.command})`);
       log(`up: ${i.url}${i.host === '0.0.0.0' ? ' (listening on 0.0.0.0)' : ''}  pid ${i.pid}, process group ${i.pgid}${i.watch ? ', --watch' : ''}`);
       log(`log: ${i.log}`);
+      log(`operator MCP: ${i.url}/mcp`);
       if (r.corrections) { log(`reconcile: ${r.corrections.length ? `${r.corrections.length} correction(s)` : 'everything matches'}`); for (const cx of r.corrections) log(`  ${cx}`); }
       else log(`reconcile failed: ${r.reconcileError} (the server is up; reconcile from the UI or POST ${i.url}/api/reconcile)`);
       log(`stop it with: planestro stop ${i.data_dir}`);
