@@ -8,6 +8,7 @@ import { execFileSync } from 'node:child_process';
 import type { ServerEvent } from '@planestro/shared';
 import { DataStore } from './store/DataStore.ts';
 import { apiRoutes, attachmentRoutes } from './routes/api.ts';
+import { operatorMcpRoutes } from './routes/mcp.ts';
 import { ConsoleBuffer } from './store/ConsoleBuffer.ts';
 import type { Engine } from './engine/Engine.ts';
 import { MockEngine } from './engine/MockEngine.ts';
@@ -41,6 +42,10 @@ export async function startServer(o: ServeOptions) {
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
   app.route('/api', apiRoutes(store, engine, consoles));
   app.route('/attachments', attachmentRoutes(store));
+  // The operator MCP endpoint (#175): read-only, for an MCP client registered at user scope; never a worker's.
+  app.route('/mcp', operatorMcpRoutes(store, engine));
+  // No OAuth here: an MCP client's discovery probes must get a 404, not the web UI's index.html as a 200.
+  app.all('/.well-known/*', (c) => c.json({ error: 'not found' }, 404));
   app.get('/ws', upgradeWebSocket(() => ({
     onOpen(_evt, ws) { sockets.add(ws as any); (ws as any).send(JSON.stringify({ type: 'engine.paused', paused: engine.paused })); },
     onClose(_evt, ws) { sockets.delete(ws as any); },

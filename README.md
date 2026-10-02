@@ -220,6 +220,36 @@ npm --prefix ../planestro run -s planestro -- start "$PWD/planning" --port 4300 
 npm --prefix ../planestro run -s planestro -- stop "$PWD/planning"
 ```
 
+### The backlog from any MCP client
+
+A running server also serves the backlog over MCP at `/mcp` (streamable HTTP).
+It is read-only and has three tools:
+
+- `get_state`: the project, engine mode and pause, counts by status, and what
+  is running, queued, blocked, waiting for you, waiting for review and open as a
+  PR. It also lists the planestro instances running on the machine, from
+  `planestro start`'s records.
+- `list_items`: one summary line per item, filtered by `status`, `epic` (its
+  children), `queued` or text `q`.
+- `get_item`: one item in full.
+
+Register it once per project, at **user scope**, under a name of its own.
+`planestro status` prints each instance's MCP URL:
+
+```sh
+claude mcp add --scope user --transport http planestro-myproject http://127.0.0.1:4300/mcp
+codex mcp add planestro-myproject --url http://127.0.0.1:4300/mcp
+```
+
+This is for you and your own sessions, never for planestro's workers, which
+never touch planning state. Claude workers and the orchestrator run with
+`strictMcpConfig`, so they load no user-scope or `.mcp.json` servers, and Codex
+workers run with `--ignore-user-config`. A model whose `mcp` list names a
+server pointing at a running planestro's `/mcp` is stopped (`mcp_missing`)
+rather than given it. Tests pin all three. Don't add the endpoint to a project's
+checked-in `.mcp.json`: your own sessions in that repo would get it, and
+`strictMcpConfig` is the only thing between it and a worker.
+
 > **The web UI has no authentication.** It binds to `127.0.0.1` by default and
 > can start agents that edit and push code. Requests from other websites and
 > DNS-rebinding tricks are refused, but `--host 0.0.0.0` exposes the UI to your
