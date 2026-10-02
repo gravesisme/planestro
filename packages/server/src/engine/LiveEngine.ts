@@ -3,7 +3,7 @@ import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1 } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
-import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote } from './ports.ts';
+import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote, type CiQueue } from './ports.ts';
 import { makePolicy, ruleFor, allowedByRules, sdkRules, BASE_ALLOWED } from './policy.ts';
 import { commandShape } from './parks.ts';
 import { hostNote, keptPathsNote, cwdNote } from './hostNote.ts';
@@ -360,6 +360,7 @@ export class LiveEngine implements Engine {
     if (due !== undefined && due <= Date.now()) { this.guardResume(); return; }
     // Read off the tick, not awaited in it: an await here let overlapping ticks interleave. A pause it sets holds from the next tick.
     void this.checkDisk().catch(() => undefined);
+    void this.refreshCiQueue().catch(() => undefined);
     if (this._paused) return;
     try {
       this.admit();
@@ -403,6 +404,15 @@ export class LiveEngine implements Engine {
     const items = this.store.listItems();
     const active = items.filter((i) => this.holdsSlot(i)).length;
     let free = this.store.config.concurrency.max_sessions - active;
+    // Admission control (#170): with CI the bottleneck, a new start only adds a run to the queue. In-flight items carry on.
+    const cap = this.store.config.ci.max_queued_runs;
+    // Until the first reading lands (it is read off the tick) nothing is known, so nothing new starts on a guess.
+    if (cap > 0 && this.ports.gh.ciQueue && this.store.config.code_repo.github && !this.ciQueue && !this.ciQueueUnreadable) return;
+    if (cap > 0 && this.ciQueue && this.ciQueue.queued >= cap) {
+      if (!this.ciQueueHeld) { this.ciQueueHeld = true; this.note('info', `holding new starts: ${this.ciQueue.queued} CI runs are queued for a runner (ci.max_queued_runs ${cap})`); }
+      return;
+    }
+    if (this.ciQueueHeld) { this.ciQueueHeld = false; this.note('info', `CI queue down to ${this.ciQueue?.queued ?? 0}; starting new items again`); }
     for (const item of items) {
       if (free <= 0) break;
       const fm = item.file.frontmatter;
@@ -1664,7 +1674,8 @@ export class LiveEngine implements Engine {
     if (verdict === 'stopping') { this.store.journal.end(opId, id, 'aborted', { reason: 'engine_stopping' }); return; }
     if (verdict === 'taken_over') { this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { activity: { actor: 'app', text: 'stopped waiting for CI to merge: you took this item over (its CI is still read)' } }], 'engine'); this.store.journal.end(opId, id, 'aborted', { reason: 'taken_over' }); return; }
     if (verdict === 'skipped') { this.store.journal.end(opId, id, 'aborted', { reason: 'ci_skipped', head: headSha }); this.block(id, 'ci_skipped', (await this.ports.gh.prView(this.github, fm.pr)).isDraft ? `every CI run for ${headSha.slice(0, 7)} skipped its jobs because PR #${fm.pr} is a draft; mark it ready for review, then unblock` : `every CI run for ${headSha.slice(0, 7)} skipped its jobs, again after planestro sent ready for review once more; check the workflow's job conditions, start a run by hand, then unblock`); return; }
-    if (verdict === 'timeout') { this.store.journal.end(opId, id, 'aborted', { reason: 'ci_timeout' }); this.block(id, 'ci_timeout', `CI for ${headSha.slice(0, 7)} did not finish within ${cfg.timeout_min} min`); return; }
+    if (verdict === 'timeout') { this.store.journal.end(opId, id, 'aborted', { reason: 'ci_timeout' }); this.block(id, 'ci_timeout', `CI for ${headSha.slice(0, 7)} ran longer than ${cfg.timeout_min} min after a runner started it${this.ciQueueNote()}`); return; }
+    if (verdict === 'queue_timeout') { this.store.journal.end(opId, id, 'aborted', { reason: 'ci_queue_timeout' }); this.block(id, 'ci_timeout', `CI for ${headSha.slice(0, 7)} waited ${cfg.queue_timeout_min} min for a runner and never started${this.ciQueueNote()}. A queue, not a failure: check the runners' capacity, not the change`); return; }
     if (verdict === 'blocked') {
       if (cfg.mode === 'github-or-local' && cfg.local_check_command) {
         this.store.mutateItem(id, [{ set: { op: 'running_local_checks', op_started_at: this.now() } }, { activity: { actor: 'app', text: `GitHub Actions is blocked; running local gate: ${cfg.local_check_command}` } }], 'engine');
@@ -1856,6 +1867,21 @@ export class LiveEngine implements Engine {
     return why;
   }
 
+  /** The workflow's queue repository-wide, read at most once a minute (#170); undefined when the port cannot tell. */
+  ciQueue: CiQueue | undefined;
+  private ciQueueAt = 0;
+  private ciQueueHeld = false;
+  private ciQueueUnreadable = false;
+  async refreshCiQueue(): Promise<CiQueue | undefined> {
+    if (!this.ports.gh.ciQueue || !this.store.config.code_repo.github) return undefined;
+    if (Date.now() - this.ciQueueAt < 60_000) return this.ciQueue;
+    this.ciQueueAt = Date.now();
+    // A failed read keeps the last reading; with none at all, admission control steps aside rather than hold every start.
+    try { this.ciQueue = await this.ports.gh.ciQueue(this.github, this.ciWorkflow); this.ciQueueUnreadable = false; } catch { this.ciQueueUnreadable = !this.ciQueue; }
+    return this.ciQueue;
+  }
+  private ciQueueNote(): string { return this.ciQueue ? ` (CI queue: ${this.ciQueue.queued} queued, ${this.ciQueue.running} running)` : ''; }
+
   /**
    * Poll the named workflow for `sha`. 10 s cadence for the first 2 min, then 30 s.
    *
@@ -1866,7 +1892,7 @@ export class LiveEngine implements Engine {
    * Within HEAD_PROPAGATION_GRACE_MS the old sha is lag and we keep polling; anything else is
    * a real move. 'stopping' is the engine shutting down, which says nothing about CI.
    */
-  private async waitForCi(id: string, branch: string, sha: string, pr: number, previousSha: string | null = null, minAttempt = 0): Promise<'green' | 'red' | 'blocked' | 'moved' | 'timeout' | 'stopping' | 'taken_over' | 'skipped'> {
+  private async waitForCi(id: string, branch: string, sha: string, pr: number, previousSha: string | null = null, minAttempt = 0): Promise<'green' | 'red' | 'blocked' | 'moved' | 'timeout' | 'queue_timeout' | 'stopping' | 'taken_over' | 'skipped'> {
     const cfg = this.store.config.ci;
     // The project's CI runs nothing for this change (its own path filters): there is nothing to wait for, and nothing to stand in for (HH-324).
     const notRun = await this.ciSkipsHead(id, sha);
@@ -1877,6 +1903,10 @@ export class LiveEngine implements Engine {
     }
     // The wait's clock; a run planestro re-queues starts it again (HH-323, HH-326, HH-328 timed out minutes after their re-run).
     let started = this.ciNow();
+    // When a runner first had the run (#170): ci.timeout_min counts from here. A run queued for a runner is
+    // waiting, not failing: on Oct 1 (HH) four healthy items blocked ci_timeout behind a 3-5 h self-hosted queue.
+    let runningSince: number | null = null;
+    let queueNoted = 0;
     let sawRun = false;
     let skippedPolls = 0;
     let cancelledPolls = 0;
@@ -1911,7 +1941,7 @@ export class LiveEngine implements Engine {
         const cur = this.store.requireItem(id).file.frontmatter;
         if (cur.op_data?.ci_cancel_rerun !== sha) {
           let note: string;
-          try { await this.ports.gh.rerunAll(this.github, ci.runId); need = (ci.attempt ?? 1) + 1; started = this.ciNow(); note = `CI run ${ci.runId} for ${sha.slice(0, 7)} was cancelled and no other run replaced it; re-running it`; }
+          try { await this.ports.gh.rerunAll(this.github, ci.runId); need = (ci.attempt ?? 1) + 1; started = this.ciNow(); runningSince = null; note = `CI run ${ci.runId} for ${sha.slice(0, 7)} was cancelled and no other run replaced it; re-running it`; }
           catch (e) { note = `CI run ${ci.runId} for ${sha.slice(0, 7)} was cancelled and could not be re-run (${(e as Error).message.replace(/\s+/g, ' ').slice(0, 160)}); waiting for a new run`; }
           this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), ci_cancel_rerun: sha } } }, { activity: { actor: 'app', text: note } }], 'engine');
         }
@@ -1924,7 +1954,20 @@ export class LiveEngine implements Engine {
       // stop, not ci_blocked: Actions did run, and the local gate is no answer to a job condition that skips everything.
       if (ci.state === 'skipped' && !sawRun && elapsedMin > cfg.start_timeout_min && (view.isDraft || this.store.requireItem(id).file.frontmatter.op_data?.ci_refired === sha)) return 'skipped';
       if (ci.state === 'none' && !sawRun && elapsedMin > cfg.start_timeout_min) return 'blocked';
-      if (elapsedMin > cfg.timeout_min) return 'timeout';
+      // A run (or a re-run's new attempt) waiting for a runner has not started its clock; once a job runs, it has.
+      if (ci.state === 'pending' && ci.queued) runningSince = null;
+      else if (ci.state === 'pending' && runningSince === null) runningSince = this.ciNow();
+      if (runningSince !== null) { if ((this.ciNow() - runningSince) / 60_000 > cfg.timeout_min) return 'timeout'; }
+      else if (ci.state === 'pending' && ci.queued) {
+        if (elapsedMin > cfg.queue_timeout_min) return 'queue_timeout';
+        // Say so once an hour, with the queue it is in, so a long wait reads as a queue and not a stall.
+        if (elapsedMin >= 30 && elapsedMin - queueNoted >= 60) {
+          queueNoted = elapsedMin;
+          const q = await this.refreshCiQueue();
+          this.store.mutateItem(id, [{ activity: { actor: 'app', text: `CI run for ${sha.slice(0, 7)} has waited ${Math.round(elapsedMin)} min for a runner${q ? ` (${q.queued} queued, ${q.running} running)` : ''}; it is queued, not failing` } }], 'engine');
+        }
+      }
+      else if (elapsedMin > cfg.timeout_min) return 'timeout';
       await this.sleep(elapsedMin < 2 ? 10_000 : 30_000);
     }
   }

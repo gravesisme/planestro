@@ -74,7 +74,10 @@ export interface GitPort {
 /** `skipped`: every run for the head skipped all its jobs (a draft guard): no verdict, never red. */
 export type CiState = 'none' | 'pending' | 'success' | 'failure' | 'cancelled' | 'skipped';
 /** `attempt` is the run's attempt number: a re-run keeps its run id and counts up. */
-export interface CiStatus { state: CiState; runId?: number; url?: string; sha?: string; startedAt?: string; attempt?: number }
+/** `queued` (pending only): the run is waiting for a runner and no job has started, so it is not using its time yet (#170). */
+export interface CiStatus { state: CiState; runId?: number; url?: string; sha?: string; startedAt?: string; attempt?: number; queued?: boolean }
+/** Runs of the CI workflow across the repository that are waiting for a runner, and running (#170). */
+export interface CiQueue { queued: number; running: number }
 export interface PrInfo { number: number; url: string; state: 'OPEN' | 'MERGED' | 'CLOSED'; mergedAt?: string; headRefOid: string; headRefName: string; baseRefName: string; mergeCommit?: string; title?: string; isDraft?: boolean; author?: string; updatedAt?: string }
 
 export interface GhPort {
@@ -96,6 +99,8 @@ export interface GhPort {
   closePr(repo: string, number: number, comment: string): Promise<void>;
   /** The URL of the newest successful deployment for this commit (a Vercel or Netlify preview), or null (#137). */
   previewUrl(repo: string, sha: string): Promise<string | null>;
+  /** How deep the workflow's queue is, repository-wide (#170). Optional: a port without it reports no queue. */
+  ciQueue?(repo: string, workflow: string): Promise<CiQueue>;
   /** Latest run of the workflow on a branch (base health). */
   branchCi(repo: string, branch: string, workflow: string): Promise<CiStatus>;
 }

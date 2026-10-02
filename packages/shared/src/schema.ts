@@ -351,13 +351,18 @@ export const Config = z.object({
     mode: z.enum(['github', 'github-or-local']).default('github'),
     require_green_base: z.boolean().default(true),
     start_timeout_min: z.number().positive().default(10),
+    /** How long a run may take once it has STARTED. Time a run spends queued for a runner is not counted (#170). */
     timeout_min: z.number().positive().default(45),
+    /** How long a run may sit queued, no job started, before CI counts as timed out: a queue, not a failure (#170). */
+    queue_timeout_min: z.number().positive().default(720),
+    /** Admission control (#170): while this many or more runs of the workflow wait queued for a runner, no new item starts. 0 = off. */
+    max_queued_runs: z.number().int().min(0).default(0),
     /** Open a held item's PR as a draft, and mark it ready (which starts CI, when the project's CI skips drafts) only once the hold is released. */
     draft_while_held: z.boolean().default(true),
     local_check_command: z.string().optional(),
     /** Text that marks a CI failure as a known flake (a check name, a message): the failed jobs are re-run once for that head before a fix turn is spent. */
     flaky_checks: z.array(z.string().min(1)).default([]),
-  }).default({ mode: 'github', require_green_base: true, start_timeout_min: 10, timeout_min: 45, draft_while_held: true, flaky_checks: [] }),
+  }).default({ mode: 'github', require_green_base: true, start_timeout_min: 10, timeout_min: 45, queue_timeout_min: 720, max_queued_runs: 0, draft_while_held: true, flaky_checks: [] }),
   orchestrator: z.object({
     model: z.string().default('claude-opus-5-5'),
     /** When the orchestrator's model is out of usage, wake on its model row's `fallback` instead. */
