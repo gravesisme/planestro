@@ -378,6 +378,92 @@ Items on skip_merge sit at ci_result 'pending' indefinitely. The CI poll only ru
 
 **Fix.** Poll CI for held items too (read-only: update ci_result and wake the fix path on red without merging). Show 'held · CI red' on the board card. When an item is released, re-check CI before merging, and never trust a stale 'green'.
 
+### p38 — A decision card asked the designer to edit ci.yml
+
+*bug · fixed*
+
+HH-149's triage filed a decision card whose recommended answer was a workflow edit, which is an engineering task the designer can't do from a phone. Cards should offer only choices a designer can make (approve, hold, clean up, retry); anything needing a file edit belongs to the orchestrator or a fix turn.
+
+**Evidence.** HH-149, the evening of 2026-09-23; answered by hand from the supervising session.
+
+**Fix.** Validate decision options in the triage tool: refuse options that name files, commands or code, and route them to a fix turn instead.
+
+**Shipped.** PR #41: a card is a product call; an engineering fix is filed for the maintainer instead, and a card never asks for an action somewhere else.
+
+### p39 — Cleanup proof keyed to a stale SHA after a hand merge
+
+*bug · fixed*
+
+HH-149 blocked on cleanup_unverifiable. The proof checked reachability of aa1b5a6, the tip planestro last pushed, but the branch moved to 955fb3a (a reconcile pushed from the supervising session) and the PR was merged outside planestro. GitHub's merged head 955fb3a was in the base, so the cleanup was safe. The orchestrator diagnosed this correctly, retried, failed identically, and filed a card.
+
+**Evidence.** HH-149, 2026-09-24 01:15; PR #328 merge 78d0453f; `git merge-base --is-ancestor 955fb3a origin/feature/crystal-cavern` true. Cleaned up by hand, but unblocking re-runs the same proof (the tick resumes cleanup for any unblocked MERGED item, LiveEngine.ts:934) and it re-blocks, because `ci_head_sha` still holds aa1b5a6 and neither PATCH nor transition can change it (MERGED → FINISHED is refused). Left blocked; harmless, since the epic counts MERGED children as done.
+
+**Fix.** Prove cleanup against the PR's merged head SHA (from pr_status), or against the current remote branch tip, not the last SHA planestro pushed. When the PR is merged and the local tip is reachable from base, clean up.
+
+**Shipped.** commit bb80a62: cleanup proves the tips it is about to delete (worktree HEAD, local and remote branch), never a remembered sha.
+
+### p40 — Cleanup deletes a Codex art worker's raw sources
+
+*bug · fixed*
+
+HH-161 merged and cleanup removed its worktree immediately, taking `tmp/cc_dressing/source/` (the raw generations; finished masters and prompts were committed). The orchestrator caught it after the fact and asked for a manual copy of HH-158's and HH-160's raws before they merged. HH-161's raws were recovered from Codex's own store, `~/.codex/generated_images/<thread id>` (thread id in `agent_sessions.codex`).
+
+**Fix.** Before removing a codex-art worktree, copy its `tmp/` art folders to a durable place (for example `<code repo>/tmp/<item>/`, configurable), or refuse cleanup while the item carries a pending rescue flag. Record the Codex thread's image-store path on the item so a lost raw can be found.
+
+**Shipped.** PR #39 (`worktrees.keep_on_remove`), then #53 and PR #89 (`worktrees.copy_to_checkout`, #72).
+
+### p41 — Planning turns end without submit_plan, repeatedly and expensively
+
+*bug · fixed*
+
+Four planning turns in one night ended "success" with no plan (HH-166, HH-165, HH-162, plus HH-168 cut by usage). HH-162's cost $97.11 over 23 turns of research with an untouched worktree. The orchestrator now resolves each with a directed "submit now" message, which works, but the research spend is already gone. Two items (HH-168, HH-169) that were unblocked without a message after the usage cut sat idle until nudged (p12 again).
+
+**Evidence.** Journal op planning_turn-mufh3m6b-hkyj (HH-162, 07:53 to 08:18, outcome ok, cost 97.11); orchestrator triage note at 08:19.
+
+**Fix.** Cap a planning turn's spend (a planning budget separate from the item's), and when a planning turn ends without submit_plan, resume the same session at once with a short "submit now" prompt instead of blocking. Resume after a messageless unblock too (p12).
+
+**Shipped.** PR #38: a planning turn has its own cap (`budget_usd_per_plan_turn`), and a turn that ends without a plan is asked once for the plan it has.
+
+### p42 — A withdrawn decision card stays on the item
+
+*bug · fixed*
+
+The orchestrator re-blocked HH-162 as user_takeover at 08:47 and called its budget card "withdrawn/moot", but `awaiting_data.decision` stayed, so the card still asked the designer to raise the cap at 09:07. Cleared by hand by answering it.
+
+**Fix.** Blocking for the user or filing a new card replaces or clears any pending decision; give the orchestrator an explicit withdraw tool.
+
+**Shipped.** PR #34: blocks replace a card, and `withdraw_decision`.
+
+### p43 — A card asked the designer to raise a budget the card can't raise
+
+*bug · fixed*
+
+HH-162's card said "raise the item budget in planestro, then answer". Answering felt like the action, so the designer tapped it and nothing changed; the worker resumed on $0.50 and died again. The orchestrator itself noted this ("the card flow makes answer feel like the action"), but only inside a long triage comment.
+
+**Fix.** Cards never ask for an action somewhere else. Put the budget control on the card (an option that raises the cap and resumes), or block the answer until the cap changes.
+
+**Shipped.** A card option's `raise_budget_usd` ("+$40 and resume") raises the item's budget when picked; the prompt forbids asking for an action elsewhere (PR #41).
+
+### p44 — A PR attached by hand never enters the merge pipeline
+
+*bug · fixed*
+
+HH-162 was finished outside planestro (branch pushed, PR #350 opened, `fields.pr` patched, transition to IN_REVIEW, unblock). `ci_result` stays unset, so the tick never runs the merge op, the green CI is never seen, and the `skip_merge` hold never reaches "awaiting review": NEEDS YOU showed 0 while the designer waited to review it. Reconcile changes nothing.
+
+**Fix.** Adopting a PR (the PATCH, or reconcile's "adopted PR" correction) sets `ci_result: 'pending'` so the merge op runs, or f2's "Finish from here" does it end to end.
+
+**Shipped.** PR #40.
+
+### p45 — An epic based on another epic's branch breaks when that branch merges
+
+*bug · fixed*
+
+HH-163 (animations) was opened from `feature/crystal-cavern`. When HH-113's epic PR merged into develop and the branch was deleted, `submitEpic` failed (`No commits between feature/crystal-cavern and feature/animate-crystal-cavern-enemies, Base ref must be a branch`). Fixed by hand: `base_branch_override = develop`, unblock; PR #357 opened, then its develop sync conflicted in LICENSES.md (both epics appended rows), resolved by hand.
+
+**Fix.** When an epic's base is itself an epic branch that has merged, retarget the child epic to the parent's base automatically (and note it in Activity); `submitEpic` should detect a deleted base rather than fail on `gh pr create`.
+
+**Shipped.** PR #46: a base that was a merged epic's branch follows to that epic's own base.
+
 ## Feature proposals (for review)
 
 ### f1 — Feature: a stall detector
@@ -431,9 +517,36 @@ Held items (skip_merge or hold_for_review) run full CI on every push and rebase 
 - The game's `ci.yml`: skip draft PRs (`if: !github.event.pull_request.draft`) and add `types: [opened, synchronize, reopened, ready_for_review]`.
 - It pairs with the game's self-hosted runner for epic children (game PR #337).
 
+### f7 — Feature (requested by the designer 2026-09-24): "approve with amendments" sends the plan back to be amended
+
+When the orchestrator reviews a plan and approves it WITH stipulations (HH-167's retention fix, HH-168's "work in your own tmp/, commit review.png + validation.json, commit the pipeline"), the stipulations live only in an Activity comment. The designer approving from a phone can easily miss them, and the worker never sees them unless someone relays them. Asked for by the designer: "When the orchestrator leaves a comment that it approves a plan with stipulation, it needs to tell the agent to update the plan with those stipulations."
+
+**Evidence.** HH-168, 07:53: verdict "sound — approve WITH the same retention amendment HH-167 needed", left as a comment with approve_plan not permitted; relayed by hand as a plan rejection at 08:50.
+
+**Proposal.** Give the orchestrator's plan review three verdicts: approve, reject, and amend. "Amend" sends the plan back to its session with the stipulations as the message (the same path as a user rejection), and the item re-enters review once the worker resubmits. The approved plan then contains every condition, and the designer only ever approves a complete plan. The review card should also say "amended by the orchestrator: n stipulations folded in".
+
+**Shipped.** PR #36: the orchestrator's `amend_plan`.
+
+### f8 — Feature (requested by the designer 2026-09-24): surface the orchestrator's planestro notes
+
+The orchestrator's "PLANESTRO UX NOTE" suggestions sit inside long triage comments, where the designer finds them only by reading carefully.
+
+**Proposal.** A `note_planestro` orchestrator tool that files rows in a planestro-feedback list (Console or Settings) with a badge.
+
+**Shipped.** PR #37.
+
+### f9 — Feature (requested by the designer 2026-09-24): collapse the description in the quick view when the item needs you
+
+At a decision, the quick view puts the long Description/Plan before the Activity log, which is what matters in that moment.
+
+**Proposal.** When the item needs the designer (decision, review, block), show the Description/Plan collapsed by default (one line and a toggle) and the latest Activity first.
+
+**Shipped.** PR #35.
+
 ## Shipped since these notes began
 
 - Model fallback (Fable 5 → Opus 5.5), per item and for the orchestrator: PR #9.
 - Permission matching for env-prefixed commands: PR #10.
 - Phone photo attachments (file picker, HEIC to JPEG, shrink to the limit): PR #14.
 - Needs-you triage (the orchestrator resolves blocks itself or files a plain decision card): PR #15. It addresses much of p12, p28, p30, p34 and p35 and f1/f2 in spirit; re-check each against it.
+- From the 2026-09-24 rows: p38–p45 and f7–f9 all shipped (PRs #34–#41, #46, #53, #89 and commit bb80a62); each row names its fix.
