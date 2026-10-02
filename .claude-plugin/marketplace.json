@@ -1,0 +1,12 @@
+{
+  "name": "planestro",
+  "owner": { "name": "David Graves", "url": "https://github.com/gravesisme" },
+  "metadata": { "description": "planestro's Claude Code plugin: the /planestro skill and the backlog over MCP." },
+  "plugins": [
+    {
+      "name": "planestro",
+      "source": "./plugins/planestro",
+      "description": "/planestro: status, start, stop and item lookup for planestro servers, and the running server's read-only backlog tools over MCP."
+    }
+  ]
+}
