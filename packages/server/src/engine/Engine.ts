@@ -54,6 +54,8 @@ export interface Engine {
   drain?(by?: 'user' | 'update'): void;
   undrain?(): void;
   restartReadiness?(): { draining: boolean; by?: 'user' | 'update'; idle: boolean; running: string[] };
+  /** The CI workflow's runner queue as last read (#170); absent when the engine does not read it. */
+  ciQueue?: { queued: number; running: number };
   /** Run a notification command now, as its event would (Settings → Notifications → Test). */
   testNotification?(event: 'on_merge' | 'on_usage_pause'): Promise<{ code: number; output: string }>;
   log: ServerEvent[];

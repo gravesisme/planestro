@@ -4,7 +4,7 @@ import { statfs } from 'node:fs/promises';
 import { existsSync, mkdirSync, renameSync, copyFileSync, unlinkSync, lstatSync, readdirSync, readFileSync, statSync, constants as fsConstants } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { matchesPathPattern } from './ports.ts';
-import type { GitPort, GhPort, ProcPort, WorktreeEntry, RebaseResult, CiStatus, PrInfo, ChangedFile } from './ports.ts';
+import type { GitPort, GhPort, ProcPort, WorktreeEntry, RebaseResult, CiStatus, CiQueue, PrInfo, ChangedFile } from './ports.ts';
 
 const execFileP = promisify(execFile);
 
@@ -243,7 +243,8 @@ export function ciFromRuns(runs: any[], sha: string): CiStatus {
   const run = runs.find((r) => r.conclusion !== 'skipped') ?? runs[0];
   if (!run) return { state: 'none', sha };
   const base = { runId: run.databaseId, url: run.url, sha, startedAt: run.createdAt, ...(run.attempt ? { attempt: run.attempt } : {}) };
-  if (run.status !== 'completed') return { ...base, state: 'pending' };
+  // queued, waiting, requested, pending: no runner has picked it up, so its clock has not started (#170).
+  if (run.status !== 'completed') return { ...base, state: 'pending', ...(run.status !== 'in_progress' ? { queued: true } : {}) };
   if (run.conclusion === 'success') return { ...base, state: 'success' };
   if (run.conclusion === 'cancelled') return { ...base, state: 'cancelled' };
   if (run.conclusion === 'skipped') return { ...base, state: 'skipped' };
@@ -269,6 +270,11 @@ export class LiveGhPort implements GhPort {
   async ciForSha(repo: string, branch: string, sha: string, workflow: string): Promise<CiStatus> {
     const runs = JSON.parse(await ghRead(['run', 'list', '--repo', repo, '--branch', branch, '--workflow', workflow, '--limit', '10', '--json', 'databaseId,status,conclusion,headSha,url,createdAt,attempt'])) as any[];
     return ciFromRuns(runs.filter((r) => r.headSha === sha), sha);
+  }
+  async ciQueue(repo: string, workflow: string): Promise<CiQueue> {
+    const count = async (status: string) => (JSON.parse(await ghRead(['run', 'list', '--repo', repo, '--workflow', workflow, '--status', status, '--limit', '100', '--json', 'databaseId'])) as any[]).length;
+    const [queued, running] = await Promise.all([count('queued'), count('in_progress')]);
+    return { queued, running };
   }
   async runFailedLog(repo: string, runId: number, maxLines: number) {
     const log = await ghRead(['run', 'view', String(runId), '--repo', repo, '--log-failed']).catch((e) => `(could not fetch log: ${e.message})`);
