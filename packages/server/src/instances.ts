@@ -110,9 +110,35 @@ export function liveInstance(dataDir: string): Instance | undefined {
   return undefined;
 }
 
-/** The pid in `<data_dir>/.planestro/lock`, when a planestro that `start` did not record holds the data dir. */
-function dataDirLockHolder(dataDir: string): number | undefined {
-  try { const { pid } = JSON.parse(readFileSync(join(dataDir, '.planestro', 'lock'), 'utf8')); return typeof pid === 'number' && pidAlive(pid) ? pid : undefined; } catch { return undefined; }
+const lockFile = (dataDir: string) => join(dataDir, '.planestro', 'lock');
+
+/**
+ * Whether a lock's pid is really a planestro on this data dir: its `serve`, or another planestro
+ * command naming the dir (a `reconcile`, a `check`). A live pid alone is not enough: the OS reuses
+ * pids, and a lock naming some unrelated process would otherwise keep the data dir shut for good.
+ */
+export function lockHeldBy(command: string | undefined, dataDir: string): boolean {
+  return servesDataDir(command, dataDir) || (command !== undefined && /(planestro|cli\.ts)/.test(command) && command.includes(dataDir));
+}
+
+/** The pid in `<data_dir>/.planestro/lock` when a planestro that `start` did not record holds the data dir. */
+function dataDirLockHolder(dataDir: string, command: (pid: number) => string | undefined = commandOf): number | undefined {
+  try { const { pid } = JSON.parse(readFileSync(lockFile(dataDir), 'utf8')); return typeof pid === 'number' && pidAlive(pid) && lockHeldBy(command(pid), dataDir) ? pid : undefined; } catch { return undefined; }
+}
+
+/**
+ * Remove a lock whose pid is alive but is not a planestro on this data dir (a reused pid). The
+ * DataStore checks only that the pid is alive, so `serve` would refuse it forever. A dead pid's
+ * lock is left for the DataStore, which replaces it itself. Returns the pid it cleared.
+ */
+export function clearForeignLock(dataDir: string, command: (pid: number) => string | undefined = commandOf): { pid: number; command: string } | undefined {
+  let pid: unknown;
+  try { pid = JSON.parse(readFileSync(lockFile(dataDir), 'utf8')).pid; } catch { return undefined; }
+  if (typeof pid !== 'number' || !pidAlive(pid)) return undefined;
+  const cmd = command(pid);
+  if (lockHeldBy(cmd, dataDir)) return undefined;
+  try { unlinkSync(lockFile(dataDir)); } catch { return undefined; }
+  return { pid, command: cmd ?? '?' };
 }
 
 export class StartRefused extends Error { constructor(message: string, readonly exitCode: number) { super(message); } }
@@ -124,7 +150,13 @@ export interface StartOptions {
   serveCommand?: (args: string[]) => { cmd: string; args: string[] };
 }
 
-export interface StartResult { instance: Instance; corrections: string[] | undefined; reconcileError?: string }
+export interface StartResult {
+  instance: Instance; corrections: string[] | undefined; reconcileError?: string;
+  /** The data dir's own server was already up on the port asked for: nothing was started (a wrapper's desired state already holds). */
+  already?: boolean;
+  /** A stale lock naming an unrelated process, removed before starting. */
+  clearedLock?: { pid: number; command: string };
+}
 
 /**
  * `planestro start`: refuse a data dir or port someone already holds (naming them), run `serve`
@@ -136,9 +168,11 @@ export async function startInstance(o: StartOptions): Promise<StartResult> {
   if (!existsSync(join(dataDir, CONFIG_FILE))) throw new Error(`not a planestro data dir (no ${CONFIG_FILE}): ${dataDir}`);
 
   const running = liveInstance(dataDir);
-  if (running) throw new StartRefused(`${dataDir} already has a server: ${running.url} (pid ${running.pid}, process group ${running.pgid}, log ${running.log}); not starting another — \`planestro stop ${dataDir}\` first`, EXIT_DATA_DIR_IN_USE);
+  if (running && running.port === port && running.host === host) return { instance: running, corrections: undefined, already: true };
+  if (running) throw new StartRefused(`${dataDir} already has a server on ${running.host}:${running.port}, not the ${host}:${port} asked for: ${running.url} (pid ${running.pid}, process group ${running.pgid}, log ${running.log}); \`planestro stop ${dataDir}\` first to move it`, EXIT_DATA_DIR_IN_USE);
+  const clearedLock = clearForeignLock(dataDir);
   const locker = dataDirLockHolder(dataDir);
-  if (locker) throw new StartRefused(`${dataDir} is held by a planestro started some other way (pid ${locker}: ${commandOf(locker) ?? '?'}); not starting another`, EXIT_DATA_DIR_IN_USE);
+  if (locker) throw new StartRefused(`${dataDir} is held by a planestro started some other way (pid ${locker}: ${commandOf(locker) ?? '?'}); not starting another — \`planestro stop ${dataDir}\` stops it`, EXIT_DATA_DIR_IN_USE);
   const holder = portListener(port);
   if (holder) throw new StartRefused(`port ${port} is in use by pid ${holder} (${commandOf(holder) ?? '?'}); not starting — free it or pass --port`, EXIT_PORT_IN_USE);
 
@@ -176,8 +210,8 @@ export async function startInstance(o: StartOptions): Promise<StartResult> {
   try {
     const r = await fetch(`${instance.url}/api/reconcile`, { method: 'POST', signal: AbortSignal.timeout(120_000) });
     const body = await r.json() as { corrections?: string[]; error?: string };
-    return r.ok ? { instance, corrections: body.corrections ?? [] } : { instance, corrections: undefined, reconcileError: body.error ?? `HTTP ${r.status}` };
-  } catch (e) { return { instance, corrections: undefined, reconcileError: (e as Error).message }; }
+    return r.ok ? { instance, corrections: body.corrections ?? [], clearedLock } : { instance, corrections: undefined, reconcileError: body.error ?? `HTTP ${r.status}`, clearedLock };
+  } catch (e) { return { instance, corrections: undefined, reconcileError: (e as Error).message, clearedLock }; }
 }
 
 async function answers(url: string): Promise<boolean> {

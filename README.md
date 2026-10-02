@@ -186,9 +186,13 @@ npm run planestro -- stop ../myproject-planning
   once the server answers, after reconciling items against their branches and
   worktrees, and prints the URL, the log path and any corrections. A server
   started as a Claude Code background task is killed at that task's time cap,
-  along with the worker turns it is driving. A server from `start` is not. It
-  refuses a data dir that already has a server, or a port something else
-  listens on, and says what holds it. It never stops or takes over another server.
+  along with the worker turns it is driving. A server from `start` is not. If
+  the data dir's own server is already up on that port, `start` prints it and
+  exits 0, so a wrapper script can run it every time. It refuses (and says what
+  holds it) the same data dir on another port, a data dir another planestro
+  holds, and a port something else listens on. It never stops or takes over
+  another server. A data-dir lock whose pid now runs something unrelated is stale,
+  and `start` removes it.
 - **`stop <data_dir> | --port N | --all`** sends SIGTERM to the server's whole
   process group (npm, tsx, the server, and a `--watch` supervisor with whatever
   child it last restarted), then SIGKILL after 15 s. With no argument it stops

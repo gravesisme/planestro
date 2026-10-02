@@ -22,7 +22,8 @@ const USAGE = `planestro ${TOOL_VERSION}
   planestro start [data_dir] [--port N] [--host H] [--watch]
                                     run serve in the background, in a session of its own (it outlives this terminal and a
                                     Claude Code task's time cap); returns once it answers, then reconciles and prints the corrections.
-                                    Refuses a data dir or port that is already in use. Log: <data_dir>/.planestro/serve.log
+                                    Already running there: prints it and exits 0. Refuses a data dir or port held by anything else.
+                                    Log: <data_dir>/.planestro/serve.log
   planestro stop [data_dir] | --port N | --all
                                     stop that server's whole process group (SIGTERM, SIGKILL after 15 s); with no argument, the
                                     data dir in this directory. Never stops anything it cannot identify as the server asked for
@@ -118,13 +119,15 @@ try {
       break;
     }
     case 'start': {
-      const { startInstance } = await import('./instances.ts');
+      const { startInstance, uptime } = await import('./instances.ts');
       const dir = locateDataDir(arg);
       const port = values.port ? Number(values.port) : 4300;
       if (!Number.isInteger(port) || port <= 0) throw new Error(`--port ${values.port} is not a port number`);
       log(`starting planestro for ${dir} on port ${port}…`);
       const r = await startInstance({ dataDir: dir, port, host: values.host, watch: values.watch, log });
       const i = r.instance;
+      if (r.already) { log(`already running: ${i.url}${i.host === '0.0.0.0' ? ' (listening on 0.0.0.0)' : ''}  pid ${i.pid}, process group ${i.pgid}${i.watch ? ', --watch' : ''}, up ${uptime(i.started_at)}\nlog: ${i.log}`); break; }
+      if (r.clearedLock) log(`removed a stale data-dir lock: its pid ${r.clearedLock.pid} now runs something else (${r.clearedLock.command})`);
       log(`up: ${i.url}${i.host === '0.0.0.0' ? ' (listening on 0.0.0.0)' : ''}  pid ${i.pid}, process group ${i.pgid}${i.watch ? ', --watch' : ''}`);
       log(`log: ${i.log}`);
       if (r.corrections) { log(`reconcile: ${r.corrections.length ? `${r.corrections.length} correction(s)` : 'everything matches'}`); for (const cx of r.corrections) log(`  ${cx}`); }

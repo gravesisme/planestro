@@ -8,7 +8,7 @@ import { seedSample } from '../src/sample.ts';
 import { EXIT_DATA_DIR_IN_USE, EXIT_PORT_IN_USE } from '../src/exitCodes.ts';
 import {
   servesDataDir, instanceAlive, listInstances, liveInstance, startInstance, stopInstance, stopGroup, groupAlive,
-  instancePath, uptime, type Instance, StartRefused,
+  instancePath, uptime, type Instance, StartRefused, lockHeldBy, clearForeignLock, unrecordedHolder,
 } from '../src/instances.ts';
 
 const home = () => { const h = mkdtempSync(join(tmpdir(), 'planestro-home-')); process.env.PLANESTRO_HOME = h; return h; };
@@ -41,6 +41,27 @@ describe('planestro start/stop/status: telling our server from anything else (#1
     expect(instanceAlive(r, { group: () => true, command: () => serve })).toBe(true);
     // the pid was recycled for something else, and nothing serves the port
     expect(instanceAlive(r, { group: () => true, command: () => 'bash', listener: () => undefined })).toBe(false);
+  });
+  it('a data-dir lock is held only by a planestro on that dir, not by whatever process now has its pid', () => {
+    expect(lockHeldBy('node cli.ts serve /work/hh/planning --port 4300', '/work/hh/planning')).toBe(true);
+    expect(lockHeldBy('node /p/cli.ts reconcile /work/hh/planning', '/work/hh/planning')).toBe(true);
+    expect(lockHeldBy('/usr/libexec/some-daemon --flag', '/work/hh/planning')).toBe(false);
+    expect(lockHeldBy('node cli.ts serve /work/lm/planning --port 4301', '/work/hh/planning')).toBe(false);
+    expect(lockHeldBy(undefined, '/work/hh/planning')).toBe(false);
+  });
+  it('a lock naming a live pid that runs something else is stale: removed before start, and stop does not chase it', () => {
+    home();
+    const d = mkdtempSync(join(tmpdir(), 'planestro-lock-'));
+    mkdirSync(join(d, '.planestro'), { recursive: true });
+    const lock = join(d, '.planestro', 'lock');
+    writeFileSync(lock, JSON.stringify({ pid: process.pid, started_at: 'x' })); // alive, and it is this test, not a planestro on d
+    expect(unrecordedHolder(d)).toBeUndefined();
+    expect(clearForeignLock(d)).toMatchObject({ pid: process.pid });
+    expect(existsSync(lock)).toBe(false);
+    // a lock its own planestro really holds is left alone
+    writeFileSync(lock, JSON.stringify({ pid: process.pid, started_at: 'x' }));
+    expect(clearForeignLock(d, () => `node cli.ts serve ${d} --port 4300`)).toBeUndefined();
+    expect(existsSync(lock)).toBe(true);
   });
   it('uptime reads at a glance', () => {
     const now = Date.parse('2026-10-02T12:00:00Z');
@@ -111,13 +132,17 @@ describe('planestro start/stop with real servers: two instances side by side (#1
     const rb = await startInstance({ dataDir: b, port: pb, watch: true });
     started.push(rb.instance);
 
+    // The same start again is a no-op that reports the running server: a wrapper's desired state already holds.
+    const again = await startInstance({ dataDir: a, port: pa });
+    expect(again).toMatchObject({ already: true, instance: { pid: ra.instance.pid, pgid: ra.instance.pgid, port: pa } });
     const refused = async (p: Promise<unknown>) => { try { await p; return undefined; } catch (e) { return e as StartRefused; } };
-    const sameDir = await refused(startInstance({ dataDir: a, port: await freePort() }));
-    expect(sameDir?.message).toMatch(/already has a server/);
-    expect(sameDir?.exitCode).toBe(EXIT_DATA_DIR_IN_USE);
+    const otherPort = await refused(startInstance({ dataDir: a, port: await freePort() }));
+    expect(otherPort?.message).toMatch(/already has a server on 127\.0\.0\.1:\d+, not the/);
+    expect(otherPort?.exitCode).toBe(EXIT_DATA_DIR_IN_USE);
     const samePort = await refused(startInstance({ dataDir: c, port: pa }));
     expect(samePort?.exitCode).toBe(EXIT_PORT_IN_USE);
     expect(liveInstance(c)).toBeUndefined();
+    expect(listInstances().live.map((r) => r.data_dir).sort()).toEqual([a, b].sort());
 
     expect(listInstances().live.map((r) => r.data_dir).sort()).toEqual([a, b].sort());
     expect(await stopInstance(rb.instance)).toBe('stopped');
