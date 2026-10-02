@@ -250,6 +250,40 @@ rather than given it. Tests pin all three. Don't add the endpoint to a project's
 checked-in `.mcp.json`: your own sessions in that repo would get it, and
 `strictMcpConfig` is the only thing between it and a worker.
 
+### The Claude Code plugin
+
+This repository is also a Claude Code plugin marketplace. Its `planestro` plugin
+adds the `/planestro` skill and registers the operator MCP server above:
+
+```sh
+claude plugin marketplace add gravesisme/planestro
+claude plugin install planestro@planestro
+```
+
+Or, inside Claude Code, `/plugin marketplace add gravesisme/planestro` and then
+`/plugin install planestro@planestro`.
+
+- `/planestro` (or `/planestro status`) summarizes the current project's
+  backlog: what needs you, what's blocked and why, what's waiting for review,
+  running or queued, and open PRs with their CI. It also lists the other running
+  instances. Outside a project it summarizes every running instance.
+- `/planestro start [--port N --host H --watch]` and `/planestro stop` run in
+  the foreground. Use your repo's `start-planestro.sh` / `stop-planestro.sh`
+  when it has them, else `planestro start` / `stop` on its data dir. Without a
+  wrapper, `start` needs a port and asks you for one rather than picking one.
+- `/planestro item <ID>` shows one item, from whichever running instance has
+  that id prefix.
+
+The skill runs only when you type it (`disable-model-invocation`), so it costs
+no context until then, and it never changes planestro's state. It finds the data
+dir from the current directory (`planestro.yml`, or `planning/planestro.yml` in
+the repo or its main checkout from a linked worktree), or from `PLANESTRO_DATA_DIR`.
+It runs the CLI from `PLANESTRO_DIR`, else `../planestro` beside the repo, else
+`~/Projects/planestro`. That checkout needs `npm install`. The registered MCP
+server is the one on `PLANESTRO_URL` (default `http://127.0.0.1:4300`). Install
+the plugin at **user scope** (the default): workers load project settings, and a
+project-scope install would put the skill in front of them too.
+
 > **The web UI has no authentication.** It binds to `127.0.0.1` by default and
 > can start agents that edit and push code. Requests from other websites and
 > DNS-rebinding tricks are refused, but `--host 0.0.0.0` exposes the UI to your

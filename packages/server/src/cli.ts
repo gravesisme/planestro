@@ -27,7 +27,9 @@ const USAGE = `planestro ${TOOL_VERSION}
   planestro stop [data_dir] | --port N | --all
                                     stop that server's whole process group (SIGTERM, SIGKILL after 15 s); with no argument, the
                                     data dir in this directory. Never stops anything it cannot identify as the server asked for
-  planestro status [data_dir]       every running instance on this machine: data dir, URL, pid / process group, uptime, log
+  planestro status [data_dir] [--json]
+                                    every running instance on this machine: data dir, URL, pid / process group, uptime, log;
+                                    --json for scripts (one record, or null with exit 3, when a data dir is given)
   planestro sample [dir] [--reset] [--no-serve] [--port N]
                                     build a fictional project with a full backlog and serve it in dry-run:
                                     no repo, GitHub remote or Claude login needed (default dir .planestro/sample, port 4310)
@@ -43,7 +45,7 @@ const { values, positionals } = parseArgs({
     repo: { type: 'string' }, name: { type: 'string' }, prefix: { type: 'string' }, 'default-branch': { type: 'string' },
     'release-branch': { type: 'string' }, github: { type: 'string' }, layout: { type: 'string' }, 'no-commit': { type: 'boolean' },
     commit: { type: 'boolean' }, 'copy-small': { type: 'boolean' }, data: { type: 'string' },
-    help: { type: 'boolean', short: 'h' }, port: { type: 'string' }, host: { type: 'string' }, mock: { type: 'boolean' }, watch: { type: 'boolean' }, open: { type: 'boolean' }, reset: { type: 'boolean' }, 'no-serve': { type: 'boolean' }, all: { type: 'boolean' },
+    help: { type: 'boolean', short: 'h' }, port: { type: 'string' }, host: { type: 'string' }, mock: { type: 'boolean' }, watch: { type: 'boolean' }, open: { type: 'boolean' }, reset: { type: 'boolean' }, 'no-serve': { type: 'boolean' }, all: { type: 'boolean' }, json: { type: 'boolean' },
   },
 });
 const [cmd, arg] = positionals;
@@ -173,8 +175,14 @@ try {
     }
     case 'status': {
       const { listInstances, liveInstance, describeInstance } = await import('./instances.ts');
-      if (arg) { const r = liveInstance(resolve(arg)); log(r ? describeInstance(r) : `not running: ${resolve(arg)}`); if (!r) process.exitCode = 3; break; }
+      if (arg) {
+        const r = liveInstance(resolve(arg));
+        log(values.json ? JSON.stringify(r ? { ...r, mcp: `${r.url}/mcp` } : null) : r ? describeInstance(r) : `not running: ${resolve(arg)}`);
+        if (!r) process.exitCode = 3;
+        break;
+      }
       const { live, pruned } = listInstances();
+      if (values.json) { log(JSON.stringify(live.map((r) => ({ ...r, mcp: `${r.url}/mcp` })))); break; }
       for (const d of pruned) log(`(pruned a stale record: ${d})`);
       log(live.length ? live.map(describeInstance).join('\n') : 'no planestro instance is running (servers started with `serve` instead of `start` are not listed)');
       break;

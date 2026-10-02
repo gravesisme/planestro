@@ -1,0 +1,102 @@
+#!/bin/sh
+# The /planestro skill's hands: everything it does that a script can know (#175, step 3).
+#
+#   planestro locate            the data dir for the current directory (exit 1 when there is none)
+#   planestro checkout          the planestro checkout whose CLI is used
+#   planestro start [flags…]    start this project's server: the repo's ./start-planestro.sh when it
+#                               has one, else `planestro start <data dir> <flags>` (needs --port)
+#   planestro stop              stop it: ./stop-planestro.sh when the repo has one, else `planestro stop <data dir>`
+#   planestro status [--json]   every running instance on this machine
+#   planestro call <tool> [json-args] [--url URL]
+#                               call a read-only tool on an instance's /mcp (default: this project's)
+#   planestro item <ID>         get_item on whichever running instance has that id prefix
+#   planestro cli <args…>       the planestro CLI itself
+#
+# Settings (environment):
+#   PLANESTRO_DIR       planestro checkout (default: ../planestro beside the repo, then ~/Projects/planestro)
+#   PLANESTRO_DATA_DIR  the data dir, when it is not <repo>/planning or the current directory
+
+set -u
+
+die() { echo "planestro: $*" >&2; exit 1; }
+
+# The repo's main checkout root: worktrees of a repo share its planning/ and its scripts.
+repo_root() {
+	common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+	case "$common" in */.git) dirname "$common" ;; *) git rev-parse --show-toplevel 2>/dev/null ;; esac
+}
+
+locate() {
+	if [ -n "${PLANESTRO_DATA_DIR:-}" ]; then echo "$PLANESTRO_DATA_DIR"; return 0; fi
+	d=$(pwd -P)
+	while [ "$d" != "/" ]; do
+		[ -f "$d/planestro.yml" ] && { echo "$d"; return 0; }
+		[ -f "$d/planning/planestro.yml" ] && { echo "$d/planning"; return 0; }
+		d=$(dirname "$d")
+	done
+	root=$(repo_root) && [ -f "$root/planning/planestro.yml" ] && { echo "$root/planning"; return 0; }
+	return 1
+}
+
+is_checkout() { [ -f "$1/package.json" ] && [ -f "$1/packages/server/src/cli.ts" ] && [ -d "$1/node_modules" ]; }
+
+checkout() {
+	if [ -n "${PLANESTRO_DIR:-}" ]; then is_checkout "$PLANESTRO_DIR" && { echo "$PLANESTRO_DIR"; return 0; }; die "PLANESTRO_DIR=$PLANESTRO_DIR is not an installed planestro checkout (npm install there)"; fi
+	here=$(cd "$(dirname "$0")/../../.." 2>/dev/null && pwd)
+	root=$(repo_root 2>/dev/null || true)
+	for c in "$here" ${root:+"$root/../planestro"} "$HOME/Projects/planestro"; do
+		is_checkout "$c" && { (cd "$c" && pwd); return 0; }
+	done
+	die "no planestro checkout found: clone gravesisme/planestro, run npm install there, and set PLANESTRO_DIR to it"
+}
+
+cli() { dir=$(checkout) || exit 1; npm --prefix "$dir" run -s planestro -- "$@"; }
+
+# This project's running instance URL, from `planestro start`'s records.
+instance_url() {
+	data=$(locate) || die "no planestro data dir here (no planestro.yml, no planning/planestro.yml); cd into the project or set PLANESTRO_DATA_DIR"
+	cli status "$data" --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s||"null");if(!r)process.exit(3);console.log(r.url)})' \
+		|| die "not running: $data (start it with /planestro start)"
+}
+
+# JSON-RPC tools/call on a stateless /mcp; prints the tool's text, exit 1 on an error result.
+call() {
+	tool=$1; args=${2:-'{}'}; url=${3:-}
+	[ -n "$url" ] || url=$(instance_url) || exit 1
+	body=$(node -e 'console.log(JSON.stringify({jsonrpc:"2.0",id:1,method:"tools/call",params:{name:process.argv[1],arguments:JSON.parse(process.argv[2])}}))' "$tool" "$args") || die "arguments are not JSON: $args"
+	curl -sS -m 30 -X POST "$url/mcp" -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d "$body" \
+		| node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let m;try{m=JSON.parse(s)}catch{console.error(s||"no answer");process.exit(1)}if(m.error){console.error(m.error.message);process.exit(1)}for(const c of m.result.content??[])if(c.type==="text")console.log(c.text);if(m.result.isError)process.exit(1)})'
+}
+
+cmd=${1:-status}; [ $# -gt 0 ] && shift
+case "$cmd" in
+	locate) locate || die "no planestro data dir here" ;;
+	checkout) checkout ;;
+	status) cli status "$@" ;;
+	start)
+		data=$(locate) || die "no planestro data dir here; cd into the project or set PLANESTRO_DATA_DIR"
+		root=$(dirname "$data")
+		if [ -x "$root/start-planestro.sh" ]; then echo "using $root/start-planestro.sh"; exec "$root/start-planestro.sh"; fi
+		case " $* " in *" --port "*) ;; *) die "no start-planestro.sh in $root, and no --port: say which port (\`planestro status\` lists the ones in use), e.g. /planestro start --port 4301 --host 0.0.0.0 --watch" ;; esac
+		cli start "$data" "$@" ;;
+	stop)
+		data=$(locate) || die "no planestro data dir here; cd into the project or set PLANESTRO_DATA_DIR"
+		root=$(dirname "$data")
+		if [ -x "$root/stop-planestro.sh" ]; then echo "using $root/stop-planestro.sh"; exec "$root/stop-planestro.sh"; fi
+		cli stop "$data" ;;
+	call)
+		[ $# -ge 1 ] || die "usage: planestro call <tool> [json-args] [--url URL]"
+		tool=$1; shift; args='{}'; url=''
+		while [ $# -gt 0 ]; do case "$1" in --url) url=$2; shift 2 ;; *) args=$1; shift ;; esac; done
+		call "$tool" "$args" "$url" ;;
+	item)
+		[ $# -eq 1 ] || die "usage: planestro item <ID>"
+		id=$1; prefix=${id%%-*}
+		for url in $(cli status --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{for(const r of JSON.parse(s))console.log(r.url)})'); do
+			p=$(call get_state '{}' "$url" 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).project.id_prefix)}catch{}})')
+			[ "$p" = "$prefix" ] && { call get_item "{\"id\":\"$id\"}" "$url"; exit $?; }
+		done
+		die "no running planestro has items prefixed $prefix- (\`planestro status\` lists what runs)" ;;
+	cli) cli "$@" ;;
+	*) die "unknown command: $cmd (locate, checkout, start, stop, status, call, item, cli)" ;;
+esac

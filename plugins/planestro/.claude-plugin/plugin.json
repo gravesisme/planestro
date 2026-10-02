@@ -1,0 +1,10 @@
+{
+  "name": "planestro",
+  "version": "0.1.0",
+  "description": "/planestro: status, start, stop and item lookup for planestro servers, and the running server's read-only backlog tools (list_items, get_item, get_state) over MCP.",
+  "author": { "name": "David Graves", "url": "https://github.com/gravesisme" },
+  "homepage": "https://github.com/gravesisme/planestro",
+  "repository": "https://github.com/gravesisme/planestro",
+  "license": "MIT",
+  "keywords": ["planestro", "backlog", "orchestration", "mcp"]
+}
