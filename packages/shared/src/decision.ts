@@ -14,7 +14,7 @@ export interface DecisionOption {
   action?: DecisionAction;
 }
 
-export interface CreateItemArgs { title: string; description: string; kind?: 'item' | 'epic'; planner?: string; implementer?: string; category?: string; parent?: string; depends_on?: string[]; submit?: boolean }
+export interface CreateItemArgs { title: string; description: string; kind?: 'item' | 'epic'; planner?: string; implementer?: string; category?: string; priority?: 'high' | 'medium' | 'low'; parent?: string; depends_on?: string[]; submit?: boolean }
 /**
  * What an option can carry: only what the user could do on the page themselves. `submit_item` on an
  * epic plans its breakdown (an epic is never queued), so planning one needs no tool of its own.
@@ -71,10 +71,12 @@ function parseAction(raw: unknown): { value: DecisionAction } | { error: string 
   if (bad) return { error: `action create_item: ${bad} must be a name (leave it out for the default)` };
   if (args.depends_on !== undefined && !(Array.isArray(args.depends_on) && args.depends_on.every((d) => typeof d === 'string' && d.trim()))) return { error: 'action create_item: depends_on is a list of item ids' };
   if (args.submit !== undefined && typeof args.submit !== 'boolean') return { error: 'action create_item: submit is true or false' };
+  if (args.priority !== undefined && args.priority !== 'high' && args.priority !== 'medium' && args.priority !== 'low') return { error: 'action create_item: priority is "high", "medium" or "low" (leave it out for none)' };
   return { value: { tool: 'create_item', args: {
     title, description, ...(args.kind === 'epic' ? { kind: 'epic' as const } : {}),
     ...Object.fromEntries(named.filter((k) => str(k)).map((k) => [k, str(k)])),
     ...(Array.isArray(args.depends_on) && args.depends_on.length ? { depends_on: (args.depends_on as string[]).map((d) => d.trim()) } : {}),
+    ...(args.priority !== undefined ? { priority: args.priority as 'high' | 'medium' | 'low' } : {}),
     ...(args.submit === true ? { submit: true } : {}),
   } } };
 }
@@ -103,7 +105,7 @@ export function describeAction(action: DecisionAction, lookup?: (id: string) => 
     return it?.kind === 'epic' ? `has the breakdown of epic ${name} planned (you approve its children)` : `queues ${name} for planning`;
   }
   const a = action.args; const epic = a.kind === 'epic';
-  const what = `creates the ${epic ? 'epic' : 'item'} "${a.title}"${a.parent ? ` in epic ${a.parent}` : ''}${a.implementer ? `, implemented by ${a.implementer}` : ''}${a.depends_on?.length ? `, after ${a.depends_on.join(', ')}` : ''}`;
+  const what = `creates the ${a.priority ? `${a.priority}-priority ` : ''}${epic ? 'epic' : 'item'} "${a.title}"${a.parent ? ` in epic ${a.parent}` : ''}${a.implementer ? `, implemented by ${a.implementer}` : ''}${a.depends_on?.length ? `, after ${a.depends_on.join(', ')}` : ''}`;
   return `${what}${a.submit ? (epic ? ' and has its breakdown planned (you approve its children)' : ' and queues it for planning') : ', not submitted yet'}`;
 }
 

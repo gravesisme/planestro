@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
-import { STATUSES } from '@planestro/shared';
+import { STATUSES, PRIORITIES } from '@planestro/shared';
 import type { DataStore, StoredItem } from '../store/DataStore.ts';
 import type { Engine } from '../engine/Engine.ts';
 import { TOOL_VERSION } from '../config.ts';
@@ -35,7 +35,7 @@ function itemSummary(store: DataStore, item: StoredItem) {
   const fm = item.file.frontmatter;
   const d = store.derived(item);
   return {
-    id: fm.id, title: fm.title, kind: fm.kind, status: fm.status, category: fm.category,
+    id: fm.id, title: fm.title, kind: fm.kind, status: fm.status, category: fm.category, ...(fm.priority ? { priority: fm.priority } : {}),
     ...(fm.parent ? { epic: fm.parent } : {}),
     ...(fm.blocked ? { blocked: fm.blocked_reason ?? true } : {}),
     ...(fm.awaiting ? { awaiting: fm.awaiting } : {}),
@@ -85,16 +85,17 @@ const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: 
 export function operatorServer(store: DataStore, engine: Engine): McpServer {
   const server = new McpServer({ name: 'planestro', version: TOOL_VERSION }, { instructions: `The backlog of ${store.config.project.name} (${store.dataDir}), read-only. get_state for the overview, list_items to find items, get_item for one.` });
   server.registerTool('list_items', {
-    description: 'List backlog items, one summary line each (id, title, kind, status, epic, blocked reason, awaiting, needs_you, PR and CI). Filters combine.',
+    description: 'List backlog items, one summary line each (id, title, kind, status, priority, epic, blocked reason, awaiting, needs_you, PR and CI). Filters combine.',
     inputSchema: {
       status: z.enum(STATUSES).optional().describe('Only items in this status'),
       epic: z.string().optional().describe('Only the children of this epic id'),
       queued: z.boolean().optional().describe('true: only items waiting in the queue (QUEUED); false: everything else'),
       q: z.string().optional().describe('Text to search titles and bodies for'),
+      priority: z.enum(PRIORITIES).optional().describe('Only items with this priority'),
     },
     annotations: READ_ONLY,
-  }, async ({ status, epic, queued, q }) => {
-    let items = store.search(q ?? '', status ? { status } : {});
+  }, async ({ status, epic, queued, q, priority }) => {
+    let items = store.search(q ?? '', { ...(status ? { status } : {}), ...(priority ? { priority } : {}) });
     if (epic) items = items.filter((i) => i.file.frontmatter.parent === epic);
     if (queued !== undefined) items = items.filter((i) => (i.file.frontmatter.status === 'QUEUED') === queued);
     return json(items.map((i) => itemSummary(store, i)));

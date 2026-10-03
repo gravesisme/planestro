@@ -13,6 +13,8 @@ describe('decision cards', () => {
     expect(v.ok && v.value.options.map((o) => o.label)).toEqual(['Yes, start a worker', 'Not now']);
     expect(v.ok && v.value.options[0].action).toEqual({ tool: 'create_item', args: { ...create.args, depends_on: ['TP-3'] } });
     expect(v.ok && v.value.options[1].action).toBeUndefined();
+    const prio = validateDecision(card(no, yes({ action: { tool: 'create_item', args: { ...create.args, priority: 'high' } } })));
+    expect(prio.ok && prio.value.options[0].action).toEqual({ tool: 'create_item', args: { ...create.args, priority: 'high' } });
     const submit = validateDecision(card(no, yes({ action: { tool: 'submit_item', args: { id: ' TP-4 ' } } })));
     expect(submit.ok && submit.value.options[0].action).toEqual({ tool: 'submit_item', args: { id: 'TP-4' } });
   });
@@ -25,6 +27,7 @@ describe('decision cards', () => {
     expect(errorOf(card(no, yes({ action: { tool: 'create_item', args: { ...create.args, kind: 'story' } } })))).toMatch(/kind is "item" or "epic"/);
     expect(errorOf(card(no, yes({ action: { tool: 'create_item', args: { ...create.args, parent: 7 } } })))).toMatch(/parent must be a name/);
     expect(errorOf(card(no, yes({ action: { tool: 'create_item', args: { ...create.args, depends_on: 'TP-3' } } })))).toMatch(/depends_on is a list of item ids/);
+    expect(errorOf(card(no, yes({ action: { tool: 'create_item', args: { ...create.args, priority: 'urgent' } } })))).toMatch(/priority is "high", "medium" or "low"/);
     expect(errorOf(card(no, yes({ action: { tool: 'submit_item', args: {} } })))).toMatch(/needs args\.id/);
     expect(errorOf(card(no, yes({ action: create, raise_budget_usd: 40 })))).toMatch(/has both raise_budget_usd and an action: an option does one thing/);
     expect(errorOf(card(no, yes({ action: create, fresh: true })))).toMatch(/has both fresh and an action/);
@@ -37,6 +40,7 @@ describe('decision cards', () => {
     expect(describeAction(create as never)).toBe('creates the item "Draw the shop icon" in epic TP-2, implemented by opus-5 and queues it for planning');
     expect(describeAction({ tool: 'create_item', args: { title: 'Shop', description: 'x', kind: 'epic', submit: true } })).toBe('creates the epic "Shop" and has its breakdown planned (you approve its children)');
     expect(describeAction({ tool: 'create_item', args: { title: 'Later', description: 'x', depends_on: ['TP-3'] } })).toBe('creates the item "Later", after TP-3, not submitted yet');
+    expect(describeAction({ tool: 'create_item', args: { title: 'Fix CI', description: 'x', priority: 'high' } })).toBe('creates the high-priority item "Fix CI", not submitted yet');
     expect(describeAction({ tool: 'submit_item', args: { id: 'TP-4' } }, lookup)).toBe('has the breakdown of epic TP-4 "Shop screen" planned (you approve its children)');
     expect(describeAction({ tool: 'submit_item', args: { id: 'TP-5' } }, lookup)).toBe('queues TP-5 "Fix the door" for planning');
     expect(describeAction({ tool: 'submit_item', args: { id: 'TP-9' } })).toBe('queues TP-9 for planning');

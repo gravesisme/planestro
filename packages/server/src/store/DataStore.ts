@@ -7,9 +7,9 @@ import { planReviewByDefault,
   parseReleaseFile, serializeReleaseFile, setReleaseSection, sortReleases, compareVersions, getReleaseSection, VERSION_RE, DATE_RE,
   parseQuestionFile, serializeQuestionFile, setQuestionSection, appendThread, questionNumber, QUESTION_SECTIONS,
   applyTransition, flavorOf, laneOf, needsYou, baseBranchOf, depsSatisfied,
-  rankForTop, rankForBottom, rankBefore, rankAfter, renormalize, sortByRank,
+  rankForTop, rankForBottom, rankBefore, rankAfter, renormalize, sortByRank, priorityBand,
   isoLocal, SCHEMA_VERSION,
-  type ItemFile, type ItemFrontmatter, type PromptFile, type ReleaseFile, type ReleaseStatus, type QuestionFile, type QuestionStatus, type ThreadActor, type Status, type Actor, type Flavor, type Lane,
+  type ItemFile, type ItemFrontmatter, type PromptFile, type ReleaseFile, type ReleaseStatus, type QuestionFile, type QuestionStatus, type ThreadActor, type Status, type Actor, type Flavor, type Lane, type Priority,
   type Config, type LocalConfig, type ServerEvent, type ActivityActor,
 } from '@planestro/shared';
 import { atomicWrite, cleanStaleTemps } from './atomicWrite.ts';
@@ -56,6 +56,8 @@ export interface MutateOptions { commit?: string; body?: string; paths?: string[
 export interface CreateItemInput {
   title: string; category?: string; description?: string; notes?: string; kind?: 'item' | 'epic'; parent?: string;
   planner?: string; implementer?: string; status?: 'NOT_YET_SUBMITTED' | 'ICEBOX'; depends_on?: string[]; extra?: Record<string, unknown>;
+  /** Unset by default (#194). */
+  priority?: Priority;
   /** Omitted: the project's `defaults.allow_model_fallback`. */
   allow_model_fallback?: boolean;
 }
@@ -209,13 +211,15 @@ export class DataStore {
   // ---- reads ----
   getItem(id: string): StoredItem | undefined { return this.items.get(id); }
   requireItem(id: string): StoredItem { const it = this.items.get(id); if (!it) throw new Error(`unknown item ${id}`); return it; }
-  listItems(): StoredItem[] { return sortByRank([...this.items.values()].map((s) => ({ id: s.id, rank: s.file.frontmatter.rank, s }))).map((x) => x.s); }
+  /** Priority first, then rank (#194): the board's columns, the queue's admissions and the orchestrator's lists all read this order. */
+  listItems(): StoredItem[] { return sortByRank([...this.items.values()].map((s) => ({ id: s.id, rank: s.file.frontmatter.rank, priority: s.file.frontmatter.priority, s }))).map((x) => x.s); }
   laneItems(lane: Lane): StoredItem[] { return this.listItems().filter((s) => laneOf(s.file.frontmatter.status) === lane); }
-  search(query: string, filter: { status?: Status; category?: string; lane?: Lane } = {}): StoredItem[] {
+  search(query: string, filter: { status?: Status; category?: string; priority?: Priority; lane?: Lane } = {}): StoredItem[] {
     return this.listItems().filter((s) => {
       const fm = s.file.frontmatter;
       if (filter.status && fm.status !== filter.status) return false;
       if (filter.category && fm.category !== filter.category) return false;
+      if (filter.priority && fm.priority !== filter.priority) return false;
       if (filter.lane && laneOf(fm.status) !== filter.lane) return false;
       return matches({ frontmatter: fm, text: s.file.sections.map((x) => x.body).join('\n') }, query);
     });
@@ -279,7 +283,7 @@ export class DataStore {
     const lane = laneOf(status);
     const fm: ItemFrontmatter = {
       schema: SCHEMA_VERSION, id, kind: input.kind ?? 'item', parent: input.parent, title: input.title.trim(),
-      category: input.category ?? this.config.defaults.category, status,
+      category: input.category ?? this.config.defaults.category, ...(input.priority ? { priority: input.priority } : {}), status,
       rank: rankForBottom(this.laneItems(lane).map((s) => ({ id: s.id, rank: s.file.frontmatter.rank }))),
       planner: input.planner ?? this.config.defaults.planner, implementer: input.implementer ?? this.config.defaults.implementer,
       ...((input.allow_model_fallback ?? this.config.defaults.allow_model_fallback) ? { allow_model_fallback: true } : {}),
@@ -346,14 +350,19 @@ export class DataStore {
     return stored;
   }
 
-  move(id: string, op: 'top' | 'bottom' | 'before' | 'after' | 'icebox' | 'backlog', refId?: string, actor: Actor = 'user'): StoredItem {
+  move(id: string, how: 'top' | 'bottom' | 'before' | 'after' | 'icebox' | 'backlog', refId?: string, actor: Actor = 'user'): StoredItem {
     this.assertWritable();
     const item = this.requireItem(id);
     const fm = item.file.frontmatter;
-    if (op === 'icebox') return this.transition(id, 'ICEBOX', actor);
-    if (op === 'backlog') return this.transition(id, 'NOT_YET_SUBMITTED', actor);
+    if (how === 'icebox') return this.transition(id, 'ICEBOX', actor);
+    if (how === 'backlog') return this.transition(id, 'NOT_YET_SUBMITTED', actor);
     const lane = laneOf(fm.status);
-    const ranked = this.laneItems(lane).map((s) => ({ id: s.id, rank: s.file.frontmatter.rank }));
+    // A rank orders an item within its priority band (#194). A place beside an item of another band snaps
+    // to this band's edge nearest it; changing the band is a priority edit, not a move.
+    const band = priorityBand(fm.priority);
+    const refBand = (how === 'before' || how === 'after') && refId ? priorityBand(this.requireItem(refId).file.frontmatter.priority) : band;
+    const op = refBand < band ? 'top' : refBand > band ? 'bottom' : how;
+    const ranked = this.laneItems(lane).filter((s) => priorityBand(s.file.frontmatter.priority) === band).map((s) => ({ id: s.id, rank: s.file.frontmatter.rank }));
     let rank: number | null;
     if (op === 'top') rank = rankForTop(ranked.filter((r) => r.id !== id));
     else if (op === 'bottom') rank = rankForBottom(ranked.filter((r) => r.id !== id));

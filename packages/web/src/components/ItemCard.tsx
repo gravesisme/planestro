@@ -28,6 +28,7 @@ export function ItemCard({ item, sortable = true, onSelect }: { item: ItemView; 
           {fm.awaiting === 'review' && <div className="checker card-thumb"><img src={`/api/items/${item.id}/thumb?v=${encodeURIComponent(fm.updated_at)}`} alt="" onError={(e) => { (e.currentTarget.parentElement as HTMLElement).hidden = true; }} /></div>}
           <div className="meta">
             <span className="tag">{fm.category}</span>
+            {fm.priority && <span className={`tag prio-${fm.priority}`} title={`${fm.priority} priority`}>{fm.priority}</span>}
             {fm.kind === 'epic' && <span className="tag epic">EPIC {children.length ? `${merged}/${children.length}` : ''}</span>}
             {fm.parent && <span className="tag">↳ {fm.parent}</span>}
             {d.external ? <span className="tag">{modelLabel(fm.implementer)} (external)</span> : <span className="tag">{modelLabel(fm.planner)} → {modelLabel(fm.implementer)}</span>}

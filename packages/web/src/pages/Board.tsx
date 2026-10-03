@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { NavLink, useSearchParams } from 'react-router';
 import { DndContext, PointerSensor, useSensor, useSensors, useDroppable, closestCenter, pointerWithin, type CollisionDetection, type DragEndEvent, type DragOverEvent } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
-import { findTransition, type Status } from '@planestro/shared';
+import { findTransition, PRIORITIES, type Priority, type Status } from '@planestro/shared';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { ItemCard, statusLabel } from '../components/ItemCard.tsx';
@@ -46,6 +46,7 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
   const [params, setParams] = useSearchParams();
   const [q, setQ] = useState('');
   const [category, setCategory] = useState<string>('');
+  const [priority, setPriority] = useState<Priority | ''>('');
   const [creating, setCreating] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
   const [dragTarget, setDragTarget] = useState<{ status: string; ok: boolean } | null>(null);
@@ -57,9 +58,10 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
     const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
     return (state?.items ?? []).filter((i) => i.derived.lane === lane)
       .filter((i) => !category || i.frontmatter.category === category)
+      .filter((i) => !priority || i.frontmatter.priority === priority)
       .filter((i) => !needsOnly || i.derived.needs_you)
       .filter((i) => terms.every((t) => `${i.id} ${i.frontmatter.title} ${i.sections.Description} ${i.sections.Notes}`.toLowerCase().includes(t)));
-  }, [state, lane, q, category, needsOnly]);
+  }, [state, lane, q, category, priority, needsOnly]);
 
   const statusAt = (overId: string | number): string | undefined => String(overId).startsWith(COL) ? String(overId).slice(COL.length) : items.find((i) => i.id === overId)?.frontmatter.status;
   const onDragOver = (e: DragOverEvent) => {
@@ -81,6 +83,13 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
     if (!o) return; // dropped on its own column's empty space
     const col = items.filter((i) => i.frontmatter.status === a.frontmatter.status);
     const before = col.indexOf(a) > col.indexOf(o);
+    // A rank orders an item within its priority (#194): dropped among another priority's items, it takes that
+    // priority if you say so; otherwise the server keeps it at its own priority's edge.
+    const to_ = o.frontmatter.priority;
+    if (to_ !== a.frontmatter.priority && confirm(`Change ${a.id}'s priority from ${a.frontmatter.priority ?? 'none'} to ${to_ ?? 'none'}?`)) {
+      void act(async () => { await api.patchItem(a.id, { fields: { priority: to_ ?? null } }); return api.move(a.id, before ? 'before' : 'after', o.id); });
+      return;
+    }
     void act(() => api.move(a.id, before ? 'before' : 'after', o.id));
   };
 
@@ -95,6 +104,8 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
         <div className="chips">
           <button className={`chip ${!category ? 'on' : ''}`} onClick={() => setCategory('')}>All</button>
           {state.config.categories.map((c) => <button key={c} className={`chip ${category === c ? 'on' : ''}`} onClick={() => setCategory(category === c ? '' : c)}>{c}</button>)}
+          <span className="chip-sep" aria-hidden />
+          {PRIORITIES.map((p) => <button key={p} className={`chip prio-${p} ${priority === p ? 'on' : ''}`} title={`Only ${p}-priority items`} onClick={() => setPriority(priority === p ? '' : p)}>{p}</button>)}
           {needsOnly && <button className="chip on" onClick={() => setParams({})}>needs you ×</button>}
         </div>
         <span className="grow desk-only" />
@@ -104,7 +115,7 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
       {creating && <NewItemDialog onClose={() => setCreating(false)} icebox={lane === 'icebox'} />}
       {preview && <PreviewDrawer id={preview} onClose={() => setPreview(null)} />}
       {phone && lane !== 'done' ? (
-        <PhoneBoard columns={columns} items={items} filtered={!!q || !!category || needsOnly} onSelect={setPreview} />
+        <PhoneBoard columns={columns} items={items} filtered={!!q || !!category || !!priority || needsOnly} onSelect={setPreview} />
       ) : lane === 'done' ? (
         <div className="list card-list">{done.map((i) => <ItemCard key={i.id} item={i} sortable={false} onSelect={setPreview} />)}{!done.length && <p className="muted">Nothing finished yet.</p>}</div>
       ) : (

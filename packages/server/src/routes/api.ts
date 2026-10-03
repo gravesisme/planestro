@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { managedAttachmentPath } from '../store/managedAttachments.ts';
 import { existsSync, readFileSync } from 'node:fs';
 import YAML from 'yaml';
-import { allowedTransitions, parsePromptFile, RenderError, STATUSES, PROMPT_KINDS, RELEASE_STATUSES, markUnavailable, type Status, type Actor } from '@planestro/shared';
+import { allowedTransitions, parsePromptFile, RenderError, STATUSES, PRIORITIES, type Priority, PROMPT_KINDS, RELEASE_STATUSES, markUnavailable, type Status, type Actor } from '@planestro/shared';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Engine } from '../engine/Engine.ts';
 import type { ConsoleBuffer } from '../store/ConsoleBuffer.ts';
@@ -15,7 +15,7 @@ import { itemView, promptView, releaseView, questionView, stateView, guardView, 
 import { applyConfigSettings, applyLocalSettings, putModel, removeModel } from '../settingsWrite.ts';
 
 const EDITABLE_FIELDS = z.object({
-  title: z.string().min(1).optional(), category: z.string().min(1).optional(), planner: z.string().optional(), implementer: z.string().optional(),
+  title: z.string().min(1).optional(), category: z.string().min(1).optional(), priority: z.enum(PRIORITIES).nullable().optional(), planner: z.string().optional(), implementer: z.string().optional(),
   auto_approve_plan: z.boolean().optional(), allow_model_fallback: z.boolean().nullable().optional(), depends_on: z.array(z.string()).optional(), parent: z.string().nullable().optional(),
   merge_policy: z.enum(['app', 'watch']).nullable().optional(), base_branch_override: z.string().nullable().optional(),
   branch: z.string().nullable().optional(), pr: z.number().int().positive().nullable().optional(),
@@ -46,12 +46,13 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
     const status = c.req.query('status') as Status | undefined;
     const lane = c.req.query('lane') as 'board' | 'icebox' | 'done' | undefined;
     const category = c.req.query('category') ?? undefined;
-    return c.json(store.search(q, { status, lane, category }).map((i) => itemView(store, i)));
+    const priority = c.req.query('priority') as Priority | undefined;
+    return c.json(store.search(q, { status, lane, category, priority }).map((i) => itemView(store, i)));
   });
   api.post('/items', async (c) => {
     try {
       const body = z.object({
-        title: z.string().min(1), category: z.string().optional(), description: z.string().optional(), notes: z.string().optional(),
+        title: z.string().min(1), category: z.string().optional(), priority: z.enum(PRIORITIES).optional(), description: z.string().optional(), notes: z.string().optional(),
         kind: z.enum(['item', 'epic']).optional(), parent: z.string().optional(), planner: z.string().optional(), implementer: z.string().optional(),
         status: z.enum(['NOT_YET_SUBMITTED', 'ICEBOX']).optional(), depends_on: z.array(z.string()).optional(), auto_approve_plan: z.boolean().optional(),
         allow_model_fallback: z.boolean().optional(),
