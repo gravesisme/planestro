@@ -101,13 +101,16 @@ describe('the static marketing site', () => {
     expect(createHash('sha256').update(text).digest('hex')).toBe(approved);
   });
 
-  it('keeps the six captures, stage controls and evidence accessible at the nested route', () => {
+  it('keeps the nine captures, branching workflow and evidence accessible at the nested route', () => {
     const html = read(join(SITE, 'blog/building-an-ai-fleet/index.html'));
-    expect(tags(html, 'button').filter((t) => attr(t, 'class') === 'capture-tab')).toHaveLength(6);
+    expect(tags(html, 'button').filter((t) => attr(t, 'class') === 'capture-tab')).toHaveLength(9);
     for (const tag of tags(html, 'button').filter((t) => attr(t, 'role') === 'tab')) {
       expect(html).toContain(`id="${attr(tag, 'aria-controls')}"`);
     }
     expect(tags(html, 'details').length).toBeGreaterThan(5);
+    expect(html).toContain('id="epic-workflow-title"');
+    expect(html).toContain('id="inside-planestro"');
+    expect(html).not.toContain('data-stage=');
     expect(html).toContain('aria-describedby="dialog-caption"');
     expect(html).toContain('href="https://hurricaneharrison.com/"');
   });

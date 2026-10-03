@@ -1,54 +1,3 @@
-const stages = [
-  [
-    "PLANNER + DESIGNER",
-    "Turn intent into a reviewable plan.",
-    "The planner investigates the repository and proposes the approach. Approval stays with the designer unless both global and per-item settings delegate an eligible plan. Epic breakdowns and other protected decisions stay with the user.",
-    "An approved plan",
-  ],
-  [
-    "ISOLATED WORKER",
-    "Implement inside a dedicated worktree.",
-    "The worker changes files on its own branch, runs the full check suite, commits, and reports completion. A blocked worker reports the problem rather than improvising around the process.",
-    "A checked commit and completion report",
-  ],
-  [
-    "PLANESTRO ENGINE",
-    "Let application code own integration.",
-    "Planestro pushes, opens the PR, waits for CI, rebases when the target moves, and merges after the required gates. Epic children target the feature branch before the epic reaches develop.",
-    "A verified merge",
-  ],
-  [
-    "DESIGNER",
-    "Play the result. Change the requirements.",
-    "I test the build on my phone and decide what feels wrong. Reproducible findings become backlog items, checks, or standing rules for the next pass through the pipeline.",
-    "New evidence and better requirements",
-  ],
-];
-const tabs = [...document.querySelectorAll("[data-stage]")],
-  panel = document.querySelector("#stage-panel");
-function selectStage(i) {
-  tabs.forEach((t, n) => {
-    t.setAttribute("aria-selected", n === i);
-    t.tabIndex = n === i ? 0 : -1;
-  });
-  const s = stages[i];
-  panel.setAttribute("aria-labelledby", `tab-${i}`);
-  panel.innerHTML = `<span class="owner">${s[0]}</span><h3>${s[1]}</h3><p>${s[2]}</p><div class="handoff">OUTPUT <strong>${s[3]}</strong></div>`;
-}
-tabs.forEach((t, i) => {
-  t.addEventListener("click", () => selectStage(i));
-  t.addEventListener("keydown", (e) => {
-    let n;
-    if (e.key === "ArrowRight") n = (i + 1) % 4;
-    else if (e.key === "ArrowLeft") n = (i + 3) % 4;
-    else if (e.key === "Home") n = 0;
-    else if (e.key === "End") n = 3;
-    else return;
-    e.preventDefault();
-    selectStage(n);
-    tabs[n].focus();
-  });
-});
 const progress = document.querySelector("#progress");
 let pending = false;
 function updateProgress() {
@@ -105,8 +54,9 @@ function showCapture(index, focus = false) {
   const nav = selected.parentElement;
   nav.scrollLeft = Math.max(
     0,
-    selected.offsetLeft -
-      nav.offsetLeft -
+    selected.getBoundingClientRect().left -
+      nav.getBoundingClientRect().left +
+      nav.scrollLeft -
       (nav.clientWidth - selected.clientWidth) / 2,
   );
   if (focus) selected.focus({ preventScroll: true });

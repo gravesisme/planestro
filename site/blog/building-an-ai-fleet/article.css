@@ -2476,3 +2476,316 @@ footer .brand .brand-icon {
     justify-content: space-between;
   }
 }
+
+/* Story-first opening: evidence alongside the introduction. */
+.opening {
+  display: grid;
+  grid-template-columns: 205px minmax(0, 1fr);
+  gap: 64px;
+  margin-top: 48px;
+  align-items: start;
+}
+.opening .intro {
+  grid-column: 2;
+  grid-row: 1;
+  padding: 0;
+  min-width: 0;
+}
+.opening .intro p {
+  font-size: 18px;
+  line-height: 1.8;
+  margin: 0 0 22px;
+}
+.opening .intro p:first-child {
+  font-size: 22px;
+  line-height: 1.65;
+}
+.opening .intro-metrics {
+  grid-column: 1;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 5px 24px 0 0;
+  border: 0;
+  border-right: 1px solid var(--line);
+}
+.opening .intro-metrics > div {
+  padding: 0 0 22px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+}
+.opening .intro-metrics > div:last-child {
+  border: 0;
+  padding-bottom: 0;
+}
+.opening .intro-metrics strong {
+  font-size: 36px;
+  letter-spacing: -1.5px;
+  white-space: nowrap;
+}
+.opening .intro-metrics span {
+  font-size: 14px;
+  line-height: 1.5;
+}
+.opening .intro-metrics small {
+  font-size: 12px;
+  line-height: 1.5;
+}
+.showcase-wrap {
+  margin-top: 38px;
+}
+.article-layout > .contents {
+  padding-top: 0;
+}
+.article-layout > article > #origin {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+@media (max-width: 1000px) {
+  .opening {
+    grid-template-columns: 155px minmax(0, 1fr);
+    gap: 35px;
+  }
+  .opening .intro-metrics {
+    padding-right: 16px;
+  }
+  .opening .intro-metrics strong {
+    font-size: 30px;
+  }
+}
+@media (max-width: 650px) {
+  .opening {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    margin-top: 30px;
+  }
+  .opening .intro p:first-child {
+    font-size: 20px;
+  }
+  .opening .intro-metrics {
+    width: 100%;
+    border-right: 0;
+    padding: 0;
+    gap: 18px;
+  }
+  .opening .intro-metrics > div {
+    display: grid;
+    grid-template-columns: 130px 1fr;
+    column-gap: 16px;
+    width: 100%;
+    padding-bottom: 18px;
+  }
+  .opening .intro-metrics strong {
+    grid-row: 1/3;
+    margin: 0;
+    font-size: 32px;
+  }
+  .opening .intro-metrics small {
+    margin-top: 4px;
+  }
+  .showcase-wrap {
+    margin-top: 30px;
+  }
+}
+
+/* Full-width screenshot chapter follows the written field note. */
+.gallery-chapter {
+  margin-top: 64px;
+  padding-top: 54px;
+}
+.gallery-heading {
+  margin-left: 269px;
+}
+.gallery-heading p {
+  font-size: 18px;
+  line-height: 1.75;
+  color: var(--muted);
+  margin-bottom: 28px;
+}
+.gallery-chapter .capture-showcase {
+  margin-top: 28px;
+}
+.article-tail {
+  margin-top: 54px;
+}
+@media (max-width: 1000px) {
+  .gallery-heading {
+    margin-left: 190px;
+  }
+}
+@media (max-width: 650px) {
+  .gallery-chapter {
+    margin-top: 40px;
+    padding-top: 36px;
+  }
+  .gallery-heading {
+    margin-left: 0;
+  }
+  .article-tail {
+    margin-top: 36px;
+  }
+}
+
+.epic-workflow {
+  margin: 32px 0;
+  border: 1px solid #cbd5ea;
+  border-radius: 12px;
+  overflow: hidden;
+}
+.epic-flow-body {
+  padding: 26px;
+}
+.epic-flow-body > h3 {
+  margin: 0 0 24px;
+}
+.epic-step {
+  border: 1px solid #d8dfed;
+  border-radius: 9px;
+  background: #f8faff;
+  padding: 18px;
+  min-width: 0;
+}
+.epic-step > span {
+  display: block;
+  font: 12px/1.5 monospace;
+  letter-spacing: 0.06em;
+  color: #536789;
+  margin-bottom: 7px;
+}
+.epic-step strong {
+  display: block;
+  font-size: 17px;
+  line-height: 1.4;
+}
+.epic-step p {
+  font-size: 14px;
+  line-height: 1.65;
+  margin: 8px 0 0;
+}
+.human-gate {
+  border-left: 3px solid #ba881d;
+  background: #fffcf4;
+}
+.integration-step {
+  border-left: 3px solid var(--blue);
+}
+.flow-link {
+  text-align: center;
+  color: var(--blue);
+  padding: 10px;
+  font-size: 22px;
+}
+.flow-link span {
+  font-size: 13px;
+}
+.branch-caption {
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted);
+  padding: 22px 0 16px;
+}
+.epic-branches {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 22px;
+  border-top: 2px solid #cbd5ea;
+  border-bottom: 2px solid #cbd5ea;
+  padding: 20px 0;
+  position: relative;
+}
+.epic-lane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.lane-merge {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-left: 2px solid #cbd5ea;
+  margin: 18px 0 0 24px;
+  padding: 12px 16px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.epic-workflow figcaption {
+  padding: 0 26px 24px;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+.agent-foundation > strong {
+  color: #fff;
+}
+.product-gallery > .gallery-heading {
+  margin-left: 0;
+}
+@media (max-width: 650px) {
+  .epic-flow-body {
+    padding: 18px;
+  }
+  .epic-branches {
+    gap: 12px;
+  }
+  .epic-step {
+    padding: 12px;
+  }
+  .epic-step strong {
+    font-size: 15px;
+  }
+  .epic-step p {
+    font-size: 14px;
+  }
+  .lane-merge {
+    margin-left: 10px;
+    padding: 10px;
+  }
+  .epic-workflow figcaption {
+    padding: 0 18px 20px;
+  }
+}
+
+/* Section 08: section label beside the title, carousel full width. */
+.gallery-chapter > .gallery-heading {
+  margin-left: 0;
+  display: grid;
+  grid-template-columns: 205px minmax(0, 1fr);
+  column-gap: 64px;
+  align-items: start;
+}
+.gallery-chapter > .gallery-heading > .section-kicker {
+  grid-column: 1;
+  grid-row: 1;
+  padding-top: 9px;
+  line-height: 1.5;
+}
+.gallery-chapter > .gallery-heading > h2 {
+  grid-column: 2;
+  grid-row: 1;
+  margin-top: 0;
+  margin-bottom: 14px;
+}
+.gallery-chapter > .gallery-heading > p {
+  grid-column: 2;
+  margin-top: 0;
+  margin-bottom: 0;
+}
+@media (max-width: 1000px) {
+  .gallery-chapter > .gallery-heading {
+    grid-template-columns: 155px minmax(0, 1fr);
+    column-gap: 35px;
+  }
+}
+@media (max-width: 650px) {
+  .gallery-chapter > .gallery-heading {
+    display: block;
+  }
+  .gallery-chapter > .gallery-heading > .section-kicker {
+    padding-top: 0;
+    margin-bottom: 18px;
+  }
+}
