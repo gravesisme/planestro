@@ -2564,12 +2564,14 @@ export class LiveEngine implements Engine {
         // A loop item is done when it is green, and hands off with its review (#171); before anything is recorded.
         const loopRefusal = this.loopDoneRefusal(id, review);
         if (loopRefusal) return loopRefusal;
+        const before = s.requireItem(id).file.frontmatter;
+        // A retry of a report that did land (#167): nothing is recorded twice, the loop's review included.
+        const repeat = before.op_data?.done_summary === summary && (!hold || before.skip_merge);
         const bad = parts === undefined ? undefined : this.recordParts(id, parts);
         const att = this.attachFromWorktree(id, attach);
-        const filed = this.fileLoopReview(id, review);
+        const filed = !repeat && this.fileLoopReview(id, review);
         const cur = s.requireItem(id).file.frontmatter;
-        // A retry of a report that did land (#167): nothing is recorded twice.
-        if (cur.op_data?.done_summary === summary && (!hold || cur.skip_merge)) return `Already recorded by planestro${bad ? `, but ${bad}` : '.'}${att ? ` ${att}` : ''} End your turn now.`;
+        if (repeat) return `Already recorded by planestro${bad ? `, but ${bad}` : '.'}${att ? ` ${att}` : ''} End your turn now.`;
         const ops: ItemOp[] = [{ set: { op_data: { ...(cur.op_data ?? {}), done_summary: summary } } }, { activity: { actor: 'worker', text: `done: ${summary.slice(0, 300)}` } }];
         // The worker that knows its pull request must wait says so (#97). Recorded here, with the done: the pull
         // request is opened from the item as persisted, and no drive path sees the item before this turn ends.

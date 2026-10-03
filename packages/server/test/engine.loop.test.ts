@@ -79,6 +79,7 @@ describe('loop until green (#171)', () => {
       answers.push(await o.tools.report_iteration(4, 4, 'all contracts pass'));
       answers.push(await o.tools.report_done('fixed the generator'));
       answers.push(await o.tools.report_done('fixed the generator', undefined, undefined, undefined, '# Review\n\n- gap contract: failed before, passes now'));
+      answers.push(await o.tools.report_done('fixed the generator', undefined, undefined, undefined, '# Review\n\n- gap contract: failed before, passes now'));
       return { ...ok, done: 'fixed the generator' };
     });
     const id = await approved(store, engine, { max_iterations: 5, goal: 'every layout contract passes' });
@@ -97,6 +98,8 @@ describe('loop until green (#171)', () => {
     const fm = fmOf(store, id);
     expect(fm.loop_state).toMatchObject({ iteration: 2, passing: 4, total: 4 });
     expect(fm).toMatchObject({ skip_merge: true, hold_reason: 'loop review: 4/4 checks green after 2 iterations; read the review on the item before releasing it' });
+    expect(answers[5]).toMatch(/^Already recorded by planestro/);
+    expect(getSection(store.getItem(id)!.file, 'Notes')!.split('## Loop review').length).toBe(2);   // a retried done (#167) files nothing twice
     expect(getSection(store.getItem(id)!.file, 'Notes')).toContain('## Loop review (iteration 2, 4/4 green)');
     expect(fm.attachments.some((a) => a.path.endsWith('-REVIEW.md'))).toBe(true);
     await sleep(200);
