@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { holdShapeOf, heldReasonOf } from '../src/hold.ts';
+import { holdShapeOf, heldReasonOf, holdWaitsOnPerson } from '../src/hold.ts';
 
 describe('a merge hold stated in a plan (#97, LM-22)', () => {
   it('finds the sentence that states the hold, and what it waits for', () => {
@@ -86,5 +86,16 @@ describe('a merge hold stated in a plan (#97, LM-22)', () => {
     expect(heldReasonOf({ skip_merge: true, hold_reason: ' until X ' })).toBe('until X');
     expect(heldReasonOf({ hold_reason: 'until X' })).toBeUndefined();
     expect(heldReasonOf({ skip_merge: true })).toBeUndefined();
+  });
+});
+
+describe('who a hold waits on (#195)', () => {
+  it('drafts only for a person: a review hold, review.hold_into, or a hold placed for a person', () => {
+    expect(holdWaitsOnPerson({ review_hold: true })).toBe(true);
+    expect(holdWaitsOnPerson({ skip_merge: true }, true)).toBe(true);
+    expect(holdWaitsOnPerson({ skip_merge: true, hold_waits_on: 'person' })).toBe(true);
+    expect(holdWaitsOnPerson({ skip_merge: true, hold_waits_on: 'agent' })).toBe(false);
+    expect(holdWaitsOnPerson({ skip_merge: true })).toBe(false);   // an older hold: the merge only, never a deadlocked draft
+    expect(holdWaitsOnPerson({ hold_waits_on: 'person' })).toBe(false);   // no hold, nothing to wait on
   });
 });

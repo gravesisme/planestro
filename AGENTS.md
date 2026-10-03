@@ -112,6 +112,10 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   `skip_merge` / `approve_plan`, the worker's `report_done` `hold`. A plan that states a merge
   hold is found by `holdShapeOf`, read from the Plan as it stands and never persisted; a hold the
   user released or left out is not put back by the worker (`op_data.hold_waived`) (#97).
+  `hold_waits_on` says who a hold waits on (#195): a `person`'s (the user, `review.hold_into`, a loop's
+  review, a review hold) is drafted under `ci.draft_while_held`; an `agent`'s (the orchestrator, the worker,
+  a scope check; unset reads so) holds the merge only, its PR kept ready so CI runs. A run in flight is never
+  cancelled by drafting.
 - **Loop until green** (#171) is the orthogonal, authoritative `loop: {max_iterations, goal?}`, not a
   `kind`. The worker's `report_iteration` tallies each pass into `loop_state` and Activity and counts
   it against `max_iterations`; the pass that spends it unless green blocks `loop_cap` (tally + diff).
