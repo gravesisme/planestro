@@ -132,11 +132,14 @@ planned at once, an item is queued. It is committed as `HH-198: convert to epic`
   request will be held** with **Drop the hold**. A hold you released, dropped or left out at
   approval is not put back by the worker: its request is logged instead. A hold ends when the
   item merges, finishes or leaves the board.
-- **Draft while held** (`ci.draft_while_held`, on by default) — a held item's pull request (a
-  review hold or `skip_merge`) is a GitHub **draft**. With CI that skips drafts, nothing runs
-  while it waits for you: a review-held item comes to you as soon as it is synced, and releasing
-  the hold syncs the branch, marks the PR ready and runs CI once, on the head that merges.
-  Putting a hold on an open PR turns it back into a draft.
+- **Draft while held** (`ci.draft_while_held`, on by default) — a pull request held for a
+  person (a review hold, `review.hold_into`, your own hold, a loop's review) is a GitHub **draft**.
+  With CI that skips drafts, nothing runs while it waits for you: a review-held item comes to you
+  as soon as it is synced, and releasing the hold syncs the branch, marks the PR ready and runs CI
+  once, on the head that merges. Putting such a hold on an open PR turns it back into a draft once
+  any run in flight has ended. A hold the orchestrator or the worker puts on waits for a report or
+  a fix, which needs a CI verdict, so it holds the merge only: its PR stays ready (a drafted one is
+  marked ready again) and CI runs on every push (#195).
 - **Resume when merged** (`resume_after`) — a stopped item that is only waiting for other items
   (a flag, an asset) is parked on them with the message to resume with. It stops needing you;
   once they have all merged, planestro rebases its branch onto the base (a conflict goes to the

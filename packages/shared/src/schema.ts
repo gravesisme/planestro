@@ -55,7 +55,7 @@ export const OPERATIONAL_KEYS = [
   'pr_created_at', 'merged_at', 'finished_at', 'iceboxed_at',
   'branch', 'worktree', 'pr', 'session_id', 'agent_sessions', 'session_context', 'awaiting', 'awaiting_data', 'triage', 'resume_after', 'taken_over',
   'op', 'op_started_at', 'op_data', 'plan_revisions', 'ci_head_sha', 'ci_result', 'ci_failed_count',
-  'merge_order', 'skip_merge', 'hold_reason', 'review_hold', 'loop_state', 'delivered', 'parts', 'blocked', 'blocked_reason', 'cost_usd', 'turns', 'agent_turns', 'tokens',
+  'merge_order', 'skip_merge', 'hold_reason', 'hold_waits_on', 'review_hold', 'loop_state', 'delivered', 'parts', 'blocked', 'blocked_reason', 'cost_usd', 'turns', 'agent_turns', 'tokens',
   'imported_from', 'dates_estimated',
 ] as const;
 export const DERIVED_KEYS = ['base_branch', 'lane', 'external', 'children', 'deps_satisfied', 'needs_you'] as const;
@@ -152,6 +152,12 @@ export const ItemFrontmatter = z.object({
   skip_merge: z.boolean().optional(),
   /** Why it is held, in the words of whoever held it (the plan, the worker, the orchestrator, the user). Kept only while `skip_merge` is set (#97). */
   hold_reason: z.string().optional(),
+  /**
+   * Who the hold waits on (#195): a `person` (the user's hold, review.hold_into, a loop's review) drafts the PR under
+   * `ci.draft_while_held`; an `agent` (the orchestrator, the worker, a scope check) holds the merge only, so CI runs on
+   * every push. Unset on an older hold: read as an agent's. Kept only while `skip_merge` is set.
+   */
+  hold_waits_on: z.enum(['person', 'agent']).optional(),
   /** The PR goes through sync and CI as usual, then parks (`awaiting: review`) instead of merging, until a person releases it. */
   review_hold: z.boolean().optional(),
   /** The loop's last reported iteration (#171): its tally of checks passing and its one-line note. */

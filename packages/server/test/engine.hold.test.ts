@@ -105,7 +105,7 @@ describe('a hold stated in the plan (#97)', () => {
     const { store, engine, world, prompts } = await setup({ plan: plans(HOLD_PLAN) });
     const id = await planned(store, engine);
     await engine.approvePlan(id, undefined, 'user', { hold: STATED });
-    expect(fmOf(store, id)).toMatchObject({ status: 'IN_PROGRESS', skip_merge: true, hold_reason: STATED });
+    expect(fmOf(store, id)).toMatchObject({ status: 'IN_PROGRESS', skip_merge: true, hold_reason: STATED, hold_waits_on: 'person' });
     expect(activityOf(store, id)).toContain(`[user] held out of the merge queue: ${STATED}`);
     await waitFor(() => fmOf(store, id).status === 'IN_REVIEW' && fmOf(store, id).ci_result === 'green');
     expect(prompts.find((p) => p.phase === 'implement')!.prompt).toContain(`## Merge hold\n\nThis item's pull request is held out of the merge queue: ${STATED}.`);
@@ -118,6 +118,7 @@ describe('a hold stated in the plan (#97)', () => {
     await waitFor(() => fmOf(store, id).status === 'FINISHED');
     expect(fmOf(store, id).skip_merge).toBeUndefined();
     expect(fmOf(store, id).hold_reason).toBeUndefined();
+    expect(fmOf(store, id).hold_waits_on).toBeUndefined();   // lasts exactly as long as the hold, like its reason
     expect(activityOf(store, id)).toContain('approved for merge: 0.4.0 is out');
   });
 
@@ -218,7 +219,7 @@ describe('the orchestrator holds an item (#97)', () => {
     await waitFor(() => results.back !== undefined);
     expect(results.empty).toMatch(/^not held: say why/);
     expect(results.held).toBe('held');
-    expect(results.fm).toMatchObject({ skip_merge: true, hold_reason: 'until HH-3 has merged' });
+    expect(results.fm).toMatchObject({ skip_merge: true, hold_reason: 'until HH-3 has merged', hold_waits_on: 'agent' });   // the merge only (#195)
     expect(results.list).toContain('HELD:until HH-3 has merged');
     expect(fmOf(store, id).skip_merge).toBeUndefined();
     expect(fmOf(store, id).hold_reason).toBeUndefined();
@@ -228,7 +229,7 @@ describe('the orchestrator holds an item (#97)', () => {
 });
 
 describe('report_done with a hold (#97)', () => {
-  it('opens the pull request held, as a draft where the project drafts held PRs, with the reason on the item', async () => {
+  it('opens the pull request held for the merge only, ready even where the project drafts held PRs, with the reason on the item (#195)', async () => {
     const replies: string[] = [];
     const { store, engine, world } = await setup({ drafts: true, plan: plans(PLAIN_PLAN), work: async (o, w) => { const r = await works('until the store listing is approved')(o, w); replies.push(r.text); return r; } });
     const id = await planned(store, engine);
@@ -236,7 +237,10 @@ describe('report_done with a hold (#97)', () => {
     await waitFor(() => fmOf(store, id).status === 'IN_REVIEW');
     const fm = fmOf(store, id);
     expect(fm).toMatchObject({ skip_merge: true, hold_reason: 'until the store listing is approved' });
-    expect(fm.op_data?.pr_draft).toBe(true);
+    // The worker's hold waits on an agent-side step, which needs a CI verdict: never a draft (#195).
+    expect(fm.op_data?.pr_draft).toBeUndefined();
+    expect(fm.hold_waits_on).toBe('agent');
+    expect(world.prs.get(fm.pr!)!.isDraft).toBeFalsy();
     expect(fm.op_data?.done_summary).toBe('did it');
     expect(replies[0]).toBe('Recorded: planestro keeps the pull request out of the merge queue until the user releases the hold. End your turn now.');
     expect(activityOf(store, id)).toContain('[worker] held out of the merge queue: until the store listing is approved');

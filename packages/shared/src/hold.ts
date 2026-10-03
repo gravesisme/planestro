@@ -87,6 +87,15 @@ export function heldReasonOf(fm: { skip_merge?: boolean; hold_reason?: string })
   return fm.skip_merge ? fm.hold_reason?.trim() || undefined : undefined;
 }
 
+/**
+ * Whether the item's PR waits on a person (#195): a review hold, a PR into a `review.hold_into` branch, or a hold placed
+ * for a person. Only these are drafted under `ci.draft_while_held` ("CI runs once, on the head that merges"); a hold
+ * the orchestrator or worker placed waits on a report or a fix, which needs a CI verdict, so it holds the merge only.
+ */
+export function holdWaitsOnPerson(fm: { skip_merge?: boolean; hold_waits_on?: string; review_hold?: boolean }, holdInto = false): boolean {
+  return Boolean(fm.review_hold) || holdInto || (Boolean(fm.skip_merge) && fm.hold_waits_on === 'person');
+}
+
 /** The preview deployment for an item's PR head, when one was found (#137): `op_data.preview`, read with the held poll. */
 export function previewOf(fm: { op_data?: Record<string, unknown> }): { url: string; sha: string } | undefined {
   const p = fm.op_data?.preview as { url?: unknown; sha?: unknown } | undefined;

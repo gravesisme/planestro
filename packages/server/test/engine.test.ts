@@ -918,7 +918,7 @@ describe('held pull requests (skip_merge)', () => {
   const polls: ReturnType<typeof setInterval>[] = [];
   afterEach(() => { for (const p of polls.splice(0)) clearInterval(p); });
   /** An item already IN_REVIEW with an open PR and a hold, its worktree on `head`, the PR branch at `head` too. */
-  async function held(opts: { failOnce?: boolean; drafts?: boolean } = {}) {
+  async function held(opts: { failOnce?: boolean; drafts?: boolean; waitsOn?: 'person' | 'agent'; draft?: boolean } = {}) {
     const ctx = await setup();
     const { store, engine, world } = ctx;
     // These describe a project whose CI runs on held PRs; the draft flow (f6) has its own tests.
@@ -929,7 +929,10 @@ describe('held pull requests (skip_merge)', () => {
     const head = world.sha();
     world.worktrees.set(cwd, { path: cwd, head, branch }); world.remoteBranches.set(branch, head);
     world.prs.set(200, { number: 200, url: 'https://github.com/acme/repo/pull/200', state: 'OPEN', headRefOid: head, headRefName: branch, baseRefName: 'trunk', polls: 0, failOnce: Boolean(opts.failOnce) });
-    store.mutateItem(item.id, [{ set: { status: 'IN_REVIEW', branch, worktree: rel, pr: 200, skip_merge: true, ci_result: 'pending' } }], 'engine');
+    // The draft tests hold for a person (#195): only that kind of hold is drafted.
+    const waitsOn = opts.waitsOn ?? (opts.drafts ? 'person' : undefined);
+    if (opts.draft) world.prs.get(200)!.isDraft = true;
+    store.mutateItem(item.id, [{ set: { status: 'IN_REVIEW', branch, worktree: rel, pr: 200, skip_merge: true, ci_result: 'pending', ...(waitsOn ? { hold_waits_on: waitsOn } : {}), ...(opts.draft ? { op_data: { pr_draft: true } } : {}) } }], 'engine');
     // The tick polls a held item once a minute; tests look again on every tick.
     const poll = setInterval(() => (engine as any).heldPolledAt.clear(), 30);
     polls.push(poll);
@@ -966,6 +969,7 @@ describe('held pull requests (skip_merge)', () => {
 
   it('with draft_while_held, a hold put on an open PR turns it back into a draft, and pushes run no CI (f6)', async () => {
     const { store, engine, world, id, branch, cwd, stopPolling } = await held({ drafts: true });
+    world.prs.get(200)!.polls = 5;   // its run has finished: a run still going is not cancelled by the draft (#195)
     world.worktrees.get(cwd)!.head = world.sha();
     await engine.start();
     await waitFor(() => activityOf(store, id).includes('held: rebased onto trunk'));
@@ -997,6 +1001,54 @@ describe('held pull requests (skip_merge)', () => {
     expect(fm.ci_failed_count).toBeUndefined();
     expect(world.readyEvents).toBe(1);                   // ready_for_review landed on the pushed head the first time
     expect(activityOf(store, id)).not.toContain('CI red');
+  });
+
+  it('a hold that waits on an agent holds the merge only: the PR stays ready and the fix it waits for gets CI (#195)', async () => {
+    const { store, engine, world, id, branch, cwd, stopPolling } = await held({ drafts: true, waitsOn: 'agent' });
+    world.worktrees.get(cwd)!.head = world.sha();   // the worker's fix, pushed while the orchestrator holds the PR
+    await engine.start();
+    await waitFor(() => activityOf(store, id).includes('held: rebased onto trunk'));
+    expect(activityOf(store, id)).toContain("and CI show the session's commits; not merging");
+    await waitFor(() => store.getItem(id)!.file.frontmatter.ci_result === 'green');
+    stopPolling();
+    const fm = store.getItem(id)!.file.frontmatter;
+    expect(world.prs.get(200)!.isDraft).toBeFalsy();
+    expect(fm.op_data?.pr_draft).toBeUndefined();
+    expect(fm.ci_head_sha).toBe(world.remoteBranches.get(branch));
+    expect(activityOf(store, id)).not.toContain('back to a draft');
+    expect(fm.status).toBe('IN_REVIEW');
+  });
+
+  it('an agent\'s hold on a PR that is already a draft marks it ready, so its CI runs (#195, HH PR #541)', async () => {
+    const { store, engine, world, id, stopPolling } = await held({ drafts: true, waitsOn: 'agent', draft: true });
+    await engine.start();
+    await waitFor(() => store.getItem(id)!.file.frontmatter.ci_result === 'green');
+    stopPolling();
+    expect(world.prs.get(200)!.isDraft).toBe(false);
+    expect(store.getItem(id)!.file.frontmatter.op_data?.pr_draft).toBe(false);
+    expect(activityOf(store, id)).toContain('held for the merge only: PR #200 is ready for review again, so CI runs on its pushes');
+  });
+
+  it('a person\'s hold does not draft a PR while its CI is running: it waits for the run to end (#195)', async () => {
+    const { store, engine, world, id, branch, stopPolling } = await held({ drafts: true });
+    const gh = (engine as any).ports.gh; const real = gh.ciForSha.bind(gh);
+    let running = true;
+    gh.ciForSha = async (r: string, b: string, sha: string, wf: string) => b === branch && running ? { state: 'pending', runId: 9, sha, url: 'https://example/run/9' } : real(r, b, sha, wf);
+    await engine.start();
+    await sleep(300);
+    expect(world.prs.get(200)!.isDraft).toBeFalsy();
+    running = false;
+    await waitFor(() => world.prs.get(200)!.isDraft === true);
+    stopPolling();
+    expect(activityOf(store, id)).toContain('back to a draft, so CI waits until the hold is released');
+  });
+
+  it('a session\'s commits under a person\'s hold are logged as a draft\'s, not as pushed for CI (#195)', async () => {
+    const { store, engine, id, stopPolling } = await held({ drafts: true });
+    stopPolling();
+    await (engine as any).afterWorkTurn(id, 'fix', { sessionId: 's', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '' });
+    expect(activityOf(store, id)).toContain('held, so it is pushed for review but not merged; its PR is a draft, so CI runs once the hold is released');
+    expect(activityOf(store, id)).not.toContain('pushed for CI and review');
   });
 
   it('never pushes over a PR branch that moved on its own', async () => {

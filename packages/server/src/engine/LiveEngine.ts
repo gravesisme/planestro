@@ -1,6 +1,6 @@
 import { join, relative, isAbsolute, extname, basename, matchesGlob } from 'node:path';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
-import { resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem } from '@planestro/shared';
+import { resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote, type CiQueue, type UndeliveredReport } from './ports.ts';
@@ -699,12 +699,26 @@ export class LiveEngine implements Engine {
     ], 'engine');
   }
 
+  /** Whether CI is queued or running for the head the PR branch has on GitHub: a run a draft would cancel (#195). */
+  private async ciRunningOnPr(branch: string): Promise<boolean> {
+    const remote = await this.ports.git.remoteBranchSha(this.repo, branch);
+    return remote ? (await this.ports.gh.ciForSha(this.github, branch, remote, this.ciWorkflow)).state === 'pending' : false;
+  }
+
   private async heldStep(id: string): Promise<void> {
     let fm = this.store.requireItem(id).file.frontmatter;
-    if (this.store.config.ci.draft_while_held && !fm.op_data?.pr_draft) {
-      // A hold put on after the PR opened: back to draft, so pushes during the hold run no CI.
+    const drafts = this.draftsWhileHeld(id);
+    if (drafts && !fm.op_data?.pr_draft && !(await this.ciRunningOnPr(fm.branch!))) {
+      // A person's hold put on after the PR opened: back to draft, so pushes during the hold run no CI. A run already
+      // going is never cancelled by it (#195): the draft waits for the next poll after it ends.
       await this.ports.gh.setDraft(this.github, fm.pr!, true);
       this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), pr_draft: true } } }, { activity: { actor: 'app', text: `held: PR #${fm.pr} is back to a draft, so CI waits until the hold is released` } }], 'engine');
+      fm = this.store.requireItem(id).file.frontmatter;
+    } else if (!drafts && fm.op_data?.pr_draft) {
+      // A hold that waits on the orchestrator or the worker holds the merge only (#195): HH PR #541 was drafted by one, its
+      // CI skipped drafts, and the fix the hold waited for never got a run. Ready again, so every push runs CI.
+      await this.ports.gh.setDraft(this.github, fm.pr!, false);
+      this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), pr_draft: false } } }, { activity: { actor: 'app', text: `held for the merge only: PR #${fm.pr} is ready for review again, so CI runs on its pushes` } }], 'engine');
       fm = this.store.requireItem(id).file.frontmatter;
     }
     // An epic has no session of its own: nothing of its is pushed from here, only its CI is read, and a red run goes to triage.
@@ -1461,13 +1475,14 @@ export class LiveEngine implements Engine {
       const head = await this.ports.git.revParse(cwd, 'HEAD');
       const moved = head !== fm.ci_head_sha;
       const held = Boolean(fm.skip_merge);
+      const heldText = this.draftsWhileHeld(id) ? 'held, so it is pushed for review but not merged; its PR is a draft, so CI runs once the hold is released' : 'held, so it is pushed for CI and review but not merged';
       // A turn here that reports nothing is read by the orchestrator (#196): HH-373's worker explained itself twice in its
       // last message after the PR opened, and the line "re-checking" was all anyone saw, for eight hours.
       const silent = this.silentTurn(result);
       const said = silent ? this.finalLine(result) : '';
       this.store.mutateItem(id, [
         { set: { ci_result: 'pending', op_data: { ...(opData ?? {}), needs_session_rebase: false } } },
-        { activity: { actor: 'app', text: `${moved ? `session updated the branch (${head.slice(0, 7)}); ${held ? 'held, so it is pushed for CI and review but not merged' : 're-entering the merge pipeline'}` : 'session finished without changing the branch; re-checking'}${silent ? `. It ended without report_done or report_blocked${said ? `, saying: "${said}"` : ' and said nothing'}; the orchestrator reads its last message` : ''}` } },
+        { activity: { actor: 'app', text: `${moved ? `session updated the branch (${head.slice(0, 7)}); ${held ? heldText : 're-entering the merge pipeline'}` : 'session finished without changing the branch; re-checking'}${silent ? `. It ended without report_done or report_blocked${said ? `, saying: "${said}"` : ' and said nothing'}; the orchestrator reads its last message` : ''}` } },
       ], 'engine');
       if (silent) this.wakeOrchestrator('turn_ended_silent', id, this.silentTurnData(id, result, moved ? head : undefined));
       this.heldPolledAt.delete(id);
@@ -1538,8 +1553,9 @@ export class LiveEngine implements Engine {
     const implementer = this.store.config.models.find((m) => m.id === fm.implementer);
     const held = Boolean(implementer?.hold_for_review);
     const holdInto = this.holdIntoReason(base, fm.skip_merge);
-    // A held PR opens as a draft: no CI while it waits for a person, one run once it is released (dogfood f6).
-    const draft = this.store.config.ci.draft_while_held && (held || Boolean(fm.review_hold) || Boolean(fm.skip_merge) || Boolean(holdInto));
+    // A PR held for a person opens as a draft: no CI while it waits, one run once it is released (dogfood f6). A hold
+    // that waits on the orchestrator or the worker needs a CI verdict, so its PR opens ready (#195).
+    const draft = this.store.config.ci.draft_while_held && (held || Boolean(holdInto) || holdWaitsOnPerson(fm));
     const opId = this.store.journal.begin('creating_pr', id, { branch: fm.branch, base });
     this.store.mutateItem(id, [{ set: { op: 'pushing', op_started_at: this.now() } }], 'engine');
     await this.ports.git.pushSetUpstream(cwd, fm.branch!);
@@ -1682,7 +1698,7 @@ export class LiveEngine implements Engine {
       headSha = sync.head;
       pushed = true;
       if (hold) {
-        this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { ci_head_sha: headSha, ci_result: 'pending' } }, { activity: { actor: 'app', text: `held: rebased onto ${base}@${baseSha.slice(0, 7)} and pushed ${headSha.slice(0, 7)} so the PR and CI show the session's commits; not merging` } }], 'engine');
+        this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { ci_head_sha: headSha, ci_result: 'pending' } }, { activity: { actor: 'app', text: `held: rebased onto ${base}@${baseSha.slice(0, 7)} and pushed ${headSha.slice(0, 7)} so the PR ${this.draftsWhileHeld(id) ? 'shows the session\'s commits (a draft: CI runs once the hold is released)' : 'and CI show the session\'s commits'}; not merging` } }], 'engine');
         this.store.journal.end(opId, id, 'ok', { held: true, head: headSha });
         return;
       }
@@ -1827,7 +1843,7 @@ export class LiveEngine implements Engine {
     if (extra.length) {
       const list = extra.slice(0, 8).join(', ') + (extra.length > 8 ? `, and ${extra.length - 8} more` : '');
       const why = `commits after your approval touched ${extra.length} path${extra.length === 1 ? '' : 's'} the approved change did not: ${list}`;
-      this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, ...this.holdOps(why, 'app')], 'engine', { commit: `${id}: held (changed after approval)` });
+      this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, ...this.holdOps(why, 'app', 'agent')], 'engine', { commit: `${id}: held (changed after approval)` });
       this.store.journal.end(opId, id, 'aborted', { reason: 'outside_approved_scope', paths: extra.slice(0, 50) });
       this.wakeOrchestrator('scope_changed', id, { paths: extra.slice(0, 50).join('\n'), policy: 'Release the hold (unskip_merge) if these belong to the change: that approves them. Otherwise message_session to revert them, and the PR is checked again before it merges.' });
       return;
@@ -4007,10 +4023,21 @@ export class LiveEngine implements Engine {
     return `a pull request into ${base}: held for you before it merges (review.hold_into)`;
   }
 
-  /** The one way a hold is put on an item (#97): out of the merge queue, with the reason on the item and in its log. */
-  private holdOps(reason: string, by: 'user' | 'orchestrator' | 'worker' | 'app'): ItemOp[] {
+  /**
+   * The one way a hold is put on an item (#97): out of the merge queue, with the reason on the item and in its log. Who
+   * it waits on (#195) decides whether its PR is drafted: the user's and the app's holds for a person (review.hold_into,
+   * a loop's review) wait on a person; the orchestrator's and the worker's wait on an agent and hold the merge only.
+   */
+  private holdOps(reason: string, by: 'user' | 'orchestrator' | 'worker' | 'app', waitsOn: 'person' | 'agent' = by === 'user' || by === 'app' ? 'person' : 'agent'): ItemOp[] {
     const why = reason.trim().replace(/\s+/g, ' ').slice(0, 300);
-    return [{ set: { skip_merge: true, hold_reason: why } }, { activity: { actor: by, text: `held out of the merge queue: ${why}` } }];
+    return [{ set: { skip_merge: true, hold_reason: why, hold_waits_on: waitsOn } }, { activity: { actor: by, text: `held out of the merge queue: ${why}` } }];
+  }
+
+  /** Whether the item's PR is drafted while it is held (#195): `ci.draft_while_held`, and a hold that waits on a person. */
+  private draftsWhileHeld(id: string): boolean {
+    const item = this.store.requireItem(id);
+    const base = this.store.derived(item).base_branch;
+    return this.store.config.ci.draft_while_held && holdWaitsOnPerson(item.file.frontmatter, Boolean(base && this.store.config.review.hold_into.includes(base)));
   }
 
   private orchestratorHolds(id: string, reason: string): string {
