@@ -112,7 +112,7 @@ describe('the static marketing site', () => {
     expect(html).toContain('href="https://hurricaneharrison.com/"');
   });
 
-  it('does not invent published follow-ups or subscription-only setup', () => {
+  it('keeps planned posts unlinked and setup local without a Planestro login', () => {
     const blog = read(join(SITE, 'blog/index.html'));
     expect(blog.match(/class="planned-label"/g)).toHaveLength(2);
     expect(tags(blog, 'a').map((t) => attr(t, 'href')).filter((href) => href?.startsWith('/blog/')))
@@ -120,7 +120,10 @@ describe('the static marketing site', () => {
     expect(blog.match(/<section class="planned-section"[\s\S]*?<\/section>/)![0]).not.toContain('<a ');
     const guide = mainText(read(join(SITE, 'quick-start/index.html')));
     expect(guide).toContain('private repository');
-    expect(guide).toContain('Anthropic Console API key');
+    expect(guide).toContain('There is no Planestro account or login.');
+    expect(guide).toContain('complete Claude Code’s sign-in');
+    expect(guide).not.toMatch(/API[- ]keys?/i);
+    expect(mainText(read(join(SITE, 'index.html')))).not.toContain('Claude API access');
     expect(guide).toContain('A Codex subscription alone cannot run');
     expect(guide).toContain('npm run sample');
     expect(guide).toContain('gh repo create myproject --private');

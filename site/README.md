@@ -67,8 +67,9 @@ unverified. The GitHub snippet is an intentional user action, not an installer.
 
 The repository was private and `PAGES_ENABLED` was unset at implementation.
 Copy therefore says a public early release is forthcoming and installation
-requires repository access. Authentication guidance uses a Claude API key;
-Codex remains an optional implementer. There is no signup form or backend.
+requires repository access. The quick start uses existing local Claude Code
+and optional Codex logins; Planestro has no account or login screen. There is
+no signup form or backend.
 
 The existing `.github/workflows/pages.yml` can publish this directory once
 configured. This change does **not** enable it, set a custom domain, change DNS,

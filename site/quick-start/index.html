@@ -112,19 +112,15 @@ claude --version</code></pre>
                 Codex subscription alone cannot run Planestro’s live workflow.
               </p>
               <p>
-                For the public setup path, use an
-                <strong>Anthropic Console API key</strong>. After opening
-                Planestro in step 4, enter it in
-                <strong>Settings → This machine → Anthropic API key</strong>.
-                API usage is billed separately from a Claude subscription. The
-                key is stored in the gitignored machine configuration, not your
-                versioned project configuration.
+                <strong>There is no Planestro account or login.</strong>
+                Planestro runs locally and starts agent sessions using the
+                credentials available on your machine.
               </p>
               <p>
-                Planestro uses the Claude Agent SDK. See
-                <a href="https://code.claude.com/docs/en/agent-sdk/overview"
-                  >Anthropic’s authentication guidance</a
-                >. Keep keys out of command examples and committed files.
+                Run <code>claude</code> once, complete Claude Code’s sign-in,
+                then exit back to your terminal before starting Planestro.
+                GitHub and agent logins belong to those local tools, not to
+                Planestro.
               </p>
             </div>
           </section>
@@ -337,9 +333,8 @@ npm run planestro -- init ../myproject-planning --repo ../myproject --name &quot
                 <strong>Check Settings.</strong> Confirm the project’s base
                 branch, keep <code>engine.mode</code> in <code>dry-run</code>,
                 and check that the configured Claude model IDs are available to
-                your account. Set your API key under
-                <strong>This machine</strong> and review per-item budgets before
-                enabling live work.
+                your account. Confirm Claude Code is signed in on this machine
+                and review per-item budgets before enabling live work.
               </li>
               <li>
                 <strong>Try the lifecycle.</strong> Queue a clearly labeled
@@ -384,8 +379,8 @@ npm run planestro -- init ../myproject-planning --repo ../myproject --name &quot
             <h2>Just try the workflow.</h2>
             <p>
               After installing Planestro, the fictional Tidepool project lets
-              you explore without a GitHub project, an API key, or an agent
-              login. Node and Git are still needed to install Planestro.
+              you explore without a GitHub project or an agent login. Node
+              and Git are still needed to install Planestro.
             </p>
             <div class="code-block">
               <div class="code-heading">
@@ -438,8 +433,8 @@ npm run planestro -- init ../myproject-planning --repo ../myproject --name &quot
 codex login status</code></pre>
             </div>
             <p>
-              Codex supports ChatGPT sign-in for subscription access and API
-              keys for usage-based access. See
+              Sign in to the Codex CLI with your ChatGPT account. Planestro
+              uses the credentials available to that local CLI. See
               <a href="https://learn.chatgpt.com/docs/auth"
                 >OpenAI’s authentication guide</a
               >
