@@ -13,6 +13,8 @@ import { planReviewByDefault,
   type Config, type LocalConfig, type ServerEvent, type ActivityActor,
 } from '@planestro/shared';
 import { atomicWrite, cleanStaleTemps } from './atomicWrite.ts';
+import { managedAttachmentPath, managedAttachmentParts } from './managedAttachments.ts';
+import { assertSafePlanningGit } from './planningGitSafety.ts';
 import { DataDirInUseError } from '../exitCodes.ts';
 import { Journal } from './Journal.ts';
 import { GitCommitter } from './GitCommitter.ts';
@@ -101,6 +103,7 @@ export class DataStore {
   }
 
   static async open(dataDir: string, opts: DataStoreOptions = {}): Promise<DataStore> {
+    assertSafePlanningGit(dataDir);
     const store = new DataStore(dataDir, opts);
     if (opts.lock !== false) store.acquireLock();
     for (const d of ['items', 'prompts', 'releases', 'questions']) for (const f of cleanStaleTemps(join(dataDir, d))) opts.log?.('warn', `removed stale temp file ${d}/${f}`);
@@ -408,7 +411,7 @@ export class DataStore {
     const stamp = isoLocal().slice(0, 19).replace(/[-:T]/g, '').replace(/^(\d{8})(\d{6})$/, '$1-$2');
     const safe = basename(originalName).replace(/[^A-Za-z0-9._-]+/g, '-');
     const rel = `attachments/${id}/${stamp}-${safe}`;
-    atomicWrite(join(this.dataDir, rel), data);
+    atomicWrite(managedAttachmentPath(this.dataDir, id, `${stamp}-${safe}`, true), data);
     const entry = { path: rel, kind: 'managed' as const, added_at: isoLocal() };
     this.mutateItem(id, [{ set: { attachments: [...this.requireItem(id).file.frontmatter.attachments, entry] } }, { activity: { actor: actorToActivity(actor), text: `attached ${rel}` } }], actor, { commit: `${id}: attach ${safe}`, paths: [rel] });
     return entry;
@@ -424,13 +427,21 @@ export class DataStore {
     const fm = this.requireItem(id).file.frontmatter;
     const entry = fm.attachments.find((a) => a.path === path);
     if (!entry) throw new Error(`no attachment ${path} on ${id}`);
-    if (entry.kind === 'managed' && existsSync(join(this.dataDir, path))) unlinkSync(join(this.dataDir, path));
+    if (entry.kind === 'managed') {
+      const parts = managedAttachmentParts(path, id);
+      try { unlinkSync(managedAttachmentPath(this.dataDir, parts.id, parts.file)); }
+      catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
+    }
     this.mutateItem(id, [{ set: { attachments: fm.attachments.filter((a) => a.path !== path) } }], actor, { commit: `${id}: remove attachment ${basename(path)}`, paths: entry.kind === 'managed' ? [path] : [] });
   }
 
   /** Absolute path for an attachment (managed → inside data dir; reference → as given, or relative to the code repo). */
   attachmentAbsPath(entry: { path: string; kind: string }): string {
-    if (entry.kind === 'managed') return join(this.dataDir, entry.path);
+    if (entry.kind === 'managed') {
+      const parts = managedAttachmentParts(entry.path);
+      this.requireItem(parts.id);
+      return managedAttachmentPath(this.dataDir, parts.id, parts.file);
+    }
     return entry.path.startsWith('/') ? entry.path : join(this.codeRepoPath(), entry.path);
   }
 

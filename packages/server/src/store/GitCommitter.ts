@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { isoLocal } from '@planestro/shared';
+import { assertSafePlanningGit, assertSafePlanningPush, safePlanningPaths, planningStagePaths } from './planningGitSafety.ts';
 
 const execFileP = promisify(execFile);
 
@@ -48,10 +49,14 @@ export class GitCommitter {
    */
   commit(message: string, body?: string, paths?: string[]): boolean {
     if (!this.enabled) return false;
-    const scope = paths?.length ? ['--', ...paths] : [];
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        this.gitSync(['add', '-A', ...scope]);
+        assertSafePlanningGit(this.dir);
+        const selected = safePlanningPaths(this.dir, paths);
+        if (!selected.length) return false;
+        const scope = ['--', ...selected.map((p) => `:(top,literal)${p}`)];
+        const toStage = planningStagePaths(this.dir, selected);
+        if (toStage.length) this.gitSync(['add', '-A', '--', ...toStage]);
         if (!this.gitSync(['status', '--porcelain', ...scope]).trim()) return false;
         const args = ['commit', '-q', '-m', message];
         if (body) args.push('-m', body);
@@ -80,6 +85,7 @@ export class GitCommitter {
         const { ahead } = await this.status();
         if (ahead === undefined) return false;
         if (ahead === 0) return true;
+        assertSafePlanningPush(this.dir);
         await this.git(['push', '-q']);
         this.opts.log?.('info', `git: pushed ${ahead} commit(s)`);
         return true;

@@ -37,7 +37,7 @@ export function patchConfigFile(dataDir: string, patch: (doc: YAML.Document) => 
 }
 
 export function writeLocalConfig(dataDir: string, local: LocalConfig): void {
-  atomicWrite(join(dataDir, LOCAL_CONFIG_FILE), YAML.stringify(local, { lineWidth: 0 }));
+  atomicWrite(join(dataDir, LOCAL_CONFIG_FILE), YAML.stringify(local, { lineWidth: 0 }), 0o600);
 }
 
 /** Absolute code-repo path: local override, else config path relative to the data dir. */

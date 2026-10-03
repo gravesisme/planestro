@@ -11,6 +11,7 @@ import type { GitPort, GhPort, ProcPort, ClaudePort, AgentPort, AgentTurnOptions
 export class FakeWorld {
   worktrees = new Map<string, WorktreeEntry>();
   localBranches = new Set<string>();
+  localTips = new Map<string, string>();
   remoteBranches = new Map<string, string>();     // branch → sha
   commits = new Map<string, number>();            // worktree → commits ahead
   /** Files a fake agent "committed", by branch — so a dry run has real images to review. */
@@ -72,11 +73,19 @@ export class DryRunGitPort implements GitPort {
   async readBlob(_cwd: string, ref: string, path: string) { return this.w.files.get(ref.replace(/^origin\//, ''))?.get(path) ?? null; }
   private say(m: string) { this.w.log(`Would ${m}`); }
   async fetch(repo: string) { this.say(`git fetch origin (in ${repo})`); }
-  async revParse(cwd: string, ref: string) { if (ref === 'HEAD') return this.w.worktrees.get(cwd)?.head ?? this.w.sha(); return this.w.remoteBranches.get(ref.replace(/^origin\//, '')) ?? this.w.baseBranches[ref] ?? this.w.sha(); }
+  async revParse(cwd: string, ref: string) {
+    if (ref === 'HEAD') return this.w.worktrees.get(cwd)?.head ?? this.w.sha();
+    if (ref.startsWith('refs/heads/')) {
+      const branch = ref.slice('refs/heads/'.length);
+      const tip = [...this.w.worktrees.values()].find((w) => w.branch === branch)?.head ?? this.w.localTips.get(branch) ?? this.w.remoteBranches.get(branch) ?? this.w.sha();
+      this.w.localTips.set(branch, tip); return tip;
+    }
+    return this.w.remoteBranches.get(ref.replace(/^origin\//, '')) ?? this.w.baseBranches[ref] ?? this.w.sha();
+  }
   async refExists(_repo: string, ref: string) { return this.w.remoteBranches.has(ref.replace(/^(origin|refs\/heads)\//, '')) || ref.startsWith('origin/'); }
   async worktreeAddDetached(_repo: string, path: string, ref: string) { this.say(`git worktree add --detach ${path} ${ref}`); this.w.worktrees.set(path, { path, head: this.w.sha() }); }
   async worktreeAdd(_repo: string, path: string, branch: string, startRef: string) { this.say(`git worktree add -b ${branch} ${path} ${startRef}`); this.w.worktrees.set(path, { path, head: this.w.sha(), branch }); this.w.localBranches.add(branch); }
-  async worktreeRemove(_repo: string, path: string, force: boolean) { this.say(`git worktree remove${force ? ' --force' : ''} ${path}`); this.w.worktrees.delete(path); }
+  async worktreeRemove(_repo: string, path: string, force: boolean) { this.say(`git worktree remove${force ? ' --force' : ''} ${path}`); const wt = this.w.worktrees.get(path); if (wt?.branch) this.w.localTips.set(wt.branch, wt.head); this.w.worktrees.delete(path); }
   async worktreePrune() { this.say('git worktree prune'); }
   async worktreeList() { return [...this.w.worktrees.values()]; }
   async status(cwd: string) { const u = this.w.untracked.get(cwd) ?? []; const dirty = [...(this.w.dirty.has(cwd) ? ['src/fake.ts'] : []), ...u]; return { clean: dirty.length === 0, dirty }; }
@@ -141,7 +150,10 @@ export class DryRunGitPort implements GitPort {
   async pushRef(_repo: string, src: string, dst: string) { this.say(`git push origin ${src}:refs/heads/${dst}`); this.w.remoteBranches.set(dst, this.w.sha()); }
   async remoteHeads(): Promise<Map<string, string>> { return new Map(this.w.remoteBranches); }
   async remoteBranchSha(_repo: string, branch: string) { return this.w.remoteBranches.get(branch) ?? null; }
-  async deleteRemoteBranch(_repo: string, branch: string) { this.say(`git push origin --delete ${branch}`); this.w.remoteBranches.delete(branch); }
+  async deleteRemoteBranch(repo: string, branch: string, expected: string | null) {
+    if (expected === null) { if (this.w.remoteBranches.has(branch)) throw new Error(`remote branch ${branch} appeared after verification; kept it`); }
+    else if (await this.deleteRemoteBranchAt(repo, branch, expected) === 'moved') throw new Error(`remote branch ${branch} moved after verification; kept it`);
+  }
   async deleteRemoteBranchAt(_repo: string, branch: string, sha: string): Promise<'deleted' | 'moved' | 'gone'> {
     const now = this.w.remoteBranches.get(branch);
     if (now === undefined) return 'gone';
@@ -149,7 +161,12 @@ export class DryRunGitPort implements GitPort {
     this.say(`git push --force-with-lease=refs/heads/${branch}:${sha} origin :refs/heads/${branch}`); this.w.remoteBranches.delete(branch); return 'deleted';
   }
   async localBranchExists(_repo: string, branch: string) { return this.w.localBranches.has(branch); }
-  async deleteLocalBranch(_repo: string, branch: string) { this.say(`git branch -D ${branch}`); this.w.localBranches.delete(branch); }
+  async deleteLocalBranch(repo: string, branch: string, expected: string | null) {
+    if (!this.w.localBranches.has(branch)) return;
+    if (!expected || await this.revParse(repo, `refs/heads/${branch}`) !== expected) throw new Error(`local branch ${branch} moved after verification; kept it`);
+    if ([...this.w.worktrees.values()].some((w) => w.branch === branch)) throw new Error(`local branch ${branch} is checked out; kept it`);
+    this.say(`git update-ref -d refs/heads/${branch} ${expected}`); this.w.localBranches.delete(branch); this.w.localTips.delete(branch);
+  }
   async isAncestor(_repo: string, ancestor: string) { return !this.w.unreachable.has(ancestor); }
   async log() { return 'abc1234 (dry-run) fake commit'; }
 }
@@ -202,12 +219,15 @@ export class DryRunGhPort implements GhPort {
   async rerunAll(_repo: string, runId: number) { this.say(`gh run rerun ${runId}`); for (const p of this.w.prs.values()) if (p.cancelled) { p.cancelled = false; p.attempt = (p.attempt ?? 1) + 1; p.polls = 0; } }
   async previewUrl(_repo: string, sha: string): Promise<string | null> { return this.w.previews.get(sha) ?? null; }
   async closePr(_repo: string, number: number, comment: string) { this.say(`gh pr close ${number} --comment "${comment}"`); const p = this.w.prs.get(number); if (p) p.state = 'CLOSED'; }
-  async mergePr(_repo: string, number: number, opts: { deleteBranch: boolean }) {
-    this.say(`gh pr merge ${number} --merge${opts.deleteBranch ? ' --delete-branch' : ''}`);
-    const p = this.w.prs.get(number)!; p.state = 'MERGED'; p.mergedAt = new Date().toISOString(); p.mergeCommit = this.w.sha();
-    if (opts.deleteBranch) this.w.remoteBranches.delete(p.headRefName);
+  async mergePr(_repo: string, number: number, opts: { headSha: string }): Promise<'merged' | 'head_moved'> {
+    const p = this.w.prs.get(number)!;
+    const head = this.w.remoteBranches.get(p.headRefName) ?? p.headRefOid;
+    if (head !== opts.headSha) return 'head_moved';
+    this.say(`gh pr merge ${number} --merge --match-head-commit ${opts.headSha}`);
+    p.headRefOid = head; p.state = 'MERGED'; p.mergedAt = new Date().toISOString(); p.mergeCommit = this.w.sha();
     // The base moved: every other branch is behind it now, and syncs again before it merges.
     for (const [cwd, wt] of this.w.worktrees) if (wt.branch !== p.headRefName) this.w.behind.set(cwd, Math.max(1, this.w.behind.get(cwd) ?? 1));
+    return 'merged';
   }
   async branchCi(): Promise<CiStatus> { return { state: 'success' }; }
 }

@@ -48,6 +48,20 @@ commands). planestro checks its result afterwards.
 the item instead of deleting anything.
 
 **Secrets on disk.** `anthropic_api_key`, if you set it, is stored in plain text in
-`planestro.local.yml`, which is gitignored and never committed or pushed. Everything
+`planestro.local.yml`, which is written with owner-only permissions where supported and excluded from automatic commits.
+Initialization preserves custom ignore rules while adding the private exclusions.
+Planestro refuses startup or automatic commits when machine-local settings or
+runtime files are tracked, and refuses pushes whose outgoing history includes
+them. See the [recovery instructions](docs/troubleshooting.md#machine-local-files-are-tracked). Everything
 else in the data dir (items, plans, prompts, the journal) is committed to its git
 repository and pushed to its remote if it has one. Don't paste secrets into items.
+
+**Attachments.** Managed attachments are restricted to real files in a known item's
+attachment directory; symlinks and traversals are rejected. Active document formats
+(such as SVG, HTML and PDF) download instead of running on the control API's origin.
+Attachment responses also use a restrictive sandbox policy and disable MIME
+sniffing. Treat downloaded files as untrusted when opening them in another program.
+
+**Concurrent Git updates.** A merge is conditioned on the exact verified head SHA.
+Cleanup uses conditional ref deletion so a branch that changed after its ancestry
+check is kept for inspection; GitHub's merge operation does not delete it early.

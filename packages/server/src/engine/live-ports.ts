@@ -216,20 +216,35 @@ export class LiveGitPort implements GitPort {
     return map;
   }
   async remoteBranchSha(repo: string, branch: string) { const out = (await retrying(() => git(repo, ['ls-remote', '--heads', 'origin', branch]), GIT_RETRY_MS)).stdout.trim(); return out ? out.split(/\s+/)[0] : null; }
-  async deleteRemoteBranch(repo: string, branch: string) {
-    await refLocked(() => retrying(async () => { const r = await git(repo, ['push', 'origin', '--delete', branch], true); if (r.code !== 0 && !/remote ref does not exist/.test(r.stderr)) throw new Error(`delete remote ${branch}: ${r.stderr.trim()}`); }, GIT_RETRY_MS));
+  async deleteRemoteBranch(repo: string, branch: string, expected: string | null) {
+    if (expected === null) {
+      if (await this.remoteBranchSha(repo, branch)) throw new Error(`remote branch ${branch} appeared after verification; kept it`);
+    } else if (await this.deleteRemoteBranchAt(repo, branch, expected) === 'moved') {
+      throw new Error(`remote branch ${branch} moved after verification; kept it`);
+    }
   }
   async deleteRemoteBranchAt(repo: string, branch: string, sha: string): Promise<'deleted' | 'moved' | 'gone'> {
     return refLocked(() => retrying(async () => {
       const r = await git(repo, ['push', `--force-with-lease=refs/heads/${branch}:${sha}`, 'origin', `:refs/heads/${branch}`], true);
       if (r.code === 0) return 'deleted' as const;
-      if (/remote ref does not exist|unable to delete .*: remote ref does not exist/.test(r.stderr)) return 'gone' as const;
-      if (/stale info|\(stale info\)|rejected/.test(r.stderr)) return 'moved' as const;
+      // A retry after a successful deletion may report stale info, not "ref does not exist".
+      const now = await this.remoteBranchSha(repo, branch);
+      if (now === null) return 'gone' as const;
+      if (now !== sha) return 'moved' as const;
       throw new Error(`delete remote ${branch}: ${r.stderr.trim()}`);
     }, GIT_RETRY_MS));
   }
   async localBranchExists(repo: string, branch: string) { return this.refExists(repo, `refs/heads/${branch}`); }
-  async deleteLocalBranch(repo: string, branch: string) { if (await this.localBranchExists(repo, branch)) await git(repo, ['branch', '-D', branch]); }
+  async deleteLocalBranch(repo: string, branch: string, expected: string | null) {
+    await refLocked(async () => {
+      if (!await this.localBranchExists(repo, branch)) return;
+      if (!expected) throw new Error(`local branch ${branch} appeared after verification; kept it`);
+      if ((await this.worktreeList(repo)).some((w) => w.branch === branch)) throw new Error(`local branch ${branch} is checked out; kept it`);
+      // Compare-and-delete under Git's ref lock, rather than force-deleting whichever tip is there.
+      const r = await git(repo, ['update-ref', '--no-deref', '-d', `refs/heads/${branch}`, expected], true);
+      if (r.code !== 0) throw new Error(`local branch ${branch} could not be deleted at its verified tip; kept it: ${r.stderr.trim()}`);
+    });
+  }
   async isAncestor(repo: string, ancestor: string, descendant: string) { return (await git(repo, ['merge-base', '--is-ancestor', ancestor, descendant], true)).code === 0; }
   async log(cwd: string, range: string, n: number) { return (await git(cwd, ['log', '--oneline', `-n${n}`, range], true)).stdout.trim(); }
 }
@@ -314,8 +329,16 @@ export class LiveGhPort implements GhPort {
     return null;
   }
   async closePr(repo: string, number: number, comment: string) { await gh(['pr', 'close', String(number), '--repo', repo, '--comment', comment]); }
-  async mergePr(repo: string, number: number, opts: { deleteBranch: boolean }) {
-    await gh(['pr', 'merge', String(number), '--repo', repo, '--merge', ...(opts.deleteBranch ? ['--delete-branch'] : [])]);
+  async mergePr(repo: string, number: number, opts: { headSha: string }): Promise<'merged' | 'head_moved'> {
+    try {
+      await gh(['pr', 'merge', String(number), '--repo', repo, '--merge', '--match-head-commit', opts.headSha]);
+      return 'merged';
+    } catch (e) {
+      // A mismatched head is a validation stop, not a reason to retry against a new head.
+      const view = await this.prView(repo, number);
+      if (view.state === 'OPEN' && view.headRefOid !== opts.headSha) return 'head_moved';
+      throw e;
+    }
   }
   async branchCi(repo: string, branch: string, workflow: string): Promise<CiStatus> {
     const runs = JSON.parse(await ghRead(['run', 'list', '--repo', repo, '--branch', branch, '--workflow', workflow, '--event', 'push', '--limit', '5', '--json', 'databaseId,status,conclusion,headSha,url,createdAt'])) as any[];
