@@ -869,6 +869,12 @@ body:has(#image-dialog[open]) {
     font-size: 29px;
   }
 }
+@media (max-width: 900px) {
+  .home-hero-grid {
+    grid-template-columns: 1fr;
+    gap: 35px;
+  }
+}
 @media (max-width: 760px) {
   .wrap {
     padding-inline: 24px;
