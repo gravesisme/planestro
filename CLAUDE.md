@@ -126,6 +126,11 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   prompt that stands on its own, never planning or an answer to the session's own question), or
   `over_budget` before anything is spent. The fresh session replaces `session_id`; its intent is
   persisted first (`op_data.fresh_brief`). `commit_paths` commits named dirty files with no turn.
+- A report (`submit_plan`, `report_done`, `report_blocked`) whose call never reached planestro is applied
+  from the turn's record (#167): the port keeps the session's last lost report with its arguments, the engine
+  persists it in `op_data.outbox` and applies it through the same tool when the turn ends (or at the next start),
+  and those tools are idempotent. The prompt goes to the SDK as a stream held open while background work runs, so
+  stdin is not closed under it (sdk-notes gotcha 11).
 - A session slot is held only while something drives the item (a turn, an engine step,
   an op), never by an epic. An active item that nothing drives for
   `concurrency.stall_after_min` is carried on once (`driveStalls`), then blocked `stalled`.

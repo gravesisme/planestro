@@ -173,7 +173,14 @@ export interface ClaudeTurnExtras {
   onResumeQuote?(quote: ResumeQuote): 'go' | 'stop';
   /** Decide a permission prompt. Return 'park' to persist + deny + park, 'deny' with a reason, or 'allow'. */
   onPermission(req: PermissionRequest): Promise<{ action: 'allow' } | { action: 'deny'; message: string } | { action: 'park' }>;
+  /**
+   * The session's last report (submit_plan, report_done, report_blocked) whose call never reached its handler, as soon as
+   * the port sees it, and undefined when a later report landed (#167). The engine keeps it in `op_data.outbox`.
+   */
+  onUndelivered?(report: UndeliveredReport | undefined): void;
 }
+/** A report the session made whose call was lost on the way to planestro (sdk-notes gotcha 11), with the arguments it was made with. */
+export interface UndeliveredReport { tool: 'submit_plan' | 'report_done' | 'report_blocked'; args: Record<string, unknown>; error: string }
 export type TurnOptions = AgentTurnOptions & ClaudeTurnExtras;
 /** What reloading a conversation costs before it does any work, as the CLI quotes it when it resumes one. */
 export interface ResumeQuote {
@@ -210,6 +217,8 @@ export interface TurnResult {
   parked?: 'question' | 'permission';
   /** planestro tool calls that came back as errors without reaching their handler (a transport failure). */
   toolFailures?: { tool: string; error: string }[];
+  /** The last report the session made that never reached planestro, unless a later one did (#167): the engine applies it. */
+  undelivered?: UndeliveredReport;
   /** Set with subtype `usage_exhausted`: the model is out of usage (the provider's message, and its reset time when it gave one). */
   usageLimit?: { message: string; resetsAt?: string };
   /** The most pressing rate-limit reading the turn saw (Claude subscriptions report one per turn): what the usage guard reads. */

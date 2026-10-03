@@ -100,16 +100,30 @@ a live worker) would have matched it.
 11. **In-process MCP tool calls can fail late in a long session** (seen live on
    HH-94, turn 46: `submit_plan` failed 3× with `Tool permission request
    failed: AbortError: Stream closed`, then succeeded on a fresh resumed
-   turn). Treat planestro tool results as fallible: the engine's no_plan /
-   done detection paths are the safety net, and a resumed turn re-running the
-   tool is the recovery. Cause not yet isolated (SDK-internal transport; the
-   message points at the `canUseTool` control channel, which plan mode uses
-   even for planestro's own tools — gotcha 10). The port records such calls
-   (`noteToolFailures`: an errored `tool_result` for an `mcp__planestro__*`
-   call, whose handler never ran) in `TurnResult.toolFailures`; the engine
-   logs each one, resumes a plan turn once to hand the plan in again, and
-   blocks `no_plan` naming the transport if that fails too. An identical
-   re-submit of a recorded plan is a no-op.
+   turn). Cause (isolated for #167 on SDK 0.3.251 / CLI 2.1.288): given a
+   string `prompt`, the SDK treats the query as a single user turn and closes
+   the CLI's stdin at the first `result`. Work that outlives that result — a
+   background agent (`Agent` with `run_in_background`) or the follow-up turn a
+   finished background Bash starts — then has no control channel: the CLI
+   throws `Stream closed` for every SDK-MCP call and `can_use_tool` request
+   (the current CLI words it "The tool call was interrupted before a result
+   was received"), the handler never runs, and a background Bash's follow-up
+   turn silently never happens. Reproduced with a background agent calling an
+   SDK-MCP tool after the main turn's result. Fix: the port passes the prompt
+   as a stream (`InputGate`) and ends it at a `result` only when the level
+   signal `background_tasks_changed` lists no non-ambient task, or 30 s after
+   the last one ended with no follow-up turn; a CLI that never sends that
+   signal ends where it always did. Still treat planestro tool results as
+   fallible (a crash, a kill): the port records such calls
+   (`noteToolFailures`, `TurnResult.toolFailures`) and the session's last
+   report call that never reached its handler with its arguments
+   (`ReportWatch` → `TurnResult.undelivered`, persisted at once as
+   `op_data.outbox`). The engine applies that report through the same tool
+   when the turn ends (or at the next start, for a turn the engine's stop
+   killed) instead of resuming the session to hand it in again; the report
+   tools are idempotent, so a call that did land is not recorded twice. A
+   loss with no arguments to apply still gets one resumed retry for a plan,
+   then `no_plan` naming the transport.
 12. **A model that is out of usage** (subscription limit, or a model that needs
    credits the account lacks) is visible three ways, and planestro reads all
    of them (`noteUsage` / `classifyUsage` in `LiveClaudePort.ts`): a

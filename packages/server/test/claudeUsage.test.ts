@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { noteUsage, classifyUsage, rateLimitSnapshot, type UsageSignals, noteToolFailures, noteContext, resumeQuoteOf, settleCost, lastCostState, resumeWatch, type ContextSeen } from '../src/engine/sessions/LiveClaudePort.ts';
-import type { TurnResult } from '../src/engine/ports.ts';
+import { noteUsage, classifyUsage, rateLimitSnapshot, type UsageSignals, noteToolFailures, InputGate, ReportWatch, noteContext, resumeQuoteOf, settleCost, lastCostState, resumeWatch, type ContextSeen } from '../src/engine/sessions/LiveClaudePort.ts';
+import type { TurnResult, UndeliveredReport } from '../src/engine/ports.ts';
 
 const result = (over: Partial<TurnResult> = {}): TurnResult => ({ subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', ...over });
 const feed = (msgs: unknown[]) => { const u: UsageSignals = {}; for (const m of msgs) noteUsage(m, u); return u; };
@@ -173,5 +173,63 @@ describe('what a resume costs and reports (#64)', () => {
     expect(await ask({})).toEqual({ continue: true });            // asked once per turn
     w.cleanup();
     expect(existsSync(file)).toBe(false);
+  });
+});
+
+describe('the prompt stays open while background work runs (#167)', () => {
+  const tasks = (n: number) => ({ type: 'system', subtype: 'background_tasks_changed', tasks: Array.from({ length: n }, (_, i) => ({ task_id: `t${i}`, task_type: 'local_agent', description: 'x' })) });
+  const drain = async (g: InputGate) => { const it = g.open('hi'); expect((await it.next()).value.message.content).toBe('hi'); return it.next(); };
+
+  it('ends at a result with no background task, as a string prompt did', async () => {
+    const g = new InputGate(); const end = drain(g);
+    g.see({ type: 'assistant', message: { content: [] } }); g.see({ type: 'result' });
+    expect((await end).done).toBe(true);
+  });
+
+  it('a result while a background agent runs keeps it open; the follow-up turn\'s result ends it', async () => {
+    const g = new InputGate(); const end = drain(g);
+    g.see(tasks(1)); g.see({ type: 'result' });
+    expect(g.closed).toBe(false);
+    g.see(tasks(0)); g.see({ type: 'system', subtype: 'init' }); g.see({ type: 'assistant', message: { content: [] } });
+    expect(g.closed).toBe(false);
+    g.see({ type: 'result' });
+    expect((await end).done).toBe(true);
+  });
+
+  it('ambient tasks do not count, and a last task that ends with no follow-up turn ends it after the grace', async () => {
+    const g = new InputGate(5); const end = drain(g);
+    g.see({ ...tasks(0), tasks: [{ task_id: 'w', task_type: 'x', description: 'watcher', ambient: true }] }); g.see({ type: 'result' });
+    expect(g.closed).toBe(true);
+    const h = new InputGate(5); const end2 = drain(h);
+    h.see(tasks(1)); h.see({ type: 'result' }); h.see(tasks(0));
+    expect(h.closed).toBe(false);
+    expect((await end2).done).toBe(true);
+    await end;
+  });
+});
+
+describe('reports lost in transport (#167)', () => {
+  const call = (id: string, name: string, input: Record<string, unknown>) => ({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] } });
+  const answer = (id: string, text: string, is_error = false) => ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, is_error, content: [{ type: 'text', text }] }] } });
+  const watch = (msgs: unknown[], end = true) => { const seen: (UndeliveredReport | undefined)[] = []; const w = new ReportWatch((r) => seen.push(r)); for (const m of msgs) w.see(m); if (end) w.end(); return seen; };
+
+  it('a report_done whose call errored is kept with its arguments', () => {
+    expect(watch([call('a', 'mcp__planestro__report_done', { summary: 'Did it', hold: 'until HH-1' }), answer('a', 'Stream closed', true)]))
+      .toEqual([{ tool: 'report_done', args: { summary: 'Did it', hold: 'until HH-1' }, error: 'Stream closed' }]);
+  });
+
+  it('a later report that landed clears it; an earlier one answered late does not decide', () => {
+    expect(watch([call('a', 'mcp__planestro__report_done', { summary: 'x' }), answer('a', 'Stream closed', true), call('b', 'mcp__planestro__report_done', { summary: 'x' }), answer('b', 'Recorded. End your turn now.')]).at(-1)).toBeUndefined();
+    expect(watch([call('a', 'mcp__planestro__report_done', { summary: 'x' }), call('b', 'mcp__planestro__report_blocked', { reason: 'y' }), answer('a', 'Stream closed', true), answer('b', 'Recorded.')])).toEqual([]);
+  });
+
+  it("ExitPlanMode is a plan hand-in: planestro's own denial landed, a transport error did not", () => {
+    expect(watch([call('a', 'ExitPlanMode', { plan: '# p' }), answer('a', 'Plan recorded by planestro. Do not use ExitPlanMode; end your turn now.', true)])).toEqual([]);
+    expect(watch([call('a', 'ExitPlanMode', { plan: '# p' }), answer('a', 'Tool permission request failed: AbortError: Stream closed', true)])).toEqual([{ tool: 'submit_plan', args: { plan: '# p' }, error: 'Tool permission request failed: AbortError: Stream closed' }]);
+  });
+
+  it('a last report call with no answer when the stream ended may not have landed', () => {
+    expect(watch([call('a', 'mcp__planestro__submit_plan', { plan: '# p' })])).toEqual([{ tool: 'submit_plan', args: { plan: '# p' }, error: 'the session ended before the call was answered' }]);
+    expect(watch([call('a', 'mcp__planestro__add_note', { markdown: 'n' })])).toEqual([]);
   });
 });
