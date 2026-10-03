@@ -1,6 +1,6 @@
 import { join, relative, isAbsolute, extname, basename, matchesGlob } from 'node:path';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
-import { resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1 } from '@planestro/shared';
+import { resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote, type CiQueue, type UndeliveredReport } from './ports.ts';
@@ -843,7 +843,7 @@ export class LiveEngine implements Engine {
       ...(by === 'orchestrator' ? [{ activity: { actor: by, text: `approved the plan on your behalf${notes ? `: ${notes}` : ''}` } }] : notes ? [{ activity: { actor: by, text: `approval notes: ${notes}` } }] : []),
     ], by, { commit: `${id}: approve plan${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
     // queued, not dropped: the orchestrator can decide while the planner's turn is still ending
-    this.queueFollowUp(id, () => this.runTurnFor(id, 'implement', this.withHoldNote(id, this.withDelivered(id, 'implement-plan', this.store.renderPrompt('implement-plan', this.store.requireItem(id), { approval_notes: notes?.trim() || '(none)' }))), [], [], { opener: true }));
+    this.queueFollowUp(id, () => this.runTurnFor(id, 'implement', this.withLoopNote(id, this.withHoldNote(id, this.withDelivered(id, 'implement-plan', this.store.renderPrompt('implement-plan', this.store.requireItem(id), { approval_notes: notes?.trim() || '(none)' })))), [], [], { opener: true }));
   }
 
   async rejectPlan(id: string, message: string, by: 'user' | 'orchestrator' = 'user', { amend = false }: { amend?: boolean } = {}): Promise<void> {
@@ -1082,7 +1082,7 @@ export class LiveEngine implements Engine {
     // opening turn died before the agent heard the task, or the thread was lost — a fresh conversation
     // gets the phase's full prompt first, and the resume note after it.
     if (!resumeId && !replaced && !opts.opener && !opts.final && (phase === 'plan' || phase === 'implement')) {
-      const opener = phase === 'plan' ? this.withImplementer(id, this.withDelivered(id, 'plan-item', this.store.renderPrompt('plan-item', item))) : this.withDelivered(id, 'implement-plan', this.store.renderPrompt('implement-plan', item, { approval_notes: String(fm.op_data?.approval_notes ?? '').trim() || '(none)' }));
+      const opener = phase === 'plan' ? this.withImplementer(id, this.withDelivered(id, 'plan-item', this.store.renderPrompt('plan-item', item))) : this.withLoopNote(id, this.withDelivered(id, 'implement-plan', this.store.renderPrompt('implement-plan', item, { approval_notes: String(fm.op_data?.approval_notes ?? '').trim() || '(none)' })));
       prompt = `${opener}\n\n---\n\n${prompt}`;
       this.store.mutateItem(id, [{ activity: { actor: 'app', text: `no ${def.label} conversation to resume: starting a fresh one with the full ${phase} prompt` } }], 'engine');
     }
@@ -1431,6 +1431,8 @@ export class LiveEngine implements Engine {
     if (opData !== fm.op_data) this.store.mutateItem(id, [{ set: { op_data: opData } }], 'engine'); // clean: the next dirty turn gets its reminders afresh
     await this.ports.git.fetch(this.repo);
     const { ahead } = await this.ports.git.aheadBehind(cwd, `origin/${base}`, 'HEAD');
+    // A loop item whose turn ended before it was green and before it was done carries on (#171), not to a pull request.
+    if (fm.status === 'IN_PROGRESS' && fm.loop && !summary && result.numTurns > 0 && !loopGreen(fm.loop_state)) { await this.carryOnLoop(id, phase); return; }
     if (fm.status === 'IN_PROGRESS') {
       if (ahead === 0) { this.block(id, 'no_commits', 'the session reported done but the branch has no commits ahead of its base'); return; }
       if (await this.blockOversize(id)) return;
@@ -1462,6 +1464,24 @@ export class LiveEngine implements Engine {
       this.heldPolledAt.delete(id);
       void this.tick();
     }
+  }
+
+  /**
+   * A loop item's turn ended mid-loop (#171): its session is asked to carry on from its last tally. Only on
+   * progress: a turn that reported no new iteration since the last carry-on blocks the item (`loop_stalled`),
+   * so a session that stops iterating is never resumed forever; the iteration budget bounds the rest.
+   */
+  private async carryOnLoop(id: string, phase: TurnPhase): Promise<void> {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    const max = fm.loop!.max_iterations;
+    const st = fm.loop_state; const at = st?.iteration ?? 0;
+    const tally = st ? `${st.passing}/${st.total} passing` : 'no iteration reported';
+    const last = fm.op_data?.loop_carried_at;
+    if (typeof last === 'number' && last >= at) { this.block(id, 'loop_stalled', `the turn ended mid-loop again without reporting a new iteration (still at ${at}/${max}, ${tally}). ${await this.loopDiffSummary(id)}`); return; }
+    const cannot = this.cannotStart(fm, phase, 'auto');
+    if (cannot) { this.block(id, 'loop_stalled', `the turn ended mid-loop (iteration ${at}/${max}, ${tally}) and the item cannot pay for another turn: ${cannot}. ${await this.loopDiffSummary(id)}`); return; }
+    this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), loop_carried_at: at } } }, { activity: { actor: 'app', text: `the turn ended mid-loop (iteration ${at}/${max}, ${tally}); asking the session to carry on` } }], 'engine');
+    await this.runTurnFor(id, phase, this.withLoopNote(id, `Your turn ended before the loop was green, and you did not report it done. Carry on from where you are: the next iteration, then report_iteration. ${max - at} iteration${max - at === 1 ? '' : 's'} left. If you cannot get it green, report_blocked with what you learned.`), [], [], { fresh: 'auto' });
   }
 
   /** The one follow-up for a turn that committed without report_done (#99): the report, and nothing else. */
@@ -2539,23 +2559,32 @@ export class LiveEngine implements Engine {
       add_note: async (markdown, attach) => { const cur = getSection(s.requireItem(id).file, 'Notes'); s.mutateItem(id, [{ section: 'Notes', body: cur ? `${cur}\n\n${markdown}` : markdown }], 'engine', { commit: `${id}: worker note` }); const att = this.attachFromWorktree(id, attach); return `Note recorded.${att ? ` ${att}` : ''}`; },
       append_activity: async (text) => { s.mutateItem(id, [{ activity: { actor: 'worker', text } }], 'engine'); return 'Recorded.'; },
       report_progress: async (parts) => this.recordParts(id, parts) ?? 'Recorded.',
-      report_done: async (summary, parts, hold, attach) => {
+      report_iteration: async (passing, total, note) => this.recordIteration(id, passing, total, note),
+      report_done: async (summary, parts, hold, attach, review) => {
+        // A loop item is done when it is green, and hands off with its review (#171); before anything is recorded.
+        const loopRefusal = this.loopDoneRefusal(id, review);
+        if (loopRefusal) return loopRefusal;
+        const before = s.requireItem(id).file.frontmatter;
+        // A retry of a report that did land (#167): nothing is recorded twice, the loop's review included.
+        const repeat = before.op_data?.done_summary === summary && (!hold || before.skip_merge);
         const bad = parts === undefined ? undefined : this.recordParts(id, parts);
         const att = this.attachFromWorktree(id, attach);
+        const filed = !repeat && this.fileLoopReview(id, review);
         const cur = s.requireItem(id).file.frontmatter;
-        // A retry of a report that did land (#167): nothing is recorded twice.
-        if (cur.op_data?.done_summary === summary && (!hold || cur.skip_merge)) return `Already recorded by planestro${bad ? `, but ${bad}` : '.'}${att ? ` ${att}` : ''} End your turn now.`;
+        if (repeat) return `Already recorded by planestro${bad ? `, but ${bad}` : '.'}${att ? ` ${att}` : ''} End your turn now.`;
         const ops: ItemOp[] = [{ set: { op_data: { ...(cur.op_data ?? {}), done_summary: summary } } }, { activity: { actor: 'worker', text: `done: ${summary.slice(0, 300)}` } }];
         // The worker that knows its pull request must wait says so (#97). Recorded here, with the done: the pull
         // request is opened from the item as persisted, and no drive path sees the item before this turn ends.
         const asked = typeof hold === 'string' && cur.kind !== 'epic' && (cur.status === 'IN_PROGRESS' || cur.status === 'IN_REVIEW') && !cur.skip_merge ? hold.trim() : '';
-        const held = asked !== '' && !cur.op_data?.hold_waived;
-        if (held) ops.push(...this.holdOps(asked, 'worker'));
+        // A loop's hand-off is held for the user's review of what it did, unless the worker named its own hold (#171).
+        const loopHold = !asked && filed && cur.status === 'IN_PROGRESS' && !cur.skip_merge && !cur.op_data?.hold_waived ? `loop review: ${cur.loop_state!.passing}/${cur.loop_state!.total} checks green after ${cur.loop_state!.iteration} iteration${cur.loop_state!.iteration === 1 ? '' : 's'}; read the review on the item before releasing it` : '';
+        const held = (asked !== '' || loopHold !== '') && !cur.op_data?.hold_waived;
+        if (held) ops.push(...this.holdOps(asked || loopHold, asked ? 'worker' : 'app'));
         // A hold the user released, or left out at approval, is not put back by a later turn.
         else if (asked) ops.push({ activity: { actor: 'app', text: `the worker asked for a hold (${asked.slice(0, 200)}); not held: you released this item's hold, or approved its plan without one` } });
         s.mutateItem(id, ops, 'engine', held ? { commit: `${id}: skip merge` } : {});
-        if (held) this.note('info', `${id}: its worker asked for the pull request to be held: ${asked.slice(0, 200)}`);
-        return `Recorded${held ? ': planestro keeps the pull request out of the merge queue until the user releases the hold' : ''}${bad ? `, but ${bad}` : '.'}${att ? ` ${att}` : ''} End your turn now.`;
+        if (held) this.note('info', asked ? `${id}: its worker asked for the pull request to be held: ${asked.slice(0, 200)}` : `${id}: its loop is green; the pull request is held for your review`);
+        return `Recorded${filed ? ', with your review filed on the item' : ''}${held ? ': planestro keeps the pull request out of the merge queue until the user releases the hold' : ''}${bad ? `, but ${bad}` : '.'}${att ? ` ${att}` : ''} End your turn now.`;
       },
       report_blocked: async (reason, parts) => {
         // A park is a wait, not a block (#168): refused in words while the session waits on a ruling.
@@ -2572,6 +2601,69 @@ export class LiveEngine implements Engine {
       hand_off: async (to, paths, note) => this.handOff(id, to, paths, note, 'worker'),
       get_item: async () => serializeItemFile(s.requireItem(id).file),
     };
+  }
+
+  // ---- loop until green (#171) ----
+  /**
+   * One iteration of a loop item, as the worker tallies it: logged, persisted in `loop_state`, and counted
+   * against `loop.max_iterations`. The iteration that spends the budget without going green blocks the item
+   * (`loop_cap`) with the tally and the branch's diff, so a loop never runs on by itself.
+   */
+  private async recordIteration(id: string, passing: number, total: number, note: string): Promise<string> {
+    const cur = this.store.requireItem(id).file.frontmatter;
+    if (!cur.loop) return 'Not a loop item: this item has no iteration budget. Use append_activity for progress.';
+    if (cur.status !== 'IN_PROGRESS' && cur.status !== 'IN_REVIEW') return `Not now: ${id} is ${cur.status}; iterations are reported while implementing.`;
+    if (cur.blocked) return 'Not recorded: this item is blocked. End your turn now.';
+    const bad = loopTallyProblem(passing, total);
+    if (bad) return `Rejected: ${bad}. Call report_iteration again.`;
+    const max = cur.loop.max_iterations;
+    const iteration = (cur.loop_state?.iteration ?? 0) + 1;
+    const line = String(note ?? '').replace(/\s+/g, ' ').trim().slice(0, 300);
+    const state = { iteration, passing, total, ...(line ? { line } : {}), at: this.now() };
+    this.store.mutateItem(id, [{ set: { loop_state: state } }, { activity: { actor: 'worker', text: loopLine(state, max) } }], 'engine');
+    if (loopGreen(state)) return `Recorded: ${passing}/${total}, all green. Finish now: commit, then call report_done with your REVIEW.md as \`review\` and the captures as \`attach\`.`;
+    if (iteration >= max) {
+      this.block(id, 'loop_cap', `the loop spent its ${max} iteration${max === 1 ? '' : 's'} (loop.max_iterations) without going green: ${passing}/${total} passing at the last one${line ? ` (${line})` : ''}. ${await this.loopDiffSummary(id)}`);
+      return `Recorded. That was the last of this item's ${max} iterations and it is not green, so planestro has blocked the item for the user with your tally and the branch's diff. Commit what you have, then end your turn now; do not iterate further.`;
+    }
+    return `Recorded: iteration ${iteration} of ${max}, ${passing}/${total} passing; ${max - iteration} left.`;
+  }
+
+  /** What the branch holds against its base, for a loop that stopped: the head and the files it changed. */
+  private async loopDiffSummary(id: string): Promise<string> {
+    try {
+      const item = this.store.requireItem(id); const fm = item.file.frontmatter; const base = this.store.derived(item).base_branch;
+      if (!fm.worktree || !base) return 'No branch to describe.';
+      const cwd = this.absWorktree(fm.worktree);
+      const head = await this.ports.git.revParse(cwd, 'HEAD');
+      const files = await this.ports.git.changedFiles(cwd, `origin/${base}`, head);
+      if (!files.length) return `Last diff: nothing committed ahead of ${base} (head ${head.slice(0, 7)}).`;
+      return `Last diff (head ${head.slice(0, 7)} against ${base}): ${files.length} file${files.length === 1 ? '' : 's'} — ${files.slice(0, 12).map((f) => `${f.change} ${f.path}`).join(', ')}${files.length > 12 ? ', …' : ''}.`;
+    } catch (e) { return `The diff could not be read: ${(e as Error).message.replace(/\s+/g, ' ').slice(0, 160)}.`; }
+  }
+
+  /** Why a loop item's report_done is not taken yet (undefined: it is): not green, or its first hand-off without a review. */
+  private loopDoneRefusal(id: string, review: string | undefined): string | undefined {
+    const cur = this.store.requireItem(id).file.frontmatter;
+    if (!cur.loop || cur.kind === 'epic') return undefined;
+    const st = cur.loop_state;
+    if (!loopGreen(st)) return `Rejected: this is a loop-until-green item and its last iteration ${st ? `was ${st.passing}/${st.total} passing` : 'was never reported'}. Report each iteration with report_iteration, and call report_done once every check passes (or report_blocked if they cannot). Nothing was recorded.`;
+    if (cur.status === 'IN_PROGRESS' && !review?.trim()) return 'Rejected: a loop-until-green item hands off with its review. Call report_done again with the markdown of your REVIEW.md as `review` (each finding, its check, before and after, the checks satisfied) and the captures as `attach`. Nothing was recorded.';
+    return undefined;
+  }
+
+  /** A loop's REVIEW.md, filed on the item: in its Notes, where the page shows it, and as a managed attachment. */
+  private fileLoopReview(id: string, review: string | undefined): boolean {
+    const cur = this.store.requireItem(id).file;
+    if (!cur.frontmatter.loop || !review?.trim()) return false;
+    const st = cur.frontmatter.loop_state;
+    const heading = `## Loop review${st ? ` (iteration ${st.iteration}, ${st.passing}/${st.total} green)` : ''}`;
+    const body = `${heading}\n\n${demoteH1(review.trim())}`;
+    const notes = getSection(cur, 'Notes');
+    this.store.mutateItem(id, [{ section: 'Notes', body: notes ? `${notes}\n\n${body}` : body }, { activity: { actor: 'app', text: 'filed the loop\'s REVIEW.md in Notes' } }], 'engine', { commit: `${id}: loop review` });
+    try { this.store.addManagedAttachment(id, 'REVIEW.md', Buffer.from(review.trim() + '\n'), 'engine'); }
+    catch (e) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `REVIEW.md not attached (it is in Notes): ${(e as Error).message.slice(0, 160)}` } }], 'engine'); }
+    return true;
   }
 
   /**
@@ -3577,7 +3669,7 @@ export class LiveEngine implements Engine {
     const reported: { done?: string; blocked?: string } = {};
     const none = async () => 'not available in a conflict session: resolve the merge, then report_done or report_blocked';
     const tools: TurnTools = {
-      submit_plan: none, submit_breakdown: none, add_note: none, report_progress: none, hand_off: none,
+      submit_plan: none, submit_breakdown: none, add_note: none, report_progress: none, report_iteration: none, hand_off: none,
       append_activity: async (t) => { this.store.mutateItem(id, [{ activity: { actor: 'worker', text: `[conflict session] ${String(t).slice(0, 500)}` } }], 'engine'); return 'appended'; },
       report_done: async (s) => { reported.done = String(s); return 'recorded: planestro checks your merge and pushes it. End your turn now.'; },
       report_blocked: async (r) => { reported.blocked = String(r); return 'recorded. End your turn now.'; },
@@ -3891,6 +3983,16 @@ export class LiveEngine implements Engine {
     if (!reason?.trim()) return 'not held: say why, the reason is shown on the item';
     this.store.mutateItem(id, this.holdOps(reason, 'orchestrator'), 'orchestrator', { commit: `${id}: skip merge` });
     return 'held';
+  }
+
+  /** A loop item's rules (#171), from the `loop-until-green` partial: in code, so a data dir's older implement-plan still gets them. */
+  private withLoopNote(id: string, rendered: string): string {
+    const item = this.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    if (!fm.loop) return rendered;
+    const st = fm.loop_state;
+    const loop = { max_iterations: fm.loop.max_iterations, used: st?.iteration ?? 0, tally: st ? `${st.passing}/${st.total} passing` : 'none yet', goal: fm.loop.goal?.trim() || 'every check passes: the ones the plan names, and the project\'s full suite' };
+    return `${rendered}\n\n${this.store.renderPrompt('loop-until-green', item, { loop })}`;
   }
 
   /**

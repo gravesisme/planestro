@@ -112,6 +112,12 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   `skip_merge` / `approve_plan`, the worker's `report_done` `hold`. A plan that states a merge
   hold is found by `holdShapeOf`, read from the Plan as it stands and never persisted; a hold the
   user released or left out is not put back by the worker (`op_data.hold_waived`) (#97).
+- **Loop until green** (#171) is the orthogonal, authoritative `loop: {max_iterations, goal?}`, not a
+  `kind`. The worker's `report_iteration` tallies each pass into `loop_state` and Activity and counts
+  it against `max_iterations`; the pass that spends it unless green blocks `loop_cap` (tally + diff).
+  A turn that ends mid-loop is carried on once per new iteration, else `loop_stalled`. `report_done`
+  is refused until green, and the first one carries `review` (REVIEW.md): filed in Notes and as an
+  attachment, and the PR held by `holdOps` (`loop review: …`) unless `hold_waived`.
 - `taken_over` (**take over** / **hand back**, `Engine.takeOver` / `handBack`) is also
   orthogonal: a person finishes the item by hand. It aborts the live turn, drops what
   was queued for it, and every drive path (turns, wakes, triage, stalls, fix turns,

@@ -162,7 +162,7 @@ export class LiveCodexPort implements AgentPort<AgentTurnOptions> {
       const answer = await o.tools.hand_off(final.hand_off.to, final.hand_off.paths, final.hand_off.note ?? '');
       o.onOutput(`hand_off → ${final.hand_off.to}: ${answer}`);
     }
-    if (final.outcome === 'done') { await o.tools.report_done(final.summary, final.parts ?? undefined, final.hold ?? undefined); result.done = final.summary; }
+    if (final.outcome === 'done') { const answer = await o.tools.report_done(final.summary, final.parts ?? undefined, final.hold ?? undefined); if (!answer.startsWith('Rejected')) result.done = final.summary; }
     else if (final.outcome === 'blocked') { await o.tools.report_blocked(final.summary, final.parts ?? undefined); result.blocked = final.summary; }
     else if (final.parts) await o.tools.report_progress(final.parts);
     else { await o.onQuestion([{ question: final.question ?? final.summary, header: 'Codex asks', options: [] }]); result.parked = 'question'; }

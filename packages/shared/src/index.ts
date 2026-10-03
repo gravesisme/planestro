@@ -18,3 +18,4 @@ export * from './decision.ts';
 export * from './usage.ts';
 export * from './resume.ts';
 export * from './settings.ts';
+export * from './loop.ts';
