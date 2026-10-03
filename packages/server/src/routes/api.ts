@@ -21,6 +21,7 @@ const EDITABLE_FIELDS = z.object({
   branch: z.string().nullable().optional(), pr: z.number().int().positive().nullable().optional(),
   skip_merge: z.boolean().nullable().optional(),
   budget_usd: z.number().positive().nullable().optional(), budget_turns: z.number().int().positive().nullable().optional(), budget_tokens: z.number().int().positive().nullable().optional(), mcp_budget: z.number().int().nonnegative().nullable().optional(),
+  loop: z.object({ max_iterations: z.number().int().positive(), goal: z.string().optional() }).nullable().optional(),
 }).strict();
 
 const CHAT_TYPES = new Set(['orchestrator.user_message', 'orchestrator.reply', 'orchestrator.question', 'orchestrator.done']);

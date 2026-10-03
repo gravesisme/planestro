@@ -48,14 +48,14 @@ export type Attachment = z.infer<typeof Attachment>;
 export const AUTHORITATIVE_KEYS = [
   'schema', 'id', 'kind', 'parent', 'title', 'category', 'status', 'rank',
   'planner', 'implementer', 'allow_model_fallback', 'auto_approve_plan', 'budget_usd', 'budget_turns', 'budget_tokens', 'mcp_budget', 'depends_on', 'attachments',
-  'merge_policy', 'base_branch_override',
+  'merge_policy', 'base_branch_override', 'loop',
 ] as const;
 export const OPERATIONAL_KEYS = [
   'created_at', 'updated_at', 'queued_at', 'started_at', 'plan_ready_at', 'plan_approved_at',
   'pr_created_at', 'merged_at', 'finished_at', 'iceboxed_at',
   'branch', 'worktree', 'pr', 'session_id', 'agent_sessions', 'session_context', 'awaiting', 'awaiting_data', 'triage', 'resume_after', 'taken_over',
   'op', 'op_started_at', 'op_data', 'plan_revisions', 'ci_head_sha', 'ci_result', 'ci_failed_count',
-  'merge_order', 'skip_merge', 'hold_reason', 'review_hold', 'delivered', 'parts', 'blocked', 'blocked_reason', 'cost_usd', 'turns', 'agent_turns', 'tokens',
+  'merge_order', 'skip_merge', 'hold_reason', 'review_hold', 'loop_state', 'delivered', 'parts', 'blocked', 'blocked_reason', 'cost_usd', 'turns', 'agent_turns', 'tokens',
   'imported_from', 'dates_estimated',
 ] as const;
 export const DERIVED_KEYS = ['base_branch', 'lane', 'external', 'children', 'deps_satisfied', 'needs_you'] as const;
@@ -86,6 +86,12 @@ export const ItemFrontmatter = z.object({
   attachments: z.array(Attachment).default([]),
   merge_policy: z.enum(MERGE_POLICIES).optional(),
   base_branch_override: z.string().min(1).optional(),
+  /**
+   * Loop until green (#171): the worker iterates (change, regenerate, run the checks) and reports each
+   * iteration's tally with `report_iteration`, until every check passes or `max_iterations` is spent —
+   * a budget of its own, beside the per-turn and per-item caps. Green ends in a review hold.
+   */
+  loop: z.object({ max_iterations: z.number().int().positive(), goal: z.string().optional() }).passthrough().optional(),
 
   created_at: ts,
   updated_at: ts,
@@ -148,6 +154,8 @@ export const ItemFrontmatter = z.object({
   hold_reason: z.string().optional(),
   /** The PR goes through sync and CI as usual, then parks (`awaiting: review`) instead of merging, until a person releases it. */
   review_hold: z.boolean().optional(),
+  /** The loop's last reported iteration (#171): its tally of checks passing and its one-line note. */
+  loop_state: z.object({ iteration: z.number().int().nonnegative(), passing: z.number().int().nonnegative(), total: z.number().int().nonnegative(), line: z.string().optional(), at: ts }).passthrough().optional(),
   /** What this item's branch changed, recorded from git as it merged — so items that waited on it can be told, long after the branch is gone. */
   delivered: z.array(z.object({ path: z.string(), change: z.enum(['added', 'modified', 'deleted']), bytes: z.number().optional(), width: z.number().optional(), height: z.number().optional() })).optional(),
   blocked: z.boolean().optional(),

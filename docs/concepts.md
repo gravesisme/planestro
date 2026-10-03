@@ -180,6 +180,25 @@ gate a rejection failed. The item page and the board card show the strip, the or
 quote it instead of summarising prose, and when the parts accepted so far project the whole past
 the item's budget the Activity log says so once, before the cap.
 
+## Loop until green
+
+An item with `loop: { max_iterations, goal? }` (the item page's **loop … iterations** box) is
+worked as a loop rather than once (#171). Its implementation turns carry the `loop-until-green`
+partial: turn each finding into a check that is proven to fail, then iterate (change → regenerate →
+checks, suite and captures) and call `report_iteration` with the tally after each pass. Each call
+is one line in Activity (`iteration 3/8: 5/7 passing — …`) and the item page's Loop strip, and
+counts against `max_iterations`, a budget of its own beside the turn and dollar caps.
+
+- **The cap.** The iteration that spends the budget without going green blocks the item
+  `loop_cap`, with the tally and the branch's diff. Raising `max_iterations` and unblocking lets it
+  carry on.
+- **Carrying on.** A turn that ends mid-loop, neither green nor done, is resumed once to carry on;
+  a second end with no new iteration blocks it `loop_stalled`.
+- **The hand-off.** `report_done` is refused until the last tally is green, and the first one
+  needs `review`, the markdown of the loop's REVIEW.md. planestro files it in Notes and as a
+  `REVIEW.md` attachment, `attach` puts the captures on the item, and the pull request is held
+  (`loop review: …`) until the user has looked.
+
 ## Tools from outside: sound, 3D, and whatever comes next
 
 A worker that makes sounds or models is a Claude session with that service's tools. A model row

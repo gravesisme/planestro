@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
-import { canPlan, decisionOf, DISCARD, planToolsMissing, mcpBudgetOf, dollarHint, epicFlagOf, heldReasonOf, holdShapeOf, kindConversionRefusal, previewOf, type Status } from '@planestro/shared';
+import { canPlan, decisionOf, DISCARD, planToolsMissing, mcpBudgetOf, dollarHint, epicFlagOf, heldReasonOf, holdShapeOf, kindConversionRefusal, previewOf, loopLine, loopGreen, type Status } from '@planestro/shared';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { reloadText, useResumeEstimate } from '../resumeCost.ts';
@@ -72,6 +72,8 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
   const field = (fields: Record<string, unknown>) => act(() => api.patchItem(item.id, { fields }));
   const budget = { usd: fm.budget_usd ?? state.config.budget_usd_per_item, turns: fm.budget_turns ?? state.config.budget_turns_per_item, tokens: fm.budget_tokens ?? state.config.budget_tokens_per_item };
   /** A number typed into a budget box: empty clears the item's own cap (back to the project default). */
+  /** The loop's iteration budget (#171): a number turns loop mode on or changes its budget, empty turns it off. */
+  const setLoop = (raw: string) => { const n = Number(raw); const cur = fm.loop?.max_iterations; if (raw.trim() === '') { if (cur !== undefined) void field({ loop: null }); } else if (Number.isInteger(n) && n > 0 && n !== cur) void field({ loop: { ...(fm.loop ?? {}), max_iterations: n } }); };
   const setBudget = (key: 'budget_usd' | 'budget_turns' | 'budget_tokens', raw: string) => { const n = Number(raw); const cur = fm[key]; if (raw.trim() === '' ? cur !== undefined : n > 0 && n !== cur) void field({ [key]: raw.trim() === '' ? null : n }); };
   const implementerDef = state.config.models.find((m) => m.id === fm.implementer);
   const estimate = useResumeEstimate(item);
@@ -188,6 +190,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           </div>
         )}
         {fm.parts?.length ? <PartsStrip parts={fm.parts} /> : null}
+        {fm.loop && <div className="section"><h2>Loop · {fm.loop_state ? `${fm.loop_state.passing}/${fm.loop_state.total} passing` : 'not started'}</h2><div className="small">{fm.loop_state ? loopLine(fm.loop_state, fm.loop.max_iterations) : `no iteration reported yet; ${fm.loop.max_iterations} allowed`}{loopGreen(fm.loop_state) && <> · <b>green</b></>}</div>{fm.loop.goal && <div className="muted small">goal: {fm.loop.goal}</div>}</div>}
         <AwaitingPanels item={item} />
         <ReviewPanel item={item} />
         {fm.status === 'IN_PROGRESS' && fm.skip_merge && (
@@ -258,6 +261,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
               <div style={{ marginTop: 6 }}>{fm.agent_turns ?? 0} {implementerDef.runner} turns · {(fm.tokens ?? 0).toLocaleString()} tokens{(fm.tokens ?? 0) / budget.tokens >= 0.8 && <> <span className={`tag ${(fm.tokens ?? 0) >= budget.tokens ? 'hot' : 'wait'}`}>{Math.round((fm.tokens ?? 0) / budget.tokens * 100)}% used</span></>}</div>
               <div className="row" style={{ gap: 6, marginTop: 4, flexWrap: 'wrap' }}><span className="muted small">budget</span><label><input type="number" min={1} key={`bt${fm.budget_turns}`} defaultValue={fm.budget_turns ?? ''} placeholder={String(state.config.budget_turns_per_item)} onBlur={(e) => setBudget('budget_turns', e.target.value)} style={{ width: 60 }} /> turns</label><label><input type="number" min={1000} step={1000} key={`bk${fm.budget_tokens}`} defaultValue={fm.budget_tokens ?? ''} placeholder={String(state.config.budget_tokens_per_item)} onBlur={(e) => setBudget('budget_tokens', e.target.value)} style={{ width: 100 }} /> tokens</label></div>
             </>}
+            {fm.kind !== 'epic' && <div className="row" style={{ gap: 6, marginTop: 4, flexWrap: 'wrap' }} title="Loop until green: the worker iterates until every check passes, each iteration counted against this budget; green ends in a review hold. Empty: an ordinary item."><span className="muted small">loop</span><label><input type="number" min={1} key={`lp${fm.loop?.max_iterations}`} defaultValue={fm.loop?.max_iterations ?? ''} placeholder="off" onBlur={(e) => setLoop(e.target.value)} style={{ width: 60 }} /> iterations</label></div>}
           </dd>
           {(() => { const rs = (state.releases ?? []).filter((r) => r.frontmatter.items.includes(item.id)); return rs.length ? <><dt>release</dt><dd>{rs.map((r) => <div key={r.version}><Link to={`/releases/${encodeURIComponent(r.version)}`}>{r.version}</Link> <span className="muted small">{r.frontmatter.status}</span></div>)}</dd></> : null; })()}
           <dt>rank</dt><dd>{fm.rank ?? '—'}</dd>
