@@ -1550,11 +1550,14 @@ describe('what parks cost (#108)', () => {
     const answered = store.journal.read({ item: item.id, type: 'permission.answered' });
     expect(parked.map((p) => p.data?.shape)).toEqual(['npx tsx', 'npx tsx']);
     expect(answered.map((a) => [a.data?.park, a.data?.by, a.data?.decision])).toEqual(parked.map((p) => [p.data?.park, 'user', 'allow']));
+    expect(answered.map((a) => [a.data?.tool, a.data?.command])).toEqual([['Bash', 'npx tsx tools/check-1.ts'], ['Bash', 'npx tsx tools/check-2.ts']]);   // replayable (#169)
     const resumes = store.journal.read({ item: item.id, type: 'op.begin' }).filter((b) => b.data?.resumes_park);
     expect(resumes.map((b) => b.data?.resumes_park)).toEqual(parked.map((p) => p.data?.park));
     expect(store.getItem(item.id)!.file.frontmatter.op_data?.resume_park).toBeUndefined();
     const summary = await (await app.request('/parks')).json();
     expect(summary).toEqual([expect.objectContaining({ item: item.id, parks: 2, open: 0, resume_cost: 9.25, shapes: [{ shape: 'npx tsx', parks: 2, rule: 'Bash(npx tsx *)@worktree' }] })]);
+    const suggest = await (await app.request('/permissions/suggest?min=2&min_items=1')).json();
+    expect(suggest).toMatchObject({ allowed: 2, denied: 0, suggestions: [{ rule: 'Bash(npx tsx *)@worktree', approvals: 2 }], replay: { proposed: { false_allows: 0 } } });
   });
 });
 

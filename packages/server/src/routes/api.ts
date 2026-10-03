@@ -1,4 +1,5 @@
 import { parkSummary } from '../engine/parks.ts';
+import { suggestForStore } from '../engine/allowSuggest.ts';
 import { orchestratorSpend } from '../engine/orchestratorSpend.ts';
 import { Hono } from 'hono';
 import { z } from 'zod';
@@ -420,6 +421,11 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   // What waiting on a person cost, per item (#108): parks, time waited, what their resumes cost, the commands that park most.
   // The orchestrator's cost per wake, today and in its current conversation (#49).
   api.get('/orchestrator/spend', (c) => c.json(orchestratorSpend(store.journal.read({ type: 'orchestrator.done' }))));
+  // Allow rules suggested from the ruling history, replayed so none would have let a past denial through (#169). Read-only.
+  api.get('/permissions/suggest', (c) => {
+    const num = (k: string) => { const v = Number(c.req.query(k)); return Number.isFinite(v) && v > 0 ? v : undefined; };
+    return c.json(suggestForStore(store, { minApprovals: num('min'), minItems: num('min_items') }));
+  });
   api.get('/parks', (c) => c.json(parkSummary(store.journal.read().filter((e) => e.type.startsWith('permission.') || e.type === 'op.begin' || e.type === 'op.end'))));
   api.get('/engine', (c) => c.json({ mode: engine.mode, paused: engine.paused, ...guardView(store, engine.paused), sessions: engine.sessions(), ...(engine.ciQueue ? { ci_queue: engine.ciQueue } : {}), ...(engine.restartReadiness ? { restart: engine.restartReadiness() } : {}), log: engine.log.slice(-200) }));
   // The orchestrator's suggestions about planestro itself (dogfood f8): a list of their own, not buried in Activity.

@@ -7,7 +7,7 @@ import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type T
 import { operatorMcpUrl } from '../routes/mcp.ts';
 import { listInstances } from '../instances.ts';
 import { makePolicy, ruleFor, allowedByRules, sdkRules, BASE_ALLOWED } from './policy.ts';
-import { commandShape, rulingText, parkedRefusal } from './parks.ts';
+import { answeredCommand, commandShape, rulingText, parkedRefusal } from './parks.ts';
 import { hostNote, keptPathsNote, cwdNote } from './hostNote.ts';
 import { Orchestrator } from './orchestrator.ts';
 import { pngSize } from './placeholderPng.ts';
@@ -935,7 +935,7 @@ export class LiveEngine implements Engine {
       else if (decision !== 'deny' && Number(fm.op_data?.orchestrator_denials ?? 0) > 0) ops.push({ set: { op_data: { ...(fm.op_data ?? {}), orchestrator_denials: 0 } } });
       if (decision === 'always' && !this.store.config.permissions.allow.includes(rule)) this.store.updateConfig((doc) => { doc.setIn(['permissions', 'allow'], [...this.store.config.permissions.allow, rule]); }, `config: always allow ${rule.slice(0, 60)}`);
       this.store.mutateItem(id, ops, by, { commit: `${id}: permission ${decision}${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
-      this.recordAnswer(id, fm, by, decision);   // after: those ops write op_data from the snapshot, which would drop the resume tag
+      this.recordAnswer(id, fm, by, decision, { tool: req.tool, ...(req.tool === 'Bash' ? answeredCommand(String(req.input.command ?? '')) : {}), ...(payload.reason ? { reason: String(payload.reason).slice(0, 1000) } : {}) });   // after: those ops write op_data from the snapshot, which would drop the resume tag
       const msg = `${this.resumeNote(id, 'a permission decision')}\n\n${rulingText(req, decision, who, payload.reason ? String(payload.reason) : undefined)}`;
       // A chained/heredoc command can't be expressed as a matchable allow rule (the SDK's
       // matcher and segment matching both refuse it), so an approval is also carried into the
@@ -957,11 +957,11 @@ export class LiveEngine implements Engine {
   }
 
   /** A park is answered (#108): who, how, after how long; the turn it resumes is tagged with it (runTurnFor). */
-  private recordAnswer(id: string, fm: ItemFrontmatter, by: string, decision: string): void {
+  private recordAnswer(id: string, fm: ItemFrontmatter, by: string, decision: string, request: Record<string, unknown> = {}): void {
     const park = typeof fm.awaiting_data?.park === 'string' ? fm.awaiting_data.park : undefined;
     if (!park) return;
     const since = Date.parse(String(fm.awaiting_data?.requested_at ?? ''));
-    this.store.journal.append({ type: 'permission.answered', item: id, actor: by, data: { park, by, decision, waited_ms: Number.isFinite(since) ? Math.max(0, Date.now() - since) : 0 } });
+    this.store.journal.append({ type: 'permission.answered', item: id, actor: by, data: { park, by, decision, waited_ms: Number.isFinite(since) ? Math.max(0, Date.now() - since) : 0, ...request } });
     this.store.mutateItem(id, [{ set: { op_data: { ...(this.store.requireItem(id).file.frontmatter.op_data ?? {}), resume_park: park } } }], 'engine');
   }
 

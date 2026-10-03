@@ -33,6 +33,10 @@ const USAGE = `planestro ${TOOL_VERSION}
   planestro sample [dir] [--reset] [--no-serve] [--port N]
                                     build a fictional project with a full backlog and serve it in dry-run:
                                     no repo, GitHub remote or Claude login needed (default dir .planestro/sample, port 4310)
+  planestro permissions suggest [data_dir] [--json] [--min N]
+                                    allow rules suggested from past permission rulings (#169): safe kinds of command the
+                                    orchestrator and the user keep approving, each replayed against every past ruling so
+                                    none would have allowed anything ever denied. Read-only: add the ones you accept in Settings
   planestro notify <title> <message>
                                     show a desktop notification (osascript on a Mac, notify-send on Linux); for notifications.* commands,
                                     which also get PLANESTRO_TITLE and PLANESTRO_MESSAGE
@@ -45,7 +49,7 @@ const { values, positionals } = parseArgs({
     repo: { type: 'string' }, name: { type: 'string' }, prefix: { type: 'string' }, 'default-branch': { type: 'string' },
     'release-branch': { type: 'string' }, github: { type: 'string' }, layout: { type: 'string' }, 'no-commit': { type: 'boolean' },
     commit: { type: 'boolean' }, 'copy-small': { type: 'boolean' }, data: { type: 'string' },
-    help: { type: 'boolean', short: 'h' }, port: { type: 'string' }, host: { type: 'string' }, mock: { type: 'boolean' }, watch: { type: 'boolean' }, open: { type: 'boolean' }, reset: { type: 'boolean' }, 'no-serve': { type: 'boolean' }, all: { type: 'boolean' }, json: { type: 'boolean' },
+    help: { type: 'boolean', short: 'h' }, port: { type: 'string' }, host: { type: 'string' }, mock: { type: 'boolean' }, watch: { type: 'boolean' }, open: { type: 'boolean' }, reset: { type: 'boolean' }, 'no-serve': { type: 'boolean' }, all: { type: 'boolean' }, json: { type: 'boolean' }, min: { type: 'string' },
   },
 });
 const [cmd, arg] = positionals;
@@ -198,6 +202,16 @@ try {
       void openWhenUp(`http://127.0.0.1:${port}`, log);
       const { startServer } = await import('./server.ts');
       await startServer({ dataDir: r.dataDir, port, host: values.host });
+      break;
+    }
+    case 'permissions': {
+      if (arg !== 'suggest') throw new Error('usage: planestro permissions suggest [data_dir] [--json] [--min N]');
+      const dir = locateDataDir(positionals[2]);
+      const store = await DataStore.open(dir, { lock: false, log: () => {} });
+      const { suggestForStore, formatSuggestReport } = await import('./engine/allowSuggest.ts');
+      const report = suggestForStore(store, { minApprovals: values.min ? Number(values.min) : undefined });
+      store.close();
+      log(values.json ? JSON.stringify(report, null, 2) : formatSuggestReport(report));
       break;
     }
     case 'notify': {
