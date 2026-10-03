@@ -4,10 +4,10 @@ import { dirname, join, basename } from 'node:path';
 let counter = 0;
 
 /** Write via a sibling temp file + fsync + rename so readers never see a partial file. */
-export function atomicWrite(path: string, data: string | Buffer): void {
+export function atomicWrite(path: string, data: string | Buffer, mode?: number): void {
   mkdirSync(dirname(path), { recursive: true });
   const tmp = join(dirname(path), `.${basename(path)}.tmp-${process.pid}-${++counter}`);
-  const fd = openSync(tmp, 'w');
+  const fd = openSync(tmp, 'wx', mode);
   try { if (typeof data === 'string') writeSync(fd, data); else writeSync(fd, data); fsyncSync(fd); } finally { closeSync(fd); }
   renameSync(tmp, path);
 }

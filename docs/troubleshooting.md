@@ -55,9 +55,10 @@ and brings you only a plain decision card. See [Needs-you triage](concepts.md#ne
 | `ci_skipped` | Every CI run for the head skipped its jobs (a draft guard), and none ran after planestro sent ready for review once more (or the pull request is still a draft). A skipped run is not a verdict. | Check the pull request's draft state and the workflow's job conditions, start a run by hand, then unblock. |
 | `ci_blocked` | GitHub Actions did not run at all (billing block, no workflow). | Set `ci.mode: github-or-local` with a `ci.local_check_command`, or re-run by hand. |
 | `base_red` | The base branch's own tip is red and `ci.require_green_base` is on. | Fix the base, or turn the gate off. |
+| `merge_head_moved` | The pull request changed after its commit passed checks. The merge was refused. | Inspect the new commits and sync the branch before unblocking; approval and CI must cover the new head. |
 | `merge_unverified` | `gh` reported a merge but the pull request is not MERGED. | Look at the pull request; reconcile. |
 | `pr_closed_externally` | The pull request was closed without merging. | Reopen it, or close the item. |
-| `cleanup_unverifiable` | After the merge, the branch tip could not be proven reachable from the base. **Nothing was deleted.** | Check the merge; remove the worktree and branch by hand if it is right. |
+| `cleanup_unverifiable` | Cleanup could not prove a resource safe, or a branch moved after verification. Remaining resources were kept. | Check the merge and remaining branch tips, then retry cleanup. Preserve any unmerged commits. |
 | `cleanup_dirty` | The worktree has uncommitted changes after the merge. | Discard or rescue them, then remove the worktree by hand. |
 | `engine_error` | An unexpected error inside a lifecycle step; the message is the exception. Transient git and GitHub failures (a ref lock held by another git process, a network or GitHub timeout, a 5xx) are retried with backoff before a step fails, so one that still arrives here persisted for about a minute. | If a retry makes sense, unblock; if it repeats, it is a bug — the Activity log and journal have what is needed to report it. |
 
@@ -85,3 +86,14 @@ and brings you only a plain decision card. See [Needs-you triage](concepts.md#ne
 - **Startup warns that Claude Code or Codex changed version.** The orchestration was
   validated against the versions in `packages/server/src/compat.ts`; it is a warning, not
   a failure. Re-run the spikes (`npm run spike`, `npm run spike:codex`) if behaviour looks off.
+
+## Machine-local files are tracked
+
+If startup, init, or an automatic commit/push reports that machine-local files
+are tracked, stop Planestro and back up `planestro.local.yml`. Inspect the planning
+repository's index and unpublished commits for that file, `.planestro/`, and
+`logs/`. Remove private files from tracking yourself, preserving the local copies,
+and review unpublished history before pushing. Removing a file in a later commit
+does not remove it from earlier commits. If credentials have already been pushed,
+rotate them and address the history separately. Planestro refuses these automatic
+operations; it does not delete your files or rewrite history for you.

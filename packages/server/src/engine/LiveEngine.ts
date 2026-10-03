@@ -1635,7 +1635,7 @@ export class LiveEngine implements Engine {
     }
     this.store.mutateItem(id, [{ set: { ci_head_sha: headSha, ci_result: 'green' } }, { activity: { actor: 'app', text: `${synced}; CI is green for it` } }], 'engine');
     if (this.parkIfHeld(id, opId)) return;
-    await this.merge(id, opId, base);
+    await this.merge(id, opId, base, headSha);
   }
 
   /**
@@ -1718,7 +1718,7 @@ export class LiveEngine implements Engine {
   }
 
   /** 4. merge, inside the chain, on a head the chain has just seen green on the base tip. */
-  private async merge(id: string, opId: string, base: string): Promise<void> {
+  private async merge(id: string, opId: string, base: string, headSha: string): Promise<void> {
     const fm = this.store.requireItem(id).file.frontmatter;
     // Commits made after the review touch something the reviewer never saw: held for the orchestrator to accept or send back (#74).
     const extra = fm.ci_head_sha ? await this.outsideApprovedScope(id, fm.ci_head_sha) : [];
@@ -1733,7 +1733,12 @@ export class LiveEngine implements Engine {
     // Record what this branch changed while it still exists: dependents are told from this, not from a summary.
     const delivered = await this.deliveredBy(id).catch(() => undefined);
     this.store.mutateItem(id, [{ set: { op: 'merging', op_started_at: this.now(), ci_result: 'green', ...(delivered ? { delivered } : {}) } }], 'engine');
-    await this.ports.gh.mergePr(this.github, fm.pr!, { deleteBranch: true });
+    if (await this.ports.gh.mergePr(this.github, fm.pr!, { headSha }) === 'head_moved') {
+      this.store.mutateItem(id, [{ set: { ci_result: 'pending' } }], 'engine');
+      this.store.journal.end(opId, id, 'aborted', { reason: 'head_moved', head: headSha });
+      this.block(id, 'merge_head_moved', `PR #${fm.pr} moved after ${headSha.slice(0, 7)} passed checks; nothing merged. Inspect and sync the branch, then retry validation.`);
+      return;
+    }
     const view = await this.ports.gh.prView(this.github, fm.pr!);
     if (view.state !== 'MERGED') { this.store.journal.end(opId, id, 'failed', { state: view.state }); this.block(id, 'merge_unverified', `gh reported the merge but PR #${fm.pr} is ${view.state}`); return; }
     this.store.mutateItem(id, [
@@ -2062,40 +2067,46 @@ export class LiveEngine implements Engine {
     const opId = this.store.journal.begin('cleaning_up', id, { branch: fm.branch });
     this.store.mutateItem(id, [{ set: { op: 'cleaning_up', op_started_at: this.now() } }], 'engine');
     // invariant 7: positive evidence before anything is deleted
-    await this.ports.git.fetch(this.repo);
-    const view = await this.ports.gh.prView(this.github, fm.pr!);
-    // The proof covers exactly what is about to be deleted — the worktree's HEAD and the
-    // local and remote branch tips, whichever still exist — never a remembered sha: a branch
-    // pushed or merged outside planestro leaves ci_head_sha stale (dogfood p39). When all
-    // three are already gone (removed by hand), a merged PR leaves nothing to prove.
-    const tips: Array<[string, string]> = [];
-    const worktrees = await this.ports.git.worktreeList(this.repo).catch(() => []);
-    if (worktrees.some((w) => w.path === cwd)) tips.push(['worktree HEAD', await this.ports.git.revParse(cwd, 'HEAD')]);
-    if (fm.branch && await this.ports.git.localBranchExists(this.repo, fm.branch)) tips.push([fm.branch, await this.ports.git.revParse(this.repo, `refs/heads/${fm.branch}`)]);
-    const remoteTip = fm.branch ? await this.ports.git.remoteBranchSha(this.repo, fm.branch) : null;
-    if (remoteTip) tips.push([`origin/${fm.branch}`, remoteTip]);
-    const stranded: string[] = [];
-    for (const [what, sha] of tips) if (!await this.ports.git.isAncestor(this.repo, sha, `origin/${base}`)) stranded.push(`${what} ${sha.slice(0, 7)}`);
-    if (view.state !== 'MERGED' || stranded.length) { this.store.journal.end(opId, id, 'aborted', { reason: 'unverifiable', stranded }); this.block(id, 'cleanup_unverifiable', view.state !== 'MERGED' ? `PR #${fm.pr} is ${view.state}; nothing was deleted` : `cannot prove ${stranded.join(', ')} reachable from origin/${base}; nothing was deleted`); return; }
-    const { clean } = await this.worktreeDirt(cwd).catch(() => ({ clean: true }));
-    if (!clean) { this.store.journal.end(opId, id, 'aborted', { reason: 'dirty' }); this.block(id, 'cleanup_dirty', 'the worktree has uncommitted changes after the merge; remove it by hand or discard them'); return; }
-    let copied: string | undefined;
-    try { copied = await this.copyToCheckout(cwd); }
-    catch (e) { this.store.journal.end(opId, id, 'aborted', { reason: 'copy_failed' }); this.block(id, 'cleanup_dirty', `copying ${this.store.config.worktrees.copy_to_checkout.join(', ')} into the main checkout failed (${(e as Error).message.replace(/\s+/g, ' ').slice(0, 200)}); nothing was removed`); return; }
-    if (copied) this.store.mutateItem(id, [{ activity: { actor: 'app', text: copied } }], 'engine');
-    const kept = await this.setAsideBeforeRemove(id, cwd);
-    if (kept) this.store.mutateItem(id, [{ activity: { actor: 'app', text: kept } }], 'engine');
-    await this.ports.git.worktreeRemove(this.repo, cwd, false);
-    await this.ports.git.worktreePrune(this.repo);
-    await this.ports.git.deleteLocalBranch(this.repo, fm.branch!);
-    if (d.flavor !== 'external' && await this.ports.git.remoteBranchSha(this.repo, fm.branch!)) await this.ports.git.deleteRemoteBranch(this.repo, fm.branch!);
-    this.store.mutateItem(id, [
-      { transition: { to: 'FINISHED', actor: 'engine' } },
-      { unset: ['op', 'op_started_at'] },
-      { activity: { actor: 'app', text: `removed worktree and branch ${fm.branch} (local + remote)` } },
-    ], 'engine', { commit: `${id}: finish` });
-    this.store.journal.end(opId, id, 'ok');
-    this.note('info', `${id}: finished`);
+    try {
+      await this.ports.git.fetch(this.repo);
+      const view = await this.ports.gh.prView(this.github, fm.pr!);
+      // The proof covers exactly what is about to be deleted — the worktree's HEAD and the
+      // local and remote branch tips, whichever still exist — never a remembered sha: a branch
+      // pushed or merged outside planestro leaves ci_head_sha stale (dogfood p39). When all
+      // three are already gone (removed by hand), a merged PR leaves nothing to prove.
+      const tips: Array<[string, string]> = [];
+      const worktrees = await this.ports.git.worktreeList(this.repo);
+      if (worktrees.some((w) => w.path === cwd)) tips.push(['worktree HEAD', await this.ports.git.revParse(cwd, 'HEAD')]);
+      const localTip = fm.branch && await this.ports.git.localBranchExists(this.repo, fm.branch) ? await this.ports.git.revParse(this.repo, `refs/heads/${fm.branch}`) : null;
+      if (localTip) tips.push([fm.branch!, localTip]);
+      const remoteTip = fm.branch ? await this.ports.git.remoteBranchSha(this.repo, fm.branch) : null;
+      if (remoteTip) tips.push([`origin/${fm.branch}`, remoteTip]);
+      const stranded: string[] = [];
+      for (const [what, sha] of tips) if (!await this.ports.git.isAncestor(this.repo, sha, `origin/${base}`)) stranded.push(`${what} ${sha.slice(0, 7)}`);
+      if (view.state !== 'MERGED' || stranded.length) { this.store.journal.end(opId, id, 'aborted', { reason: 'unverifiable', stranded }); this.block(id, 'cleanup_unverifiable', view.state !== 'MERGED' ? `PR #${fm.pr} is ${view.state}; nothing was deleted` : `cannot prove ${stranded.join(', ')} reachable from origin/${base}; nothing was deleted`); return; }
+      const { clean } = worktrees.some((w) => w.path === cwd) ? await this.worktreeDirt(cwd) : { clean: true };
+      if (!clean) { this.store.journal.end(opId, id, 'aborted', { reason: 'dirty' }); this.block(id, 'cleanup_dirty', 'the worktree has uncommitted changes after the merge; remove it by hand or discard them'); return; }
+      let copied: string | undefined;
+      try { copied = await this.copyToCheckout(cwd); }
+      catch (e) { this.store.journal.end(opId, id, 'aborted', { reason: 'copy_failed' }); this.block(id, 'cleanup_dirty', `copying ${this.store.config.worktrees.copy_to_checkout.join(', ')} into the main checkout failed (${(e as Error).message.replace(/\s+/g, ' ').slice(0, 200)}); nothing was removed`); return; }
+      if (copied) this.store.mutateItem(id, [{ activity: { actor: 'app', text: copied } }], 'engine');
+      const kept = await this.setAsideBeforeRemove(id, cwd);
+      if (kept) this.store.mutateItem(id, [{ activity: { actor: 'app', text: kept } }], 'engine');
+      await this.ports.git.worktreeRemove(this.repo, cwd, false);
+      await this.ports.git.worktreePrune(this.repo);
+      await this.ports.git.deleteLocalBranch(this.repo, fm.branch!, localTip);
+      if (d.flavor !== 'external') await this.ports.git.deleteRemoteBranch(this.repo, fm.branch!, remoteTip);
+      this.store.mutateItem(id, [
+        { transition: { to: 'FINISHED', actor: 'engine' } },
+        { unset: ['op', 'op_started_at'] },
+        { activity: { actor: 'app', text: `removed worktree and branch ${fm.branch} (local + remote)` } },
+      ], 'engine', { commit: `${id}: finish` });
+      this.store.journal.end(opId, id, 'ok');
+      this.note('info', `${id}: finished`);
+    } catch (e) {
+      this.store.journal.end(opId, id, 'aborted', { reason: 'verification_failed' });
+      this.block(id, 'cleanup_unverifiable', `cleanup stopped; remaining resources were kept: ${(e as Error).message}`);
+    }
   }
 
   // ---- reconciliation (Phase 5): cross-check persisted state against the world ----
@@ -2792,6 +2803,7 @@ export class LiveEngine implements Engine {
     const branch = fm.branch;
     const bases = [...new Set([base, this.journalledBase(id)].filter((b): b is string => Boolean(b)))];
     let entry: { path: string } | undefined;
+    let localTip: string | null = null, remoteTip: string | null = null;
     try {
       await this.ports.git.fetch(this.repo);
       entry = (await this.ports.git.worktreeList(this.repo)).find((w) => w.path === dir && !w.prunable);
@@ -2805,7 +2817,9 @@ export class LiveEngine implements Engine {
         const tip = await this.ports.git.revParse(this.repo, `refs/heads/${branch}`);
         if (!(await this.anyAncestor(tip, bases))) return `refused: the local branch ${branch} has commits that are not on origin/${bases.join(' or origin/')}; nothing was touched`;
       }
-      const remote = await this.ports.git.remoteBranchSha(this.repo, branch);
+      localTip = await this.ports.git.localBranchExists(this.repo, branch) ? await this.ports.git.revParse(this.repo, `refs/heads/${branch}`) : null;
+      if (localTip && !(await this.anyAncestor(localTip, bases))) return `refused: local branch ${branch} has unmerged commits; nothing was touched`;
+      const remote = remoteTip = await this.ports.git.remoteBranchSha(this.repo, branch);
       if (remote && !(await this.anyAncestor(remote, bases))) return `refused: the pushed branch ${branch} has commits that are not on origin/${bases.join(' or origin/')}; nothing was touched`;
     } catch (e) { return `refused: could not verify the worktree holds no work (${(e as Error).message.slice(0, 200)}); nothing was touched`; }
     const note = message?.trim() || `planestro recreated your worktree (${fm.worktree}, branch ${branch}) from origin/${base}. It holds none of your earlier edits (there were none to keep). Continue your ${fm.status === 'IN_PROGRESS' ? 'implementation of the approved plan' : 'planning'} from there.`;
@@ -2816,8 +2830,8 @@ export class LiveEngine implements Engine {
       if (hadWorktree) { const kept = await this.setAsideBeforeRemove(id, dir); if (kept) this.store.mutateItem(id, [{ activity: { actor: 'app', text: kept } }], 'engine'); }
       if (hadWorktree) await this.ports.git.worktreeRemove(this.repo, dir, false);
       await this.ports.git.worktreePrune(this.repo);
-      await this.ports.git.deleteLocalBranch(this.repo, branch);
-      if (await this.ports.git.remoteBranchSha(this.repo, branch)) await this.ports.git.deleteRemoteBranch(this.repo, branch);
+      await this.ports.git.deleteLocalBranch(this.repo, branch, localTip);
+      await this.ports.git.deleteRemoteBranch(this.repo, branch, remoteTip);
       await this.ports.git.worktreeAdd(this.repo, dir, branch, `origin/${base}`);
       if (!(await this.runSetupHooks(id, dir, opId))) return;
       this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }], 'engine');
@@ -3952,7 +3966,7 @@ export class LiveEngine implements Engine {
                 if (aside) { await this.ports.git.moveAside(cwd, dirty, aside); said.push(`set ${dirty.length} uncommitted file${dirty.length === 1 ? '' : 's'} aside in ${relative(this.repo, aside)}`); }
                 await this.ports.git.worktreeRemove(this.repo, cwd, true);
                 await this.ports.git.worktreePrune(this.repo);
-                await this.ports.git.deleteLocalBranch(this.repo, branch);
+                await this.ports.git.deleteLocalBranch(this.repo, branch, head);
                 removed = true; said.push('removed its worktree and local branch');
               } catch (e) { said.push(`removing its worktree stopped partway (${brief(e)}); finish it by hand`); }
             }
@@ -3963,7 +3977,7 @@ export class LiveEngine implements Engine {
           else if (!clean) said.push(`kept its worktree and branch ${branch}: it has uncommitted changes`);
           else if (head !== remote) said.push(`kept its worktree and branch ${branch}: its local commits are not all on the remote`);
           else {
-            try { await this.ports.git.worktreeRemove(this.repo, cwd, false); await this.ports.git.worktreePrune(this.repo); await this.ports.git.deleteLocalBranch(this.repo, branch); removed = true; said.push(`removed its worktree and local branch (everything is on the remote branch ${branch}, which is kept)`); }
+            try { await this.ports.git.worktreeRemove(this.repo, cwd, false); await this.ports.git.worktreePrune(this.repo); await this.ports.git.deleteLocalBranch(this.repo, branch, head); removed = true; said.push(`removed its worktree and local branch (everything is on the remote branch ${branch}, which is kept)`); }
             catch (e) { said.push(`removing its worktree stopped partway (${brief(e)}); finish it by hand`); }
           }
         }
@@ -4074,7 +4088,7 @@ export class LiveEngine implements Engine {
       } else if (fm.branch) {
         const unused = await this.unusedWorktree(cwd, fm.branch, this.store.derived(item).base_branch);
         if ('keep' in unused) throw new Error(`not converted: ${id}'s worktree ${fm.worktree} may hold work (${unused.keep}), and nothing with work in it is removed. Clear it by hand first, or keep it as an item`);
-        released = await this.removeUnusedWorktree(cwd, fm.branch, this.store.derived(item).base_branch!, unused.remote);
+        released = await this.removeUnusedWorktree(cwd, fm.branch, this.store.derived(item).base_branch!, unused.remote, unused.local);
       }
     }
     // The text crosses over: the new kind's planner reads Notes (plan-item and plan-epic both quote them).
@@ -4207,11 +4221,11 @@ export class LiveEngine implements Engine {
   /** Returns the Activity line describing what was removed, or what was left in place and why. */
   private async releaseUnusedWorktree(cwd: string, branch: string, base: string | undefined): Promise<string> {
     const unused = await this.unusedWorktree(cwd, branch, base);
-    return 'keep' in unused ? `left worktree ${cwd} and branch ${branch} in place: ${unused.keep}` : this.removeUnusedWorktree(cwd, branch, base!, unused.remote);
+    return 'keep' in unused ? `left worktree ${cwd} and branch ${branch} in place: ${unused.keep}` : this.removeUnusedWorktree(cwd, branch, base!, unused.remote, unused.local);
   }
 
   /** Positive evidence that a worktree and its branch hold no work (invariant 7): a clean tree and nothing ahead of a freshly fetched base. Otherwise why not. */
-  private async unusedWorktree(cwd: string, branch: string, base: string | undefined): Promise<{ keep: string } | { remote: string | null }> {
+  private async unusedWorktree(cwd: string, branch: string, base: string | undefined): Promise<{ keep: string } | { remote: string | null; local: string | null }> {
     if (!base) return { keep: 'the base branch could not be resolved' };
     try {
       const { clean, dirty } = await this.worktreeDirt(cwd);
@@ -4221,19 +4235,21 @@ export class LiveEngine implements Engine {
       if (ahead > 0) return { keep: `${ahead} commit(s) are not on origin/${base}` };
       const remote = await this.ports.git.remoteBranchSha(this.repo, branch);
       if (remote && !await this.ports.git.isAncestor(this.repo, remote, `origin/${base}`)) return { keep: `the pushed branch has commits that are not on origin/${base}` };
-      return { remote };
+      const local = await this.ports.git.localBranchExists(this.repo, branch) ? await this.ports.git.revParse(this.repo, `refs/heads/${branch}`) : null;
+      if (local && !await this.ports.git.isAncestor(this.repo, local, `origin/${base}`)) return { keep: 'the local branch has unmerged commits' };
+      return { remote, local };
     } catch (e) { return { keep: `could not verify it is unused (${(e as Error).message.replace(/\s+/g, ' ').slice(0, 200)})` }; }
   }
 
-  private async removeUnusedWorktree(cwd: string, branch: string, base: string, remote: string | null): Promise<string> {
+  private async removeUnusedWorktree(cwd: string, branch: string, base: string, remote: string | null, local: string | null): Promise<string> {
     const brief = (e: unknown) => (e as Error).message.replace(/\s+/g, ' ').slice(0, 200);
     let kept: string | undefined;
     try {
       kept = await this.setAsideBeforeRemove(branch.replace(/[\/\\]/g, '-'), cwd);
       await this.ports.git.worktreeRemove(this.repo, cwd, false);
       await this.ports.git.worktreePrune(this.repo);
-      await this.ports.git.deleteLocalBranch(this.repo, branch);
-      if (remote) await this.ports.git.deleteRemoteBranch(this.repo, branch);
+      await this.ports.git.deleteLocalBranch(this.repo, branch, local);
+      await this.ports.git.deleteRemoteBranch(this.repo, branch, remote);
     } catch (e) { return `removing the unused worktree ${cwd} / branch ${branch} stopped partway (${brief(e)}); finish it by hand`; }
     return `removed unused worktree and branch ${branch} (clean, nothing ahead of origin/${base})${kept ? `; ${kept}` : ''}`;
   }

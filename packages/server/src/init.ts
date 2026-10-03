@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { SCHEMA_VERSION } from '@planestro/shared';
 import { CONFIG_FILE, TOOL_VERSION, registerProject } from './config.ts';
 import { isoLocal } from '@planestro/shared';
+import { assertSafePlanningGit, ensurePlanningIgnores, safePlanningPaths, planningStagePaths } from './store/planningGitSafety.ts';
 
 export interface InitOptions {
   dataDir: string;
@@ -40,6 +41,8 @@ export function initDataDir(o: InitOptions): { created: string[] } {
     created.push(rel);
   };
   mkdirSync(dataDir, { recursive: true });
+  assertSafePlanningGit(dataDir);
+  if (ensurePlanningIgnores(dataDir)) created.push('.gitignore');
   for (const d of ['items', 'prompts', 'attachments', 'journal']) mkdirSync(join(dataDir, d), { recursive: true });
 
   const name = o.name ?? basename(codeRepo);
@@ -125,7 +128,6 @@ releases:
     - { title: Release notes, hint: "What users are told changed." }
     - { title: Notes, hint: "Yours: the checklist, what went wrong, what to do differently." }
 `);
-  write('.gitignore', `.planestro/\nplanestro.local.yml\nlogs/\n.DS_Store\n`);
   if (gd) write('.gdignore', '');
   write('counter', '1\n');
   write('README.md', readme(name, prefix));
@@ -140,7 +142,8 @@ releases:
   }
   if (o.register !== false) registerProject({ name, data_dir: dataDir, last_used: isoLocal() });
   if ((o.commit ?? true) && existsSync(join(dataDir, '.git')) && created.length) {
-    execFileSync('git', ['-C', dataDir, 'add', '-A']);
+    assertSafePlanningGit(dataDir);
+    execFileSync('git', ['-C', dataDir, 'add', '-A', '--', ...planningStagePaths(dataDir, safePlanningPaths(dataDir))]);
     execFileSync('git', ['-C', dataDir, 'commit', '-q', '-m', `planestro: init schema ${SCHEMA_VERSION}`, '-m', `Planestro-Version: ${TOOL_VERSION}`]);
     log('committed seed files');
   }

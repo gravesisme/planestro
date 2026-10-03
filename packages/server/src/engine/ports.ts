@@ -57,11 +57,11 @@ export interface GitPort {
   pushRef(repo: string, srcRef: string, dstBranch: string): Promise<void>;
   remoteBranchSha(repo: string, branch: string): Promise<string | null>;
   remoteHeads(repo: string): Promise<Map<string, string>>;
-  deleteRemoteBranch(repo: string, branch: string): Promise<void>;
+  deleteRemoteBranch(repo: string, branch: string, expected: string | null): Promise<void>;
   /** Delete the remote branch only while its tip is still `sha` (#135): 'moved' when it is not, nothing deleted; 'gone' when it no longer exists. */
   deleteRemoteBranchAt(repo: string, branch: string, sha: string): Promise<'deleted' | 'moved' | 'gone'>;
   localBranchExists(repo: string, branch: string): Promise<boolean>;
-  deleteLocalBranch(repo: string, branch: string): Promise<void>;
+  deleteLocalBranch(repo: string, branch: string, expected: string | null): Promise<void>;
   isAncestor(repo: string, ancestor: string, descendant: string): Promise<boolean>;
   log(cwd: string, range: string, n: number): Promise<string>;
   /** What `head` changed since it left `base` (three-dot: against their merge base), with the size of each surviving file. */
@@ -94,7 +94,7 @@ export interface GhPort {
   rerunFailed(repo: string, runId: number): Promise<void>;
   /** Re-run every job of a run: a cancelled run, which has no failed jobs to re-run (HH-321). */
   rerunAll(repo: string, runId: number): Promise<void>;
-  mergePr(repo: string, number: number, opts: { deleteBranch: boolean }): Promise<void>;
+  mergePr(repo: string, number: number, opts: { headSha: string }): Promise<'merged' | 'head_moved'>;
   /** Close a pull request without merging it, with a comment saying why (#135). */
   closePr(repo: string, number: number, comment: string): Promise<void>;
   /** The URL of the newest successful deployment for this commit (a Vercel or Netlify preview), or null (#137). */

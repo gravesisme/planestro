@@ -53,13 +53,15 @@ class LocalMergeGh extends DryRunGhPort {
     const sha = git(repo, 'ls-remote', 'origin', `refs/heads/${pr.headRefName}`).split('\t')[0]?.trim();
     return sha ? { ...pr, headRefOid: sha } : pr;
   }
-  override async mergePr(r: string, number: number, opts: { deleteBranch: boolean }) {
+  override async mergePr(r: string, number: number, opts: { headSha: string }) {
     const pr = this.world.prs.get(number)!;
+    if ((await this.prView(r, number)).headRefOid !== opts.headSha) return 'head_moved' as const;
     // in a scratch clone, so the engine's own worktrees and checkouts are never disturbed
     const scratch = mkdtempSync(join(root, 'merge-'));
     execFileSync('git', ['clone', '-q', remote, scratch]);
     git(scratch, 'checkout', '-q', pr.baseRefName); git(scratch, 'merge', '-q', '--no-ff', '-m', `Merge PR #${number}`, `origin/${pr.headRefName}`); git(scratch, 'push', '-q', 'origin', pr.baseRefName);
-    await super.mergePr(r, number, opts);
+    pr.headRefOid = opts.headSha;
+    return super.mergePr(r, number, opts);
   }
 }
 

@@ -2,7 +2,8 @@ import { parkSummary } from '../engine/parks.ts';
 import { orchestratorSpend } from '../engine/orchestratorSpend.ts';
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { basename, join, normalize } from 'node:path';
+import { join } from 'node:path';
+import { managedAttachmentPath } from '../store/managedAttachments.ts';
 import { existsSync, readFileSync } from 'node:fs';
 import YAML from 'yaml';
 import { allowedTransitions, parsePromptFile, RenderError, STATUSES, PROMPT_KINDS, RELEASE_STATUSES, markUnavailable, type Status, type Actor } from '@planestro/shared';
@@ -446,12 +447,21 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
 export function attachmentRoutes(store: DataStore): Hono {
   const r = new Hono();
   r.get('/:id/:file', (c) => {
-    const rel = normalize(join('attachments', c.req.param('id'), basename(c.req.param('file'))));
-    const abs = join(store.dataDir, rel);
-    if (!abs.startsWith(store.attachmentsDir) || !existsSync(abs)) return c.notFound();
-    const ext = abs.split('.').pop()?.toLowerCase() ?? '';
-    const type = ({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', txt: 'text/plain', md: 'text/markdown', json: 'application/json', pdf: 'application/pdf' } as Record<string, string>)[ext] ?? 'application/octet-stream';
-    return c.body(readFileSync(abs), 200, { 'content-type': type });
+    const id = c.req.param('id'), file = c.req.param('file');
+    if (!store.getItem(id)) return c.notFound();
+    try {
+      const abs = managedAttachmentPath(store.dataDir, id, file);
+      const ext = file.split('.').pop()?.toLowerCase() ?? '';
+      const inline = ({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', txt: 'text/plain', md: 'text/plain', json: 'application/json' } as Record<string, string>)[ext];
+      // Attachments are untrusted documents on the control API's origin. SVG/PDF/HTML
+      // download; the sandbox also prevents script execution if a browser renders one.
+      return c.body(readFileSync(abs), 200, {
+        'content-type': inline ?? 'application/octet-stream',
+        'content-disposition': `${inline ? 'inline' : 'attachment'}; filename="${file}"`,
+        'x-content-type-options': 'nosniff',
+        'content-security-policy': "sandbox; default-src 'none'; base-uri 'none'; form-action 'none'",
+      });
+    } catch { return c.notFound(); }
   });
   return r;
 }
