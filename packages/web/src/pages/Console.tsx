@@ -4,7 +4,7 @@ import { heldReasonOf, type JournalEntry } from '@planestro/shared';
 import { DndContext, MouseSensor, TouchSensor, useSensor, useSensors, closestCenter, type DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { api, type QuestionView, type ParkSummary, type OrchestratorSpend } from '../api.ts';
+import { api, type QuestionView, type ParkSummary, type AllowSuggestReport, type OrchestratorSpend } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { usePhone } from '../usePhone.ts';
 
@@ -37,6 +37,7 @@ export function ConsolePage() {
       </div>
       <PlanestroNotes />
       <ParkCosts />
+      <AllowSuggestions />
       <div className="section"><h2>Merge queue ({phone ? 'hold, then drag' : 'drag'} to reorder)</h2>
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onQueueDrag}>
           <SortableContext items={queue.map((i) => i.id)} strategy={verticalListSortingStrategy}>
@@ -196,6 +197,47 @@ function ParkCosts() {
           </tr>))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+/**
+ * Allow rules suggested from every past ruling (#169), each replayed against the whole history so none would have let a
+ * denial through. Read-only: the user adds the ones they accept in Settings. Computed on request, over the whole journal.
+ */
+function AllowSuggestions() {
+  const [report, setReport] = useState<AllowSuggestReport | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const load = () => { setBusy(true); setError(null); void api.allowSuggest().then(setReport).catch((e: Error) => setError(e.message)).finally(() => setBusy(false)); };
+  const pct = (n: number) => (report?.allowed ? `${Math.round((n / report.allowed) * 100)}%` : '0%');
+  return (
+    <div className="section"><h2>Suggested allow rules</h2>
+      <p className="muted small">Kinds of command the orchestrator and you keep approving, as worktree rules. Each is replayed against every past approval and denial, and one that would have let any denial through is refused. Nothing is applied: add the ones you want to <Link to="/settings">Settings → permissions.allow</Link>.</p>
+      {!report && <div className="row"><button className="small" disabled={busy} onClick={load}>{busy ? 'Reading the history…' : 'Suggest rules'}</button>{error && <span className="small" style={{ color: "var(--warn)" }}>{error}</span>}</div>}
+      {report && (<>
+        <p className="small">{report.rulings} rulings ({report.allowed} approvals, {report.denied} denials). Replayed, the current rules let {report.replay.current.allowed_now} approvals ({pct(report.replay.current.allowed_now)}) run without a wait; with these, {report.replay.proposed.allowed_now} ({pct(report.replay.proposed.allowed_now)}), and {report.replay.proposed.false_allows - report.replay.current.false_allows} more denials let through.</p>
+        {report.suggestions.length ? (
+          <table className="small" style={{ width: '100%' }}>
+            <thead><tr><th style={{ textAlign: 'left' }}>Rule</th><th>Approvals</th><th>Items</th><th style={{ textAlign: 'left' }}>Class</th></tr></thead>
+            <tbody>{report.suggestions.map((s) => (
+              <tr key={s.rule} title={s.examples.join('\n')}>
+                <td><code>{s.rule}</code></td>
+                <td style={{ textAlign: 'center' }}>{s.approvals}</td>
+                <td style={{ textAlign: 'center' }}>{s.items}</td>
+                <td className="muted">{s.class}</td>
+              </tr>))}
+            </tbody>
+          </table>
+        ) : <p className="muted small">No rule to suggest.</p>}
+        {report.refused.length > 0 && <details className="small"><summary>{report.refused.length} refused: each would have allowed a past denial</summary>
+          <ul>{report.refused.map((x) => <li key={x.rule}><code>{x.rule}</code> ({x.approvals} approvals): denied on {x.denied[0]?.item}, <code>{x.denied[0]?.command.slice(0, 120)}</code></li>)}</ul>
+        </details>}
+        {report.current_false_allows.length > 0 && <details className="small"><summary>{report.current_false_allows.length} past denials the current rules would let through today</summary>
+          <ul>{report.current_false_allows.map((d, i) => <li key={i}>{d.item}: <code>{d.command.slice(0, 120)}</code></li>)}</ul>
+        </details>}
+        <div className="row"><button className="small" disabled={busy} onClick={load}>{busy ? 'Reading…' : 'Refresh'}</button></div>
+      </>)}
     </div>
   );
 }

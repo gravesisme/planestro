@@ -137,6 +137,11 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
 - Frontmatter keys are classified authoritative / operational / derived in
   `packages/shared/src/schema.ts`; derived values (`base_branch`, `lane`,
   `needs_you`, …) are never persisted. Dependencies unblock on MERGED.
+- Allow rules are suggested from the ruling history, never applied (`allowSuggest.ts`, #169: `planestro
+  permissions suggest`, `GET /permissions/suggest`, the Console). Rulings come from Activity
+  (`permission allow (reason): Bash(…)`) and, whole, from `permission.answered` (`tool`, `command`,
+  `reason`); only safe classes get a `…@worktree` rule, and one that the replay finds would have let any
+  past denial through, alone or with the others, is refused (zero false allows on the history).
 - Semantic git commits only (`HH-143: approve plan`), scoped to the paths the
   mutation touched; telemetry is checkpointed (`planestro: checkpoint <ts>`).
 - Releases (`releases/<version>.md`) are a second file type beside items: status

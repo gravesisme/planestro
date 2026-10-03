@@ -7,6 +7,15 @@ export interface OrchestratorSpend {
   conversation: { wakes: number; cost: number; context_tokens?: number } | null;
 }
 
+/** Allow rules suggested from the ruling history (#169): see packages/server/src/engine/allowSuggest.ts. */
+export interface AllowSuggestReport {
+  rulings: number; allowed: number; denied: number;
+  suggestions: { rule: string; shape: string; class: string; approvals: number; items: number; unlocks: number; examples: string[] }[];
+  refused: { rule: string; approvals: number; denied: { item: string; at: string; command: string; reason?: string }[] }[];
+  replay: { current: { allowed_now: number; still_parks: number; false_allows: number }; proposed: { allowed_now: number; still_parks: number; false_allows: number } };
+  current_false_allows: { item: string; at: string; command: string }[];
+}
+
 export interface ParkSummary { item: string; parks: number; waited_ms: number; resume_cost: number; open: number; shapes: { shape: string; parks: number; rule?: string }[] }
 
 export interface ItemView {
@@ -104,6 +113,7 @@ export const api = {
   resume: () => req<{ paused: boolean }>('POST', '/api/engine/resume'),
   orchestratorSpend: () => req<OrchestratorSpend>('GET', '/api/orchestrator/spend'),
   parks: () => req<ParkSummary[]>('GET', '/api/parks'),
+  allowSuggest: () => req<AllowSuggestReport>('GET', '/api/permissions/suggest'),
   journal: (q: { item?: string; limit?: number }) => req<JournalEntry[]>('GET', `/api/journal?${new URLSearchParams(Object.entries(q).filter(([, v]) => v !== undefined).map(([k, v]) => [k, String(v)]))}`),
   reload: () => req<{ ok: true }>('POST', '/api/reload'),
   reconcile: () => req<{ corrections: string[] }>('POST', '/api/reconcile'),

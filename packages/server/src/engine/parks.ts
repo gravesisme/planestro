@@ -132,3 +132,8 @@ export function parkedRefusal(fm: { awaiting?: string; awaiting_data?: Record<st
   const req = { tool: fm.awaiting_data.tool, input: (fm.awaiting_data.input ?? {}) as Record<string, unknown> };
   return `${PARKED_REFUSAL} you are parked on ${parkedRequestText(req)}; wait. A park is not a denial and not a block: end your turn now with no report, and planestro resumes you with the ruling.`;
 }
+
+/** The command a ruling was on, as the journal keeps it (#169): whole up to 4000 characters, newlines and all, so the history can be replayed. */
+export function answeredCommand(command: string): { command: string; truncated?: true } {
+  return command.length > 4000 ? { command: command.slice(0, 4000), truncated: true } : { command };
+}
