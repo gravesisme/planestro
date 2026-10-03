@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { KNOWN_USAGE_LIMIT_PREFIXES, USAGE_ERROR_CODES, isUsageLimitText, resetTime, worseRateLimit, type RateLimitSnapshot } from '@planestro/shared';
 import type { ClaudePort, TurnOptions, TurnResult, CustomTurnOptions, ResumeQuote } from '../ports.ts';
+import { PARKED_REFUSAL } from '../parks.ts';
 
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] });
 const PARTS = z.array(z.object({ name: z.string(), state: z.enum(['accepted', 'pending', 'rejected']), reason: z.string().optional() }));
@@ -79,7 +80,7 @@ export class LiveClaudePort implements ClaudePort {
         tool('report_progress', 'Multi-part work (an atlas of rows, a set of icons, a pack of sounds): the state of every part so far, accepted | pending | rejected, each rejection with the gate it failed. Replaces your last report; the user and the orchestrator read it instead of your prose.', { parts: PARTS },
           async ({ parts }) => text(await o.tools.report_progress(parts))),
         tool('report_blocked', 'Report that you cannot proceed without a human decision. Then end your turn.', { reason: z.string(), parts: PARTS.optional().describe('Multi-part work: the state of each part when you stopped') },
-          async ({ reason, parts }) => { result.blocked = reason; return text(await o.tools.report_blocked(reason, parts)); }),
+          async ({ reason, parts }) => { const answer = await o.tools.report_blocked(reason, parts); if (!answer.startsWith(PARKED_REFUSAL)) result.blocked = reason; return text(answer); }),
         tool('hand_off', 'Give files you made to another backlog item that waits on this one (its depends_on names your item, or you share an epic): planestro copies them into that item\'s attachments and tells its session. Use it when your output is needed by another item before your branch merges. Paths are relative to your worktree.',
           { to: z.string().describe('The receiving item id'), paths: z.array(z.string()).min(1).describe('Files in your worktree, relative paths'), note: z.string().describe('What they are and how to use them') },
           async ({ to, paths, note }) => text(await o.tools.hand_off(to, paths, note))),

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { JournalEntry } from '@planestro/shared';
-import { commandShape, suggestedRule, parksOf, parkSummary, parkHint } from '../src/engine/parks.ts';
+import { commandShape, suggestedRule, parksOf, parkSummary, parkHint, rulingText, parkedRefusal } from '../src/engine/parks.ts';
 
 const e = (type: string, item: string, data: Record<string, unknown>, ts = '2026-09-29T10:00:00-04:00'): JournalEntry => ({ ts, type, item, actor: 'engine', data });
 
@@ -35,5 +35,17 @@ describe('what parks cost (#108)', () => {
     expect(parkHint(j, 'npx tsx c.ts', [])).toEqual({ shape: 'npx tsx', parks: 2, rule: 'Bash(npx tsx *)@worktree' });
     expect(parkHint(j, 'npx tsx c.ts', ['Bash(npx tsx *)@worktree'])).toBeUndefined();
     expect(parkHint(j.slice(0, 1), 'npx tsx c.ts', [])).toBeUndefined();   // only once so far
+  });
+
+  it('states a ruling outright, and refuses report_blocked only while a permission is parked (#168)', () => {
+    const bash = { tool: 'Bash', input: { command: 'npm run check' } };
+    expect(rulingText(bash, 'allow', 'The orchestrator')).toBe('APPROVED: The orchestrator approved your command `npm run check`. Run it now, as it was; it is allowed. Then continue.');
+    expect(rulingText(bash, 'deny', 'The user', 'not on main')).toMatch(/^DENIED: The user denied your command `npm run check`: not on main\. Do not retry it in another form/);
+    expect(rulingText({ tool: 'WebFetch', input: { url: 'https://x' } }, 'always', 'The user')).toContain('approved your WebFetch {"url":"https://x"} call');
+    expect(parkedRefusal({ awaiting: 'permission', awaiting_data: { tool: 'Bash', input: { command: 'ls' } } })).toMatch(/^Not recorded: you are parked on `ls`; wait\./);
+    expect(parkedRefusal({ awaiting: 'orchestrator', awaiting_data: { kind: 'permission', tool: 'Bash', input: { command: 'ls' } } })).toBeDefined();
+    expect(parkedRefusal({ awaiting: 'orchestrator' })).toBeUndefined();            // a plan review handed over is not a park
+    expect(parkedRefusal({ awaiting: 'question', awaiting_data: { questions: [] } })).toBeUndefined();
+    expect(parkedRefusal({})).toBeUndefined();
   });
 });

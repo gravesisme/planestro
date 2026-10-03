@@ -7,7 +7,7 @@ import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type T
 import { operatorMcpUrl } from '../routes/mcp.ts';
 import { listInstances } from '../instances.ts';
 import { makePolicy, ruleFor, allowedByRules, sdkRules, BASE_ALLOWED } from './policy.ts';
-import { commandShape } from './parks.ts';
+import { commandShape, rulingText, parkedRefusal } from './parks.ts';
 import { hostNote, keptPathsNote, cwdNote } from './hostNote.ts';
 import { Orchestrator } from './orchestrator.ts';
 import { pngSize } from './placeholderPng.ts';
@@ -936,10 +936,7 @@ export class LiveEngine implements Engine {
       if (decision === 'always' && !this.store.config.permissions.allow.includes(rule)) this.store.updateConfig((doc) => { doc.setIn(['permissions', 'allow'], [...this.store.config.permissions.allow, rule]); }, `config: always allow ${rule.slice(0, 60)}`);
       this.store.mutateItem(id, ops, by, { commit: `${id}: permission ${decision}${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
       this.recordAnswer(id, fm, by, decision);   // after: those ops write op_data from the snapshot, which would drop the resume tag
-      const desc = req.tool === 'Bash' ? `\`${String(req.input.command)}\`` : `${req.tool} ${JSON.stringify(req.input).slice(0, 200)}`;
-      const msg = decision === 'deny'
-        ? `${this.resumeNote(id, 'a permission decision')}\n\n${who} denied ${desc}${payload.reason ? `: ${payload.reason}` : ''}. Continue without it, or call report_blocked if you cannot.`
-        : `${this.resumeNote(id, 'a permission decision')}\n\n${who} approved ${desc}. It is now allowed; continue.`;
+      const msg = `${this.resumeNote(id, 'a permission decision')}\n\n${rulingText(req, decision, who, payload.reason ? String(payload.reason) : undefined)}`;
       // A chained/heredoc command can't be expressed as a matchable allow rule (the SDK's
       // matcher and segment matching both refuse it), so an approval is also carried into the
       // turn as a one-shot exact-command pass (consumed on first use).
@@ -2517,6 +2514,9 @@ export class LiveEngine implements Engine {
         return `Recorded${held ? ': planestro keeps the pull request out of the merge queue until the user releases the hold' : ''}${bad ? `, but ${bad}` : '.'}${att ? ` ${att}` : ''} End your turn now.`;
       },
       report_blocked: async (reason, parts) => {
+        // A park is a wait, not a block (#168): refused in words while the session waits on a ruling.
+        const parked = parkedRefusal(s.requireItem(id).file.frontmatter);
+        if (parked) return parked;
         if (parts !== undefined) this.recordParts(id, parts);
         const cur = s.requireItem(id).file.frontmatter;
         if (cur.op_data?.done_summary !== undefined) { const { done_summary: _withdrawn, ...rest } = cur.op_data; s.mutateItem(id, [{ set: { op_data: rest } }], 'engine'); }
