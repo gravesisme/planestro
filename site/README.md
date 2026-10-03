@@ -20,13 +20,13 @@ and `/blog/building-an-ai-fleet/`. Directory indexes support direct navigation.
   The article loads its imported `article.css` first to preserve its approved
   diagrams and editorial layout. Keep shared shell changes scoped to their classes.
 - `site.js` enhances command copy buttons and screenshot dialogs. The article's
-  `script.js` owns its stage tabs, six-slide carousel, progress bar and contents.
+  `script.js` owns its nine-slide carousel, progress bar and contents.
   Navigation and the article text do not require JavaScript; no-script visitors
-  see all six captures. Clipboard failure leaves manually selectable commands.
+  see all nine captures. Clipboard failure leaves manually selectable commands.
 - All four headers/footers are static HTML; update them together. There is no
   client-side page router or dynamically fetched navigation.
 - The article and files under `assets/` came from the approved October 2, 2026
-  Planestro-Blog-Handoff (source e8f72805323007b9c929e6c9272db9dee973ac89).
+  Planestro-Blog-Handoff-v2 (source 5eb4f0497b066c17b70d50e2d3ae96fe7274433e).
   Its title, date, wording, diagrams, captions, metrics and caveats are approved
   copy. Keep the planned articles unlinked, and preserve the historical context.
 - `packages/server/test/fixtures/blog-content.sha256` records normalized text
@@ -48,9 +48,10 @@ integrity, and setup boundaries. Run the complete `npm test`,
 Browser-check at 1440, 768 and 390 pixels (also 320 for overflow):
 
 - Every route, its navigation, screenshots, tables, command blocks, and footer.
-- Six carousel labels, Previous/Next wrap, counter, Arrow/Home/End navigation,
+- Nine carousel labels, Previous/Next wrap, counter, Arrow/Home/End navigation,
   horizontal mobile labels, and full-screenshot controls.
-- All stage tabs by keyboard, evidence disclosures, reading progress, and direct
+- Branching epic workflow and expandable child-workflow details, evidence
+  disclosures, reading progress, and direct
   article anchors. Close dialogs by button, Escape and backdrop; focus returns
   to the opening control.
 - The quick-start copy buttons and manually selectable fallback. Expand the
