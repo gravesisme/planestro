@@ -1,142 +1,316 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>planestro — one backlog, any agent, you conduct</title>
-  <meta name="description" content="A local tool that turns a markdown backlog into merged pull requests, for a web app, an API or anything with CI. Claude Code plans each item, Claude Code or the Codex CLI implements it, deterministic code does the git, CI and merging — and it stops whenever a decision is yours.">
-  <meta property="og:title" content="planestro">
-  <meta property="og:description" content="One backlog, any agent, you conduct. Claude Code plans, Claude Code or Codex implements, and nothing merges without a plan you approved and green CI.">
-  <meta property="og:image" content="og.png">
-  <meta name="theme-color" content="#0f1b2d">
-  <link rel="icon" type="image/svg+xml" href="favicon.svg">
-  <link rel="stylesheet" href="styles.css">
-</head>
-<body>
-<header class="top">
-  <a class="brand" href="#top"><img src="favicon.svg" alt="" width="28" height="28">planestro</a>
-  <nav aria-label="Site">
-    <a href="#releases">Releases</a>
-    <a href="#trust">Why trust it</a>
-    <a href="#start">Try it</a>
-    <a href="https://github.com/gravesisme/planestro/blob/main/docs/README.md">Manual</a>
-    <a class="repo" href="https://github.com/gravesisme/planestro">GitHub</a>
-  </nav>
-</header>
-
-<main id="top">
-  <section class="hero">
-    <h1><span>One backlog.</span> <span>Any agent.</span> <span>You conduct.</span></h1>
-    <p class="lede">planestro is a local tool that turns a markdown backlog into merged pull requests — for a web app, an API, anything that lives in a git repository with CI. Claude Code plans each item, Claude Code or the Codex CLI implements it, and plain deterministic code does the git, the CI waits, the rebases and the merging. Whenever a decision is yours, it stops and asks — and picks the same conversation back up when you answer.</p>
-
-    <figure class="score" aria-labelledby="score-caption">
-      <!-- One ordinary item as a score: who plays in which bar, and the only two bars that are yours. -->
-      <svg viewBox="0 0 1200 430" role="img" aria-label="A score with four staves: you, Claude, Codex, and git and CI. You write an item; git makes its worktree and branch; Claude explores and writes the plan; you approve it; Codex does the work; git and CI push, open the pull request and run CI, which comes back red; Codex fixes it in the same conversation; CI goes green and the item merges.">
-        <g class="bars">
-          <text x="170" y="26">write an item</text><text x="318" y="26">plan</text><text x="466" y="26">approve</text><text x="614" y="26">implement</text><text x="762" y="26">pull request</text><text x="910" y="26">red CI</text><text x="1058" y="26">land</text>
-          <path d="M160 40V400M308 40V400M456 40V400M604 40V400M752 40V400M900 40V400M1048 40V400M1190 40V400"/>
-        </g>
-        <g class="staves">
-          <g transform="translate(0,58)"><path d="M160 0H1190M160 14H1190M160 28H1190M160 42H1190M160 56H1190"/><text x="146" y="35" class="voice you-t">you</text></g>
-          <g transform="translate(0,146)"><path d="M160 0H1190M160 14H1190M160 28H1190M160 42H1190M160 56H1190"/><text x="146" y="35" class="voice claude-t">Claude</text></g>
-          <g transform="translate(0,234)"><path d="M160 0H1190M160 14H1190M160 28H1190M160 42H1190M160 56H1190"/><text x="146" y="35" class="voice codex-t">Codex</text></g>
-          <g transform="translate(0,322)"><path d="M160 0H1190M160 14H1190M160 28H1190M160 42H1190M160 56H1190"/><text x="146" y="35" class="voice machine-t">git and CI</text></g>
-        </g>
-        <g class="notes">
-          <g class="note you" style="--at:0"><rect x="166" y="68" width="136" height="36" rx="8"/><text x="234" y="91">a markdown file</text></g>
-          <g class="note machine" style="--at:0.5"><rect x="174" y="339" width="120" height="22" rx="6"/><text x="234" y="354">worktree, branch</text></g>
-          <g class="note claude" style="--at:1"><rect x="314" y="156" width="136" height="36" rx="8"/><text x="382" y="179">explores, plans</text></g>
-          <g class="note you" style="--at:2"><rect x="462" y="68" width="136" height="36" rx="8"/><text x="530" y="91">read and approve</text></g>
-          <g class="note codex" style="--at:3"><rect x="610" y="244" width="136" height="36" rx="8"/><text x="678" y="267">does the work</text></g>
-          <g class="note machine" style="--at:4"><rect x="766" y="339" width="120" height="22" rx="6"/><text x="826" y="354">push, PR, sync, CI</text></g>
-          <g class="note machine" style="--at:4.6"><rect x="906" y="339" width="60" height="22" rx="6"/><text x="936" y="354">red</text></g>
-          <g class="note codex" style="--at:5"><rect x="906" y="244" width="136" height="36" rx="8"/><text x="974" y="267">fixes it</text></g>
-          <g class="note machine" style="--at:5.6"><rect x="976" y="339" width="112" height="22" rx="6"/><text x="1032" y="354">sync, CI green</text></g>
-          <g class="note machine" style="--at:6.2"><rect x="1100" y="332" width="84" height="36" rx="8"/><text x="1142" y="355">merged</text></g>
-        </g>
-        <path class="playhead" d="M0 40V400"/>
-      </svg>
-      <figcaption id="score-caption">One item, markdown to merged. Claude plans it; this one is implemented by Codex, but either can be, chosen per item. You play two notes. The red CI run goes back to the agent that wrote the code, in the same conversation, and nothing merges until CI is green.</figcaption>
-    </figure>
-  </section>
-
-  <section class="band" id="what">
-    <div class="prose">
-      <h2>Your backlog is a folder of markdown</h2>
-      <p>One file per item: a description, notes, the plan, and a log of everything that happened to it. Queue an item and planestro makes a worktree and a branch, has Claude explore and write a plan, and waits for you to approve it. Then Claude or Codex does the work in that worktree, and it is pushed, opened as a pull request, kept in sync with its base, checked by CI, merged, and cleaned up.</p>
-      <p>Queue several and they run side by side, each in its own worktree. A merge queue brings each branch up to date with the base and waits for green CI, so they land one after another on a base that stays green.</p>
-      <p>The agent never pushes, merges or deletes anything. Code does that, and only with proof: a worktree is removed after a fresh fetch shows its commits on the base branch, and not before.</p>
-    </div>
-    <img class="shot" src="img/item.png" width="3000" height="1520" loading="lazy" alt="A bug fix waiting on plan approval: its description and notes, with Approve and implement, and a box to say what should change.">
-  </section>
-
-  <section class="band" id="split">
-    <div class="prose">
-      <h2>One feature, split across agents</h2>
-      <p>Each model you configure carries a line saying what it is for. Write one epic, and the planner proposes the child items, routes each to the model that fits, and says which waits on which. A program checks the list before you see it, so an unknown model or a dependency loop goes back to the planner, not to you. Then you edit it and approve, and the children ship together as one pull request.</p>
-      <p>It was built for pictures and code: a game on the App Store, <a href="https://hurricaneharrison.com">Hurricane Harrison</a>, is made with it every day. The raster art goes to a Codex model that can generate images, and the code that uses the art goes to Claude and waits for it.</p>
-    </div>
-    <img class="shot" src="img/board.png" width="1760" height="780" loading="lazy" alt="The planestro board. Two art items are in review with thumbnails of what was drawn; two code items are queued, each marked as waiting on the art; their epic shows zero of four children merged.">
-    <img class="shot" src="img/breakdown.png" width="1500" height="1010" loading="lazy" alt="A proposed breakdown: an icon and an illustration routed to Codex Art with nothing to wait on, an implementation and a docs item routed to a Claude model that wait on the art.">
-    <div class="pair">
-      <div class="prose">
-        <h3>Art is reviewed by eye</h3>
-        <p>Codex draws in its own worktree and commits. The pull request goes through sync and CI like any other. Then, instead of merging, it parks: the images the branch added or changed, read from git, before beside after. Approve it, or send it back to the same Codex conversation with a note and a pasted screenshot.</p>
-        <h3>Code is told what arrived</h3>
-        <p>When the art merges, planestro records the files it delivered. The code item's worktree is cut from a branch that already holds them, and its prompt lists each one with its size. If one is missing, the worker says so. It does not improvise a stand-in.</p>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Planestro — One backlog. Any agent. You conduct.</title>
+    <meta
+      name="description"
+      content="Local-first planning and agent orchestration for one developer. Turn a backlog into reviewed plans, parallel work, and verified merges."
+    />
+    <meta name="theme-color" content="#ffffff" />
+    <link rel="canonical" href="https://planestro.com/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Planestro" />
+    <meta
+      property="og:title"
+      content="Planestro — One backlog. Any agent. You conduct."
+    />
+    <meta
+      property="og:description"
+      content="Local-first planning and agent orchestration for one developer. Turn a backlog into reviewed plans, parallel work, and verified merges."
+    />
+    <meta property="og:url" content="https://planestro.com/" />
+    <meta
+      property="og:image"
+      content="https://planestro.com/assets/home-social.jpg"
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="icon" type="image/png" href="/assets/planestro-icon.png" />
+    <link rel="apple-touch-icon" href="/assets/planestro-icon.png" />
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/site.js" defer></script>
+  </head>
+  <body class="marketing">
+    <a class="skip-link" href="#top">Skip to content</a>
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="Planestro home"
+        ><img
+          src="/assets/planestro-icon.png"
+          width="36"
+          height="36"
+          alt=""
+        />planestro</a
+      >
+      <nav aria-label="Main">
+        <a href="/" aria-current="page">Home</a
+        ><a href="/quick-start/">Quick start</a><a href="/blog/">Blog</a>
+      </nav>
+    </header>
+    <main id="top">
+      <section class="home-hero wrap">
+        <div class="hero-kicker">
+          <span class="eyebrow">YOUR LOCAL AGENT WORKSHOP</span
+          ><span class="availability"
+            ><span aria-hidden="true"></span> Public early release
+            forthcoming</span
+          >
+        </div>
+        <div class="home-hero-grid">
+          <div>
+            <h1>One backlog.<br />Any agent.<br /><span>You conduct.</span></h1>
+            <p class="lead">
+              Local-first planning and orchestration for one developer. Turn a
+              Markdown backlog into reviewed plans and verified merges.
+            </p>
+            <div class="actions">
+              <a class="button" href="/quick-start/"
+                >Start locally <span aria-hidden="true">↗</span></a
+              ><a class="text-link" href="/blog/building-an-ai-fleet/"
+                >Read the story <span aria-hidden="true">→</span></a
+              >
+            </div>
+            <p class="micro">Local-first · One developer · Your repositories</p>
+          </div>
+          <aside class="flow-card" aria-label="How Planestro moves an item">
+            <div class="panel-label">
+              <span class="status-dot"></span> FROM INTENT TO INTEGRATION
+              <span>01</span>
+            </div>
+            <div class="flow-row">
+              <span class="flow-number">01</span>
+              <div>
+                <small>YOU</small>
+                <h3>Set the direction.</h3>
+                <p>Write the requirement. Keep the why.</p>
+              </div>
+            </div>
+            <div class="flow-row">
+              <span class="flow-number">02</span>
+              <div>
+                <small>CLAUDE + YOU</small>
+                <h3>Review the plan.</h3>
+                <p>An agent investigates. You decide.</p>
+              </div>
+            </div>
+            <div class="flow-row">
+              <span class="flow-number">03</span>
+              <div>
+                <small>CLAUDE OR CODEX</small>
+                <h3>Build in parallel.</h3>
+                <p>Each item gets its own Git worktree.</p>
+              </div>
+            </div>
+            <div class="flow-row">
+              <span class="flow-number">04</span>
+              <div>
+                <small>PLANESTRO ENGINE</small>
+                <h3>Verify. Integrate. Clean up.</h3>
+                <p>Code manages Git, PRs, CI, and merging.</p>
+              </div>
+            </div>
+            <div class="flow-foot">
+              <span>Models make judgments.</span
+              ><span>Code runs the mechanics.</span>
+            </div>
+          </aside>
+        </div>
+      </section>
+      <section class="intro-band">
+        <div class="wrap intro-grid">
+          <p class="eyebrow">MEET PLANESTRO</p>
+          <p>
+            A local tool for a solo developer coordinating coding agents. Claude
+            plans and orchestrates. Claude or Codex implements. Planestro
+            manages the steps between them, with
+            <strong
+              >your backlog, plans, and decisions saved in Markdown.</strong
+            >
+          </p>
+        </div>
+      </section>
+      <section class="section wrap" id="workflow">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">THE WORK, IN VIEW</p>
+            <h2>
+              Your next decision.<br /><span
+                >Not another terminal to watch.</span
+              >
+            </h2>
+          </div>
+          <p>
+            See what’s running, what’s ready, and what needs your judgment. Open
+            the plan, ask for a change, or let approved work move forward.
+          </p>
+        </div>
+        <figure class="product-frame">
+          <div class="panel-label">
+            <span class="status-dot"></span> PLANESTRO / PLAN REVIEW
+            <span>LOCAL WEB APP</span>
+          </div>
+          <button
+            type="button"
+            class="screenshot-button"
+            data-image="/assets/plan-approval.png"
+            data-caption="Historical product capture: HH-309 awaits plan approval. Read the approach, request changes, or approve implementation."
+            aria-label="View full screenshot: Plan approval"
+          >
+            <img
+              src="/assets/plan-approval.png"
+              width="2048"
+              height="1284"
+              loading="lazy"
+              alt="Planestro item HH-309 with its implementation plan and approval controls"
+            />
+          </button>
+          <figcaption>
+            <span>A plan ready for a decision · Historical product capture</span
+            ><span>Open full screenshot ↗</span>
+          </figcaption>
+        </figure>
+        <div class="feature-grid">
+          <article>
+            <p class="eyebrow">01 / PARALLEL WORK</p>
+            <h3>A worktree for every item.</h3>
+            <p>
+              Agents work on separate branches. Dependencies keep related work
+              in order; epics bring it together on an integration branch.
+            </p>
+          </article>
+          <article>
+            <p class="eyebrow">02 / DURABLE STATE</p>
+            <h3>Your files are the memory.</h3>
+            <p>
+              Plans, notes, and activity live in a Git-versioned data directory.
+              Decisions survive restarts and replacement sessions.
+            </p>
+          </article>
+          <article>
+            <p class="eyebrow">03 / HUMAN JUDGMENT</p>
+            <h3>Answer when you’re ready.</h3>
+            <p>
+              A question parks the session and saves the request. Return to a
+              plan, permission, or review when it has your attention.
+            </p>
+          </article>
+          <article>
+            <p class="eyebrow">04 / CONTROL</p>
+            <h3>Try it. Pause it. Take over.</h3>
+            <p>
+              Start with a dry run. Pause new automation, hold a PR for review,
+              or finish an item yourself. Cleanup requires evidence.
+            </p>
+          </article>
+        </div>
+      </section>
+      <section class="start-band">
+        <div class="wrap start-grid">
+          <div>
+            <p class="eyebrow">A SMALL FIRST STEP</p>
+            <h2>Your project.<br />Your machine.</h2>
+            <p>
+              Install Planestro, connect a new repository, and open your local
+              board. Start in dry-run before turning on real agents.
+            </p>
+            <a class="button" href="/quick-start/"
+              >Follow the four-step guide <span aria-hidden="true">→</span></a
+            >
+          </div>
+          <div class="start-side">
+            <ol>
+              <li><span>01</span> Prepare your tools</li>
+              <li><span>02</span> Install Planestro</li>
+              <li><span>03</span> Connect a project</li>
+              <li><span>04</span> Open your board</li>
+            </ol>
+            <p>
+              Node 24 + Git + GitHub CLI + Claude API access.<br />Codex
+              implementation is optional.
+            </p>
+            <a href="/quick-start/#sample" class="text-link"
+              >Just looking? Try the no-login sample →</a
+            >
+          </div>
+        </div>
+      </section>
+      <section class="section wrap">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">FIELD NOTES / 001</p>
+            <h2>Built while<br /><span>building something real.</span></h2>
+          </div>
+          <a class="text-link" href="/blog/">From the workshop →</a>
+        </div>
+        <a class="story-card" href="/blog/building-an-ai-fleet/"
+          ><img
+            src="/assets/hurricane-harrison-hero.png"
+            width="2048"
+            height="853"
+            loading="lazy"
+            alt="Hurricane Harrison explores a lantern-lit town with a slime and a skeleton"
+          />
+          <div>
+            <p class="eyebrow">BUILDING WITH AN AGENT FLEET</p>
+            <h3>
+              How I built an AI fleet and shipped Hurricane Harrison to the App
+              Store.
+            </h3>
+            <p>
+              From a personal playbook to a working orchestration system. The
+              architecture, quality checks, and hard limits along the way.
+            </p>
+            <div class="story-meta">
+              <span>David Graves · October 1, 2026</span
+              ><span>Read the field note ↗</span>
+            </div>
+          </div></a
+        >
+      </section>
+      <section class="closing wrap">
+        <h2>One operator.<br /><span>A whole fleet.</span></h2>
+        <p>
+          For a web app, an API, a game, or any project with Git and CI. Run
+          your own instance, use your own credentials, and stay accountable for
+          what ships.
+        </p>
+        <a class="text-link" href="/quick-start/">Get to know the workflow →</a>
+      </section>
+    </main>
+    <dialog
+      id="image-dialog"
+      aria-label="Full screenshot"
+      aria-describedby="dialog-caption"
+    >
+      <button
+        type="button"
+        class="dialog-close"
+        aria-label="Close image"
+        autofocus
+      >
+        Close ×</button
+      ><img id="dialog-image" alt="" />
+      <p id="dialog-caption"></p>
+    </dialog>
+    <footer class="site-footer wrap">
+      <div>
+        <a class="brand" href="/"
+          ><img
+            src="/assets/planestro-icon.png"
+            width="30"
+            height="30"
+            alt=""
+          />planestro</a
+        >
+        <p>One operator. A whole fleet.</p>
       </div>
-      <img class="shot" src="img/review.png" width="1500" height="820" loading="lazy" alt="An art item waiting for review: the image the branch added, shown on a checkerboard, with Approve and merge and Request changes.">
-    </div>
-    <figure class="drawn">
-      <img src="img/codex-header.jpg" width="1200" height="400" loading="lazy" alt="A flat vector seascape: layered teal waves under a navy sky with a small pale moon.">
-      <figcaption>Drawn by the Codex CLI during planestro's live acceptance run, from a one-paragraph brief, then reviewed, merged into the epic branch, and handed to the code item that waited for it.</figcaption>
-    </figure>
-  </section>
-
-  <section class="band" id="releases">
-    <div class="prose">
-      <h2>Releases, next to the backlog</h2>
-      <p>What shipped lives beside what was planned: one file per version with its release notes, its store copy and the items that went out in it. Sections are yours to define, each with a store's character limit if it has one, and the copy that rarely changes carries forward to the next release. The page offers the work that landed since the last release; you decide what goes in.</p>
-    </div>
-    <img class="shot" src="img/releases.png" width="2800" height="2058" loading="lazy" alt="A planned release, 0.4.0: two backlog items in it, two more that landed since the last release offered with an add button, and sections for release notes, a tagline counted against a 60-character limit, and notes.">
-  </section>
-
-  <section class="band" id="trust">
-    <div class="prose">
-      <h2>Why you can leave it running</h2>
-      <p>An agent that writes code is the easy part. These are the rules everything around it is held to.</p>
-    </div>
-    <dl class="rules">
-      <div><dt>Files are the truth</dt><dd>Items, prompts and a journal, in a git repository with commits you can read. Everything works without the tool: grep it, edit it, diff it.</dd></div>
-      <div><dt>A state machine, not a model, knows the state</dt><dd>Git, worktrees, pull requests, CI polling, merging and cleanup are code. The models plan, implement and make judgment calls. They never poll.</dd></div>
-      <div><dt>Nothing waits on you</dt><dd>A plan to approve, a question, a permission, a picture to look at: the request is saved, the agent's process exits, and your answer resumes the same conversation, after an hour or after a restart.</dd></div>
-      <div><dt>Deleting needs evidence</dt><dd>No worktree or branch is removed because state says it should be safe. It takes a fresh fetch and a proof that the commits are on the base. Anything ambiguous blocks with a reason.</dd></div>
-      <div><dt>Two agents, two kinds of trust, stated plainly</dt><dd>A Claude worker asks before anything unusual, one command at a time. A Codex worker cannot ask, so it runs in a sandbox that cannot write outside its worktree or reach the network; a task that needs a download stops and says so. Neither can push.</dd></div>
-      <div><dt>Dry-run, and one big lever</dt><dd>Dry-run logs every command a live engine would run, against fakes. Pause automation lets running work finish and starts nothing new, across restarts.</dd></div>
-    </dl>
-  </section>
-
-  <section class="band" id="start">
-    <div class="prose">
-      <h2>Try it in a minute</h2>
-      <p>No repository, GitHub account or agent login needed. The sample is a fictional project with a full backlog, served in dry-run: git, GitHub and both agents are the fakes the test suite uses, so the whole lifecycle really runs.</p>
-    </div>
-    <pre><code>git clone https://github.com/gravesisme/planestro
-cd planestro
-npm install &amp;&amp; npm run build
-npm run sample</code></pre>
-    <ol class="steps">
-      <li>Drag a card to Queued. A plan appears and the card turns red: it needs you.</li>
-      <li>Open it, read the plan, approve. Watch it reach Done. The Console shows every command a live engine would have run.</li>
-      <li>Open Releases: 0.4.0 is being put together, with two finished items still to place.</li>
-      <li>For one feature split across two agents, open the Tide chart view epic and choose Plan the breakdown. Approve the children, approve the art, and watch the code start only then.</li>
-    </ol>
-    <p class="links"><a href="https://github.com/gravesisme/planestro/blob/main/docs/getting-started.md">Getting started</a><a href="https://github.com/gravesisme/planestro/blob/main/docs/mixed-agent-epics.md">The mixed-agent walkthrough</a><a href="https://github.com/gravesisme/planestro/blob/main/docs/architecture.md">Architecture</a><a href="https://github.com/gravesisme/planestro">Source on GitHub</a></p>
-  </section>
-</main>
-
-<footer>
-  <p>planestro is a personal tool, shared as it is, under the MIT license. It runs on your machine, against your repositories, with your own Claude Code and Codex logins.</p>
-</footer>
-</body>
+      <div class="footer-links">
+        <a href="/quick-start/">Get started</a><a href="/blog/">Field notes</a
+        ><a href="#top">Back to top ↑</a>
+      </div>
+      <p class="release-note">
+        In active use. Preparing for a public early release.
+      </p>
+    </footer>
+  </body>
 </html>
