@@ -38,10 +38,19 @@ export function ensurePlanningIgnores(dir: string): boolean {
 /** Check both index and HEAD: a staged deletion is not permission to publish older secrets. */
 export function assertSafePlanningGit(dir: string): void {
   if (!existsSync(join(dir, '.git'))) return;
-  if (git(dir, ['ls-files', '--cached', '--', ...PRIVATE_PATHS])) throw refusal();
-  let head = false;
-  try { git(dir, ['rev-parse', '--verify', 'HEAD']); head = true; } catch { /* unborn */ }
-  if (head && git(dir, ['ls-tree', '-r', '--name-only', 'HEAD', '--', ...PRIVATE_PATHS])) throw refusal();
+  let tracked: string;
+  try {
+    // One Git read covers the index plus paths removed since HEAD. This runs on
+    // every semantic commit, so avoid separate HEAD/index/tree subprocesses.
+    tracked = git(dir, ['ls-files', '--cached', '--with-tree=HEAD', '--', ...PRIVATE_PATHS]);
+  } catch (e) {
+    let unborn = false;
+    try { git(dir, ['rev-parse', '--verify', '--quiet', 'HEAD']); }
+    catch (headError) { unborn = (headError as { status?: number }).status === 1; }
+    if (!unborn) throw e;
+    tracked = git(dir, ['ls-files', '--cached', '--', ...PRIVATE_PATHS]);
+  }
+  if (tracked) throw refusal();
 }
 
 /** Even a file removed from the tip must not be published in an earlier outgoing commit. */
