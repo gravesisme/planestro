@@ -5,7 +5,7 @@ import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, rmS
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { KNOWN_USAGE_LIMIT_PREFIXES, USAGE_ERROR_CODES, isUsageLimitText, resetTime, worseRateLimit, type RateLimitSnapshot } from '@planestro/shared';
-import type { ClaudePort, TurnOptions, TurnResult, CustomTurnOptions, ResumeQuote } from '../ports.ts';
+import type { ClaudePort, TurnOptions, TurnResult, CustomTurnOptions, ResumeQuote, UndeliveredReport } from '../ports.ts';
 import { PARKED_REFUSAL } from '../parks.ts';
 
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] });
@@ -38,8 +38,9 @@ export class LiveClaudePort implements ClaudePort {
     o.signal?.addEventListener('abort', () => abortController.abort(), { once: true });
     const resumed = resumeWatch(o);
     const allow = splitAllowed(o.allowedTools);
+    const input = new InputGate();
     const q = query({
-      prompt: o.prompt,
+      prompt: input.open(o.prompt),
       options: {
         cwd: o.cwd, model: o.model, permissionMode: o.permissionMode, resume: o.resume,
         ...(o.fallbackModel && o.fallbackModel !== o.model ? { fallbackModel: o.fallbackModel } : {}),
@@ -59,7 +60,7 @@ export class LiveClaudePort implements ClaudePort {
         },
       },
     });
-    await consume(q, result, o.onOutput, abortController, resumed);
+    await consume(q, result, o.onOutput, abortController, resumed, input);
     return result;
   }
 
@@ -91,8 +92,10 @@ export class LiveClaudePort implements ClaudePort {
     o.signal?.addEventListener('abort', () => abortController.abort(), { once: true });
     const resumed = resumeWatch(o);
     const allow = splitAllowed(o.allowedTools);
+    const input = new InputGate();
+    const reports = new ReportWatch((r) => { result.undelivered = r; o.onUndelivered?.(r); });
     const q = query({
-      prompt: o.prompt,
+      prompt: input.open(o.prompt),
       options: {
         cwd: o.cwd, model: o.model, permissionMode: o.permissionMode, resume: o.resume,
         ...(o.fallbackModel && o.fallbackModel !== o.model ? { fallbackModel: o.fallbackModel } : {}),
@@ -125,8 +128,102 @@ export class LiveClaudePort implements ClaudePort {
         },
       },
     });
-    await consume(q, result, o.onOutput, abortController, resumed);
+    await consume(q, result, o.onOutput, abortController, resumed, input, reports);
     return result;
+  }
+}
+
+/**
+ * The prompt as a stream that stays open until the session is really over (#167, sdk-notes gotcha 11). Given a
+ * string, the SDK closes the CLI's stdin at the first `result`; a background agent or task that is still running
+ * then has no channel left for its in-process MCP calls and permission requests ("Stream closed", "interrupted
+ * before a result was received"; the handler never runs), and a background Bash's follow-up turn never happens.
+ * Here the input ends at a `result` only when no background task is live (`background_tasks_changed`), or once the
+ * last one has ended and no follow-up turn began within `graceMs`. A CLI that reports no tasks ends where it always did.
+ */
+export class InputGate {
+  private live = 0;
+  private between = false;
+  private grace?: NodeJS.Timeout;
+  private release!: () => void;
+  private readonly ended = new Promise<void>((r) => { this.release = r; });
+  closed = false;
+  constructor(private readonly graceMs = 30_000) {}
+
+  async *open(prompt: string): AsyncGenerator<any> {
+    yield { type: 'user', message: { role: 'user', content: prompt }, parent_tool_use_id: null, session_id: '' };
+    await this.ended;
+  }
+
+  /** Feed one SDK message. */
+  see(m: any): void {
+    if (this.closed) return;
+    if (m?.type === 'system' && m.subtype === 'background_tasks_changed' && Array.isArray(m.tasks)) {
+      this.live = m.tasks.filter((t: any) => !t?.ambient).length;
+      if (this.live === 0 && this.between) this.arm();
+    } else if (m?.type === 'result') {
+      this.between = true;
+      if (this.live === 0) this.close(); else this.disarm();
+    } else if (m?.type === 'assistant' || (m?.type === 'system' && m.subtype === 'init')) { this.between = false; this.disarm(); }
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.disarm();
+    this.release();
+  }
+
+  private arm(): void { this.disarm(); this.grace = setTimeout(() => this.close(), this.graceMs); this.grace.unref?.(); }
+  private disarm(): void { if (this.grace) clearTimeout(this.grace); this.grace = undefined; }
+}
+
+const REPORTS: Record<string, UndeliveredReport['tool']> = { mcp__planestro__submit_plan: 'submit_plan', mcp__planestro__report_done: 'report_done', mcp__planestro__report_blocked: 'report_blocked', ExitPlanMode: 'submit_plan' };
+
+/**
+ * The session's reports as they stream (#167): a report call whose result is an error never reached its handler (a
+ * planestro handler always answers with text), and one with no result at all when the stream ended may not have. The
+ * last report call decides: one that landed clears an earlier loss. ExitPlanMode is planestro's plan hand-in too, and
+ * is always answered with an error; only one without planestro's answer was lost. Exported for tests.
+ */
+export class ReportWatch {
+  private readonly calls = new Map<string, { tool: UndeliveredReport['tool']; args: Record<string, unknown> }>();
+  private lastId?: string;
+  private lost?: UndeliveredReport;
+  constructor(private readonly onChange: (r: UndeliveredReport | undefined) => void) {}
+
+  see(m: any): void {
+    if (m?.type === 'assistant') {
+      for (const c of (m.message?.content ?? []) as any[]) {
+        const tool = c?.type === 'tool_use' ? REPORTS[String(c.name)] : undefined;
+        if (!tool) continue;
+        const args = { ...(c.input ?? {}) } as Record<string, unknown>;
+        if (tool === 'submit_plan' && typeof args.plan !== 'string') continue;
+        this.calls.set(c.id, { tool, args }); this.lastId = c.id;
+      }
+    } else if (m?.type === 'user' && Array.isArray(m.message?.content)) {
+      for (const c of m.message.content as any[]) {
+        const call = c?.type === 'tool_result' ? this.calls.get(c.tool_use_id) : undefined;
+        if (!call) continue;
+        this.calls.delete(c.tool_use_id);
+        if (c.tool_use_id !== this.lastId) continue;          // an earlier call answered late: the last one decides
+        const body = typeof c.content === 'string' ? c.content : (Array.isArray(c.content) ? c.content.map((x: any) => x?.text ?? '').join(' ') : '');
+        const landed = !c.is_error || /recorded by planestro/i.test(body);
+        this.set(landed ? undefined : { ...call, error: body.trim().slice(0, 300) || 'error' });
+      }
+    }
+  }
+
+  /** The stream is over: a last report call that never got its answer may not have landed. */
+  end(): void {
+    const open = this.lastId ? this.calls.get(this.lastId) : undefined;
+    if (open) this.set({ ...open, error: 'the session ended before the call was answered' });
+  }
+
+  private set(r: UndeliveredReport | undefined): void {
+    if (r === undefined && this.lost === undefined) return;
+    this.lost = r;
+    this.onChange(r);
   }
 }
 
@@ -352,7 +449,7 @@ export function classifyUsage(result: TurnResult, u: UsageSignals): void {
 }
 
 /** Drain a query into a TurnResult. Completion is "the iterator finished": a torn session's resume emits a zero-turn result first. */
-async function consume(q: AsyncIterable<unknown>, result: TurnResult, onOutput: (t: string) => void, abortController: AbortController, resumed?: ResumeWatch): Promise<void> {
+async function consume(q: AsyncIterable<unknown>, result: TurnResult, onOutput: (t: string) => void, abortController: AbortController, resumed?: ResumeWatch, input?: InputGate, reports?: ReportWatch): Promise<void> {
   let sawResult = false;
   let total: number | undefined;
   const usage: UsageSignals = {};
@@ -360,6 +457,8 @@ async function consume(q: AsyncIterable<unknown>, result: TurnResult, onOutput: 
   const calls = new Map<string, string>();
   try {
     for await (const m of q as AsyncIterable<any>) {
+      input?.see(m);
+      reports?.see(m);
       noteUsage(m, usage);
       noteToolFailures(m, calls, result);
       noteContext(m, context);
@@ -387,7 +486,8 @@ async function consume(q: AsyncIterable<unknown>, result: TurnResult, onOutput: 
     else if (sawResult && result.isError) { result.error = result.error ?? msg; }   // the SDK throws after an error result
     else { result.subtype = 'error_during_execution'; result.isError = true; result.error = msg; }
     if (isUsageLimitText(msg, USAGE_PREFIXES)) usage.message = usage.message ?? msg.trim().slice(0, 300);
-  } finally { resumed?.cleanup(); }
+  } finally { input?.close(); resumed?.cleanup(); }
+  reports?.end();
   settleCost(result, total, resumed);
   if (context.tokens) result.contextTokens = context.tokens;
   if (context.ttlS) result.cacheTtlS = context.ttlS;

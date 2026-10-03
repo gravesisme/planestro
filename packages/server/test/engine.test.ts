@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { DataStore } from '../src/store/DataStore.ts';
 import { LiveEngine } from '../src/engine/LiveEngine.ts';
 import { FakeWorld, DryRunGitPort, DryRunGhPort, DryRunProcPort, DryRunClaudePort } from '../src/engine/dryrun-ports.ts';
-import type { Ports, TurnOptions, TurnResult } from '../src/engine/ports.ts';
+import type { Ports, TurnOptions, TurnResult, UndeliveredReport } from '../src/engine/ports.ts';
 import type { ServerEvent } from '@planestro/shared';
 import { makeFixture, git, sleep } from './helpers.ts';
 import { apiRoutes } from '../src/routes/api.ts';
@@ -687,6 +687,112 @@ describe('planestro tool calls lost in transport', () => {
     expect(turns).toBe(2);
     expect(store.getItem(item.id)!.file.frontmatter.blocked_reason).toBe('no_plan');
     expect(activityOf(store, item.id)).toMatch(/its submit_plan call failed in transport \(Tool permission request failed: AbortError: Stream closed\), and again after being asked for the plan/);
+  });
+});
+
+describe('a report lost in transport is applied from the turn record (#167)', () => {
+  const ok = { sessionId: 's', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '' };
+  const STREAM = 'Tool permission request failed: AbortError: Stream closed';
+  /** The dry-run worker, except that the named report never reaches planestro: the port saw it go out and fail. */
+  const losing = (tool: 'submit_plan' | 'report_done', turns: { phase: string }[]) => (world: FakeWorld) => {
+    const base = new DryRunClaudePort(world);
+    return { async runTurn(o: TurnOptions): Promise<TurnResult> {
+      turns.push({ phase: o.phase });
+      if (turns.filter((t) => t.phase === o.phase).length > 1) return base.runTurn(o);
+      let lost: UndeliveredReport | undefined;
+      const tools = { ...o.tools, [tool]: async (first: string) => { lost = { tool, args: tool === 'submit_plan' ? { plan: first } : { summary: first }, error: STREAM }; o.onUndelivered?.(lost); return ''; } };
+      const r = await base.runTurn({ ...o, tools });
+      return { ...r, planSubmitted: undefined, done: undefined, undelivered: lost, toolFailures: [{ tool, error: STREAM }] };
+    } };
+  };
+  const wakesOf = (engine: LiveEngine) => { const wakes: string[] = []; const orch = (engine as any).orchestrator; const wake = orch.wake.bind(orch); orch.wake = (ev: { type: string }) => { wakes.push(ev.type); return wake(ev); }; return wakes; };
+
+  it('a dropped submit_plan lands as the plan with no retry turn and no wake but the review', async () => {
+    const turns: { phase: string }[] = [];
+    const { store, engine } = await setup({ claude: losing('submit_plan', turns) });
+    const wakes = wakesOf(engine);
+    const item = store.createItem({ title: 'Lost plan', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY' && !store.getItem(item.id)!.file.frontmatter.op);
+    const fm = store.getItem(item.id)!.file.frontmatter;
+    expect(turns).toEqual([{ phase: 'plan' }]);
+    expect(fm.blocked).toBeUndefined();
+    expect(fm.op_data?.outbox).toBeUndefined();
+    expect(fm.op_data?.plan_retry_turns).toBeUndefined();
+    expect(store.getItem(item.id)!.file.sections.find((x) => x.title === 'Plan')!.body).toContain('Plan (dry-run)');
+    expect(activityOf(store, item.id)).toContain("the session's submit_plan never reached planestro");
+    expect(wakes.filter((w) => /^blocked_|^worker_|stall/.test(w))).toEqual([]);
+  });
+
+  it('a dropped report_done lands as done: the pull request opens with its summary and no nudge turn', async () => {
+    const turns: { phase: string }[] = [];
+    const { store, engine } = await setup({ claude: losing('report_done', turns) });
+    const wakes = wakesOf(engine);
+    const item = store.createItem({ title: 'Lost done', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
+    expect(turns.filter((t) => t.phase === 'implement')).toHaveLength(1);
+    const activity = activityOf(store, item.id);
+    expect(activity).toContain("the session's report_done never reached planestro");
+    expect(activity).toContain('done: Implemented the plan and committed (dry-run).');
+    expect(activity).not.toContain('without report_done');
+    expect(wakes.filter((w) => /^blocked_|^worker_|stall/.test(w))).toEqual([]);
+  });
+
+  it('a report lost as the engine stopped is applied at the next start instead of resuming the turn', async () => {
+    const report: UndeliveredReport = { tool: 'report_done', args: { summary: 'All done before the drop.' }, error: STREAM };
+    const hanging = () => ({ async runTurn(o: TurnOptions): Promise<TurnResult> {
+      o.onUndelivered?.(report);
+      await new Promise<void>((done) => o.signal?.addEventListener('abort', () => done(), { once: true }));
+      return { ...ok, subtype: 'killed', undelivered: report };
+    } });
+    const { store, engine } = await setup({ claude: hanging });
+    const item = store.createItem({ title: 'Stopped after done', description: 'x' });
+    store.mutateItem(item.id, [{ transition: { to: 'QUEUED', actor: 'user' } }, { transition: { to: 'PLAN_IN_PROGRESS', actor: 'engine' } }, { section: 'Plan', body: '# p' }, { transition: { to: 'PLAN_READY', actor: 'engine' } }, { transition: { to: 'IN_PROGRESS', actor: 'user' } },
+      { set: { branch: 'tp/1-stopped-after-done', worktree: '.claude/worktrees/tp-1-stopped-after-done', session_id: 'sess-1', blocked: true, blocked_reason: 'turn_error', awaiting: 'user' } }], 'engine');
+    await engine.start();
+    await engine.unblock(item.id, 'go on');
+    await waitFor(() => engine.sessions().length === 1);
+    await engine.stop();
+    let fm = store.getItem(item.id)!.file.frontmatter;
+    expect(fm.op).toBe('implement_turn');
+    expect((fm.op_data?.outbox as UndeliveredReport | undefined)?.tool).toBe('report_done');
+
+    const world2 = new FakeWorld(() => {}, { 'origin/trunk': 'f'.repeat(40) });
+    const wtPath = join(store.codeRepoPath(), fm.worktree!);
+    world2.worktrees.set(wtPath, { path: wtPath, head: 'a'.repeat(40), branch: fm.branch! }); world2.commits.set(wtPath, 1);
+    let turns2 = 0;
+    const counting = { async runTurn(): Promise<TurnResult> { turns2 += 1; return ok; } };
+    const engine2 = new LiveEngine(store, { mode: 'dry-run', git: new DryRunGitPort(world2), gh: new DryRunGhPort(world2), proc: new DryRunProcPort(world2), agents: { claude: counting } }, () => {}, { sleep: async () => {}, tickMs: 50 });
+    await engine2.start();
+    await waitFor(() => ['IN_REVIEW', 'MERGED', 'FINISHED'].includes(status(store, item.id)), 8000);
+    fm = store.getItem(item.id)!.file.frontmatter;
+    expect(turns2).toBe(0);
+    expect(fm.op_data?.outbox).toBeUndefined();
+    expect(activityOf(store, item.id)).toContain('done: All done before the drop.');
+    await engine2.stop();
+  });
+
+  it('report tools are idempotent: a retry of one that landed records nothing twice', async () => {
+    let answers: string[] = [];
+    const twice = (world: FakeWorld) => { const base = new DryRunClaudePort(world); return { async runTurn(o: TurnOptions): Promise<TurnResult> {
+      if (o.phase !== 'implement') return base.runTurn(o);
+      answers = [await o.tools.report_done('same summary'), await o.tools.report_done('same summary')];
+      return base.runTurn(o);
+    } }; };
+    const { store, engine } = await setup({ claude: twice });
+    const item = store.createItem({ title: 'Twice', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => answers.length === 2);
+    expect(answers[1]).toContain('Already recorded');
+    expect(activityOf(store, item.id).match(/done: same summary/g)).toHaveLength(1);
   });
 });
 

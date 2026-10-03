@@ -3,7 +3,7 @@ import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1 } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
-import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote, type CiQueue } from './ports.ts';
+import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote, type CiQueue, type UndeliveredReport } from './ports.ts';
 import { operatorMcpUrl } from '../routes/mcp.ts';
 import { listInstances } from '../instances.ts';
 import { makePolicy, ruleFor, allowedByRules, sdkRules, BASE_ALLOWED } from './policy.ts';
@@ -1141,6 +1141,7 @@ export class LiveEngine implements Engine {
         allowedTools: sdkRules([...BASE_ALLOWED[phase], ...this.store.config.permissions.allow, ...extraAllowed]),
         extraDirs: [this.store.dataDir], maxBudgetUsd: turnCap,
         tools: this.makeTools(id),
+        onUndelivered: (r) => this.recordOutbox(id, r),
         onPermission: async (req) => {
           // The turn is being stopped under a person who took the item over: nothing may park on them or wake anyone.
           if (this.store.requireItem(id).file.frontmatter.taken_over) return { action: 'deny', message: 'Not allowed: the user has taken this item over and is finishing it by hand. Stop now and end your turn.' };
@@ -1209,6 +1210,9 @@ export class LiveEngine implements Engine {
     this.usageSeen(result.rateLimit);
     this.emit({ type: 'session.ended', id, subtype: result.subtype });
     for (const f of result.toolFailures ?? []) this.store.mutateItem(id, [{ activity: { actor: 'app', text: `planestro tool ${f.tool} failed before reaching planestro (nothing was recorded): ${f.error}` } }], 'engine');
+    // A report lost on its way here is applied now (#167); a turn the engine's stop killed keeps it for the restart, one a person stopped drops it.
+    if (result.subtype !== 'killed') await this.ingestOutbox(id, result);
+    else if (!this.stopping) this.recordOutbox(id, undefined);
     const stoppedFor = this.stoppedFor.get(id); this.stoppedFor.delete(id);
     if (result.subtype === 'killed') { this.store.mutateItem(id, [{ activity: { actor: 'app', text: stoppedFor && !this.stopping ? `turn stopped: ${stoppedFor}` : 'turn interrupted (engine stopping); resumable' } }], 'engine'); return result; }
     if (result.subtype === 'resume_declined') {
@@ -1252,6 +1256,42 @@ export class LiveEngine implements Engine {
     }
     await this.afterTurn(id, phase, result);
     return result;
+  }
+
+  /** The session's lost report as the port saw it (#167), kept in op_data so a restart can still apply it; undefined drops it. */
+  private recordOutbox(id: string, r: UndeliveredReport | undefined): void {
+    const cur = this.store.getItem(id)?.file.frontmatter;
+    if (!cur) return;
+    if (r) { this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), outbox: { ...r, at: this.now() } } } }], 'engine'); return; }
+    if (cur.op_data?.outbox === undefined) return;
+    const { outbox: _gone, ...rest } = cur.op_data;
+    this.store.mutateItem(id, [{ set: { op_data: rest } }], 'engine');
+  }
+
+  /**
+   * A report the session made that never reached planestro (#167, sdk-notes gotcha 11): applied now through the same
+   * tool, with the arguments the session gave it, so finished work lands without a retry turn or an orchestrator wake.
+   * The tools are idempotent, so a call that did land after all is not recorded twice. Sets the result's
+   * planSubmitted / done / blocked as the call would have.
+   */
+  private async ingestOutbox(id: string, result: TurnResult): Promise<void> {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    const box = (fm.op_data?.outbox as UndeliveredReport | undefined) ?? result.undelivered;
+    this.recordOutbox(id, undefined);
+    if (!box || fm.taken_over) return;
+    const a = box.args ?? {};
+    const str = (v: unknown) => (typeof v === 'string' && v.trim() !== '' ? v : undefined);
+    const list = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : undefined);
+    const text = box.tool === 'submit_plan' ? str(a.plan) : box.tool === 'report_done' ? str(a.summary) : str(a.reason);
+    const fits = box.tool === 'submit_plan' ? fm.status === 'PLAN_IN_PROGRESS' || fm.status === 'PLAN_READY' : fm.status === 'IN_PROGRESS' || fm.status === 'IN_REVIEW' || (box.tool === 'report_blocked' && fm.status === 'PLAN_IN_PROGRESS');
+    if (!text || !fits) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `the session's ${box.tool} never reached planestro (${box.error}); not applied: ${!text ? 'it carried nothing to record' : `the item is ${fm.status} now`}` } }], 'engine'); return; }
+    this.store.mutateItem(id, [{ activity: { actor: 'app', text: `the session's ${box.tool} never reached planestro (${box.error}); applying it from the turn's record` } }], 'engine');
+    const tools = this.makeTools(id);
+    try {
+      if (box.tool === 'submit_plan') { if (!(await tools.submit_plan(text)).startsWith('Rejected')) result.planSubmitted = text; }
+      else if (box.tool === 'report_done') { await tools.report_done(text, a.parts, str(a.hold), list(a.attach)); result.done = text; }
+      else { await tools.report_blocked(text, a.parts); result.blocked = text; }
+    } catch (e) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `could not apply the session's ${box.tool}: ${(e as Error).message.slice(0, 200)}` } }], 'engine'); }
   }
 
   private async afterTurn(id: string, phase: TurnPhase, result: TurnResult): Promise<void> {
@@ -2232,7 +2272,9 @@ export class LiveEngine implements Engine {
       if (RESUMABLE_TURN_OPS.has(fm.op)) {
         const phase = this.phaseFor(fm.status);
         this.store.mutateItem(item.id, [{ unset: ['op', 'op_started_at'] }, { activity: { actor: 'app', text: `turn (${fm.op}) was interrupted by a restart; ${fm.taken_over ? 'not resumed: you have this item' : 'resuming'}` } }], 'engine');
-        if (phase && !fm.awaiting && !fm.blocked && !fm.taken_over) this.runJob(item.id, () => this.runTurnFor(item.id, phase, 'Your previous turn was interrupted before it finished. Check the state of your worktree and continue where you left off.', [], [], { fresh: 'auto', note: 'a planestro restart', carryOn: true }));
+        // Its session's last report was lost on the way here (#167): that is where it stopped, so it is applied rather than resumed.
+        if (phase && fm.op_data?.outbox && !fm.awaiting && !fm.blocked && !fm.taken_over) this.runJob(item.id, async () => { const r: TurnResult = { subtype: 'success', isError: false, costUsd: 0, numTurns: 0, text: '' }; await this.ingestOutbox(item.id, r); await this.afterTurn(item.id, phase, r); });
+        else if (phase && !fm.awaiting && !fm.blocked && !fm.taken_over) this.runJob(item.id, () => this.runTurnFor(item.id, phase, 'Your previous turn was interrupted before it finished. Check the state of your worktree and continue where you left off.', [], [], { fresh: 'auto', note: 'a planestro restart', carryOn: true }));
       } else if (fm.op === 'awaiting_ci') {
         this.store.mutateItem(item.id, [{ unset: ['op', 'op_started_at'] }, { set: { ci_result: 'pending' } }, { activity: { actor: 'app', text: 'restart while waiting for CI; re-entering the merge pipeline' } }], 'engine');
       } else {
@@ -2501,6 +2543,8 @@ export class LiveEngine implements Engine {
         const bad = parts === undefined ? undefined : this.recordParts(id, parts);
         const att = this.attachFromWorktree(id, attach);
         const cur = s.requireItem(id).file.frontmatter;
+        // A retry of a report that did land (#167): nothing is recorded twice.
+        if (cur.op_data?.done_summary === summary && (!hold || cur.skip_merge)) return `Already recorded by planestro${bad ? `, but ${bad}` : '.'}${att ? ` ${att}` : ''} End your turn now.`;
         const ops: ItemOp[] = [{ set: { op_data: { ...(cur.op_data ?? {}), done_summary: summary } } }, { activity: { actor: 'worker', text: `done: ${summary.slice(0, 300)}` } }];
         // The worker that knows its pull request must wait says so (#97). Recorded here, with the done: the pull
         // request is opened from the item as persisted, and no drive path sees the item before this turn ends.
@@ -2519,7 +2563,10 @@ export class LiveEngine implements Engine {
         if (parked) return parked;
         if (parts !== undefined) this.recordParts(id, parts);
         const cur = s.requireItem(id).file.frontmatter;
-        if (cur.op_data?.done_summary !== undefined) { const { done_summary: _withdrawn, ...rest } = cur.op_data; s.mutateItem(id, [{ set: { op_data: rest } }], 'engine'); }
+        // A retry of a block that did land (#167): no second block, triage or wake.
+        if (cur.blocked && cur.blocked_reason === 'agent_blocked' && cur.op_data?.blocked_report === reason) return 'Already recorded by planestro. End your turn now; planestro will resume you with the answer.';
+        const { done_summary: _withdrawn, ...rest } = cur.op_data ?? {};
+        s.mutateItem(id, [{ set: { op_data: { ...rest, blocked_report: reason } } }], 'engine');
         this.block(id, 'agent_blocked', reason, 'user'); return 'Recorded. End your turn now; planestro will resume you with the answer.';
       },
       hand_off: async (to, paths, note) => this.handOff(id, to, paths, note, 'worker'),
