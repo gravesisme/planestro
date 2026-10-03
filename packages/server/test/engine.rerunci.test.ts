@@ -121,3 +121,57 @@ describe('rerun_ci (#139)', () => {
     expect(activity(h.id)).toMatch(/decided: Re-run CI now that the runner has disk space\? → Re-run CI \(done for you: re-running the failed jobs of run 7/);
   });
 });
+
+/**
+ * A cancelled run past its one re-run (#174, HH Oct 2): the wait sat on it until ci.timeout_min (6 h), and rerun-ci
+ * refused because "a step is running", though the step was only the poll loop. It blocks ci_cancelled at once now,
+ * and the user can re-run a cancelled run under a wait that is still polling it.
+ */
+describe('a cancelled CI run (#174)', () => {
+  /** An item in review waiting on run 9, cancelled at the attempts named; any other attempt is pending twice, then green. */
+  async function waiting(cancelled: number[]) {
+    const s = await setup();
+    const run = { attempt: 1, polls: 0, reruns: 0 };
+    const gh = (s.engine as any).ports.gh as DryRunGhPort;
+    gh.ciForSha = async (_r: string, _b: string, sha: string): Promise<CiStatus> => {
+      if (cancelled.includes(run.attempt)) return { state: 'cancelled', runId: 9, sha, url: 'https://example/run/9', attempt: run.attempt };
+      return ++run.polls < 3 ? { state: 'pending', runId: 9, sha, url: 'https://example/run/9', attempt: run.attempt } : { state: 'success', runId: 9, sha, url: 'https://example/run/9', attempt: run.attempt };
+    };
+    gh.rerunAll = async () => { run.reruns += 1; run.attempt += 1; run.polls = 0; };
+    const h = s.redTwice();
+    s.store.mutateItem(h.id, [{ unset: ['blocked', 'blocked_reason'] }, { set: { ci_result: 'pending', ci_failed_count: 0, op: 'awaiting_ci', op_data: {} } }], 'engine');
+    return { ...s, run, h };
+  }
+
+  it('still cancelled after its one re-run, it blocks ci_cancelled with the run link, and the user re-runs it from there', async () => {
+    const { engine, run, h } = await waiting([1, 2]);
+    await engine.start();
+    await until(() => fm(h.id).blocked === true);
+    expect(fm(h.id).blocked_reason).toBe('ci_cancelled');
+    expect(run.reruns).toBe(1);
+    expect(activity(h.id)).toMatch(/CI run 9 for \w{7} was cancelled again after planestro re-ran it once \(https:\/\/example\/run\/9\)/);
+    expect(fm(h.id).op_data?.last_cancelled).toMatchObject({ runId: 9, sha: fm(h.id).ci_head_sha });
+    await until(() => !(engine as any).jobs.has(h.id));
+    expect(await engine.rerunCi(h.id, 'user')).toBe('re-running cancelled run 9 (attempt 3); its verdict is the one that counts');
+    expect(fm(h.id).blocked).toBeUndefined();
+    await until(() => ['MERGED', 'FINISHED'].includes(fm(h.id).status));
+    expect(run.reruns).toBe(2);
+  });
+
+  it('the user re-runs a cancelled run while the wait polls it; the same wait takes the new attempt, with no second re-run or wait', async () => {
+    const { store, engine, run, h } = await waiting([1]);
+    let gate = true; const parked: Array<() => void> = [];
+    (engine as any).sleep = (_ms: number) => gate ? new Promise<void>((r) => parked.push(r)) : Promise.resolve();
+    await engine.start();
+    await until(() => (engine as any).ciWaits.has(h.id) && parked.length > 0);
+    expect(await engine.rerunCi(h.id, 'user')).toBe('re-running cancelled run 9 (attempt 2); the CI wait already running counts only that attempt');
+    expect(fm(h.id).op).toBe('awaiting_ci');
+    expect(activity(h.id)).toContain('re-ran cancelled CI run 9 for');
+    expect(await engine.rerunCi(h.id, 'user')).toMatch(/^not now: CI for \w{7} is still running/);
+    gate = false; parked.splice(0).forEach((r) => r());
+    await until(() => ['MERGED', 'FINISHED'].includes(fm(h.id).status));
+    expect(run.reruns).toBe(1);
+    expect(store.journal.read({ type: 'op.begin', item: h.id }).filter((e) => e.data?.op === 'ci_wait')).toHaveLength(1);
+    expect(activity(h.id)).not.toContain('no other run replaced it');
+  });
+});

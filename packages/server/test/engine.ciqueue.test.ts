@@ -72,6 +72,17 @@ describe('CI queue time is not CI failure (#170)', () => {
     expect(activityOf(store, id)).toMatch(/ran longer than 45 min after a runner started it/);
   });
 
+  it('a ci.timeout_min raised while a wait runs reaches that wait (#173)', async () => {
+    const { store, engine } = await setup();
+    scriptCi(engine, [...Array(10).fill('running'), 'success']);   // 70 min running against a 45-min timeout
+    const inner = (engine as any).ports.gh.ciForSha; let looks = 0;
+    (engine as any).ports.gh.ciForSha = async (...a: unknown[]) => { if (++looks === 2) store.updateConfig((doc) => { doc.setIn(['ci', 'timeout_min'], 360); }, 'config: longer CI timeout'); return inner(...a); };
+    const id = await toCi(store, engine, 'Raised mid-wait');
+    await waitFor(() => fmOf(store, id).status === 'FINISHED' || fmOf(store, id).blocked === true);
+    expect(fmOf(store, id).blocked_reason).toBeUndefined();
+    expect(fmOf(store, id).status).toBe('FINISHED');
+  });
+
   it('a run that never leaves the queue blocks after ci.queue_timeout_min, named as a queue', async () => {
     const { store, engine } = await setup();
     store.updateConfig((doc) => { doc.setIn(['ci', 'queue_timeout_min'], 100); }, 'config: short queue timeout');
