@@ -5,7 +5,7 @@ import { useNavigate } from 'react-router';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { confirmMove } from './QuickActions.tsx';
-import { decisionOf, heldReasonOf, previewOf, waitsFor } from '@planestro/shared';
+import { connectionDropOf, decisionOf, heldReasonOf, previewOf, waitsFor } from '@planestro/shared';
 
 export function statusLabel(s: string): string { return s.replace(/_/g, ' '); }
 
@@ -35,6 +35,7 @@ export function ItemCard({ item, sortable = true, onSelect }: { item: ItemView; 
             {previewOf(fm) && <span className="tag" title={`Preview deployment: ${previewOf(fm)!.url}`}>preview</span>}
             {fm.status === 'IN_REVIEW' && fm.skip_merge && <span className={`tag ${fm.ci_result === 'red' ? 'hot' : ''}`} title={`Held out of the merge queue${heldReasonOf(fm) ? ` (${heldReasonOf(fm)})` : ''}: it waits for you to release the hold. Its commits are pushed and its CI is watched${fm.ci_result === 'red' ? '; the red run is being fixed meanwhile (its session, or the orchestrator for an epic)' : ''}, but it does not merge`}>{fm.op_data?.pr_draft ? 'held for you · draft PR' : `${fm.hold_waits_on === 'person' || fm.review_hold ? 'held for you' : 'held'} · CI ${fm.ci_result ?? 'pending'}`}</span>}
             {fm.status === 'IN_PROGRESS' && fm.skip_merge && <span className="tag" title={`Its pull request will be held out of the merge queue${heldReasonOf(fm) ? `: ${heldReasonOf(fm)}` : ''}`}>PR will be held</span>}
+            {connectionDropOf(fm) && <span className="tag hot" title={`The session lost its connection to planestro at ${connectionDropOf(fm)!.at.slice(0, 16).replace('T', ' ')}${connectionDropOf(fm)!.tool ? ` (on ${connectionDropOf(fm)!.tool})` : ''}: ${connectionDropOf(fm)!.error}`}>lost connection</span>}
             {fm.triage && <span className="tag triage" title={`It stopped (${fm.triage.reason}); the orchestrator fixes it or asks you one question`}>orchestrator triaging</span>}
             {fm.blocked && !fm.triage && !decisionOf(fm) && <span className="tag hot">BLOCKED{fm.blocked_reason ? `: ${fm.blocked_reason}` : ''}</span>}
             {decisionOf(fm) ? <span className="tag hot">decision needed</span> : fm.awaiting && !(fm.triage && fm.awaiting === 'user') && <span className={`tag ${d.needs_you ? 'wait' : ''}`}>awaiting {fm.awaiting.replace(/_/g, ' ')}</span>}

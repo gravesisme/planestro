@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { DataStore } from '../src/store/DataStore.ts';
 import { LiveEngine } from '../src/engine/LiveEngine.ts';
 import { FakeWorld, DryRunGitPort, DryRunGhPort, DryRunProcPort, DryRunClaudePort } from '../src/engine/dryrun-ports.ts';
-import type { Ports, TurnOptions, TurnResult, UndeliveredReport } from '../src/engine/ports.ts';
+import type { Ports, TurnOptions, TurnResult, UndeliveredReport, ConnectionDrop } from '../src/engine/ports.ts';
 import type { ServerEvent } from '@planestro/shared';
 import { makeFixture, git, sleep } from './helpers.ts';
 import { apiRoutes } from '../src/routes/api.ts';
@@ -793,6 +793,87 @@ describe('a report lost in transport is applied from the turn record (#167)', ()
     await waitFor(() => answers.length === 2);
     expect(answers[1]).toContain('Already recorded');
     expect(activityOf(store, item.id).match(/done: same summary/g)).toHaveLength(1);
+  });
+});
+
+describe('a lost connection to planestro is flagged on the item; an unrecovered one wakes the orchestrator (#167, HH-377)', () => {
+  const STREAM = 'Tool permission request failed: AbortError: Stream closed';
+  const DROP: ConnectionDrop = { error: STREAM, at: '2026-10-03T12:00:00.000Z', tool: 'Bash' };
+  const LAST = 'All 357 checks pass and the work is committed. report_done failed with Stream closed, so: implemented the cavern fix.';
+  const wakesOf = (engine: LiveEngine) => { const wakes: { type: string; data?: Record<string, unknown> }[] = []; const orch = (engine as any).orchestrator; const wake = orch.wake.bind(orch); orch.wake = (ev: { type: string; data?: Record<string, unknown> }) => { wakes.push(ev); return wake(ev); }; return wakes; };
+  /**
+   * The dry-run worker, except that its first turn of `phase` loses the connection: the report it makes then is delivered
+   * anyway, lost with its arguments seen (the outbox applies it), or lost with nothing to apply.
+   */
+  const dropping = (phase: string, mode: 'delivered' | 'outbox' | 'lost', seen: { store?: DataStore; flagged?: unknown; turns: string[] }) => (world: FakeWorld) => {
+    const base = new DryRunClaudePort(world);
+    return { async runTurn(o: TurnOptions): Promise<TurnResult> {
+      seen.turns.push(o.phase);
+      if (o.phase !== phase || seen.turns.filter((t) => t === phase).length > 1) return base.runTurn(o);
+      o.onConnectionDrop?.(DROP);
+      seen.flagged = seen.store!.listItems()[0].file.frontmatter.op_data?.mcp_drop;
+      if (mode === 'delivered') return { ...(await base.runTurn(o)), connectionDrop: DROP };
+      let lost: UndeliveredReport | undefined;
+      const tools = { ...o.tools, report_done: async (summary: string) => { if (mode === 'outbox') { lost = { tool: 'report_done', args: { summary }, error: STREAM }; o.onUndelivered?.(lost); } return ''; } };
+      const r = await base.runTurn({ ...o, tools });
+      return { ...r, done: undefined, undelivered: lost, connectionDrop: DROP, lastMessage: LAST };
+    } };
+  };
+
+  it('a drop is on the item within the turn, and a turn that runs with its connection clears it', async () => {
+    const seen: { store?: DataStore; flagged?: unknown; turns: string[] } = { turns: [] };
+    const { store, engine } = await setup({ claude: dropping('plan', 'delivered', seen) });
+    seen.store = store;
+    const item = store.createItem({ title: 'Flaky line', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY' && !store.getItem(item.id)!.file.frontmatter.op);
+    expect(seen.flagged).toEqual(DROP);
+    expect(store.getItem(item.id)!.file.frontmatter.op_data?.mcp_drop).toEqual(DROP);
+    expect(activityOf(store, item.id)).toContain(`the session lost its connection to planestro at ${DROP.at} (on Bash): ${STREAM}`);
+    expect(store.getItem(item.id)!.file.frontmatter.blocked).toBeUndefined();
+    await engine.approvePlan(item.id);
+    await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
+    expect(activityOf(store, item.id)).toContain("the session's connection to planestro held this turn; the earlier drop is cleared");
+  });
+
+  it('a turn that ends after a drop with no report to apply stops as connection_lost and wakes the orchestrator with its last message', async () => {
+    const seen: { store?: DataStore; flagged?: unknown; turns: string[] } = { turns: [] };
+    const { store, engine } = await setup({ claude: dropping('implement', 'lost', seen) });
+    seen.store = store;
+    const wakes = wakesOf(engine);
+    const item = store.createItem({ title: 'Lost line', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => store.getItem(item.id)!.file.frontmatter.blocked === true);
+    const fm = store.getItem(item.id)!.file.frontmatter;
+    expect(fm.blocked_reason).toBe('connection_lost');
+    expect((fm.op_data?.mcp_drop as { final_message?: string }).final_message).toBe(LAST);
+    expect(seen.turns.filter((t) => t === 'implement')).toHaveLength(1);       // no report nudge into a dead line
+    await waitFor(() => wakes.some((w) => w.type === 'blocked_connection_lost'));
+    expect(String(wakes.find((w) => w.type === 'blocked_connection_lost')!.data?.detail)).toContain(LAST);
+    expect(activityOf(store, item.id)).toContain(LAST);
+  });
+
+  it('a drop whose report the outbox applied lands as done and wakes nobody', async () => {
+    const seen: { store?: DataStore; flagged?: unknown; turns: string[] } = { turns: [] };
+    const { store, engine } = await setup({ claude: dropping('implement', 'outbox', seen) });
+    seen.store = store;
+    const wakes = wakesOf(engine);
+    const item = store.createItem({ title: 'Recovered line', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
+    expect(seen.flagged).toEqual(DROP);
+    const activity = activityOf(store, item.id);
+    expect(activity).toContain('the session lost its connection to planestro');
+    expect(activity).toContain("the session's report_done never reached planestro");
+    expect(activity).not.toContain('connection_lost');
+    expect(wakes.filter((w) => /^blocked_|^worker_|stall/.test(w.type))).toEqual([]);
   });
 });
 

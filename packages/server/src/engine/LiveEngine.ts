@@ -3,7 +3,7 @@ import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
-import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote, type CiQueue, type UndeliveredReport } from './ports.ts';
+import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote, type CiQueue, type UndeliveredReport, type ConnectionDrop } from './ports.ts';
 import { operatorMcpUrl } from '../routes/mcp.ts';
 import { listInstances } from '../instances.ts';
 import { makePolicy, ruleFor, allowedByRules, sdkRules, BASE_ALLOWED } from './policy.ts';
@@ -26,7 +26,7 @@ export interface EngineOptions { sleep?: (ms: number) => Promise<void>; tickMs?:
 const RESUMABLE_TURN_OPS = new Set(['planning_turn', 'implement_turn']);
 /** How many of one item's permission requests the orchestrator may refuse before they go to the user instead. */
 const MAX_ORCHESTRATOR_DENIALS = 3;
-const JUDGMENT_BLOCKS = ['turn_error', 'no_plan', 'no_commits', 'dirty_tree', 'sync_conflict', 'ci_red', 'ci_timeout', 'ci_blocked', 'ci_disagree', 'base_red', 'pr_closed_externally', 'merge_unverified', 'agent_blocked', 'engine_error'] as const;
+const JUDGMENT_BLOCKS = ['turn_error', 'connection_lost', 'no_plan', 'no_commits', 'dirty_tree', 'sync_conflict', 'ci_red', 'ci_timeout', 'ci_blocked', 'ci_disagree', 'base_red', 'pr_closed_externally', 'merge_unverified', 'agent_blocked', 'engine_error'] as const;
 const ACTIVE_FOR_SLOTS: Status[] = ['PLAN_IN_PROGRESS', 'IN_PROGRESS'];
 /** Turn failures with their own block reason, because the fix is the user's (log in, wait, start over) and not a judgment call. */
 const ACTIONABLE_FAILURES = new Set(['auth_required', 'rate_limited', 'session_lost', 'spawn_error', 'cli_too_old']);
@@ -1156,6 +1156,7 @@ export class LiveEngine implements Engine {
         extraDirs: [this.store.dataDir], maxBudgetUsd: turnCap,
         tools: this.makeTools(id),
         onUndelivered: (r) => this.recordOutbox(id, r),
+        onConnectionDrop: (d) => this.recordDrop(id, d),
         onPermission: async (req) => {
           // The turn is being stopped under a person who took the item over: nothing may park on them or wake anyone.
           if (this.store.requireItem(id).file.frontmatter.taken_over) return { action: 'deny', message: 'Not allowed: the user has taken this item over and is finishing it by hand. Stop now and end your turn.' };
@@ -1225,7 +1226,7 @@ export class LiveEngine implements Engine {
     this.emit({ type: 'session.ended', id, subtype: result.subtype });
     for (const f of result.toolFailures ?? []) this.store.mutateItem(id, [{ activity: { actor: 'app', text: `planestro tool ${f.tool} failed before reaching planestro (nothing was recorded): ${f.error}` } }], 'engine');
     // A report lost on its way here is applied now (#167); a turn the engine's stop killed keeps it for the restart, one a person stopped drops it.
-    if (result.subtype !== 'killed') await this.ingestOutbox(id, result);
+    if (result.subtype !== 'killed') { await this.ingestOutbox(id, result); if (this.settleDrop(id, phase, result)) return result; }
     else if (!this.stopping) this.recordOutbox(id, undefined);
     const stoppedFor = this.stoppedFor.get(id); this.stoppedFor.delete(id);
     if (result.subtype === 'killed') { this.store.mutateItem(id, [{ activity: { actor: 'app', text: stoppedFor && !this.stopping ? `turn stopped: ${stoppedFor}` : 'turn interrupted (engine stopping); resumable' } }], 'engine'); return result; }
@@ -1280,6 +1281,42 @@ export class LiveEngine implements Engine {
     if (cur.op_data?.outbox === undefined) return;
     const { outbox: _gone, ...rest } = cur.op_data;
     this.store.mutateItem(id, [{ set: { op_data: rest } }], 'engine');
+  }
+
+  /** The session lost its line to planestro mid-turn (#167, HH-377): said on the item at once, with the first error and its time. */
+  private recordDrop(id: string, d: ConnectionDrop): void {
+    const cur = this.store.getItem(id)?.file.frontmatter;
+    if (!cur) return;
+    this.store.mutateItem(id, [
+      { set: { op_data: { ...(cur.op_data ?? {}), mcp_drop: d } } },
+      { activity: { actor: 'app', text: `the session lost its connection to planestro at ${d.at}${d.tool ? ` (on ${d.tool})` : ''}: ${d.error}. Its planestro calls and permission requests may not arrive until a new turn` } },
+    ], 'engine');
+  }
+
+  /**
+   * The turn's connection to planestro, settled as it ends (#167, HH-377). A turn that ran with no drop clears an earlier flag.
+   * A drop the turn did not recover from (no report landed, none could be applied from the outbox, and it did not park) stops
+   * the item as `connection_lost` with the session's last message, which the orchestrator reads to recover the report. A
+   * planning turn keeps its own ask-again and `no_plan` (afterTurn). True when it stopped the item.
+   */
+  private settleDrop(id: string, phase: TurnPhase, result: TurnResult): boolean {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    if (!result.connectionDrop) {
+      if (fm.op_data?.mcp_drop !== undefined && result.numTurns > 0) {
+        const { mcp_drop: _gone, ...rest } = fm.op_data;
+        this.store.mutateItem(id, [{ set: { op_data: rest } }, { activity: { actor: 'app', text: "the session's connection to planestro held this turn; the earlier drop is cleared" } }], 'engine');
+      }
+      return false;
+    }
+    if (phase === 'plan' || result.done || result.planSubmitted || result.blocked || result.parked || fm.taken_over || fm.blocked) return false;
+    const d = result.connectionDrop;
+    const last = (result.lastMessage ?? '').trim().slice(-4000);
+    this.store.mutateItem(id, [
+      { set: { op_data: { ...(fm.op_data ?? {}), mcp_drop: { ...d, final_message: last } } } },
+      { activity: { actor: 'app', text: last ? `the session's last message, as it ended without a report that reached planestro:\n${last.slice(-1500)}` : 'the session ended with no message of its own and no report that reached planestro' } },
+    ], 'engine');
+    this.block(id, 'connection_lost', `the session lost its connection to planestro at ${d.at}${d.tool ? ` (on ${d.tool})` : ''}: ${d.error}. The turn ended with no report that reached planestro, and none could be applied from the outbox. Its last message: ${last ? last.slice(-1500) : '(none)'}`);
+    return true;
   }
 
   /**
