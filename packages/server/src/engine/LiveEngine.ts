@@ -2446,7 +2446,7 @@ export class LiveEngine implements Engine {
     for (const i of dependencyOrder(children)) {
       const c = children[i];
       // A child is planned by the model the breakdown names, else by the epic's own planner (not the project default: an outage of that one should not reach every child).
-      const child = this.store.createItem({ title: c.title.trim(), description: c.description.trim(), category: c.category ?? fm.category, implementer: c.implementer, planner: c.planner ?? fm.planner, allow_model_fallback: fm.allow_model_fallback === true, parent: id, depends_on: (c.depends_on ?? []).map((d) => ids.get(d)!), ...(c.hold_for_review ? { extra: { review_hold: true } } : {}) }, 'user');
+      const child = this.store.createItem({ title: c.title.trim(), description: c.description.trim(), category: c.category ?? fm.category, ...(fm.priority ? { priority: fm.priority } : {}), implementer: c.implementer, planner: c.planner ?? fm.planner, allow_model_fallback: fm.allow_model_fallback === true, parent: id, depends_on: (c.depends_on ?? []).map((d) => ids.get(d)!), ...(c.hold_for_review ? { extra: { review_hold: true } } : {}) }, 'user');
       ids.set(i, child.id);
     }
     const created = children.map((_c, i) => ids.get(i)!);
@@ -3423,7 +3423,7 @@ export class LiveEngine implements Engine {
     if (action.tool === 'submit_item') return this.submitAsUser(action.args.id, why) === 'planning' ? `epic ${action.args.id} is having its breakdown planned` : `${action.args.id} is queued for planning`;
     const a = action.args; const epic = a.kind === 'epic';
     const planner = findModel(this.store.config, a.planner)?.id; const implementer = findModel(this.store.config, a.implementer)?.id;
-    const it = this.store.createItem({ title: a.title, description: a.description, kind: epic ? 'epic' : 'item', ...(planner ? { planner } : {}), ...(implementer ? { implementer } : {}), ...(a.category ? { category: a.category } : {}), ...(a.parent ? { parent: a.parent } : {}), ...(a.depends_on ? { depends_on: a.depends_on } : {}) }, 'user');
+    const it = this.store.createItem({ title: a.title, description: a.description, kind: epic ? 'epic' : 'item', ...(planner ? { planner } : {}), ...(implementer ? { implementer } : {}), ...(a.category ? { category: a.category } : {}), ...(a.priority ? { priority: a.priority } : {}), ...(a.parent ? { parent: a.parent } : {}), ...(a.depends_on ? { depends_on: a.depends_on } : {}) }, 'user');
     this.store.mutateItem(it.id, [{ activity: { actor: 'user', text: `created by your answer on ${from}'s decision card, as the orchestrator proposed it there` } }], 'user');
     const made = `created ${epic ? 'epic ' : ''}${it.id} ("${a.title}")`;
     if (!a.submit) return `${made}, not submitted yet`;

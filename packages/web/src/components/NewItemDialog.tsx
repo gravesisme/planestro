@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
-import { planReviewByDefault, placeholdersIn, renderPrompt, fallbackChain, findModel, canPlan, type Config, type ModelDef } from '@planestro/shared';
+import { planReviewByDefault, placeholdersIn, renderPrompt, fallbackChain, findModel, canPlan, PRIORITIES, type Config, type ModelDef, type Priority } from '@planestro/shared';
 import { api, type PromptView, type State } from '../api.ts';
 import { act, useStore } from '../store.ts';
 
@@ -53,6 +53,7 @@ export function NewItemDialog({ onClose, icebox, from }: { onClose: () => void; 
   const [template, setTemplate] = useState(start?.name ?? '');
   const [title, setTitle] = useState(start?.frontmatter.title ?? '');
   const [category, setCategory] = useState(state?.config.defaults.category ?? '');
+  const [priority, setPriority] = useState<Priority | ''>('');
   const [kind, setKind] = useState<'item' | 'epic'>('item');
   const [planner, setPlanner] = useState(state?.config.defaults.planner ?? '');
   // A template may name the model its work is for (`model:` in its frontmatter): an art brief belongs with the art model.
@@ -89,7 +90,7 @@ export function NewItemDialog({ onClose, icebox, from }: { onClose: () => void; 
         e.preventDefault();
         let text: string;
         try { text = render(); } catch (err) { useStore.setState({ error: (err as Error).message }); return; }
-        const r = await act(() => api.createItem({ title, category, description: text, kind, planner: kind === 'epic' && planner ? planner : undefined, parent: parent || undefined, implementer: kind === 'item' ? implementer || undefined : undefined, auto_approve_plan: kind === 'item' && orch?.may_approve_plans ? delegate : undefined, allow_model_fallback: allowFallback, status: icebox ? 'ICEBOX' : undefined }));
+        const r = await act(() => api.createItem({ title, category, ...(priority ? { priority } : {}), description: text, kind, planner: kind === 'epic' && planner ? planner : undefined, parent: parent || undefined, implementer: kind === 'item' ? implementer || undefined : undefined, auto_approve_plan: kind === 'item' && orch?.may_approve_plans ? delegate : undefined, allow_model_fallback: allowFallback, status: icebox ? 'ICEBOX' : undefined }));
         if (r) { onClose(); nav(`/items/${r.id}`); }
       }}>
         <h2 style={{ margin: 0 }}>New {icebox ? 'icebox ' : ''}{kind === 'epic' ? 'epic' : 'item'}</h2>
@@ -98,6 +99,7 @@ export function NewItemDialog({ onClose, icebox, from }: { onClose: () => void; 
         <KindChoice kind={kind} onChange={setKind} />
         <div className="row">
           <select value={category} onChange={(e) => setCategory(e.target.value)} title="Category">{state?.config.categories.map((c) => <option key={c}>{c}</option>)}</select>
+          <select value={priority} onChange={(e) => setPriority(e.target.value as Priority | '')} title="Priority: each column, and the queue, takes high first"><option value="">no priority</option>{PRIORITIES.map((p) => <option key={p} value={p}>{p} priority</option>)}</select>
           {kind === 'epic' && <select value={planner} onChange={(e) => setPlanner(e.target.value)} title="Who breaks it down (and, unless the breakdown says otherwise, plans its children)">{state?.config.models.filter(canPlan).map((m) => <option key={m.id} value={m.id}>planned by {m.label}</option>)}</select>}
           {kind === 'item' && <select value={implementer} onChange={(e) => setImplementer(e.target.value)} title="Who implements it (the planner stays the project default)">{state?.config.models.filter((m) => !m.external).map((m) => <option key={m.id} value={m.id}>{m.label}{(m.runner ?? 'claude') !== 'claude' ? ` (${m.runner})` : ''}</option>)}</select>}
           {kind === 'item' && epics.length > 0 && <select value={parent} onChange={(e) => setParent(e.target.value)}><option value="">no parent epic</option>{epics.map((e) => <option key={e.id} value={e.id}>{e.id} {e.frontmatter.title}</option>)}</select>}

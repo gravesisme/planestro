@@ -4,10 +4,17 @@
  */
 export const GAP = 1000;
 
-export interface Ranked { id: string; rank?: number }
+export interface Ranked { id: string; rank?: number; priority?: string }
 
+const BANDS: Record<string, number> = { high: 0, medium: 1, low: 2 };
+/** An item's priority band (#194): high 0, medium 1, low 2, unset 3. Ranks order an item within its band. */
+export function priorityBand(priority: string | undefined): number { return priority !== undefined && priority in BANDS ? BANDS[priority] : 3; }
+
+/** Priority first (#194), then rank; with no priorities set this is rank order, as it always was. */
 export function sortByRank<T extends Ranked>(items: T[]): T[] {
   return [...items].sort((a, b) => {
+    const band = priorityBand(a.priority) - priorityBand(b.priority);
+    if (band) return band;
     const ra = a.rank ?? Number.POSITIVE_INFINITY, rb = b.rank ?? Number.POSITIVE_INFINITY;
     return ra === rb ? a.id.localeCompare(b.id, undefined, { numeric: true }) : ra - rb;
   });

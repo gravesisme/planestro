@@ -4,6 +4,11 @@ import { rankForTop, rankForBottom, rankBefore, rankAfter, renormalize, sortByRa
 const items = [{ id: 'A', rank: 1000 }, { id: 'B', rank: 2000 }, { id: 'C', rank: 3000 }, { id: 'D' }];
 
 describe('rank', () => {
+  it('sorts by priority first (#194): high, medium, low, then none; rank within each', () => {
+    const mixed = [{ id: 'A', rank: 1 }, { id: 'B', rank: 2, priority: 'low' }, { id: 'C', rank: 3, priority: 'high' }, { id: 'D', rank: 4, priority: 'medium' }, { id: 'E', rank: 0, priority: 'high' }];
+    expect(sortByRank(mixed).map((i) => i.id)).toEqual(['E', 'C', 'D', 'B', 'A']);
+    expect(sortByRank(items.map((i) => ({ ...i, priority: undefined }))).map((i) => i.id)).toEqual(['A', 'B', 'C', 'D']);
+  });
   it('sorts missing ranks last, ties by id', () => {
     expect(sortByRank([{ id: 'B', rank: 5 }, { id: 'A', rank: 5 }, { id: 'Z' }]).map((i) => i.id)).toEqual(['A', 'B', 'Z']);
   });

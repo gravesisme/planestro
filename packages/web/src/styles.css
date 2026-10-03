@@ -227,6 +227,9 @@ html { -webkit-text-size-adjust: 100%; }
 .tag.triage { color: var(--accent); border-color: var(--accent); } .pill.triage { border-color: var(--accent); color: var(--accent); }
 /* taken over (p28): the item is yours by hand, and nothing automatic touches it until you hand it back */
 .tag.yours, .pill.yours { color: var(--mine); border-color: var(--mine); }
+/* Priority (#194): high stands out (filled, so it never reads as a block), low recedes. */
+.tag.prio-high { background: var(--warn); color: #0b0d10; border-color: var(--warn); font-weight: 600; } .tag.prio-medium { color: var(--accent); border-color: var(--accent); } .tag.prio-low { color: var(--muted); border-style: dashed; }
+.chip-sep { flex: none; width: 1px; align-self: stretch; margin: 2px 2px; background: var(--line); }
 .yours-panel { border: 1px solid var(--mine); background: color-mix(in srgb, var(--mine) 10%, var(--panel)); border-radius: var(--radius); padding: 12px; margin-bottom: 12px; }
 .yours-panel h2 { margin: 0 0 8px; font-size: 16px; color: var(--mine); display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; } .yours-panel .row { flex-wrap: wrap; } .drawer .yours-panel { margin: 8px 0; }
 @media (max-width: 840px) {

@@ -36,6 +36,9 @@ NOT_YET_SUBMITTED → QUEUED → PLAN_IN_PROGRESS → PLAN_READY → IN_PROGRESS
   Merges happen one at a time, in merge order; CI waits run beside them, so a pull request
   whose CI is green never queues behind another one's CI.
 - `ICEBOX` holds ideas. **Close as done** finishes an item whose work landed some other way.
+- An item may carry a **priority**: high, medium or low (unset by default). Each column, and the
+  queue, takes high before medium before low before none; dragging orders items within a
+  priority, and dropping one among another priority's items offers to change it.
 
 Which moves are legal, and for whom — you, the engine, the orchestrator — is one table:
 `packages/shared/src/transitions.ts`.

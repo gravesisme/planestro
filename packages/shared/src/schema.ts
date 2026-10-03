@@ -23,6 +23,9 @@ export type Op = (typeof OPS)[number];
 
 export const KINDS = ['item', 'epic'] as const;
 export const MERGE_POLICIES = ['app', 'watch'] as const;
+/** An item's priority (#194), the words of the GitHub labels; unset sorts after low, so items without one order as before. */
+export const PRIORITIES = ['high', 'medium', 'low'] as const;
+export type Priority = (typeof PRIORITIES)[number];
 export const CI_RESULTS = ['pending', 'green', 'red', 'blocked', 'unknown'] as const;
 export const ATTACHMENT_KINDS = ['managed', 'reference'] as const;
 
@@ -46,7 +49,7 @@ export type Attachment = z.infer<typeof Attachment>;
  *  - derived:       computed in memory, never written to disk
  */
 export const AUTHORITATIVE_KEYS = [
-  'schema', 'id', 'kind', 'parent', 'title', 'category', 'status', 'rank',
+  'schema', 'id', 'kind', 'parent', 'title', 'category', 'priority', 'status', 'rank',
   'planner', 'implementer', 'allow_model_fallback', 'auto_approve_plan', 'budget_usd', 'budget_turns', 'budget_tokens', 'mcp_budget', 'depends_on', 'attachments',
   'merge_policy', 'base_branch_override', 'loop',
 ] as const;
@@ -69,6 +72,8 @@ export const ItemFrontmatter = z.object({
   parent: id.optional(),
   title: z.string().min(1),
   category: z.string().min(1),
+  /** high | medium | low (#194). Each column orders by it first, then by rank, and the queue admits in that order. */
+  priority: z.enum(PRIORITIES).optional(),
   status: z.enum(STATUSES),
   rank: z.number().int().optional(),
   planner: z.string().min(1).optional(),

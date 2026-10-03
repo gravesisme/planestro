@@ -60,7 +60,7 @@ export function PreviewDrawer({ id, onClose }: { id: string; onClose: () => void
         {session && <span className="pill">session {session.busy ? 'running' : 'idle'}</span>}
       </div>
       <p className="small muted" style={{ margin: '4px 0' }}>
-        {fm.category} · {fm.planner}{fm.implementer !== fm.planner ? ` → ${fm.implementer}` : ''}
+        {fm.category}{fm.priority ? ` · ${fm.priority} priority` : ''} · {fm.planner}{fm.implementer !== fm.planner ? ` → ${fm.implementer}` : ''}
         {fm.branch ? <> · <code>{fm.branch}</code></> : null}
         {fm.pr ? <> · <a href={`https://github.com/${state!.config.code_repo.github}/pull/${fm.pr}`} target="_blank" rel="noreferrer">PR #{fm.pr}</a>{fm.ci_result ? ` (CI ${fm.ci_result})` : ''}</> : null}
       </p>

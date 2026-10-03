@@ -147,6 +147,9 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
 - A session slot is held only while something drives the item (a turn, an engine step,
   an op), never by an epic. An active item that nothing drives for
   `concurrency.stall_after_min` is carried on once (`driveStalls`), then blocked `stalled`.
+- `priority` (#194: `high | medium | low`, optional, authoritative) orders before `rank` wherever items are
+  listed (`sortByRank` → `DataStore.listItems`): each column, admission, the orchestrator's lists. A rank orders
+  an item within its band; a move beside another band snaps to its own band's edge. Unset sorts last, as before.
 - Frontmatter keys are classified authoritative / operational / derived in
   `packages/shared/src/schema.ts`; derived values (`base_branch`, `lane`,
   `needs_you`, …) are never persisted. Dependencies unblock on MERGED.
