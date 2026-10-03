@@ -123,7 +123,13 @@ a live worker) would have matched it.
    killed) instead of resuming the session to hand it in again; the report
    tools are idempotent, so a call that did land is not recorded twice. A
    loss with no arguments to apply still gets one resumed retry for a plan,
-   then `no_plan` naming the transport.
+   then `no_plan` naming the transport. The drop itself is read off the stream
+   (`DropWatch`): a planestro tool error in transport wording, a permission
+   request the CLI answers "Tool permission request failed …" or "interrupted
+   before a result was received", or `init` listing planestro's server as
+   failed or none of its tools. The item shows it within the turn
+   (`op_data.mcp_drop`); a work turn that ends after one with no report landed
+   or applied blocks `connection_lost` with the session's last message.
 12. **A model that is out of usage** (subscription limit, or a model that needs
    credits the account lacks) is visible three ways, and planestro reads all
    of them (`noteUsage` / `classifyUsage` in `LiveClaudePort.ts`): a

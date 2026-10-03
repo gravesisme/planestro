@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
-import { canPlan, decisionOf, DISCARD, planToolsMissing, mcpBudgetOf, dollarHint, epicFlagOf, heldReasonOf, holdShapeOf, kindConversionRefusal, previewOf, loopLine, loopGreen, type Status } from '@planestro/shared';
+import { canPlan, connectionDropOf, decisionOf, DISCARD, planToolsMissing, mcpBudgetOf, dollarHint, epicFlagOf, heldReasonOf, holdShapeOf, kindConversionRefusal, previewOf, loopLine, loopGreen, type Status } from '@planestro/shared';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { reloadText, useResumeEstimate } from '../resumeCost.ts';
@@ -102,6 +102,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
   const holdText = holdFor ?? statedHold?.reason ?? '';
   const heldFor = heldReasonOf(fm);
   const preview = previewOf(fm);
+  const drop = connectionDropOf(fm);
   const convert = (to: 'item' | 'epic') => {
     const carries = item.sections.Plan.trim() ? ` Its ${fm.kind === 'epic' ? 'breakdown' : 'plan'} moves into Notes for the new planner.` : '';
     const next = ['QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY'].includes(fm.status) ? (to === 'epic' ? ' Its breakdown is planned at once.' : ' It is queued to be planned as one item.') : '';
@@ -193,6 +194,14 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
         {fm.loop && <div className="section"><h2>Loop · {fm.loop_state ? `${fm.loop_state.passing}/${fm.loop_state.total} passing` : 'not started'}</h2><div className="small">{fm.loop_state ? loopLine(fm.loop_state, fm.loop.max_iterations) : `no iteration reported yet; ${fm.loop.max_iterations} allowed`}{loopGreen(fm.loop_state) && <> · <b>green</b></>}</div>{fm.loop.goal && <div className="muted small">goal: {fm.loop.goal}</div>}</div>}
         <AwaitingPanels item={item} />
         <ReviewPanel item={item} />
+        {drop && (
+          <div className="approval">
+            <h2 style={{ margin: '0 0 8px' }}>Lost connection to planestro</h2>
+            <p className="small" style={{ marginTop: 0 }}>At {drop.at.slice(0, 19).replace('T', ' ')}{drop.tool ? <>, on <code>{drop.tool}</code></> : null}: <code>{drop.error}</code></p>
+            <p className="small">The session's planestro calls and permission requests may not have arrived. A report it made is applied from the turn's record when the turn ends; if none could be, the item stops as <code>connection_lost</code> and the orchestrator reads the session's last message. This clears after a turn that runs with its connection.</p>
+            {drop.finalMessage && <details><summary className="small">Its last message</summary><pre className="small" style={{ whiteSpace: 'pre-wrap' }}>{drop.finalMessage}</pre></details>}
+          </div>
+        )}
         {fm.status === 'IN_PROGRESS' && fm.skip_merge && (
           <div className="approval">
             <h2 style={{ margin: '0 0 8px' }}>Its pull request will be held</h2>

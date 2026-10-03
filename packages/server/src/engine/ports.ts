@@ -181,9 +181,17 @@ export interface ClaudeTurnExtras {
    * the port sees it, and undefined when a later report landed (#167). The engine keeps it in `op_data.outbox`.
    */
   onUndelivered?(report: UndeliveredReport | undefined): void;
+  /** The first sign in this turn that the session lost its connection to planestro (#167, HH-377), as soon as the port sees it. */
+  onConnectionDrop?(drop: ConnectionDrop): void;
 }
 /** A report the session made whose call was lost on the way to planestro (sdk-notes gotcha 11), with the arguments it was made with. */
 export interface UndeliveredReport { tool: 'submit_plan' | 'report_done' | 'report_blocked'; args: Record<string, unknown>; error: string }
+/**
+ * The session lost its line to planestro (#167, HH-377): a planestro tool call or a permission request that died in transport
+ * (`Stream closed`, an AbortError, "interrupted before a result was received"), or planestro's tools missing from the session.
+ * The first error of the turn, its time, and the tool it hit when there was one.
+ */
+export interface ConnectionDrop { error: string; at: string; tool?: string }
 export type TurnOptions = AgentTurnOptions & ClaudeTurnExtras;
 /** What reloading a conversation costs before it does any work, as the CLI quotes it when it resumes one. */
 export interface ResumeQuote {
@@ -222,6 +230,10 @@ export interface TurnResult {
   toolFailures?: { tool: string; error: string }[];
   /** The last report the session made that never reached planestro, unless a later one did (#167): the engine applies it. */
   undelivered?: UndeliveredReport;
+  /** The turn's first sign of a lost connection to planestro (#167), when it saw one. */
+  connectionDrop?: ConnectionDrop;
+  /** The text of the session's last assistant message that had any: what it said as it ended. */
+  lastMessage?: string;
   /** Set with subtype `usage_exhausted`: the model is out of usage (the provider's message, and its reset time when it gave one). */
   usageLimit?: { message: string; resetsAt?: string };
   /** The most pressing rate-limit reading the turn saw (Claude subscriptions report one per turn): what the usage guard reads. */

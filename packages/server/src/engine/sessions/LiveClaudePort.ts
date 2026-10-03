@@ -5,7 +5,7 @@ import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, rmS
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { KNOWN_USAGE_LIMIT_PREFIXES, USAGE_ERROR_CODES, isUsageLimitText, resetTime, worseRateLimit, type RateLimitSnapshot } from '@planestro/shared';
-import type { ClaudePort, TurnOptions, TurnResult, CustomTurnOptions, ResumeQuote, UndeliveredReport } from '../ports.ts';
+import type { ClaudePort, TurnOptions, TurnResult, CustomTurnOptions, ResumeQuote, UndeliveredReport, ConnectionDrop } from '../ports.ts';
 import { PARKED_REFUSAL } from '../parks.ts';
 
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] });
@@ -96,6 +96,7 @@ export class LiveClaudePort implements ClaudePort {
     const allow = splitAllowed(o.allowedTools);
     const input = new InputGate();
     const reports = new ReportWatch((r) => { result.undelivered = r; o.onUndelivered?.(r); });
+    const drops = new DropWatch((d) => { result.connectionDrop = d; o.onConnectionDrop?.(d); });
     const q = query({
       prompt: input.open(o.prompt),
       options: {
@@ -130,7 +131,7 @@ export class LiveClaudePort implements ClaudePort {
         },
       },
     });
-    await consume(q, result, o.onOutput, abortController, resumed, input, reports);
+    await consume(q, result, o.onOutput, abortController, resumed, input, reports, drops);
     return result;
   }
 }
@@ -226,6 +227,48 @@ export class ReportWatch {
     if (r === undefined && this.lost === undefined) return;
     this.lost = r;
     this.onChange(r);
+  }
+}
+
+/** What a planestro tool's error says when the call died in transport: its handler never answers with an error of its own. */
+const DROP_TEXT = /Stream closed|AbortError|interrupted before a result was received|Connection closed|not connected/i;
+/** A permission request that died in transport, as the CLI answers the tool it was for (any tool, so only the CLI's own wording). */
+const PERMISSION_DROP = /^(?:Error:\s*)?(?:Tool permission request failed|The tool call was interrupted before a result was received|(?:AbortError:\s*)?Stream closed)/i;
+/** An MCP server status that means planestro's tools are not there for the session. */
+const DOWN = new Set(['failed', 'disconnected', 'needs-auth']);
+
+/**
+ * The first sign in a turn that the session lost its connection to planestro (#167, HH-377): a planestro tool call or a
+ * permission request that died in transport, or planestro's server down or its tools missing when the session starts. Said
+ * once, as soon as it is seen, so the item shows it within the turn. Exported for tests.
+ */
+export class DropWatch {
+  private readonly tools = new Map<string, string>();
+  drop?: ConnectionDrop;
+  constructor(private readonly onDrop: (d: ConnectionDrop) => void, private readonly now: () => string = () => new Date().toISOString()) {}
+
+  see(m: any): void {
+    if (this.drop) return;
+    if (m?.type === 'system' && m.subtype === 'init') {
+      const server = Array.isArray(m.mcp_servers) ? m.mcp_servers.find((x: any) => x?.name === 'planestro') : undefined;
+      if (server && DOWN.has(String(server.status))) this.flag(`planestro's MCP server status was ${server.status} when the session started`);
+      else if (Array.isArray(m.tools) && m.tools.length > 0 && !m.tools.some((t: unknown) => String(t).startsWith('mcp__planestro__'))) this.flag("planestro's tools were missing from the session's tool list");
+    } else if (m?.type === 'assistant') {
+      for (const c of (m.message?.content ?? []) as any[]) if (c?.type === 'tool_use') this.tools.set(c.id, String(c.name));
+    } else if (m?.type === 'user' && Array.isArray(m.message?.content)) {
+      for (const c of m.message.content as any[]) {
+        if (c?.type !== 'tool_result' || !c.is_error) continue;
+        const name = this.tools.get(c.tool_use_id);
+        const body = (typeof c.content === 'string' ? c.content : (Array.isArray(c.content) ? c.content.map((x: any) => x?.text ?? '').join(' ') : '')).trim();
+        const planestro = name?.startsWith('mcp__planestro__');
+        if ((planestro && DROP_TEXT.test(body)) || PERMISSION_DROP.test(body)) { this.flag(body.slice(0, 300) || 'error', planestro ? name!.slice('mcp__planestro__'.length) : name); return; }
+      }
+    }
+  }
+
+  private flag(error: string, tool?: string): void {
+    this.drop = { error, at: this.now(), ...(tool ? { tool } : {}) };
+    this.onDrop(this.drop);
   }
 }
 
@@ -451,7 +494,7 @@ export function classifyUsage(result: TurnResult, u: UsageSignals): void {
 }
 
 /** Drain a query into a TurnResult. Completion is "the iterator finished": a torn session's resume emits a zero-turn result first. */
-async function consume(q: AsyncIterable<unknown>, result: TurnResult, onOutput: (t: string) => void, abortController: AbortController, resumed?: ResumeWatch, input?: InputGate, reports?: ReportWatch): Promise<void> {
+async function consume(q: AsyncIterable<unknown>, result: TurnResult, onOutput: (t: string) => void, abortController: AbortController, resumed?: ResumeWatch, input?: InputGate, reports?: ReportWatch, drops?: DropWatch): Promise<void> {
   let sawResult = false;
   let total: number | undefined;
   const usage: UsageSignals = {};
@@ -461,15 +504,18 @@ async function consume(q: AsyncIterable<unknown>, result: TurnResult, onOutput: 
     for await (const m of q as AsyncIterable<any>) {
       input?.see(m);
       reports?.see(m);
+      drops?.see(m);
       noteUsage(m, usage);
       noteToolFailures(m, calls, result);
       noteContext(m, context);
       if (m.type === 'system' && m.subtype === 'init') result.sessionId = m.session_id;
       else if (m.type === 'assistant') {
+        const said: string[] = [];
         for (const c of (m.message?.content ?? []) as any[]) {
-          if (c.type === 'text' && c.text) { result.text += c.text + '\n'; onOutput(c.text); }
+          if (c.type === 'text' && c.text) { result.text += c.text + '\n'; said.push(c.text); onOutput(c.text); }
           else if (c.type === 'tool_use') onOutput(`→ ${describeToolUse(c.name, c.input ?? {})}`);
         }
+        if (said.length) result.lastMessage = said.join('\n');
       } else if (m.type === 'result') {
         sawResult = true;
         result.sessionId = m.session_id ?? result.sessionId;

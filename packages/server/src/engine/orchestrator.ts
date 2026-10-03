@@ -427,6 +427,8 @@ export class Orchestrator {
           if (stated) lines.push(this.holdPlanPolicy(fm.id, stated));
         }
         if (e.type === 'permission_request') lines.push(this.permissionPacket(fm));
+        const drop = fm.op_data?.mcp_drop as { error?: string; at?: string; final_message?: string } | undefined;
+        if (fm.blocked && fm.blocked_reason === 'connection_lost' && drop) lines.push(`Connection lost (#167): the session lost its line to planestro at ${drop.at} (${drop.error}), so its reports and permission requests never arrived, and nothing could be applied from them. Its last message, as it ended:\n${drop.final_message?.trim() || '(none)'}\nRecover from it: if it says the work is done and committed, finish_from_worktree (retry_op in review) lands it as it is; otherwise unblock_item tells the session what to hand in again (a new turn has a working connection).`);
         if (fm.triage) lines.push(e.type === 'decision_answered' ? this.decisionAnsweredPacket() : this.triagePacket(fm));
       }
     }

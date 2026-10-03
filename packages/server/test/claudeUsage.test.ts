@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { noteUsage, classifyUsage, rateLimitSnapshot, type UsageSignals, noteToolFailures, InputGate, ReportWatch, noteContext, resumeQuoteOf, settleCost, lastCostState, resumeWatch, type ContextSeen } from '../src/engine/sessions/LiveClaudePort.ts';
+import { noteUsage, classifyUsage, rateLimitSnapshot, type UsageSignals, noteToolFailures, InputGate, ReportWatch, DropWatch, noteContext, resumeQuoteOf, settleCost, lastCostState, resumeWatch, type ContextSeen } from '../src/engine/sessions/LiveClaudePort.ts';
 import type { TurnResult, UndeliveredReport } from '../src/engine/ports.ts';
 
 const result = (over: Partial<TurnResult> = {}): TurnResult => ({ subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', ...over });
@@ -231,5 +231,32 @@ describe('reports lost in transport (#167)', () => {
   it('a last report call with no answer when the stream ended may not have landed', () => {
     expect(watch([call('a', 'mcp__planestro__submit_plan', { plan: '# p' })])).toEqual([{ tool: 'submit_plan', args: { plan: '# p' }, error: 'the session ended before the call was answered' }]);
     expect(watch([call('a', 'mcp__planestro__add_note', { markdown: 'n' })])).toEqual([]);
+  });
+});
+
+describe('a lost connection to planestro is seen within the turn (#167, HH-377)', () => {
+  const call = (id: string, name: string) => ({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input: {} }] } });
+  const answer = (id: string, text: string, is_error = true) => ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, is_error, content: [{ type: 'text', text }] }] } });
+  const init = (tools: string[], status = 'connected') => ({ type: 'system', subtype: 'init', tools, mcp_servers: [{ name: 'planestro', status }] });
+  const drops = (msgs: unknown[]) => { const seen: unknown[] = []; const w = new DropWatch((d) => seen.push(d), () => 'T'); for (const m of msgs) w.see(m); return seen; };
+
+  it('a planestro call or a permission request that died in transport, the first one only', () => {
+    expect(drops([call('a', 'mcp__planestro__add_note'), answer('a', 'Stream closed'), call('b', 'Bash'), answer('b', 'Tool permission request failed: AbortError: Stream closed')]))
+      .toEqual([{ error: 'Stream closed', at: 'T', tool: 'add_note' }]);
+    expect(drops([call('b', 'Bash'), answer('b', 'Tool permission request failed: AbortError: Stream closed')])).toEqual([{ error: 'Tool permission request failed: AbortError: Stream closed', at: 'T', tool: 'Bash' }]);
+    expect(drops([call('b', 'Edit'), answer('b', 'The tool call was interrupted before a result was received')])).toHaveLength(1);
+  });
+
+  it("not a command's own failure, a refusal or a bad argument", () => {
+    expect(drops([call('b', 'Bash'), answer('b', 'Exit code 1\nnode:internal AbortError: Stream closed by peer')])).toEqual([]);
+    expect(drops([call('b', 'Bash'), answer('b', 'Permission recorded by planestro — end this turn')])).toEqual([]);
+    expect(drops([call('a', 'mcp__planestro__report_done'), answer('a', 'InputValidationError: summary is required')])).toEqual([]);
+    expect(drops([call('a', 'mcp__planestro__report_done'), answer('a', 'Recorded. End your turn now.', false)])).toEqual([]);
+  });
+
+  it("planestro's server down or its tools missing when the session starts", () => {
+    expect(drops([init(['Bash', 'mcp__planestro__report_done'])])).toEqual([]);
+    expect(drops([init(['Bash', 'Read'])])).toEqual([{ error: "planestro's tools were missing from the session's tool list", at: 'T' }]);
+    expect(drops([init(['Bash', 'mcp__planestro__report_done'], 'failed')])).toEqual([{ error: "planestro's MCP server status was failed when the session started", at: 'T' }]);
   });
 });
