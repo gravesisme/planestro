@@ -102,3 +102,33 @@ export function parkHint(entries: JournalEntry[], command: string, allow: string
   const parks = parksOf(entries).filter((r) => r.shape === shape).length;
   return parks >= 2 ? { shape, parks, rule } : undefined;
 }
+
+/** A parked request as the worker should read it back: the command itself for Bash, else the tool and its input. */
+export function parkedRequestText(req: { tool: string; input: Record<string, unknown> }): string {
+  return req.tool === 'Bash' ? `\`${String(req.input.command)}\`` : `${req.tool} ${JSON.stringify(req.input).slice(0, 200)}`;
+}
+
+/**
+ * The ruling a resumed session reads first (#168). Workers took a park for a denial and a denial for a hint to
+ * rephrase, so the ruling is stated outright: an approved command runs now, as it was; a denied one is not tried
+ * again in any other form.
+ */
+export function rulingText(req: { tool: string; input: Record<string, unknown> }, decision: 'allow' | 'always' | 'deny', who: string, note?: string): string {
+  const what = req.tool === 'Bash' ? `your command ${parkedRequestText(req)}` : `your ${parkedRequestText(req)} call`;
+  if (decision === 'deny') return `DENIED: ${who} denied ${what}${note ? `: ${note}` : ''}. Do not retry it in another form (a rewritten command, a script, another tool to the same effect). Continue without it, or call report_blocked if you cannot.`;
+  return `APPROVED: ${who} approved ${what}${note ? ` (${note})` : ''}. Run it now, as it was; it is allowed. Then continue.`;
+}
+
+/** How a refused report_blocked starts, so a port can tell the refusal from a recorded block. */
+export const PARKED_REFUSAL = 'Not recorded:';
+
+/**
+ * report_blocked while the session waits on a ruling (#168) is refused in words, never thrown: a park is a wait,
+ * not a block, and the turn should end with no report. Undefined when nothing is parked.
+ */
+export function parkedRefusal(fm: { awaiting?: string; awaiting_data?: Record<string, unknown> }): string | undefined {
+  const permission = fm.awaiting === 'permission' || (fm.awaiting === 'orchestrator' && fm.awaiting_data?.kind === 'permission');
+  if (!permission || typeof fm.awaiting_data?.tool !== 'string') return undefined;
+  const req = { tool: fm.awaiting_data.tool, input: (fm.awaiting_data.input ?? {}) as Record<string, unknown> };
+  return `${PARKED_REFUSAL} you are parked on ${parkedRequestText(req)}; wait. A park is not a denial and not a block: end your turn now with no report, and planestro resumes you with the ruling.`;
+}

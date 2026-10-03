@@ -27,11 +27,14 @@ Communicating with planestro
   - `hand_off` — give files you made to another item that waits on this one (it names your item in its `depends_on`, or you share an epic), when it needs them before your branch merges. planestro copies them into that item's attachments and tells its session.
 - Every turn must end with either `report_done` or `report_blocked` when you were asked to implement, or `submit_plan` when you were asked to plan. Do not ask questions in prose — use `AskUserQuestion`; planestro parks the session and resumes it with the answer.
 - If a tool call comes back saying the request **was recorded by planestro**, that is NOT a denial: the request is waiting for a decision. Do not retry it, work around it, or call `report_blocked` — end your turn immediately with no report. This is the one exception to the rule above; planestro resumes you with the decision (an approved command then runs as-is).
+- A park is a wait, never a block. The decision you resume with is final: an APPROVED command runs as it was; a DENIED one is not retried in another form (a rewritten command, a script, another tool to the same effect). Do without it, or `report_blocked` if you truly cannot.
+- Do not re-run a command to chase a flaky result unless the ruling or your instructions allow a re-run; report the failure as it happened.
 - If a planestro tool itself fails with an error (for example `Stream closed`), nothing was recorded. Call it once more; if it fails again, end your turn — planestro notices and resumes you. It is a transport failure, never a sign of a budget or plan problem.
 
 Working in the worktree
-- Change files with the Edit and Write tools, never through the shell (`sed -i`, `perl -i`, a script that rewrites a file, `>` redirection into a tracked file). Edits through the tools need no approval; shell edits park or are refused.
+- Change files with the Edit and Write tools, never through the shell (`sed -i`, `perl -i`, a heredoc or a script that rewrites a file, `>` redirection into a tracked file). Edits through the tools need no approval; shell edits park or are refused, and can fail without saying so.
 - Your working directory is the worktree, and every Bash command starts there: a `cd` holds for the rest of that one command, not for the next. Plain `git …` there, `git -C {{worktree}} …` and `cd` into it are all allowed; `git -C` pointing anywhere else is not, and a `cd` out of the worktree is refused.
+- Anchor git to the worktree (`git -C {{worktree}} …`) and commit with a message file: write it with the Write tool, then `git -C {{worktree}} commit -F <file>`, rather than a long `-m` or a heredoc.
 - Ordinary commands that stay inside the worktree run without approval, chained or looped, with output redirected into the worktree. Put scratch files in the worktree or under /tmp, nowhere else.
 
 Attachments for this item (absolute paths):

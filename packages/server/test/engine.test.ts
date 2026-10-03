@@ -284,6 +284,41 @@ describe('LiveEngine lifecycle (dry-run ports)', () => {
     expect(store.config.permissions.allow).toContain('Bash(node -e 1)');
   });
 
+  it('a park is a wait (#168): report_blocked is refused in words while parked, and the resume states the ruling', async () => {
+    const prompts: string[] = []; const refusals: string[] = [];
+    let work = 0;
+    const parky = () => ({
+      async runTurn(o: TurnOptions): Promise<TurnResult> {
+        if (o.phase === 'plan') { await o.tools.submit_plan('# p'); return { sessionId: 's', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', planSubmitted: '# p' }; }
+        prompts.push(o.prompt); work += 1;
+        if (work === 1 || work === 2) {
+          expect((await o.onPermission({ tool: 'Bash', input: { command: `node -e ${work}` } })).action).toBe('park');
+          refusals.push(await o.tools.report_blocked('a permission was denied'));   // the misreading this guards against
+          return { sessionId: 's', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', parked: 'permission' };
+        }
+        await o.tools.report_done('did it');
+        return { sessionId: 's', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', done: 'did it' };
+      },
+    });
+    const { store, engine, world } = await setup({ claude: parky });
+    const item = store.createItem({ title: 'W', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => store.getItem(item.id)!.file.frontmatter.awaiting === 'permission' && !(engine as any).jobs.has(item.id));
+    expect(refusals[0]).toBe('Not recorded: you are parked on `node -e 1`; wait. A park is not a denial and not a block: end your turn now with no report, and planestro resumes you with the ruling.');
+    expect(store.getItem(item.id)!.file.frontmatter.blocked).toBeUndefined();
+    await engine.respond(item.id, { kind: 'permission', decision: 'deny', reason: 'use the check script' });
+    await waitFor(() => work === 2 && store.getItem(item.id)!.file.frontmatter.awaiting === 'permission' && !(engine as any).jobs.has(item.id));
+    expect(prompts[1]).toContain('DENIED: The user denied your command `node -e 1`: use the check script. Do not retry it in another form');
+    world.commits.set(join(store.codeRepoPath(), '.claude/worktrees/tp-1-w'), 1);
+    await engine.respond(item.id, { kind: 'permission', decision: 'allow' });
+    await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
+    expect(prompts[2]).toContain('APPROVED: The user approved your command `node -e 2`. Run it now, as it was');
+    expect(store.getItem(item.id)!.file.frontmatter.blocked).toBeUndefined();
+  });
+
   it('a message that resumes an agent_blocked session clears the block, so the finished turn opens its PR', async () => {
     let work = 0;
     const blocky = () => ({
@@ -2380,7 +2415,7 @@ describe('permission requests delegated to the orchestrator', () => {
     expect(needed).toEqual([false]);
     expect(w.seen.prompts[0]).toContain('Permission request: DELEGATED TO YOU');
     expect(w.seen.prompts[0]).toContain('node -e 1');
-    expect(w.seen.implementPrompts[1]).toContain('The orchestrator approved `node -e 1`');
+    expect(w.seen.implementPrompts[1]).toContain('APPROVED: The orchestrator approved your command `node -e 1` (a harmless local check). Run it now, as it was');
     expect(activityOf(ctx.store, ctx.id)).toContain('[orchestrator] permission allow (a harmless local check): Bash(node -e 1)');
     expect(ctx.store.config.permissions.allow).not.toContain('Bash(node -e 1)'); // it never writes allow rules
   });
@@ -2409,7 +2444,7 @@ describe('permission requests delegated to the orchestrator', () => {
     const ctx = await begin(w.claude);
     await waitFor(() => fmOf(ctx.store, ctx.id).awaiting === 'permission', 8000);
     expect(denials).toBe(3);
-    expect(w.seen.implementPrompts[1]).toContain('The orchestrator denied `node -e 1`: use the project check script instead');
+    expect(w.seen.implementPrompts[1]).toContain('DENIED: The orchestrator denied your command `node -e 1`: use the project check script instead. Do not retry it in another form');
     expect(fmOf(ctx.store, ctx.id).op_data?.orchestrator_denials).toBe(3);
     // #95: the card says why it came to you, and your approval hands the item's next requests back to the orchestrator
     expect(fmOf(ctx.store, ctx.id).awaiting_data?.escalated).toBe('orchestrator_denials');
