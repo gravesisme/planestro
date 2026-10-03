@@ -1,6 +1,6 @@
 import { join, relative, isAbsolute, extname, basename, matchesGlob } from 'node:path';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
-import { resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem } from '@planestro/shared';
+import { resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote, type CiQueue, type UndeliveredReport } from './ports.ts';
@@ -1447,7 +1447,11 @@ export class LiveEngine implements Engine {
           await this.runTurnFor(id, phase, this.reportNudge(fm), [], [], { fresh: 'auto' });
           return;
         }
-        this.store.mutateItem(id, [{ activity: { actor: 'app', text: `turn ended with commits but without report_done (${cannot}); proceeding to a pull request` } }], 'engine');
+        // The nudge ended silent too (or could not be paid for): the PR opens, and the orchestrator reads the last message (#196).
+        const said = this.finalLine(result);
+        this.store.mutateItem(id, [{ activity: { actor: 'app', text: `turn ended with commits but without report_done (${cannot}); proceeding to a pull request. Its last message${said ? `: "${said}"` : ' was empty'}; the orchestrator reads it` } }], 'engine');
+        await this.openPr(id, summary, result);
+        return;
       }
       await this.openPr(id, summary);
       return;
@@ -1457,13 +1461,42 @@ export class LiveEngine implements Engine {
       const head = await this.ports.git.revParse(cwd, 'HEAD');
       const moved = head !== fm.ci_head_sha;
       const held = Boolean(fm.skip_merge);
+      // A turn here that reports nothing is read by the orchestrator (#196): HH-373's worker explained itself twice in its
+      // last message after the PR opened, and the line "re-checking" was all anyone saw, for eight hours.
+      const silent = this.silentTurn(result);
+      const said = silent ? this.finalLine(result) : '';
       this.store.mutateItem(id, [
         { set: { ci_result: 'pending', op_data: { ...(opData ?? {}), needs_session_rebase: false } } },
-        { activity: { actor: 'app', text: moved ? `session updated the branch (${head.slice(0, 7)}); ${held ? 'held, so it is pushed for CI and review but not merged' : 're-entering the merge pipeline'}` : 'session finished without changing the branch; re-checking' } },
+        { activity: { actor: 'app', text: `${moved ? `session updated the branch (${head.slice(0, 7)}); ${held ? 'held, so it is pushed for CI and review but not merged' : 're-entering the merge pipeline'}` : 'session finished without changing the branch; re-checking'}${silent ? `. It ended without report_done or report_blocked${said ? `, saying: "${said}"` : ' and said nothing'}; the orchestrator reads its last message` : ''}` } },
       ], 'engine');
+      if (silent) this.wakeOrchestrator('turn_ended_silent', id, this.silentTurnData(id, result, moved ? head : undefined));
       this.heldPolledAt.delete(id);
       void this.tick();
     }
+  }
+
+  /** A worker turn that ran and ended with no report of its own (#196); a parked turn is waiting, not silent. */
+  private silentTurn(result: TurnResult): boolean {
+    return result.numTurns > 0 && !result.done && !result.blocked && !result.parked;
+  }
+
+  /** The first line of the session's final message, for the Activity log. */
+  private finalLine(result: TurnResult): string {
+    const line = result.text.trim().split('\n').find((l) => l.trim() !== '')?.trim() ?? '';
+    return line.length > 200 ? `${line.slice(0, 199)}…` : line;
+  }
+
+  /** What the orchestrator needs to act on a silent turn without opening its transcript (#196). */
+  private silentTurnData(id: string, result: TurnResult, movedTo: string | undefined, opened?: number): Record<string, unknown> {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    const text = result.text.trim();
+    return {
+      final_message: text ? (text.length > 1800 ? `${text.slice(0, 1800)}…` : text) : '(none: the turn ended with no text)',
+      branch: movedTo ? `moved to ${movedTo.slice(0, 7)}` : 'unchanged',
+      hold: fm.skip_merge ? (heldReasonOf(fm) ?? 'held (no reason given)') : 'none',
+      ci: `${fm.ci_result ?? '—'}${fm.ci_head_sha ? ` (last run read for ${fm.ci_head_sha.slice(0, 7)})` : ''}`,
+      policy: `The worker's turn ended without report_done or report_blocked${opened ? `, even after it was asked for its report; planestro opened PR #${opened} anyway` : ''}. Its final message above is what it said. If it reports a problem, a question or something it could not do, act on it: message_session with what it needs, unblock or retry what stopped, or leave the user one decision card. If it says the work is complete and nothing is wrong, there is nothing to do: end the wake. Do not repeat a message you already sent it.`,
+    };
   }
 
   /**
@@ -1495,7 +1528,8 @@ export class LiveEngine implements Engine {
     ].join('\n\n');
   }
 
-  private async openPr(id: string, summary?: string): Promise<void> {
+  /** `silent`: the turn that led here ended without a report, so the wake is that turn's (#196), not a plain pr_opened. */
+  private async openPr(id: string, summary?: string, silent?: TurnResult): Promise<void> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
     if (fm.taken_over) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: 'not opening a pull request: you have this item (taken over)' } }], 'engine'); return; }
@@ -1526,7 +1560,8 @@ export class LiveEngine implements Engine {
     ], 'engine', { commit: `${id}: open PR #${pr.number}` });
     this.store.journal.end(opId, id, 'ok', { pr: pr.number });
     this.note('info', `${id}: PR #${pr.number} opened against ${base}`);
-    this.wakeOrchestrator('pr_opened', id);
+    if (silent) this.wakeOrchestrator('turn_ended_silent', id, this.silentTurnData(id, silent, undefined, pr.number));
+    else this.wakeOrchestrator('pr_opened', id);
     void this.tick();
   }
 
