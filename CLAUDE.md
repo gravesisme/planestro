@@ -67,6 +67,9 @@ The serial merge chain only syncs and merges; no CI wait ever runs inside it. A 
 that is not green yet leaves the chain (`op: awaiting_ci`), is polled beside it
 (`watchCi`) and comes back once green, so one item's CI never delays another's merge.
 Releasing a hold keeps a green run whose head is unchanged and still on the base tip.
+A red head the session changed nothing for is re-run once (`onSameRedRun`), then blocks `ci_red_parked`:
+nothing waits on a run that is not coming, and an item in review that nothing moves for `ci.stall_wake_min`
+wakes the orchestrator once (`review_stalled`, #201).
 A held item (`skip_merge`) skips only the merge: its new commits are pushed and its
 CI is polled from the tick, outside the merge chain (`driveHeld`).
 Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
