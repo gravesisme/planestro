@@ -26,7 +26,18 @@ export interface EngineOptions { sleep?: (ms: number) => Promise<void>; tickMs?:
 const RESUMABLE_TURN_OPS = new Set(['planning_turn', 'implement_turn']);
 /** How many of one item's permission requests the orchestrator may refuse before they go to the user instead. */
 const MAX_ORCHESTRATOR_DENIALS = 3;
-const JUDGMENT_BLOCKS = ['turn_error', 'connection_lost', 'no_plan', 'no_commits', 'dirty_tree', 'sync_conflict', 'ci_red', 'ci_timeout', 'ci_blocked', 'ci_disagree', 'base_red', 'pr_closed_externally', 'merge_unverified', 'agent_blocked', 'engine_error'] as const;
+const JUDGMENT_BLOCKS = ['turn_error', 'connection_lost', 'no_plan', 'no_commits', 'dirty_tree', 'sync_conflict', 'ci_red', 'ci_red_parked', 'ci_timeout', 'ci_blocked', 'ci_disagree', 'base_red', 'pr_closed_externally', 'merge_unverified', 'agent_blocked', 'engine_error'] as const;
+/** The newest Activity line that says something moved: planestro, the session or a person, not the orchestrator's own notes (#201). */
+function lastMovingLine(activity: string): { ts: string; at: number; text: string } | undefined {
+  const lines = activity.split('\n').filter((l) => l.startsWith('- '));
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const m = /^- (\S+) \[([^\]]+)\] (.*)$/.exec(lines[i]);
+    if (!m || m[2] === 'orchestrator') continue;
+    const at = Date.parse(m[1]);
+    if (Number.isFinite(at)) return { ts: m[1], at, text: m[3].slice(0, 300) };
+  }
+  return undefined;
+}
 const ACTIVE_FOR_SLOTS: Status[] = ['PLAN_IN_PROGRESS', 'IN_PROGRESS'];
 /** Turn failures with their own block reason, because the fix is the user's (log in, wait, start over) and not a judgment call. */
 const ACTIONABLE_FAILURES = new Set(['auth_required', 'rate_limited', 'session_lost', 'spawn_error', 'cli_too_old']);
@@ -375,6 +386,7 @@ export class LiveEngine implements Engine {
       this.driveInReview();
       this.driveHeld();
       await this.driveStalls();
+      this.driveReviewStalls();
       this.driveResumeAfter();
     } catch (e) { this.note('error', `tick: ${(e as Error).message}`); }
   }
@@ -465,6 +477,51 @@ export class LiveEngine implements Engine {
       this.runJob(item.id, () => this.carryOnStalled(item.id));
     }
     for (const id of this.idleSince.keys()) if (!seen.has(id)) this.idleSince.delete(id);
+  }
+
+  /** What the last CI poll of each item's wait saw, and when: a run queued or running is something coming (#201). */
+  private ciSeen = new Map<string, { state: string; at: number }>();
+  private reviewIdleSince = new Map<string, number>();
+
+  /**
+   * The backstop for an item in review that nothing moves (#201): no CI queued or running, no session, no stop, and no
+   * Activity from planestro, the session or the user for `ci.stall_wake_min`. HH-383 sat on a red run for 7½ hours that
+   * way. The orchestrator is woken once per stall (keyed by the last line that moved it), never to act by itself.
+   */
+  private driveReviewStalls(): void {
+    const after = this.store.config.ci.stall_wake_min * 60_000;
+    if (!after) return;
+    const now = Date.now();
+    const looked = new Set<string>();
+    for (const item of this.store.listItems()) {
+      const fm = item.file.frontmatter;
+      if (fm.status !== 'IN_REVIEW' || fm.kind === 'epic' || fm.blocked || fm.awaiting || fm.triage || fm.taken_over || fm.skip_merge || fm.resume_after) continue;
+      if (this.store.derived(item).flavor === 'external' || fm.op === 'running_local_checks') continue;
+      // Driven: a session, a step other than a CI wait, or a wait that has not polled yet or last saw its run queued or running.
+      const seen = this.ciSeen.get(item.id);
+      const waiting = this.ciWaits.has(item.id);
+      const driven = this.turns.has(item.id) || this.followUps.has(item.id) || (this.jobs.has(item.id) && !waiting)
+        || (waiting && (!seen || seen.state === 'pending')) || (seen?.state === 'pending' && now - seen.at < 2 * 60_000);
+      looked.add(item.id);
+      if (driven) { this.reviewIdleSince.delete(item.id); continue; }
+      // Undriven across ticks, not between two steps (a restart clears an op a tick before its job starts again).
+      const since = this.reviewIdleSince.get(item.id) ?? now;
+      this.reviewIdleSince.set(item.id, since);
+      if (now - since < Math.min(after, 60_000)) continue;
+      const last = lastMovingLine(getSection(item.file, 'Activity'));
+      if (!last || now - last.at < after) continue;
+      const mark = `${fm.ci_head_sha ?? ''}@${last.ts}`;
+      if (fm.op_data?.review_stalled === mark) continue;
+      const idleMin = Math.round((now - last.at) / 60_000);
+      const run = fm.op_data?.ci as { runId?: number; url?: string } | undefined;
+      this.store.mutateItem(item.id, [{ set: { op_data: { ...(fm.op_data ?? {}), review_stalled: mark } } }], 'engine');
+      this.note('warn', `${item.id}: in review with nothing moving it for ${idleMin} min; waking the orchestrator`);
+      this.wakeOrchestrator('review_stalled', item.id, {
+        idle_min: idleMin, ci_result: fm.ci_result ?? 'none', ...(run?.url ? { run: run.url } : {}), head: fm.ci_head_sha ?? '', last_activity: last.text,
+        note: 'Nothing is driving this item: no CI run is queued or running, no session turn, no stop. Read its Activity and CI, then act (rerun_ci, retry_op, message_session, unblock_item) or ask the user.',
+      });
+    }
+    for (const id of this.reviewIdleSince.keys()) if (!looked.has(id)) this.reviewIdleSince.delete(id);
   }
 
   /** Carry an idle item on from where it stands: committed work goes to its pull request, otherwise the session resumes. `from` says who found it idle, and why. */
@@ -736,15 +793,16 @@ export class LiveEngine implements Engine {
     await this.readPreview(id, remote);
     const ci = await this.ports.gh.ciForSha(this.github, fm.branch!, remote, this.ciWorkflow);
     const cur = this.store.requireItem(id).file.frontmatter;
-    if (ci.runId && (cur.op_data?.ci as { runId?: number } | undefined)?.runId !== ci.runId) this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), ci: { runId: ci.runId, url: ci.url } } } }], 'engine');
+    const seen = cur.op_data?.ci as { runId?: number; attempt?: number } | undefined;
+    if (ci.runId && (seen?.runId !== ci.runId || seen?.attempt !== ci.attempt)) this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), ci: { runId: ci.runId, url: ci.url, ...(ci.attempt ? { attempt: ci.attempt } : {}) } } } }], 'engine');
     if (ci.state === 'success') {
       if (cur.ci_result !== 'green' || cur.ci_head_sha !== remote) this.store.mutateItem(id, [{ set: { ci_result: 'green', ci_head_sha: remote } }, { activity: { actor: 'app', text: `held: CI is green for ${remote.slice(0, 7)} (not merging until the hold is released)` } }], 'engine');
       return;
     }
     if (ci.state === 'failure') {
       if (ci.runId && await this.ports.gh.isBillingBlocked(this.github, ci.runId)) return;
-      const lastRed = cur.op_data?.last_red as { runId?: number; sha?: string } | undefined;
-      if (cur.ci_result === 'red' || (lastRed?.runId === ci.runId && lastRed?.sha === remote)) return;
+      const lastRed = cur.op_data?.last_red as { runId?: number; sha?: string; attempt?: number } | undefined;
+      if (cur.ci_result === 'red' || (lastRed?.runId === ci.runId && lastRed?.sha === remote && (ci.attempt ?? 1) <= (lastRed.attempt ?? 1))) return;
       this.store.mutateItem(id, [{ set: { ci_head_sha: remote } }], 'engine');
       await this.onCiRed(id, this.store.journal.begin('held_ci', id, { pr: fm.pr, sha: remote }), remote, undefined, 'github', !epic);
       return;
@@ -1977,11 +2035,15 @@ export class LiveEngine implements Engine {
   private async onCiRed(id: string, opId: string, headSha: string, logText: string | undefined, source: 'github' | 'local', canFix = true): Promise<void> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
-    const ci = fm.op_data?.ci as { runId?: number; url?: string } | undefined;
+    const ci = fm.op_data?.ci as { runId?: number; url?: string; attempt?: number } | undefined;
     // The same completed run re-observed (e.g. a manual re-run was just requested and the
     // run hasn't flipped to in_progress yet) is the SAME verdict, not a second failure.
-    const lastRed = fm.op_data?.last_red as { runId?: number; sha?: string } | undefined;
-    if (source === 'github' && lastRed && lastRed.runId === ci?.runId && lastRed.sha === headSha) {
+    // A newer attempt of that run (its failed jobs re-run on GitHub by hand) is a new verdict.
+    const lastRed = fm.op_data?.last_red as { runId?: number; sha?: string; attempt?: number } | undefined;
+    if (source === 'github' && lastRed && lastRed.runId === ci?.runId && lastRed.sha === headSha && (ci?.attempt ?? 1) <= (lastRed.attempt ?? 1)) {
+      // Nothing is coming for it once the session is done with it (#201): HH-383's worker reported "no code change, re-run
+      // it" and this branch re-read the same red run every 30 s for 7½ hours, with no re-run and no one told.
+      if (!this.turns.has(id) && !this.followUps.has(id) && !fm.skip_merge) { await this.onSameRedRun(id, opId, headSha); return; }
       this.store.mutateItem(id, [
         { unset: ['op', 'op_started_at'] },
         { set: { ci_result: 'pending' } },
@@ -1996,7 +2058,7 @@ export class LiveEngine implements Engine {
     const log = logText ?? (ci?.runId ? await this.ports.gh.runFailedLog(this.github, ci.runId, 120) : '(no run id)');
     this.store.mutateItem(id, [
       { unset: ['op', 'op_started_at'] },
-      { set: { ci_result: 'red', ci_failed_count: count, op_data: { ...(fm.op_data ?? {}), last_red: { runId: ci?.runId, sha: headSha } } } },
+      { set: { ci_result: 'red', ci_failed_count: count, op_data: { ...(fm.op_data ?? {}), last_red: { runId: ci?.runId, sha: headSha, ...(ci?.attempt ? { attempt: ci.attempt } : {}) } } } },
       { activity: { actor: 'app', text: `CI red (${source}, attempt ${count}) for ${headSha.slice(0, 7)}${ci?.url ? ` ${ci.url}` : ''}` } },
     ], 'engine', { commit: `${id}: CI red (${count})` });
     this.store.journal.end(opId, id, 'failed', { reason: 'ci_red', count });
@@ -2004,6 +2066,38 @@ export class LiveEngine implements Engine {
     if (!canFix) { this.block(id, 'ci_red', 'CI is red and there is no session to hand the failure to; investigate by hand'); return; }
     if (count >= 2) { this.block(id, 'ci_red_twice', `CI failed ${count} times`); this.wakeOrchestrator('ci_red_again', id, { failed_log: log.slice(0, 3000) }); return; }
     this.queueFollowUp(id, () => this.runTurnFor(id, 'fix', this.store.renderPrompt('ci-failed', this.store.requireItem(id), { ci: { attempt: String(count), run_url: ci?.url ?? '(local run)', failed_log: log } }), [], [], { fresh: 'auto' }));
+  }
+
+  /**
+   * The head's red run, already counted, read again with no session on the item and no re-run coming: the session looked
+   * and changed nothing (a fix turn's "no code change: not caused by this change"). Its failed jobs are re-run once per
+   * head, under the same `flake_rerun` marker as a known flake, and only that attempt counts: green merges, red is a
+   * second failure (ci_red_twice). Past that one re-run, or when it cannot be sent, it stops as ci_red_parked, which the
+   * orchestrator triages with the session's report in hand. It never waits here (#201).
+   */
+  private async onSameRedRun(id: string, opId: string, headSha: string): Promise<void> {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    const ci = fm.op_data?.ci as { runId?: number; url?: string; attempt?: number } | undefined;
+    const done = String(fm.op_data?.done_summary ?? '').replace(/\s+/g, ' ').trim();
+    const said = done ? `; the session reported: "${done.length > 600 ? `${done.slice(0, 599)}…` : done}"` : '';
+    const run = `CI run ${ci?.runId ?? '?'} for ${headSha.slice(0, 7)}${ci?.url ? ` (${ci.url})` : ''}`;
+    this.store.journal.end(opId, id, 'aborted', { reason: 'same_red_run' });
+    let why = `planestro already re-ran its failed jobs once for this head`;
+    if ((fm.op_data?.flake_rerun as { sha?: string } | undefined)?.sha !== headSha && ci?.runId) {
+      try {
+        await this.ports.gh.rerunFailed(this.github, ci.runId);
+        const attempt = (ci.attempt ?? 1) + 1;
+        const { last_red: _red, ...od } = this.store.requireItem(id).file.frontmatter.op_data ?? {};
+        this.store.mutateItem(id, [
+          { set: { ci_result: 'pending', op: 'awaiting_ci', op_started_at: this.now(), op_data: { ...od, flake_rerun: { sha: headSha, runId: ci.runId, attempt, check: 'no change from the session' }, ci_rerun: { sha: headSha, runId: ci.runId, attempt, by: 'app' } } } },
+          { activity: { actor: 'app', text: `${run} is still red and the session changed nothing${said ? ' (see its report)' : ''}; re-running its failed jobs once (attempt ${attempt}), and that attempt's verdict is the one that counts` } },
+        ], 'engine', { commit: `${id}: re-run CI after a no-change report` });
+        this.poke();
+        return;
+      } catch (e) { why = `its failed jobs could not be re-run (${(e as Error).message.replace(/\s+/g, ' ').slice(0, 200)})`; }
+    }
+    this.store.mutateItem(id, [{ set: { ci_result: 'red' } }], 'engine');
+    this.block(id, 'ci_red_parked', `${run} is red and nothing is coming for it: the session made no change and ${why}${said}. A flake: rerun_ci. A real failure: unblock_item with what to fix`);
   }
 
   /** The CI wait's clock: a seam a test can drive. */
@@ -2100,6 +2194,7 @@ export class LiveEngine implements Engine {
         continue;
       }
       const ci = await this.ports.gh.ciForSha(this.github, branch, sha, this.ciWorkflow);
+      this.ciSeen.set(id, { state: ci.state, at: Date.now() });
       const elapsedMin = (this.ciNow() - started) / 60_000;
       if (ci.runId && ci.state !== 'skipped') { sawRun = true; const cur = this.store.requireItem(id).file.frontmatter; const seen = cur.op_data?.ci as { runId?: number; attempt?: number } | undefined; if (seen?.runId !== ci.runId || seen?.attempt !== ci.attempt) this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), ci: { runId: ci.runId, url: ci.url, ...(ci.attempt ? { attempt: ci.attempt } : {}) } } } }], 'engine'); }
       if (ci.state === 'success') return 'green';
@@ -3138,8 +3233,9 @@ export class LiveEngine implements Engine {
     const ci = await this.ports.gh.ciForSha(this.github, fm.branch, red.sha, this.ciWorkflow);
     const want = cancelled ? 'cancelled' : 'failure';
     if (ci.runId !== red.runId || ci.state !== want) return `not possible: run ${red.runId} is not the head's ${cancelled ? 'cancelled' : 'red'} run any more (it is ${ci.state}${ci.runId && ci.runId !== red.runId ? `, run ${ci.runId}` : ''})`;
-    const prev = fm.op_data?.ci_rerun as { sha?: string } | undefined;
-    if (by === 'orchestrator' && prev?.sha === red.sha) return `not possible: you already re-ran CI once for ${red.sha.slice(0, 7)}; a second red on the same head is the user's to judge (or the session's to fix). If something has changed since (a runner's full disk freed, a fix landed), leave ask_user_decision with an option carrying action { tool: "rerun_ci", args: { id: "${id}" } }: their tap re-runs it`;
+    // planestro's own re-run after a no-change report (#201) is not the orchestrator's one.
+    const prev = fm.op_data?.ci_rerun as { sha?: string; by?: string } | undefined;
+    if (by === 'orchestrator' && prev?.sha === red.sha && prev.by !== 'app') return `not possible: you already re-ran CI once for ${red.sha.slice(0, 7)}; a second red on the same head is the user's to judge (or the session's to fix). If something has changed since (a runner's full disk freed, a fix landed), leave ask_user_decision with an option carrying action { tool: "rerun_ci", args: { id: "${id}" } }: their tap re-runs it`;
     // A cancelled run's jobs are all re-run, as the wait's own re-run does; a red one's failed jobs only.
     if (cancelled) await this.ports.gh.rerunAll(this.github, red.runId); else await this.ports.gh.rerunFailed(this.github, red.runId);
     const attempt = (ci.attempt ?? 1) + 1;

@@ -175,3 +175,100 @@ describe('a cancelled CI run (#174)', () => {
     expect(activity(h.id)).not.toContain('no other run replaced it');
   });
 });
+
+/**
+ * HH-383 (#201): CI went red on two timing checks, the fix turn reported done with no change ("not caused by this change;
+ * re-run it"), and the same red run was read again every 30 s for 7½ hours: no re-run, no wake. Now that red is re-run
+ * once for the head, then stops as ci_red_parked with the session's report, and an item in review that nothing moves
+ * wakes the orchestrator once.
+ */
+describe('a red run the session changed nothing for (#201)', () => {
+  const REPORT = 'No code change: neither failure is caused by this item, and neither reproduces. Recommend rerunning the failed job.';
+  async function noChange() {
+    const s = await setup();
+    const wakes: { type: string; item?: string; data?: Record<string, unknown> }[] = [];
+    (s.engine as any).orchestrator.wake = (e: { type: string; item?: string; data?: Record<string, unknown> }) => { wakes.push(e); };
+    const h = s.redTwice();
+    // Already on the base tip, as HH-383 was: the pipeline reuses the head's run instead of rebasing.
+    s.world.behind.set((s.engine as any).absWorktree('.claude/worktrees/desert'), 0);
+    // After the fix turn: counted once, not blocked, back to waiting for CI on the same head with the session's report.
+    s.store.mutateItem(h.id, [{ unset: ['blocked', 'blocked_reason'] }, { set: { ci_result: 'pending', ci_failed_count: 1, op: 'awaiting_ci', op_started_at: new Date().toISOString(), op_data: { last_red: { runId: 7, sha: h.tip, attempt: 1 }, ci: { runId: 7, url: 'u7', attempt: 1 }, done_summary: REPORT } } }], 'engine');
+    return { ...s, h, wakes };
+  }
+
+  it('re-runs the failed jobs once and merges on a green attempt, with no wake', async () => {
+    const { engine, run, h, wakes } = await noChange();
+    await engine.start();
+    await until(() => ['MERGED', 'FINISHED'].includes(fm(h.id).status));
+    expect(run.reruns).toBe(1);
+    expect(activity(h.id)).toMatch(/CI run 7 for \w{7} \(u7\) is still red and the session changed nothing \(see its report\); re-running its failed jobs once \(attempt 2\)/);
+    expect(activity(h.id)).not.toContain('not counted again');
+    expect(wakes.filter((w) => w.item === h.id && w.type !== 'pr_merged')).toEqual([]);
+  });
+
+  it('a red re-run is the second failure: ci_red_twice, with one ci_red_again wake', async () => {
+    const { engine, run, h, wakes } = await noChange();
+    run.second = 'failure';
+    await engine.start();
+    await until(() => fm(h.id).blocked === true);
+    expect(fm(h.id)).toMatchObject({ blocked_reason: 'ci_red_twice', ci_failed_count: 2, ci_result: 'red' });
+    expect(run.reruns).toBe(1);
+    expect(wakes.filter((w) => w.type === 'ci_red_again')).toHaveLength(1);
+    // planestro's re-run is not the orchestrator's one.
+    await until(() => !(engine as any).jobs.has(h.id));
+    expect(await engine.rerunCi(h.id, 'orchestrator')).toMatch(/^re-running the failed jobs of run 7 \(attempt 3\)/);
+  });
+
+  it('past its one re-run it stops as ci_red_parked, once, with the report, and rerun_ci still works', async () => {
+    const { engine, run, h, wakes } = await noChange();
+    store!.mutateItem(h.id, [{ set: { op_data: { ...fm(h.id).op_data, flake_rerun: { sha: h.tip, runId: 7, attempt: 1 } } } }], 'engine');
+    await engine.start();
+    await until(() => fm(h.id).blocked === true);
+    expect(fm(h.id)).toMatchObject({ blocked_reason: 'ci_red_parked', ci_result: 'red', ci_failed_count: 1 });
+    expect(fm(h.id).op).toBeUndefined();
+    expect(run.reruns).toBe(0);
+    expect(activity(h.id)).toContain('nothing is coming for it: the session made no change and planestro already re-ran its failed jobs once for this head; the session reported: "No code change');
+    // The stub never starts a review, so triage re-wakes it each tick ("woken again"); the stop itself wakes it once.
+    const parked = wakes.filter((w) => w.item === h.id && /ci_red_parked/.test(w.type) && w.data?.detail);
+    expect(parked).toHaveLength(1);
+    expect(String(parked[0].data?.detail)).toContain('Recommend rerunning the failed job');
+    expect(await engine.rerunCi(h.id, 'orchestrator')).toMatch(/^re-running the failed jobs of run 7 \(attempt 2\)/);
+  });
+
+  it('a newer attempt of the same run (re-run by hand on GitHub) is a new verdict, not the same red', async () => {
+    const { engine, run, h } = await noChange();
+    run.attempt = 2; run.second = 'failure'; run.polls = 5;
+    await engine.start();
+    await until(() => fm(h.id).blocked === true);
+    expect(fm(h.id)).toMatchObject({ blocked_reason: 'ci_red_twice', ci_failed_count: 2 });
+    expect(run.reruns).toBe(0);
+  });
+
+  it('the review watchdog wakes once for an item nothing moves, again only after something does, never while its CI runs', async () => {
+    const { store, engine, world, h, wakes } = await noChange();
+    store.updateConfig((doc) => { doc.setIn(['ci', 'stall_wake_min'], 0.005); }, 'config: stall wake');
+    // Stuck: red, not blocked, nothing driving it (driveInReview leaves a red item alone).
+    store.mutateItem(h.id, [{ unset: ['op'] }, { set: { ci_result: 'red' } }], 'engine');
+    // Beside it, an item whose CI is still running.
+    const busy = store.createItem({ title: 'Long CI', description: 'x' });
+    const rel = '.claude/worktrees/long'; const branch = 'tp/long'; const tip = world.sha();
+    const cwd = (engine as any).absWorktree(rel) as string;
+    world.worktrees.set(cwd, { path: cwd, head: tip, branch }); world.localBranches.add(branch); world.remoteBranches.set(branch, tip);
+    world.prs.set(301, { number: 301, url: 'u', state: 'OPEN', headRefOid: tip, headRefName: branch, baseRefName: 'trunk', polls: 0, failOnce: false });
+    store.mutateItem(busy.id, [{ set: { status: 'IN_REVIEW', worktree: rel, branch, pr: 301, ci_result: 'pending', ci_head_sha: tip, op: 'awaiting_ci' } }], 'engine');
+    const gh = (engine as any).ports.gh as DryRunGhPort; const inner = gh.ciForSha.bind(gh);
+    // Its wait polls a run that never ends: a real (short) sleep between polls, so the loop yields to the timers.
+    (engine as any).sleep = () => sleep(10);
+    gh.ciForSha = async (r: string, b: string, sha: string) => b === branch ? { state: 'pending', runId: 11, sha, url: 'u11', attempt: 1 } : inner(r, b, sha);
+    await engine.start();
+    const stalled = () => wakes.filter((w) => w.type === 'review_stalled');
+    await until(() => stalled().length === 1);
+    expect(stalled()[0]).toMatchObject({ item: h.id, data: { ci_result: 'red' } });
+    await sleep(800);
+    expect(stalled()).toHaveLength(1);
+    await sleep(1100);   // Activity is stamped to the second
+    store.mutateItem(h.id, [{ activity: { actor: 'user', text: 'looked at it' } }], 'user');
+    await until(() => stalled().length === 2);
+    expect(stalled().every((w) => w.item === h.id)).toBe(true);
+  });
+});
