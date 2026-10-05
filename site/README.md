@@ -72,8 +72,11 @@ unverified. The GitHub snippet is an intentional user action, not an installer.
 ## Release boundary
 
 The repository was private and `PAGES_ENABLED` was unset at implementation.
-Copy therefore says a public early release is forthcoming and installation
-requires repository access. The quick start uses existing local Claude Code
+Copy therefore says Planestro v1.0.0 is coming soon and installation requires
+repository access. The public release is planned alongside Hurricane Harrison
+v1.6.0 while remaining bugs are worked through; this is a plan, not a dated
+launch commitment. The article’s `#release` section holds the full announcement.
+The quick start uses existing local Claude Code
 and optional Codex logins; Planestro has no account or login screen. There is
 no signup form or backend.
 
