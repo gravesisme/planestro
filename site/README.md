@@ -28,7 +28,12 @@ and `/blog/building-an-ai-fleet/`. Directory indexes support direct navigation.
 - The article and files under `assets/` came from the approved October 2, 2026
   Planestro-Blog-Handoff-v2 (source 5eb4f0497b066c17b70d50e2d3ae96fe7274433e).
   Its title, date, wording, diagrams, captions, metrics and caveats are approved
-  copy. Keep the planned articles unlinked, and preserve the historical context.
+  copy, with an approved October 5 refresh against engine commit `2cfde13`.
+  That refresh updates CI recovery, hold semantics, lost-report recovery, bounded
+  iteration, and merge/cleanup safeguards, and removes game-specific CI setup
+  and roadmap details. The original publication date and dated evidence remain;
+  the byline and metadata record the update separately. Keep the planned articles
+  unlinked, and preserve the historical context.
 - `packages/server/test/fixtures/blog-content.sha256` records normalized text
   inside the original article's main element. The test protects against accidental
   editorial changes during integration. Change the digest only with an approved

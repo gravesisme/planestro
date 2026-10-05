@@ -29,6 +29,8 @@
       href="https://planestro.com/blog/building-an-ai-fleet/"
     />
     <meta property="og:type" content="article" />
+    <meta property="article:published_time" content="2026-10-01" />
+    <meta property="article:modified_time" content="2026-10-05" />
     <meta property="og:site_name" content="Planestro" />
     <meta
       property="og:url"
@@ -96,6 +98,7 @@
                 <div>
                   <strong>David Graves</strong
                   ><span>October 1, 2026 · 18 min read</span>
+                  <br /><span>Updated October 5, 2026</span>
                 </div>
               </div>
             </div>
@@ -888,8 +891,9 @@ versus how it looks on desktop</span></pre>
                   <tr>
                     <th scope="row">Release a review hold</th>
                     <td>
-                      User only. The PR stays a draft and skips CI until
-                      approval.
+                      User only. Holds waiting on a person can keep the PR in
+                      draft when configured; an existing CI run finishes first.
+                      Holds waiting on an agent stop merging while CI continues.
                     </td>
                   </tr>
                   <tr>
@@ -941,7 +945,7 @@ versus how it looks on desktop</span></pre>
               something is actively driving the item.
             </p>
             <details class="evidence">
-              <summary>See the engine tick from the source report</summary>
+              <summary>See the engine scheduling pass · October 5 source</summary>
               <div>
                 <div class="code-block">
                   <div class="code-label">LiveEngine.ts · tick()</div>
@@ -960,6 +964,7 @@ await this.driveExternal();
 this.driveInReview();
 this.driveHeld();
 await this.driveStalls();
+this.driveReviewStalls();
 this.driveResumeAfter();</pre
                   >
                 </div>
@@ -978,17 +983,18 @@ this.driveResumeAfter();</pre
               already current, the engine can reuse its CI run. Git operations
               that update refs share a separate lock because worktrees share the
               same ref store; transient Git and GitHub errors are retried in the
-              integration layer.
+              integration layer. The merge request must match the checked head
+              commit, so a newly pushed change cannot slip into that merge.
             </p>
             <div class="verdicts">
               <div class="interactive-label">
-                CI RETURNS A TYPED RESULT <span>Nine possible verdicts</span>
+                CI RETURNS A TYPED RESULT <span>Ten possible verdicts</span>
               </div>
               <div>
                 <code>green</code><code>red</code><code>blocked</code
                 ><code>moved</code><code>timeout</code><code>queue_timeout</code
                 ><code>skipped</code><code>stopping</code
-                ><code>taken_over</code>
+                ><code>taken_over</code><code>cancelled</code>
               </div>
             </div>
             <details class="evidence">
@@ -1014,7 +1020,9 @@ this.driveResumeAfter();</pre
                   <li>
                     <strong>The newest run remains cancelled:</strong> rerun
                     once per head and give the replacement its own timeout
-                    budget.
+                    budget. If it is cancelled again, stop with
+                    <code>ci_cancelled</code>; no further run is assumed to be
+                    coming.
                   </li>
                   <li>
                     <strong>Every job is skipped:</strong> resend
@@ -1024,7 +1032,11 @@ this.driveResumeAfter();</pre
                   </li>
                   <li>
                     <strong>The same red run appears twice:</strong> do not
-                    count repeated observation as a second failed attempt.
+                    count repeated observation as a second failed attempt. If
+                    the worker leaves the head unchanged, rerun failed jobs once
+                    for that head. A new failed attempt counts as another
+                    failure; if no further run is coming, stop with
+                    <code>ci_red_parked</code> and ask the orchestrator to triage.
                   </li>
                 </ul>
               </div>
@@ -1038,9 +1050,10 @@ this.driveResumeAfter();</pre
               place the decisions live.
             </p>
             <p>
-              Fourteen block reasons are routed for judgment, including sync
-              conflicts, CI timeouts, and missing commits. Problems such as
-              expired authentication, rate limits, or a full disk escalate
+              Typed block reasons are routed for judgment, including sync
+              conflicts, CI timeouts, missing commits, unrecovered connection
+              loss, and a failed head with no further progress coming. Problems
+              such as expired authentication, rate limits, or a full disk escalate
               directly to me.
             </p>
             <div class="escalation">
@@ -1070,13 +1083,14 @@ this.driveResumeAfter();</pre
               </div>
             </div>
             <details class="evidence">
-              <summary>The typed wake events</summary>
+              <summary>Examples of typed wake events</summary>
               <div>
                 <p>
                   <code>plan_review</code>, <code>permission_request</code>,
                   <code>blocked_&lt;reason&gt;</code>,
                   <code>ci_red_again</code>, <code>pr_opened</code>,
                   <code>pr_merged</code>, <code>review_pending</code>,
+                  <code>review_stalled</code>, <code>turn_ended_silent</code>,
                   <code>orphans_found</code>, <code>scope_changed</code>,
                   <code>decision_answered</code>, <code>user_message</code>,
                   <code>epic_message</code>, <code>question_message</code>, and
@@ -1084,6 +1098,13 @@ this.driveResumeAfter();</pre
                 </p>
               </div>
             </details>
+            <p>
+              An eligible item in review that has no active work, pending CI,
+              hold, or other stop also gets a backstop: after 30 minutes without
+              progress by default, the engine wakes the orchestrator once for
+              that stall. It does not wait indefinitely for a run that is not
+              coming.
+            </p>
             <h3>A human question doesn’t hold a process open.</h3>
             <p>
               When a command needs permission, Planestro records the request and
@@ -1128,13 +1149,25 @@ this.driveResumeAfter();</pre
                 </p>
               </div>
             </div>
+            <h3>A lost connection doesn’t have to lose the report.</h3>
+            <p>
+              If a worker’s report fails to reach Planestro, the engine can
+              recover it from the turn record, persist it, and apply it through
+              the same tools used during a connected session. That recovery can
+              continue after a restart. The item shows a connection drop while
+              the turn is running. If a connection drop leaves a work turn
+              without a delivered or recovered report, and the session has not
+              parked for input, the engine stops the item and asks the
+              orchestrator to triage.
+            </p>
             <h3>Cleanup needs fresh proof.</h3>
             <p>
               A remembered “merged” status isn’t enough to delete work. Cleanup
               fetches current refs, confirms the PR is merged, and checks that
               the worktree HEAD, local branch tip, and remote branch tip are
               ancestors of the target base. A dirty tree or unverifiable
-              ancestry blocks cleanup.
+              ancestry blocks cleanup. Branch deletion is conditional on the
+              verified tip: a branch that moves after verification is kept.
             </p>
             <details class="evidence">
               <summary>See the cleanup proof from the source report</summary>
@@ -1193,9 +1226,9 @@ if (view.state !== 'MERGED' || stranded.length)
             <h2>Test what must stay true.</h2>
             <p>
               At the October 1 snapshot, Hurricane Harrison had 410 headless
-              Godot checks. Workers can run them without opening a game window.
-              CI uses them as an integration gate; held draft PRs skip runs
-              until they’re ready.
+              Godot checks. Workers could run them without opening a game
+              window, giving them repeatable evidence before reporting the work
+              complete.
             </p>
             <p>
               For level geometry, a useful check pins the behavior I need. A
@@ -1244,6 +1277,17 @@ if (view.state !== 'MERGED' || stranded.length)
               The suite still can’t decide whether a boss is fun. It can spawn,
               attack, and die correctly, then die in two seconds. That’s why I
               keep playing the builds.
+            </p>
+            <h3>Iteration has a budget, too.</h3>
+            <p>
+              Planestro now supports loop-until-green items with an explicit
+              iteration limit. The worker reports each iteration’s passing and
+              total checks; the engine records progress and stops a loop that
+              spends its budget without going green or repeatedly makes no
+              reported progress.
+              Completion requires a green tally and a review artifact. The
+              handoff normally holds the PR for human review, unless that hold
+              has already been waived.
             </p>
             <h3>What the quality records show</h3>
             <p>
@@ -1472,33 +1516,17 @@ if (view.state !== 'MERGED' || stranded.length)
             <div class="section-kicker">06 / THE BOTTLENECK</div>
             <h2>More agents.<br />Same merge queue.</h2>
             <p>
-              On October 1, I had 14 items in flight and two Mac runner
-              instances sharing one suite lock. Concurrent suites dropped
-              physics ticks, so verification was effectively serial.
+              The agents could keep producing changes faster than I could
+              verify and review them. Adding workers increased the amount of
+              unfinished work without necessarily increasing delivery.
             </p>
             <p>
-              The agents could keep producing changes. The verification system
-              couldn’t keep up. Jobs waited for hours, and some timed out while
-              still waiting for the lock.
+              Planestro separates time waiting for a CI runner from time spent
+              executing checks. A queue delay is not a code failure. Configured
+              queue limits can also pause admission of new work, while CI waits
+              stay outside the serial merge chain so a waiting item does not
+              prevent another ready item from merging.
             </p>
-            <div class="capacity">
-              <div>
-                <span class="capacity-number">14</span
-                ><span>items in flight</span>
-              </div>
-              <div class="queue-visual" aria-hidden="true">
-                <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i
-                ><i></i><i></i><i></i><i></i><i></i>
-              </div>
-              <div>
-                <span class="capacity-number">1</span
-                ><span>effective suite lane</span>
-              </div>
-              <p>
-                October 1 configuration: two runner instances, one shared suite
-                lock.
-              </p>
-            </div>
             <div class="engine-capture">
               <button
                 class="shot"
@@ -1563,29 +1591,11 @@ if (view.state !== 'MERGED' || stranded.length)
               gates, and playtesting is the next stage of the work, and the
               subject of the third field note.
             </p>
-            <h3>The first step: change-aware CI.</h3>
             <p>
-              I have a plan for the next iteration; implementation hasn’t
-              started yet. First, measure runner queue time, suite-lock waiting,
-              and test execution separately, and fix the flaky checks that
-              create avoidable reruns. Then map changes to the checks they can
-              affect.
-            </p>
-            <p>
-              The selector will start in shadow mode: propose a smaller set of
-              checks while the full suite still runs, so I can measure both
-              missed failures and potential time savings. Targeted selection on
-              epic branches comes only after that trial meets its safety and
-              benefit gates. Unmapped or ambiguous changes fall back to the full
-              suite, with full integration checks retained for gameplay changes
-              reaching develop and main.
-            </p>
-            <p>
-              Test selection belongs in Hurricane Harrison’s CI workflow.
-              Planestro stays project-neutral, recording validation evidence and
-              making queue and execution times visible. The goal is to spend
-              verification capacity where it matters while preserving the checks
-              that protect the finished product.
+              Each project owns its tests and CI workflow. Planestro stays
+              project-neutral: it coordinates the work, reads validation
+              evidence, and stops or asks for judgment when that evidence is
+              missing or inconclusive.
             </p>
           </section>
           <section id="lessons" class="chapter">
@@ -1600,10 +1610,10 @@ if (view.state !== 'MERGED' || stranded.length)
             <h3>Delivery is the outcome.</h3>
             <p>
               Hurricane Harrison shipped six App Store releases, from v1.0.0
-              through v1.5.0. The workflow carries changes from feature branches
-              through <code>develop</code> and <code>main</code>, uses tags for
-              versioning, and routes CI to hosted and self-hosted runners.
-              Planestro grew around that delivery process.
+              through v1.5.0. Planestro grew around the work of carrying a
+              planned change through implementation, verification, review, and
+              merge. Shipping the game kept that process grounded in a real
+              product.
             </p>
             <h3>One operator, by design</h3>
             <p>
@@ -1669,8 +1679,8 @@ if (view.state !== 'MERGED' || stranded.length)
                     <td>
                       Plan approval starts with me. Delegation requires both the
                       global setting and permission on the item; two fix rounds
-                      return the decision to a person. Review holds keep PRs in
-                      draft.
+                      return the decision to a person. Human review holds can
+                      draft PRs; agent holds leave CI running and stop the merge.
                     </td>
                     <td>
                       Keep people involved where their judgment matters without
@@ -1734,7 +1744,7 @@ if (view.state !== 'MERGED' || stranded.length)
                     <th scope="row">Cost control</th>
                     <td>
                       Per-turn cost tracking, usage and disk guards,
-                      orchestrator rotation, and branch-based runner routing
+                      orchestrator rotation, and bounded worker iteration
                       make resource use visible and controllable.
                     </td>
                     <td>
@@ -2380,9 +2390,14 @@ if (view.state !== 'MERGED' || stranded.length)
                 excerpts, product captures, and journal/issue history supplied
                 by David. September throughput counts were recalculated from the
                 supplied per-PR data and checked against its raw Planestro PR
-                snapshot. The engine claims were checked against Planestro
-                source at commit <code>ad3b68f</code> (October 2, 2026), as
-                documented in the supplied source review. The feedback-loop
+                snapshot. The original engine review used Planestro commit
+                <code>ad3b68f</code> (October 2, 2026). The current engine
+                descriptions were refreshed against <code>2cfde13</code> on
+                October 5, 2026, covering CI recovery, holds, lost reports,
+                bounded iteration, and merge and cleanup safeguards. Historical
+                metrics and product captures retain their original dates. The
+                game-specific CI implementation discussion was removed to keep
+                the focus on Planestro. The feedback-loop
                 roles were supplied by David. Source-line figures come from the
                 supplied recount.
               </p>
@@ -2434,7 +2449,7 @@ if (view.state !== 'MERGED' || stranded.length)
                 my account of looking for a workflow fit before committing to
                 Planestro; it is not a current product comparison.
               </p>
-              <h3>Engine source references · ad3b68f</h3>
+              <h3>Engine source references · 2cfde13</h3>
               <ul class="source-files">
                 <li>
                   <code>packages/shared/src/transitions.ts</code
@@ -2442,9 +2457,14 @@ if (view.state !== 'MERGED' || stranded.length)
                 </li>
                 <li>
                   <code>packages/server/src/engine/LiveEngine.ts</code
-                  ><br />tick(); waitForCi() and its nine verdicts;
+                  ><br />tick(); waitForCi(); onSameRedRun(); driveReviewStalls();
+                  heldStep(); ingestOutbox(); recordIteration(); loopDoneRefusal();
                   HEAD_PROPAGATION_GRACE_MS; JUDGMENT_BLOCKS; MAX_TRIAGE_ROUNDS;
                   cleanup()
+                </li>
+                <li>
+                  <code>packages/server/src/engine/live-ports.ts</code
+                  ><br />Merge head matching and branch deletion at verified tips
                 </li>
                 <li>
                   <code>packages/server/src/engine/orchestrator.ts</code
