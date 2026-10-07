@@ -274,8 +274,10 @@ for a question about no item), `PLANESTRO_KIND` (`plan`, `breakdown`, `permissio
 `decision`, `blocked` or `hold`) and `PLANESTRO_URL`, an absolute link to the item (`/items/<id>#<kind>`) or the
 question (`/questions/<id>`).
 
-A phone alert needs no new dependency. With [ntfy](https://ntfy.sh), hosted or one you run, subscribe to a
-topic in its app and set:
+A phone alert needs no new dependency and costs nothing. planestro does not depend on any notification service:
+`on_needs_you` is a command you choose. [ntfy](https://ntfy.sh) is free and open source: its public ntfy.sh server
+needs no account (paid plans only raise its limits), and you can self-host it for free, even on this machine. Its
+phone app is free too. Subscribe to a topic in the app and set:
 
 ```yaml
 notifications:
