@@ -1438,6 +1438,27 @@ describe('budget and unblock (p36, p12)', () => {
     await engine.unblock(item.id);
     await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
   });
+
+  it('an engine_error unblocked with a message retries the engine step and starts no worker turn (#211)', async () => {
+    const phases: string[] = [];
+    const claude = (world: FakeWorld) => { const inner = new DryRunClaudePort(world); return { async runTurn(o: TurnOptions): Promise<TurnResult> { phases.push(o.phase); return inner.runTurn(o); }, runCustomTurn: inner.runCustomTurn.bind(inner) }; };
+    const { store, engine, world } = await setup({ claude });
+    const item = store.createItem({ title: 'Server git hiccup', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    const fm0 = store.getItem(item.id)!.file.frontmatter;
+    const cwd = (engine as any).absWorktree(fm0.worktree!);
+    const branch = fm0.branch!;
+    world.remoteBranches.set(branch, world.worktrees.get(cwd)!.head!);
+    world.prs.set(301, { number: 301, url: 'u', state: 'OPEN', headRefOid: world.worktrees.get(cwd)!.head!, headRefName: branch, baseRefName: 'trunk', polls: 0, failOnce: false });
+    store.mutateItem(item.id, [{ set: { status: 'IN_REVIEW', pr: 301, ci_result: 'unknown', blocked: true, blocked_reason: 'engine_error', awaiting: 'user' } }, { unset: ['awaiting_data'] }], 'engine');
+    const before = phases.length;
+    await engine.unblock(item.id, 'retry the step');
+    await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
+    expect(phases.slice(before)).toEqual([]); // the worker can't fix planestro's own git failure
+    expect(activityOf(store, item.id)).toContain('retrying the merge pipeline after engine_error: retry the step');
+  });
 });
 
 describe('structured parts (f4)', () => {
