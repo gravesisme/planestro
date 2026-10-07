@@ -37,6 +37,8 @@ export const TRANSITIONS: readonly Transition[] = [
   { from: 'IN_PROGRESS', to: 'IN_REVIEW', by: UE, flavors: ALL, sets: 'pr_created_at', label: 'open PR' },
   { from: 'IN_PROGRESS', to: 'ICEBOX', by: U, flavors: ['worker'], sets: 'iceboxed_at', label: 'icebox' },
   { from: 'IN_REVIEW', to: 'MERGED', by: E, flavors: ALL, sets: 'merged_at', label: 'merge' },
+  // A child added while the epic's PR is open (#208): the epic goes back to work on it, and the same PR is submitted again.
+  { from: 'IN_REVIEW', to: 'IN_PROGRESS', by: E, flavors: ['epic'], label: 'reopen for a new child' },
   { from: 'IN_REVIEW', to: 'ICEBOX', by: U, flavors: ['worker'], sets: 'iceboxed_at', label: DISCARD },
   { from: 'MERGED', to: 'FINISHED', by: E, flavors: ALL, sets: 'finished_at', label: 'finish' },
   { from: 'FINISHED', to: 'NOT_YET_SUBMITTED', by: U, flavors: ALL, label: 'reopen' },
