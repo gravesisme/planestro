@@ -286,7 +286,7 @@ describe('sync with base (p29)', () => {
       const log = activityOf(ctx.store, ctx.id);
       expect(log).toContain('message queued for its running conflict session: stop, change nothing');
       expect(log).toContain('message queued for its running conflict session: leave the check edit out');
-      expect(ctx.store.journal.read({ item: ctx.id, type: 'orchestrator.wake' }).filter((w) => w.data?.event === 'epic_message').map((w) => w.data?.message)).toEqual(['stop, change nothing']);
+      expect(ctx.store.journal.read({ item: ctx.id, type: 'orchestrator.wake' }).filter((w) => w.data?.event === 'epic_message')).toHaveLength(1);   // the user's; the orchestrator's own is not sent back to it
       expect(log).toContain('the conflict session did not resolve it: messages arrived while it ran, and a one-shot session cannot read them: "stop, change nothing"; "leave the check edit out"');
       expect(ctx.log.some((l) => l.startsWith('Would git push -u origin feature/animate-jungle'))).toBe(false);
       const fm = ctx.store.getItem(ctx.id)!.file.frontmatter;
@@ -294,6 +294,22 @@ describe('sync with base (p29)', () => {
       expect(fm.op_data?.pending_messages ?? []).toEqual([]);
       // with no session live, the #127 behaviour stands: the orchestrator is refused, the user's word goes to the orchestrator
       await expect(ctx.engine.message(ctx.id, 'again', 'orchestrator')).rejects.toThrow(/no session past its breakdown/);
+    });
+
+    it("a message while the epic's merge worktree session runs reaches that session when its turn ends (#210)", async () => {
+      let release!: () => void;
+      const ctx = await setup({ hold: new Promise<void>((r) => { release = r; }) });
+      const epic = ctx.store.createItem({ title: 'Animate Jungle enemies', description: 'x', kind: 'epic' } as any);
+      const rel = `.claude/worktrees/merge-${epic.id.toLowerCase()}`, cwd = (ctx.engine as any).absWorktree(rel);
+      ctx.world.worktrees.set(cwd, { path: cwd, head: ctx.world.sha(), branch: 'feature/animate-jungle' });
+      ctx.store.mutateItem(epic.id, [{ set: { status: 'IN_REVIEW', branch: 'feature/animate-jungle', worktree: rel, session_id: 's-merge' } }], 'engine');
+      (ctx.engine as any).runJob(epic.id, () => (ctx.engine as any).runTurnFor(epic.id, 'fix', 'Fix the red check on the epic PR.'));
+      await waitFor(() => (ctx.engine as any).turns.has(epic.id));
+      await ctx.engine.message(epic.id, 'stop, change nothing');
+      expect(ctx.store.getItem(epic.id)!.file.frontmatter.op_data?.pending_messages).toEqual(['stop, change nothing']);
+      expect(activityOf(ctx.store, epic.id)).toContain('message queued for its running session: stop, change nothing');
+      release();
+      await waitFor(() => ctx.prompts.some((p) => p.prompt.includes('Messages from the user while you were working:\n\n- stop, change nothing')));
     });
 
     it('the orchestrator retries a blocked one with resolve_epic_conflict and a hint; with the budget at 0 it blocks as before', async () => {
