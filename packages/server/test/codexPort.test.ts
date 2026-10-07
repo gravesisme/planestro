@@ -52,6 +52,12 @@ function setup() {
 }
 
 describe('LiveCodexPort (against a recorded fake codex)', () => {
+  it('keeps the finished report when exec reports usage above its cap', async () => {
+    const t = setup();
+    const r = await t.port.runTurn(t.opts('draw it', { maxTokens: 100 }));
+    expect(r).toMatchObject({ subtype: 'success', isError: false, tokens: 150, done: 'Generated icon.png and committed it.' });
+    expect(t.calls).toEqual(['done:Generated icon.png and committed it.']);
+  });
   it('runs a fresh turn sandboxed, never feeds stdin, streams readable output and reports done with tokens', async () => {
     const t = setup();
     const r = await t.port.runTurn(t.opts('draw it', { model: 'gpt-art', images: ['/ref/rig.png'] }));
@@ -158,4 +164,3 @@ describe('parts in the closing JSON (f4)', () => {
     expect(parseFinal('{"outcome":"done","summary":"s","question":null,"hand_off":null}')?.parts).toBeUndefined();
   });
 });
-

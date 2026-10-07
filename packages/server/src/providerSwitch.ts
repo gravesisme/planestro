@@ -46,11 +46,12 @@ export function previewSwitch(store: DataStore, engine: Engine, raw: unknown) {
     const refusal = switchRefusal(store, engine, id);
     const fields = fieldsFor(store, id, m.id);
     const keep = !fields.implementer;
+    const futurePlan = keep && fm.status !== 'PLAN_IN_PROGRESS';
     const unchanged = Object.entries(fields).every(([key, value]) => fm[key] === value);
     const waiting = fm.awaiting && !['usage_exhausted', 'provider_usage', 'rate_limited'].includes(fm.blocked_reason ?? '')
       ? `; still waits for ${fm.awaiting === 'plan_approval' ? 'plan approval' : fm.awaiting === 'permission' ? 'a permission decision' : 'the pending decision'}` : '';
     return { id, title: fm.title, eligible: !refusal,
-      summary: refusal ?? (unchanged ? `already uses ${m.label}; no changes needed` : `${keep ? 'planning continues' : 'continues'} on ${m.runner === 'codex' ? 'Codex' : 'Claude'} from a fresh brief; ${fm.pr ? `PR #${fm.pr}${fm.skip_merge ? ' and its hold are' : ' is'} kept; ` : ''}status, edits, approvals and conditions, dependencies and budgets are kept${keep ? '; existing worker model and transport are kept' : ''}${waiting}`),
+      summary: refusal ?? (unchanged ? `already uses ${m.label}; no changes needed` : `${futurePlan ? 'future planning will start' : keep ? 'planning continues' : 'continues'} on ${m.runner === 'codex' ? 'Codex' : 'Claude'} from a fresh brief; ${fm.pr ? `PR #${fm.pr}${fm.skip_merge ? ' and its hold are' : ' is'} kept; ` : ''}status, edits, approvals and conditions, dependencies and budgets are kept${keep ? '; existing worker model and transport are kept' : ''}${waiting}`),
       ...(fm.pr && store.config.code_repo.github ? { pr: { number: fm.pr, url: `https://github.com/${store.config.code_repo.github}/pull/${fm.pr}` } } : {}) };
   });
   return { request: { ...req, model: m.id }, provider: m.runner, items, orchestrator: req.orchestrator ? 'Applies to the next wake. No restart required.' : undefined };
@@ -64,16 +65,24 @@ export function itemModelSwitchOps(store: DataStore, engine: Engine, id: string,
   const refusal = switchRefusal(store, engine, id); if (refusal) throw new Error(refusal);
   for (const [role, ref] of changed) {
     const m = findModel(store.config, ref!);
-    if (!m || m.external || (role === 'planner' && !canPlan(m))) throw new Error(`Model ${ref} cannot serve as ${role}`);
+    if (!m || (role === 'planner' && !canPlan(m))) throw new Error(`Model ${ref} cannot serve as ${role}`);
   }
   const plannerOnly = changed.every(([role]) => role === 'planner');
   const planning = fm.status === 'PLAN_IN_PROGRESS' || plannerOnly;
   const old = findModel(store.config, planning ? fm.planner : fm.implementer);
   const newRef = planning ? fields.planner : fields.implementer;
   const next = findModel(store.config, newRef);
-  const handoff = Boolean(fm.worktree && next && old && (next.id !== old.id));
+  const handoff = Boolean(fm.worktree && next && !next.external && old && (next.id !== old.id));
   const ops: ItemOp[] = [{ set: Object.fromEntries(changed) }];
-  if (handoff) ops.push({ set: { op_data: { ...fm.op_data, fresh_brief: {
+  const futurePlan = plannerOnly && fm.status !== 'PLAN_IN_PROGRESS';
+  if (handoff && futurePlan) {
+    // Invalidate future planning context, not the current art/implementation turn.
+    // No task or old question is captured before that future plan exists.
+    const data = { ...fm.op_data };
+    if ((data.fresh_brief as { role?: string } | undefined)?.role === 'plan') delete data.fresh_brief;
+    ops.push({ set: { op_data: { ...data, fresh_plan: true } } });
+  }
+  if (handoff && !futurePlan) ops.push({ set: { op_data: { ...fm.op_data, fresh_brief: {
     task: 'Continue the current phase from persisted state. Preserve the approved plan, review conditions, and all unfinished work.',
     from_session: fm.agent_sessions?.[old!.runner]?.session_id ?? (old!.runner === 'claude' ? fm.session_id : undefined),
     from_provider: old!.runner, to_provider: next!.runner, question_context: fm.awaiting_data,
@@ -83,7 +92,7 @@ export function itemModelSwitchOps(store: DataStore, engine: Engine, id: string,
   if (handoff && (!plannerOnly || fm.status === 'PLAN_IN_PROGRESS') && ['usage_exhausted', 'provider_usage', 'rate_limited'].includes(fm.blocked_reason ?? '')) {
     ops.push(...clearUsageStopOps(fm));
   }
-  ops.push({ activity: { actor: 'app', text: `model changed: ${changed.map(([k, v]) => `${k} → ${v}`).join(', ')}; current state and decisions preserved${handoff ? '; next turn starts from a fresh brief' : ''}` } });
+  ops.push({ activity: { actor: 'app', text: `model changed: ${changed.map(([k, v]) => `${k} → ${v}`).join(', ')}; current state and decisions preserved${handoff ? futurePlan ? '; future planning starts from current state; existing worker is unchanged' : '; next turn starts from a fresh brief' : ''}` } });
   return ops;
 }
 export function applySwitch(store: DataStore, engine: Engine, raw: unknown) {

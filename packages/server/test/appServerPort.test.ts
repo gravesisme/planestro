@@ -1,15 +1,39 @@
-import { it, expect, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { it, expect, afterEach, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, statSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { gitWritableRoots } from '../src/engine/sessions/gitWritableRoots.ts';
-import { CodexAppServerPort, ScopedTools } from '../src/engine/sessions/CodexAppServerPort.ts';
+import { CodexAppServerPort, ScopedTools, isolatedCodexHome } from '../src/engine/sessions/CodexAppServerPort.ts';
 import type { TurnOptions } from '../src/engine/ports.ts';
 
 const roots: string[] = [];
-afterEach(() => { roots.forEach((p) => rmSync(p, { recursive: true, force: true })); roots.length = 0; });
+it('seeds private credentials once and preserves refresh rotation across later turns', () => {
+  const root = mkdtempSync(join(tmpdir(), 'planestro-auth-fixture-')); roots.push(root);
+  const source = join(root, 'source'), home = join(root, 'isolated'); mkdirSync(source);
+  vi.stubEnv('CODEX_HOME', source);
+  writeFileSync(join(source, 'auth.json'), '{"token":"original-fixture"}');
+  isolatedCodexHome(home);
+  expect(statSync(join(home, 'auth.json')).mode & 0o777).toBe(0o600);
+  writeFileSync(join(home, 'auth.json'), '{"token":"rotated-fixture"}');
+  isolatedCodexHome(home); isolatedCodexHome(home);
+  expect(JSON.parse(readFileSync(join(home, 'auth.json'), 'utf8')).token).toBe('rotated-fixture');
+  expect(JSON.parse(readFileSync(join(source, 'auth.json'), 'utf8')).token).toBe('original-fixture');
+});
+it('publishes a complete credential file atomically when multiple processes initialize the same home', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'planestro-auth-race-')); roots.push(root);
+  const source = join(root, 'source'), home = join(root, 'isolated'); mkdirSync(source);
+  const token = 'fixture-only-'.repeat(100000);
+  writeFileSync(join(source, 'auth.json'), JSON.stringify({ token }));
+  const module = new URL('../src/engine/sessions/CodexAppServerPort.ts', import.meta.url).href;
+  const script = `import { isolatedCodexHome } from ${JSON.stringify(module)}; import { readFileSync } from 'node:fs'; isolatedCodexHome(${JSON.stringify(home)}); JSON.parse(readFileSync(${JSON.stringify(join(home, 'auth.json'))}, 'utf8'));`;
+  await Promise.all(Array.from({ length: 3 }, () => promisify(execFile)(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], { env: { ...process.env, CODEX_HOME: source } })));
+  expect(JSON.parse(readFileSync(join(home, 'auth.json'), 'utf8')).token).toBe(token);
+  expect(readdirSync(home)).toEqual(['auth.json']);
+});
+afterEach(() => { vi.unstubAllEnvs(); roots.forEach((p) => rmSync(p, { recursive: true, force: true })); roots.length = 0; });
 function fixture(mode: string) {
   const root = mkdtempSync(join(tmpdir(), 'planestro-fake-appserver-')); roots.push(root);
   const log = join(root, 'protocol.jsonl'); const bin = join(root, 'codex');

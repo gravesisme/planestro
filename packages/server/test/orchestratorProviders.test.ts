@@ -23,6 +23,32 @@ async function setup(run: (o: CustomTurnOptions) => Promise<TurnResult>) {
 }
 async function settled() { for (let i = 0; i < 200 && orchestrator.busy; i++) await sleep(5); expect(orchestrator.busy).toBe(false); }
 
+it('shutdown leaves persisted review and question ownership intact for restart recovery', async () => {
+  let started = false;
+  const { hooks, ports, go } = await setup(async (o) => {
+    started = true;
+    await new Promise<void>((r) => o.signal!.addEventListener('abort', () => r(), { once: true }));
+    return { ...result, subtype: 'killed' };
+  });
+  const item = store.createItem({ title: 'Unresolved judgment' });
+  const q = store.askQuestion({ headline: 'Decision', summary: 'Need a decision', details: 'Which option?', recommendation: 'Keep current behavior' });
+  store.postToQuestion(q.id, 'user', 'Keep the existing design');
+  const before = store.getQuestion(q.id)!.file;
+  orchestrator.wake({ type: 'plan_review', item: item.id });
+  orchestrator.wake({ type: 'permission_request', item: item.id });
+  orchestrator.wake({ type: 'question_message', data: { question: q.id, message: 'Keep the existing design' } });
+  go(); for (let i = 0; !started && i < 100; i++) await sleep(5);
+  expect(started).toBe(true);
+  await orchestrator.stop(); await settled();
+  expect(hooks.planReviewEnded).not.toHaveBeenCalled();
+  expect(hooks.permissionReviewEnded).not.toHaveBeenCalled();
+  expect(hooks.triageEnded).not.toHaveBeenCalled();
+  expect(store.getQuestion(q.id)!.file).toEqual(before);
+  orchestrator = new Orchestrator(store, ports, hooks, () => {}, () => {}, () => true);
+  expect(orchestrator.reviewing(item.id)).toBe(false);
+  expect(orchestrator.resumeQuestions()).toEqual([q.id]);
+});
+
 it('capped wakes run existing end hooks, journal tokens, and discard the batch without replay', async () => {
   const calls: CustomTurnOptions[] = [];
   const { hooks, dataDir, go } = await setup(async (o) => { calls.push(o); return { ...result, subtype: 'token_cap', isError: true, tokens: 200010 }; });

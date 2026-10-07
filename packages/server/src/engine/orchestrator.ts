@@ -248,6 +248,9 @@ export class Orchestrator {
         finally {
           this.inFlight = new Set();
           const asked = this.questionsInFlight; this.questionsInFlight = new Set(); this.reviewsInFlight = new Set();
+          // Shutdown is not an unanswered judgment: persisted item/question state
+          // owns recovery after restart. Do not hand it to a competing human owner.
+          if (this.stopped) continue;
           this.questionEnded(batch, asked);
           // A delegated plan never waits on a wake that failed or decided nothing: the engine hands it to the user.
           // (Unless a revised plan already queued its own review: that one is still to come.)

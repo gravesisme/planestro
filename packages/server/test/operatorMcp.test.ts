@@ -70,7 +70,7 @@ describe('the operator MCP endpoint (#175, step 2)', () => {
 
   it('knows an operator endpoint by a recorded instance\'s port, and leaves other local MCP servers alone', () => {
     const live = [{ port: 4300 }, { port: 4301 }];
-    expect(operatorMcpUrl('http://127.0.0.1:4300/mcp', live)).toBe(true);
+    for (const host of ['0.0.0.0', '0', '[::]', '127.0.0.1']) expect(operatorMcpUrl(`http://${host}:4300/mcp`, live)).toBe(true);
     expect(operatorMcpUrl('http://localhost:4301/mcp/', live)).toBe(true);
     expect(operatorMcpUrl('http://127.0.0.1:4300/api/state', live)).toBe(false);
     expect(operatorMcpUrl('http://127.0.0.1:9000/mcp', live)).toBe(false); // somebody's own local MCP server

@@ -27,7 +27,7 @@ it('enforces external permission/call budgets before forwarding, scopes calls, a
   await expect(scope.call(request)).rejects.toThrow('stale');
   expect(calls.closed).toBe(1);
 });
-it.each(['http://127.0.0.1:4300/mcp', 'http://localhost:4300/mcp/', 'http://[::1]:4300/mcp', 'http://machine.example.test:4300/mcp', 'http://private-alias.test:4300/mcp'])('rejects operator aliases before making a client: %s', async (url) => {
+it.each(['http://0.0.0.0:4300/mcp', 'http://0:4300/mcp', 'http://[::]:4300/mcp', 'http://127.0.0.1:4300/mcp', 'http://localhost:4300/mcp/', 'http://[::1]:4300/mcp', 'http://machine.example.test:4300/mcp', 'http://private-alias.test:4300/mcp'])('rejects operator aliases before making a client: %s', async (url) => {
   await expect(externalTools({ ...base, operatorHosts: ['private-alias.test'], mcpServers: { otherName: { type: 'http', url } } })).rejects.toThrow('operator');
   expect(calls.connected).toBe(0);
 });

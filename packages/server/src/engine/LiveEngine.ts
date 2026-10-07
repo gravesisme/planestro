@@ -1,6 +1,7 @@
 import { itemModelSwitchOps, clearUsageStopOps } from '../providerSwitch.ts';
 import { join, relative, isAbsolute, extname, basename, matchesGlob } from 'node:path';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
@@ -8,7 +9,7 @@ import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type T
 import { operatorMcpUrl } from '../routes/mcp.ts';
 import { listInstances } from '../instances.ts';
 import { makePolicy, ruleFor, allowedByRules, sdkRules, BASE_ALLOWED } from './policy.ts';
-import { answeredCommand, commandShape, rulingText, parkedRefusal } from './parks.ts';
+import { answeredCommand, commandShape, rulingText, parkedRefusal, permissionGrantRefusal } from './parks.ts';
 import { hostNote, keptPathsNote, cwdNote } from './hostNote.ts';
 import { Orchestrator } from './orchestrator.ts';
 import { pngSize } from './placeholderPng.ts';
@@ -59,6 +60,7 @@ const MAX_TRIAGE_ROUNDS = 4;
  * the task it was given. `final`: the prompt is already what the agent is to read (a re-run).
  */
 interface TurnOpts { opener?: boolean; fresh?: true | 'auto'; note?: string; carryOn?: boolean; final?: boolean; estimate?: ResumeEstimate }
+interface PendingTurn { key: string; phase: TurnPhase; prompt: string; extraAllowed: string[]; oneShotCommands: string[]; opts: TurnOpts }
 
 /** The CLI's quote as the engine's estimate: the write when the cache has expired, a read of the same window when it has not. */
 function quoteEstimate(q: ResumeQuote): ResumeEstimate {
@@ -389,6 +391,7 @@ export class LiveEngine implements Engine {
     if (this._paused) return;
     try {
       this.orchestrator.kick();
+      this.drivePendingTurns();
       for (const item of this.store.listItems()) this.continueAfterProviderSwitch(item.id);
       this.admit();
       this.nudgeStaleReviews();
@@ -480,7 +483,7 @@ export class LiveEngine implements Engine {
       if (!ACTIVE_FOR_SLOTS.includes(fm.status) || fm.kind === 'epic' || this.store.derived(item).flavor !== 'worker') continue;
       // Parked with resume_after, it waits for other items to merge (HH-265 on HH-272, whose PR was held): the resume is
       // theirs to trigger. Carried on, it re-reported the same block and woke the orchestrator for nothing.
-      if (this.turns.has(item.id) || this.jobs.has(item.id) || this.followUps.has(item.id) || fm.op || fm.awaiting || fm.blocked || fm.triage || fm.taken_over || fm.resume_after) continue;
+      if (this.turns.has(item.id) || this.jobs.has(item.id) || this.followUps.has(item.id) || fm.op || fm.awaiting || fm.blocked || fm.triage || fm.taken_over || fm.resume_after || fm.op_data?.pending_turn) continue;
       seen.add(item.id);
       const since = this.idleSince.get(item.id) ?? now;
       this.idleSince.set(item.id, since);
@@ -698,7 +701,7 @@ export class LiveEngine implements Engine {
   private driveInReview(): void {
     const candidates = this.store.listItems().filter((item) => {
       const fm = item.file.frontmatter;
-      if (fm.status !== 'IN_REVIEW' || fm.blocked || fm.awaiting || fm.skip_merge || fm.taken_over || this.jobs.has(item.id) || this.turns.has(item.id)) return false;
+      if (fm.status !== 'IN_REVIEW' || fm.blocked || fm.awaiting || fm.skip_merge || fm.taken_over || fm.op_data?.pending_turn || this.jobs.has(item.id) || this.turns.has(item.id)) return false;
       if (fm.ci_result === 'red' || fm.op_data?.needs_session_rebase) return false;
       const flavor = this.store.derived(item).flavor;
       if (flavor === 'external' && (fm.merge_policy ?? 'watch') === 'watch') return false; // watched: driveExternal observes it
@@ -838,10 +841,10 @@ export class LiveEngine implements Engine {
     const pending = (fm.op_data?.pending_messages as string[] | undefined) ?? [];
     const phase = this.phaseFor(fm.status);
     if (!pending.length || !phase || fm.taken_over || fm.blocked || fm.awaiting || this.turns.has(id) || this.followUps.has(id)) return false;
-    if (this.store.derived(item).flavor !== 'worker' || this.stopping) return false;
+    if (this.store.derived(item).flavor !== 'worker' || this.stopping || fm.op_data?.pending_turn) return false;
     this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), pending_messages: [] } } }, { activity: { actor: 'app', text: `sending ${pending.length} queued message${pending.length === 1 ? '' : 's'} to the session ${when}` } }], 'engine');
     const review = fm.status === 'IN_REVIEW' ? '\n\nYour pull request is open and was about to merge: it waits for what you do with these. Commit any change; planestro pushes it and runs CI again.' : '';
-    this.queueFollowUp(id, () => this.runTurnFor(id, phase, `Messages from the user while you were working:\n\n${pending.map((m) => `- ${m}`).join('\n')}${review}`));
+    this.queueTurn(id, phase, `Messages from the user while you were working:\n\n${pending.map((m) => `- ${m}`).join('\n')}${review}`);
     return true;
   }
 
@@ -867,6 +870,42 @@ export class LiveEngine implements Engine {
   /** Run `fn` as the item's next job — immediately if idle, otherwise right after the current job (never dropped). */
   private queueFollowUp(id: string, fn: () => Promise<unknown>): void {
     if (this.jobs.has(id)) this.followUps.set(id, fn); else this.runJob(id, fn);
+  }
+
+  /** The exact instruction, including a permission ruling, survives admission pauses.
+   * Only the in-flight process owns active_turn; pending_turn belongs to the next turn.
+   * Keys keep an ending turn from deleting a newer answer queued while it was ending. */
+  private savePendingTurn(id: string, turn: PendingTurn): void {
+    const data = this.store.requireItem(id).file.frontmatter.op_data ?? {};
+    this.store.mutateItem(id, [{ set: { op_data: { ...data, pending_turn: turn } } }], 'engine');
+  }
+  private queueTurn(id: string, phase: TurnPhase, prompt: string, extraAllowed: string[] = [], oneShotCommands: string[] = [], opts: TurnOpts = {}): void {
+    const turn: PendingTurn = { key: randomUUID(), phase, prompt, extraAllowed, oneShotCommands, opts };
+    this.savePendingTurn(id, turn);
+    this.queueFollowUp(id, () => this.runPendingTurn(id, turn));
+  }
+  private runPendingTurn(id: string, turn: PendingTurn): Promise<TurnResult | undefined> {
+    const current = this.store.requireItem(id).file.frontmatter.op_data?.pending_turn as PendingTurn | undefined;
+    if (current?.key !== turn.key) return Promise.resolve(undefined);
+    const data = this.store.requireItem(id).file.frontmatter.op_data ?? {};
+    const messages = (data.pending_messages as string[] | undefined) ?? [];
+    if (messages.length) {
+      turn = { ...current, prompt: `${current.prompt}\n\nAlso, from the user while admission was paused:\n\n${messages.map((m) => `- ${m}`).join('\n')}` };
+      this.store.mutateItem(id, [{ set: { op_data: { ...data, pending_turn: turn, pending_messages: [] } } }], 'engine');
+    }
+    return this.runTurnFor(id, turn.phase, turn.prompt, turn.extraAllowed, turn.oneShotCommands, turn.opts, turn);
+  }
+  private drivePendingTurns(): void {
+    for (const item of this.store.listItems()) {
+      const fm = item.file.frontmatter;
+      const turn = fm.op_data?.pending_turn as PendingTurn | undefined;
+      if (!turn || this.jobs.has(item.id) || this.turns.has(item.id) || this.followUps.has(item.id) || fm.op || fm.blocked || fm.awaiting || fm.taken_over || fm.resume_after) continue;
+      const phase = this.phaseFor(fm.status);
+      if (!phase || (phase === 'plan') !== (turn.phase === 'plan')) continue;
+      const model = findModel(this.store.config, turn.phase === 'plan' ? fm.planner : fm.implementer);
+      if (!model || model.external || this.store.local.engine.provider_guards?.[model.runner] || unavailableEntry(this.store.local.model_unavailable, model.id, new Date())) continue;
+      this.runJob(item.id, () => this.runPendingTurn(item.id, turn));
+    }
   }
 
   // ---- item lifecycle ----
@@ -931,7 +970,7 @@ export class LiveEngine implements Engine {
       ...(by === 'orchestrator' ? [{ activity: { actor: by, text: `approved the plan on your behalf${notes ? `: ${notes}` : ''}` } }] : notes ? [{ activity: { actor: by, text: `approval notes: ${notes}` } }] : []),
     ], by, { commit: `${id}: approve plan${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
     // queued, not dropped: the orchestrator can decide while the planner's turn is still ending
-    this.queueFollowUp(id, () => this.runTurnFor(id, 'implement', this.withLoopNote(id, this.withHoldNote(id, this.withDelivered(id, 'implement-plan', this.store.renderPrompt('implement-plan', this.store.requireItem(id), { approval_notes: notes?.trim() || '(none)' })))), [], [], { opener: true }));
+    this.queueTurn(id, 'implement', this.withLoopNote(id, this.withHoldNote(id, this.withDelivered(id, 'implement-plan', this.store.renderPrompt('implement-plan', this.store.requireItem(id), { approval_notes: notes?.trim() || '(none)' })))), [], [], { opener: true });
   }
 
   async rejectPlan(id: string, message: string, by: 'user' | 'orchestrator' = 'user', { amend = false }: { amend?: boolean } = {}): Promise<void> {
@@ -951,7 +990,7 @@ export class LiveEngine implements Engine {
     const ask = amend
       ? `The orchestrator approves your plan with these amendments. Fold them into the plan (do not just append them) and submit the whole plan again with the ${tool} tool, then end your turn:\n\n${message}`
       : `Changes requested on your plan:\n\n${message}\n\nRevise it accordingly and submit it again with the ${tool} tool, then end your turn.`;
-    this.queueFollowUp(id, () => this.runTurnFor(id, 'plan', `${this.resumeNote(id, 'your plan review')}\n\n${ask}`));
+    this.queueTurn(id, 'plan', `${this.resumeNote(id, 'your plan review')}\n\n${ask}`);
   }
 
   async message(id: string, text: string, by: 'user' | 'orchestrator' = 'user'): Promise<void> {
@@ -969,7 +1008,7 @@ export class LiveEngine implements Engine {
       this.wakeOrchestrator('epic_message', id, { message: text });
       return;
     }
-    if (this.turns.has(id) || this.jobs.has(id)) {
+    if (this.turns.has(id) || this.jobs.has(id) || fm.op_data?.pending_turn) {
       const pending = [...((fm.op_data?.pending_messages as string[] | undefined) ?? []), text];
       this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), pending_messages: pending } } }, { activity: { actor: 'user', text: `message queued: ${text}` } }], 'user');
       return;
@@ -1005,7 +1044,7 @@ export class LiveEngine implements Engine {
       const pending = (fm.op_data?.pending_messages as string[] | undefined) ?? [];
       const also = pending.length ? `\n\nAlso, from the user while you waited (these may change the brief):\n\n${pending.map((m) => `- ${m}`).join('\n')}` : '';
       this.store.mutateItem(id, [{ unset: ['awaiting', 'awaiting_data', 'triage'] }, ...(pending.length ? [{ set: { op_data: { ...(fm.op_data ?? {}), pending_messages: [] } } } as ItemOp] : []), { activity: { actor: by, text: `answered: ${Object.values(answers).join(' / ')}${pending.length ? ` (with ${pending.length} queued message${pending.length === 1 ? '' : 's'})` : ''}` } }], by, { commit: `${id}: answer questions${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
-      this.queueFollowUp(id, () => this.runTurnFor(id, phase, `${this.resumeNote(id, 'your questions')}\n\nAnswers to your questions:\n\n${text}${also}\n\nContinue.`));
+      this.queueTurn(id, phase, `${this.resumeNote(id, 'your questions')}\n\nAnswers to your questions:\n\n${text}${also}\n\nContinue.`);
       return;
     }
     if (payload.kind === 'permission') {
@@ -1014,6 +1053,11 @@ export class LiveEngine implements Engine {
       const req = fm.awaiting_data as unknown as PermissionRequest;
       const decision = payload.decision as 'allow' | 'always' | 'deny';
       if (by === 'orchestrator' && decision === 'always') throw new Error('only the user adds allow rules');
+      // Native sandbox approvals are always declined and the process exits. There is
+      // no scoped grant carried into a new app-server turn; accepting here would lie
+      // to the user (and "always" would persist a rule no adapter can enforce).
+      const grantRefusal = permissionGrantRefusal(req);
+      if (decision !== 'deny' && grantRefusal) throw new Error(grantRefusal);
       const rule = ruleFor(req);
       const who = by === 'orchestrator' ? 'The orchestrator' : 'The user';
       const ops: ItemOp[] = [{ unset: ['awaiting', 'awaiting_data'] }, { activity: { actor: by, text: `permission ${decision}${by === 'orchestrator' && payload.reason ? ` (${String(payload.reason).slice(0, 300)})` : ''}: ${rule.slice(0, 400)}` } }];
@@ -1030,7 +1074,7 @@ export class LiveEngine implements Engine {
       // turn as a one-shot exact-command pass (consumed on first use).
       const oneShot = decision !== 'deny' && req.tool === 'Bash' ? [String(req.input.command ?? '')] : [];
       // queued, not dropped: the orchestrator can answer while the turn that asked is still ending
-      this.queueFollowUp(id, () => this.runTurnFor(id, phase, msg, decision === 'deny' ? [] : [rule], oneShot));
+      this.queueTurn(id, phase, msg, decision === 'deny' ? [] : [rule], oneShot);
       return;
     }
     throw new Error(`unknown response kind ${String(payload.kind)}`);
@@ -1108,13 +1152,20 @@ export class LiveEngine implements Engine {
   }
 
   // ---- turns ----
-  private async runTurnFor(id: string, phase: TurnPhase, prompt: string, extraAllowed: string[] = [], oneShotCommands: string[] = [], opts: TurnOpts = {}): Promise<TurnResult | undefined> {
+  private async runTurnFor(id: string, phase: TurnPhase, prompt: string, extraAllowed: string[] = [], oneShotCommands: string[] = [], opts: TurnOpts = {}, queued?: PendingTurn): Promise<TurnResult | undefined> {
     const oneShot = new Set(oneShotCommands.map((c) => c.trim()));
-    if (this.stopping) return undefined;
+    const intent: PendingTurn = queued ?? { key: randomUUID(), phase, prompt, extraAllowed, oneShotCommands, opts };
+    const defer = () => { this.savePendingTurn(id, intent); return undefined; };
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
     // The one door every turn goes through: nothing queued before a take-over (a fix, an answer, a resume) starts while a person has the item.
-    if (fm.taken_over) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `not starting its ${phase} turn: you have this item (taken over)` } }], 'engine'); return undefined; }
+    if (fm.taken_over) {
+      const data = { ...fm.op_data };
+      if ((data.pending_turn as PendingTurn | undefined)?.key === intent.key) delete data.pending_turn;
+      this.store.mutateItem(id, [{ set: { op_data: data } }, { activity: { actor: 'app', text: `not starting its ${phase} turn: you have this item (taken over)` } }], 'engine');
+      return undefined;
+    }
+    if (this.stopping || this._paused || this.draining) return defer();
     const d = this.store.derived(item);
     const cwd = this.absWorktree(fm.worktree!);
     const modelId = phase === 'plan' ? fm.planner : fm.implementer;
@@ -1136,7 +1187,7 @@ export class LiveEngine implements Engine {
     if (runner === 'claude' && !model) throw new Error(`model ${def.id} has no claude_model`);
     // Runners that report tokens instead of dollars are budgeted in worker turns.
     const metered = modelCapabilities(def).accounting === 'dollars';
-    if (this.store.local.engine.provider_guards?.[runner]) { this.block(id, 'provider_usage', `${runner} is paused for usage`); return undefined; }
+    if (this.store.local.engine.provider_guards?.[runner]) return defer();
     const budget = this.budgetOf(fm);
     if (!metered && (fm.agent_turns ?? 0) >= budget.turns) { this.block(id, 'turn_budget', `${def.label} has used ${fm.agent_turns} of ${budget.turns} turns on this item (${budget.turnsKey}); raise it on the item and unblock, or take the item over by hand`); return undefined; }
     if (!metered && (fm.tokens ?? 0) >= budget.tokens) { this.block(id, 'token_budget', `${def.label} has used ${(fm.tokens ?? 0).toLocaleString()} of ${budget.tokens.toLocaleString()} tokens on this item (${budget.tokensKey}); raise it on the item and unblock, or take the item over by hand`); return undefined; }
@@ -1151,11 +1202,12 @@ export class LiveEngine implements Engine {
     // One the item cannot pay for, or whose reload is above budget_usd_fresh_above, becomes a fresh
     // conversation with a brief when the turn's prompt stands on its own; only when nothing fits is it
     // stopped, and then before anything is spent (HH-184 spent a +$15 raise on the reload alone).
-    const intent = fm.op_data?.fresh_brief as { task?: string; from_session?: string; role?: 'plan' } | undefined;
-    const pending = intent?.role && phase !== intent.role ? undefined : intent;
-    const mayBeFresh = Boolean(pending) || Boolean(incompatible) || (phase !== 'plan' && !opts.opener);
+    const briefIntent = fm.op_data?.fresh_brief as { task?: string; from_session?: string; role?: 'plan' } | undefined;
+    const pending = briefIntent?.role && phase !== briefIntent.role ? undefined : briefIntent;
+    const freshPlan = phase === 'plan' && fm.op_data?.fresh_plan === true;
+    const mayBeFresh = freshPlan || Boolean(pending) || Boolean(incompatible) || (phase !== 'plan' && !opts.opener);
     const estimate = opts.estimate ?? (metered && resumeId ? this.resumeEstimateFor(fm, model as string) : undefined);
-    const path = chooseTurnPath({ left: metered ? usdLeft : Infinity, estimate, hasSession: Boolean(resumeId || pending || incompatible), fresh: !mayBeFresh ? undefined : pending || incompatible || opts.fresh === true ? true : opts.fresh, freshAboveUsd: this.store.config.budget_usd_fresh_above });
+    const path = chooseTurnPath({ left: metered ? usdLeft : Infinity, estimate, hasSession: Boolean(resumeId || pending || incompatible || freshPlan), fresh: !mayBeFresh ? undefined : pending || incompatible || freshPlan || opts.fresh === true ? true : opts.fresh, freshAboveUsd: this.store.config.budget_usd_fresh_above });
     if (path.path === 'stop') {
       this.block(id, 'over_budget', usdLeft < MIN_TURN_USD
         ? `this item has spent $${(fm.cost_usd ?? 0).toFixed(2)} of its $${budget.usd} budget (${budget.usdKey}), too little for a ${phase} turn; raise the budget on the item and unblock, or take the item over by hand`
@@ -1205,11 +1257,15 @@ export class LiveEngine implements Engine {
     const resumesPark = typeof this.store.requireItem(id).file.frontmatter.op_data?.resume_park === 'string' ? String(this.store.requireItem(id).file.frontmatter.op_data!.resume_park) : undefined;
     const opId = this.store.journal.begin(op, id, { phase, model: model ?? def.label, runner, ...(pick.fellBackFrom ? { fell_back_from: pick.fellBackFrom.id } : {}), ...(resumesPark ? { resumes_park: resumesPark } : {}) });
     if (resumesPark) { const { resume_park: _done, ...rest } = this.store.requireItem(id).file.frontmatter.op_data ?? {}; this.store.mutateItem(id, [{ set: { op_data: rest } }], 'engine'); }
-    this.store.mutateItem(id, [{ set: { op, op_started_at: this.now() } }], 'engine');
+    this.store.mutateItem(id, [{ set: { op, op_started_at: this.now(), op_data: { ...this.store.requireItem(id).file.frontmatter.op_data, active_turn: intent } } }], 'engine');
     // Registered before the runner slot is won (it owns the item from here), but not a running agent until then.
     const waiting = this.store.config.concurrency.runner_limits?.[runner] !== undefined ? runner : undefined;
     this.turns.set(id, { model: model ?? def.label, phase, startedAt: this.now(), lastOutput: '', abort, waiting });
-    const admitted = () => { const t = this.turns.get(id); if (t?.waiting) { t.waiting = undefined; t.startedAt = this.now(); } this.emit({ type: 'session.started', id, session_id: fm.session_id }); };
+    const admitted = () => {
+      const data = { ...this.store.requireItem(id).file.frontmatter.op_data };
+      if ((data.pending_turn as PendingTurn | undefined)?.key === intent.key) delete data.pending_turn;
+      this.store.mutateItem(id, [{ set: { op_data: { ...data, active_turn: intent } } }], 'engine');
+      const t = this.turns.get(id); if (t?.waiting) { t.waiting = undefined; t.startedAt = this.now(); } this.emit({ type: 'session.started', id, session_id: fm.session_id }); };
     const budgetLeft = Math.max(MIN_TURN_USD, usdLeft);
     // A planning turn is capped on its own (dogfood p41): past the cap it is asked for the plan it has, not for more research.
     // The cap is for the work: what the resume reloads first is on top of it.
@@ -1218,12 +1274,13 @@ export class LiveEngine implements Engine {
     let declined: ResumeEstimate | undefined;
     let result: TurnResult;
     try {
-      result = await this.withRunnerSlot(runner, () => this.withSessionSlot(id, () => { if (abort.signal.aborted || this._paused || this.draining || this.store.local.engine.provider_guards?.[runner]) return Promise.resolve<TurnResult>({ subtype: 'killed', isError: false, costUsd: 0, numTurns: 0, text: '' }); admitted(); return agent.runTurn({
+      result = await this.withRunnerSlot(runner, () => this.withSessionSlot(id, () => { if (abort.signal.aborted && !this.stopping) return Promise.resolve<TurnResult>({ subtype: 'killed', isError: false, costUsd: 0, numTurns: 0, text: '' });
+        if (this.stopping || this._paused || this.draining || this.store.local.engine.provider_guards?.[runner]) return Promise.resolve<TurnResult>({ subtype: 'deferred', isError: false, costUsd: 0, numTurns: 0, text: '' }); admitted(); return agent.runTurn({
         itemId: id, phase, cwd, model: model as string,
         transport: modelCapabilities(def).transport,
         maxTokens: metered ? undefined : Math.min(budget.tokens - (fm.tokens ?? 0), phase === 'plan' ? fm.op_data?.plan_retry_turns ? 10_000 : this.store.config.budget_tokens_per_plan_turn : Infinity),
         onApproval: async (req) => {
-          this.store.mutateItem(id, [{ set: { awaiting: 'permission', awaiting_data: { tool: req.tool, input: req.input, requested_at: this.now() } } }, { activity: { actor: 'app', text: 'Runner permission request recorded; turn ended for a decision' } }], 'engine', { commit: `${id}: awaiting permission` });
+          this.store.mutateItem(id, [{ set: { awaiting: 'permission', awaiting_data: { tool: req.tool, input: req.input, grantable: false, requested_at: this.now() } } }, { activity: { actor: 'app', text: 'Runner permission request recorded; turn ended for a decision' } }], 'engine', { commit: `${id}: awaiting permission` });
         }, permissionMode: phase === 'plan' ? 'plan' : 'acceptEdits', prompt, resume: resumeId, images,
         ...(known?.total_usd !== undefined ? { resumeTotalUsd: known.total_usd } : {}),
         // The CLI's own quote, before the first request: the same choice as above, on its numbers. It is
@@ -1285,18 +1342,31 @@ export class LiveEngine implements Engine {
     } finally {
       this.turns.delete(id);
     }
+    if (result.subtype === 'deferred') {
+      defer();
+      const { active_turn: _active, ...data } = this.store.requireItem(id).file.frontmatter.op_data ?? {};
+      this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { op_data: data } }], 'engine');
+      this.store.journal.end(opId, id, 'ok', { subtype: 'deferred', reason: 'admission paused; instruction saved' });
+      return undefined;
+    }
+    const completedData = { ...this.store.requireItem(id).file.frontmatter.op_data };
+    if (!(result.subtype === 'killed' && this.stopping) && (completedData.active_turn as PendingTurn | undefined)?.key === intent.key) {
+      delete completedData.active_turn;
+      this.store.mutateItem(id, [{ set: { op_data: completedData } }], 'engine');
+    }
     const after = this.store.requireItem(id).file.frontmatter;
     const sessionNow = metered ? result.sessionId ?? after.session_id : result.sessionId ?? after.agent_sessions?.[runner]?.session_id;
     // A fresh conversation has its id: it is the item's from here on, and the brief's marker has done its work.
     const started = path.path === 'fresh' && result.sessionId !== undefined && result.sessionId !== replaced;
     const { fresh_brief: _brief, ...opDataAfter } = after.op_data ?? {};
+    if (phase === 'plan' && started) delete opDataAfter.fresh_plan;
     const context = metered ? sessionContextAfter(after.session_context, sessionNow, model as string, result, this.now()) : undefined;
     this.store.mutateItem(id, [
       { set: {
         ...(metered ? { session_id: sessionNow } : {}),
         ...(result.sessionId ? { agent_sessions: { ...(after.agent_sessions ?? {}), [runner]: { session_id: result.sessionId, model: def.id, role: phase, tool_contract: contract, ...(modelCapabilities(def).transport ? { transport: modelCapabilities(def).transport } : {}) } } } : {}),
         ...(context ? { session_context: context } : {}),
-        ...(started && after.op_data?.fresh_brief ? { op_data: opDataAfter } : {}),
+        ...(started && (after.op_data?.fresh_brief || freshPlan) ? { op_data: opDataAfter } : {}),
         cost_usd: Math.round(((after.cost_usd ?? 0) + result.costUsd) * 10000) / 10000, turns: (after.turns ?? 0) + result.numTurns,
         ...(metered || result.numTurns === 0 ? {} : { agent_turns: (after.agent_turns ?? 0) + 1 }),
         ...(result.tokens ? { tokens: (after.tokens ?? 0) + result.tokens } : {}),
@@ -1365,7 +1435,12 @@ export class LiveEngine implements Engine {
   private recordOutbox(id: string, r: UndeliveredReport | undefined): void {
     const cur = this.store.getItem(id)?.file.frontmatter;
     if (!cur) return;
-    if (r) { this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), outbox: { ...r, at: this.now() } } } }], 'engine'); return; }
+    if (r) {
+      // A newly observed report may retry the same arguments after the user fixed
+      // their rejection. Only replay of the old delivery is suppressed.
+      const { rejected_report: _rejected, ...data } = cur.op_data ?? {};
+      this.store.mutateItem(id, [{ set: { op_data: { ...data, outbox: { ...r, at: this.now() } } } }], 'engine'); return;
+    }
     if (cur.op_data?.outbox === undefined) return;
     const { outbox: _gone, ...rest } = cur.op_data;
     this.store.mutateItem(id, [{ set: { op_data: rest } }], 'engine');
@@ -1417,21 +1492,38 @@ export class LiveEngine implements Engine {
     const fm = this.store.requireItem(id).file.frontmatter;
     const box = (fm.op_data?.outbox as UndeliveredReport | undefined) ?? result.undelivered;
     if (!box || fm.taken_over) return;
+    const rejected = fm.op_data?.rejected_report as { report?: UndeliveredReport } | undefined;
+    if (rejected?.report?.tool === box.tool && JSON.stringify(rejected.report.args) === JSON.stringify(box.args)) return;
+    const reject = (reason: string) => {
+      const { outbox: _box, ...data } = this.store.requireItem(id).file.frontmatter.op_data ?? {};
+      this.store.mutateItem(id, [
+        { set: { op_data: { ...data, rejected_report: { report: box, reason, at: this.now() } } } },
+        { activity: { actor: 'app', text: `the session's ${box.tool} could not be recovered: ${reason}; report kept for inspection, not replayed` } },
+      ], 'engine');
+      // Terminal items need no new turn. Active work gets an explicit recovery decision,
+      // never an idle slot or unbounded attempts to apply the same rejected report.
+      if (this.phaseFor(this.store.requireItem(id).file.frontmatter.status))
+        this.block(id, 'connection_lost', `Could not recover ${box.tool}: ${reason}. The report and its arguments are saved in rejected_report; inspect it before continuing.`);
+    };
     const a = box.args ?? {};
     const str = (v: unknown) => (typeof v === 'string' && v.trim() !== '' ? v : undefined);
     const list = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : undefined);
     const text = ['submit_plan', 'submit_breakdown'].includes(box.tool) ? str(a.plan) : box.tool === 'report_done' ? str(a.summary) : str(a.reason);
     const fits = ['submit_plan', 'submit_breakdown'].includes(box.tool) ? fm.status === 'PLAN_IN_PROGRESS' || fm.status === 'PLAN_READY' : fm.status === 'IN_PROGRESS' || fm.status === 'IN_REVIEW' || (box.tool === 'report_blocked' && fm.status === 'PLAN_IN_PROGRESS');
-    if (!text || !fits) { this.recordOutbox(id, undefined); this.store.mutateItem(id, [{ activity: { actor: 'app', text: `the session's ${box.tool} never reached planestro (${box.error}); not applied: ${!text ? 'it carried nothing to record' : `the item is ${fm.status} now`}` } }], 'engine'); return; }
+    if (!text || !fits) { reject(!text ? 'it carried nothing to record' : `the item is ${fm.status} now`); return; }
     this.store.mutateItem(id, [{ activity: { actor: 'app', text: `the session's ${box.tool} never reached planestro (${box.error}); applying it from the turn's record` } }], 'engine');
     const tools = this.makeTools(id);
     try {
-      if (box.tool === 'submit_plan') { if (!(await tools.submit_plan(text)).startsWith('Rejected')) result.planSubmitted = text; }
-      else if (box.tool === 'submit_breakdown') { if (!(await tools.submit_breakdown(text, a.children)).startsWith('Rejected')) result.planSubmitted = text; }
-      else if (box.tool === 'report_done') { if (!(await tools.report_done(text, a.parts, str(a.hold), list(a.attach), str(a.review))).startsWith('Rejected')) result.done = text; }
-      else { if (!(await tools.report_blocked(text, a.parts)).startsWith('Rejected')) result.blocked = text; }
+      const answer = box.tool === 'submit_plan' ? await tools.submit_plan(text)
+        : box.tool === 'submit_breakdown' ? await tools.submit_breakdown(text, a.children)
+        : box.tool === 'report_done' ? await tools.report_done(text, a.parts, str(a.hold), list(a.attach), str(a.review))
+        : await tools.report_blocked(text, a.parts);
+      if (answer.startsWith('Rejected')) { reject(answer); return; }
+      if (box.tool === 'submit_plan' || box.tool === 'submit_breakdown') result.planSubmitted = text;
+      else if (box.tool === 'report_done') result.done = text;
+      else result.blocked = text;
       this.recordOutbox(id, undefined);
-    } catch (e) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `could not apply the session's ${box.tool}: ${(e as Error).message.slice(0, 200)}` } }], 'engine'); }
+    } catch (e) { reject((e as Error).message.slice(0, 1000)); }
   }
 
   private async afterTurn(id: string, phase: TurnPhase, result: TurnResult): Promise<void> {
@@ -1728,7 +1820,7 @@ export class LiveEngine implements Engine {
     if (this._paused || this.draining || this.stopping) return;
     let item = this.store.requireItem(id);
     let fm = item.file.frontmatter;
-    if (fm.status !== 'IN_REVIEW' || fm.blocked || fm.awaiting || fm.taken_over) return;
+    if (fm.status !== 'IN_REVIEW' || fm.blocked || fm.awaiting || fm.taken_over || fm.op_data?.pending_turn) return;
     if (hold && !fm.skip_merge) return;
     const d = this.store.derived(item);
     const base = d.base_branch!;
@@ -1804,7 +1896,7 @@ export class LiveEngine implements Engine {
           { activity: { actor: 'app', text: `${integration ? 'merge of' : 'rebase onto'} origin/${base} (${baseSha.slice(0, 7)}) conflicted in ${sync.conflicts.join(', ')}${sync.note ? ` (${sync.note})` : ''}${canFix ? '; handing to the session' : ''}` } },
         ], 'engine', { commit: `${id}: ${integration ? 'merge' : 'rebase'} conflict` });
         this.store.journal.end(opId, id, 'aborted', { reason: 'conflict', files: sync.conflicts });
-        if (canFix) this.queueFollowUp(id, () => this.runTurnFor(id, 'fix', this.store.renderPrompt('rebase-conflict', this.store.requireItem(id), { conflict_files: sync.conflicts.join('\n'), base_sha: baseSha.slice(0, 12) }), [], [], { fresh: 'auto' }));
+        if (canFix) this.queueTurn(id, 'fix', this.store.renderPrompt('rebase-conflict', this.store.requireItem(id), { conflict_files: sync.conflicts.join('\n'), base_sha: baseSha.slice(0, 12) }), [], [], { fresh: 'auto' });
         else if (integration && this.store.config.epics.conflict_budget_usd > 0) {
           // An epic has no session of its own: a one-shot one resolves the merge (#71), as the item's next job, outside the
           // serial merge chain (a session inside it would hold every other merge). Resolved, it is pushed and the chain picks the epic up again.
@@ -2097,7 +2189,7 @@ export class LiveEngine implements Engine {
     if (this.store.requireItem(id).file.frontmatter.taken_over) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: 'no fix turn: you have this item (taken over)' } }], 'engine'); return; }
     if (!canFix) { this.block(id, 'ci_red', 'CI is red and there is no session to hand the failure to; investigate by hand'); return; }
     if (count >= 2) { this.block(id, 'ci_red_twice', `CI failed ${count} times`); this.wakeOrchestrator('ci_red_again', id, { failed_log: log.slice(0, 3000) }); return; }
-    this.queueFollowUp(id, () => this.runTurnFor(id, 'fix', this.store.renderPrompt('ci-failed', this.store.requireItem(id), { ci: { attempt: String(count), run_url: ci?.url ?? '(local run)', failed_log: log } }), [], [], { fresh: 'auto' }));
+    this.queueTurn(id, 'fix', this.store.renderPrompt('ci-failed', this.store.requireItem(id), { ci: { attempt: String(count), run_url: ci?.url ?? '(local run)', failed_log: log } }), [], [], { fresh: 'auto' });
   }
 
   /**
@@ -2509,9 +2601,17 @@ export class LiveEngine implements Engine {
         this.runJob(item.id, async () => {
           const r: TurnResult = { subtype: 'success', isError: false, costUsd: 0, numTurns: 0, text: '' };
           await this.ingestOutbox(item.id, r);
+          const { active_turn: _active, ...data } = this.store.requireItem(item.id).file.frontmatter.op_data ?? {};
+          this.store.mutateItem(item.id, [{ set: { op_data: data } }], 'engine');
           if (phase && (r.done || r.planSubmitted || r.blocked)) await this.afterTurn(item.id, phase, r);
         });
         continue;
+      }
+      const savedTurn = (fm.op_data?.pending_turn ?? fm.op_data?.active_turn) as PendingTurn | undefined;
+      if (savedTurn && (!fm.op || RESUMABLE_TURN_OPS.has(fm.op))) {
+        this.store.mutateItem(item.id, [{ unset: ['op', 'op_started_at'] }, ...(fm.op ? [{ activity: { actor: 'app' as const, text: `turn (${fm.op}) was interrupted by a restart; resuming its saved instruction when admission allows` } }] : [])], 'engine');
+        this.savePendingTurn(item.id, savedTurn);
+        continue; // tick admits it only when its provider and the global lever allow it
       }
       if (!fm.op) continue;
       if (RESUMABLE_TURN_OPS.has(fm.op)) {
@@ -2968,7 +3068,7 @@ export class LiveEngine implements Engine {
         told = cur.awaiting && cur.awaiting !== 'user' ? `its session is parked (awaiting ${cur.awaiting}) and will read the hand-off when it resumes` : 'its session is busy and will read the hand-off at its next turn';
       } else {
         this.store.mutateItem(to, [{ unset: ['awaiting', 'awaiting_data'] }], 'engine');
-        this.queueFollowUp(to, () => this.runTurnFor(to, phase, `${this.resumeNote(to, `a hand-off from ${from}`)}\n\n${text}`));
+        this.queueTurn(to, phase, `${this.resumeNote(to, `a hand-off from ${from}`)}\n\n${text}`);
         told = 'its session has been resumed with the hand-off';
       }
     }
@@ -3061,10 +3161,11 @@ export class LiveEngine implements Engine {
 
   continueAfterProviderSwitch(id: string): void {
     const fm = this.store.requireItem(id).file.frontmatter;
-    if (this._paused || this.draining || this.stopping || !fm.op_data?.fresh_brief || fm.awaiting || fm.blocked || fm.taken_over || fm.resume_after || this.busyWith(id)) return;
+    if (this._paused || this.draining || this.stopping || !fm.op_data?.fresh_brief || fm.awaiting || fm.blocked || fm.taken_over || fm.resume_after || fm.op_data?.pending_turn || this.busyWith(id)) return;
     if (fm.status !== 'IN_PROGRESS' && fm.status !== 'PLAN_IN_PROGRESS') return;
+    if (findModel(this.store.config, fm.status === 'PLAN_IN_PROGRESS' ? fm.planner : fm.implementer)?.external) return;
     if ((fm.op_data.fresh_brief as { role?: string }).role === 'plan' && fm.status !== 'PLAN_IN_PROGRESS') return;
-    this.queueFollowUp(id, () => this.runTurnFor(id, fm.status === 'PLAN_IN_PROGRESS' ? 'plan' : 'implement', 'Continue from the current persisted state.', [], [], { carryOn: true }));
+    this.queueTurn(id, fm.status === 'PLAN_IN_PROGRESS' ? 'plan' : 'implement', 'Continue from the current persisted state.', [], [], { carryOn: true });
   }
   modelSwitchRefusal(id: string): string | undefined { return this.busyWith(id); }
   private busyWith(id: string): string | undefined { return this.jobs.has(id) || this.turns.has(id) ? `${id} has a step running; let it finish first` : undefined; }
@@ -3814,7 +3915,7 @@ export class LiveEngine implements Engine {
       if (cur.blocked && !opts.unblock) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `${where}; ${id} stays blocked (${cur.blocked_reason}), so the conflict waits for it to be unblocked with a sync first` } }], 'engine'); return `conflict: ${where}. ${id} stays blocked (${cur.blocked_reason}); unblock it with sync_first to hand the conflict to its session`; }
       const then = opts.unblock?.message?.trim() ? `Then continue with this:\n\n${opts.unblock.message.trim()}` : 'Once the rebase is done, carry on with your work on this item where you left off.';
       this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, { activity: { actor: by, text: `${opts.unblock ? 'unblocked; ' : ''}the sync conflict goes to the session` } }], by, { commit: `${id}: sync conflict to the session` });
-      this.queueFollowUp(id, () => this.runTurnFor(id, 'fix', `${this.conflictPrompt(id, r)}\n\n${then}`, [], [], { fresh: fresh ? true : 'auto' }));
+      this.queueTurn(id, 'fix', `${this.conflictPrompt(id, r)}\n\n${then}`, [], [], { fresh: fresh ? true : 'auto' });
       return `conflict: ${where}. Handed to the session to resolve${opts.unblock?.message?.trim() ? ', with your message to act on after' : ''}`;
     }
     if (r.kind === 'diverged') return `refused: the worktree (${r.local.slice(0, 7)}) and the pushed branch ${fm.branch} (${r.remote.slice(0, 7)}) have diverged; not pushing either way. Someone pushed commits the worktree lacks: bring them into the worktree (or reset it to them) first; nothing was rebased or pushed`;
@@ -4100,7 +4201,7 @@ export class LiveEngine implements Engine {
     this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, ...(opData !== fm.op_data ? [{ set: { op_data: opData } } as ItemOp] : []), { activity: { actor: by, text: `unblocked${message ? `: ${message}` : ''}` } }], by, { commit: `${id}: unblock${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
     const phase = this.phaseFor(fm.status);
     // The message is an instruction that stands on its own, so the engine may give it to a fresh conversation (#64); `fresh` asks for one.
-    if (message && phase) this.queueFollowUp(id, () => this.runTurnFor(id, phase, message, [], [], { fresh: opts.fresh ? true : 'auto', note: by === 'orchestrator' ? 'the orchestrator' : 'a decision from the user' }));
+    if (message && phase) this.queueTurn(id, phase, message, [], [], { fresh: opts.fresh ? true : 'auto', note: by === 'orchestrator' ? 'the orchestrator' : 'a decision from the user' });
     // p50: a merged item that stopped in cleanup (a worktree removal failed) retries it now, the path reconcile takes
     // five minutes later; with a message, or a retry that declined, clearing the flag alone left it MERGED until then.
     else if (fm.status === 'MERGED') this.runJob(id, () => this.cleanup(id));
@@ -4598,7 +4699,10 @@ export class LiveEngine implements Engine {
     const said: string[] = [];
     const turn = this.turns.get(id);
     if (turn) { this.stoppedFor.set(id, why); turn.abort.abort(); said.push(`its ${turn.phase} turn`); }
-    if (this.followUps.delete(id)) said.push('the turn queued behind it');
+    const followUp = this.followUps.delete(id);
+    if (followUp) said.push('the turn queued behind it');
+    const { pending_turn: deferred, active_turn: _active, ...keptData } = fm.op_data ?? {};
+    if (deferred && !followUp) said.push('its deferred instruction');
     if (this.pendingWakes.delete(id)) said.push('an orchestrator wake');
     this.idleSince.delete(id);
     const pending = (fm.op_data?.pending_messages as string[] | undefined) ?? [];
@@ -4609,7 +4713,7 @@ export class LiveEngine implements Engine {
     if (fm.triage) said.push('triage');
     const unset = [...(fm.resume_after ? ['resume_after'] : []), ...(fm.triage ? ['triage'] : []), ...(parked ? ['awaiting', 'awaiting_data'] : [])];
     return { said, ops: [
-      ...(pending.length ? [{ set: { op_data: { ...(fm.op_data ?? {}), pending_messages: [] } } } as ItemOp] : []),
+      { set: { op_data: { ...keptData, pending_messages: [] } } },
       ...(unset.length ? [{ unset } as ItemOp] : []),
     ] };
   }

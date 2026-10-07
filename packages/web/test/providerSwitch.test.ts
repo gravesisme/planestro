@@ -8,6 +8,16 @@ vi.mock('../src/store.ts', () => ({ useStore: (selector?: (s: any) => any) => se
 vi.mock('../src/components/OrchestratorChat.tsx', () => ({ OrchestratorChat: () => null }));
 import { SwitchProviderPage, PROVIDER_GUIDE } from '../src/pages/SwitchProvider.tsx';
 import { App } from '../src/App.tsx';
+import { AwaitingPanels } from '../src/components/AwaitingPanels.tsx';
+it('does not offer unusable allow actions for native sandbox requests, including legacy records', () => {
+  for (const grantable of [undefined, false]) {
+    const markup = renderToStaticMarkup(createElement(AwaitingPanels, { item: { id: 'TP-1', frontmatter: { awaiting: 'permission', awaiting_data: { tool: 'CodexApproval', grantable, input: {} } } } as any }));
+    expect(markup).not.toContain('Allow once'); expect(markup).not.toContain('Always allow');
+    expect(markup).toContain('Take over'); expect(markup).toContain('Deny');
+  }
+  const regular = renderToStaticMarkup(createElement(AwaitingPanels, { item: { id: 'TP-2', frontmatter: { awaiting: 'permission', awaiting_data: { tool: 'Bash', input: { command: 'npm test' } } } } as any }));
+  expect(regular).toContain('Allow once'); expect(regular).toContain('Always allow');
+});
 function state(provider: 'claude' | 'codex') {
   const other = provider === 'claude' ? 'codex' : 'claude';
   fixture.current = {
@@ -31,4 +41,3 @@ it.each(['claude', 'codex'] as const)('offers switching from exhausted %s to the
   expect(page).toContain('href="' + PROVIDER_GUIDE + '"');
   expect(page).toContain('No restart required.');
 });
-
