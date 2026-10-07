@@ -47,7 +47,11 @@ Evaluate every change against these; they are the architecture.
    Ambiguity → `blocked` with a reason, never deletion. (Untracked files that
    collide with ones the base now tracks are moved aside to `.displaced/`,
    not deleted: `clearForSync`. Untracked files the project names in
-   `worktrees.byproducts` are never dirt: cleanup sets them aside the same way.)
+   `worktrees.byproducts` are never dirt: cleanup sets them aside the same way.
+   A sync git refuses over local changes is not a conflict: untracked files it
+   names are set aside and it runs once more, else `dirty_tree`. An epic's own
+   `merge-<id>` worktree is cleared before merging: tips logged, its changes
+   moved or copied to `.displaced/`, then reset to its own HEAD.)
 8. **No lifecycle code contains the literal default branch name.** Everything
    operates on the item's resolved `base_branch`; a test greps `engine/` for it.
 

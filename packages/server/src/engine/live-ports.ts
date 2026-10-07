@@ -13,6 +13,22 @@ async function unmerged(cwd: string): Promise<string[]> {
   return (await git(cwd, ['diff', '--name-only', '--diff-filter=U'], true)).stdout.split('\n').filter(Boolean);
 }
 
+/**
+ * A sync git stopped with no unmerged path: it refused to overwrite files in the worktree (#212). The paths are the
+ * ones it listed under "… would be overwritten by …"; none when it listed none (an unstaged change a rebase will not
+ * start over), and `message` is what it said. Its last line ("Aborting") is never taken for a file.
+ */
+export function refusalOf(stderr: string): { paths: string[]; message: string } {
+  const lines = stderr.split('\n');
+  const paths: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!/would be overwritten by/.test(lines[i])) continue;
+    for (let j = i + 1; j < lines.length && /^\s/.test(lines[j]) && lines[j].trim(); j++) if (!paths.includes(lines[j].trim())) paths.push(lines[j].trim());
+  }
+  const message = lines.map((l) => l.trim()).filter(Boolean).join(' ').slice(0, 500);
+  return { paths, message: message || 'git gave no reason' };
+}
+
 /** Resolve a conflict with one side's copy, only when every conflicted file is one `patterns` names; false when it cannot. */
 async function takeSide(cwd: string, conflicts: string[], patterns: string[], side: '--ours' | '--theirs'): Promise<boolean> {
   if (!patterns.length || !conflicts.length || !conflicts.every((f) => patterns.some((p) => matchesPathPattern(f, p)))) return false;
@@ -169,7 +185,7 @@ export class LiveGitPort implements GitPort {
       const conflicts = await unmerged(cwd);
       if (!(await takeSide(cwd, conflicts, takeBase, '--ours'))) {
         await git(cwd, ['rebase', '--abort'], true);
-        return { ok: false, conflicts: conflicts.length ? conflicts : [r.stderr.trim().split('\n').pop() ?? 'unknown conflict'], head: await this.revParse(cwd, 'HEAD') };
+        return { ok: false, conflicts, head: await this.revParse(cwd, 'HEAD'), ...(conflicts.length ? {} : { refused: refusalOf(r.stderr) }) };
       }
       conflicts.forEach((f) => took.add(f));
       // A commit that only changed a generated file is empty once the base's copy is taken: skip it, the regenerate step remakes the file.
@@ -188,7 +204,7 @@ export class LiveGitPort implements GitPort {
       return { ok: true, conflicts: [], head: await this.revParse(cwd, 'HEAD'), tookBase: conflicts };
     }
     await git(cwd, ['merge', '--abort'], true);
-    return { ok: false, conflicts: conflicts.length ? conflicts : [r.stderr.trim().split('\n').pop() ?? 'unknown conflict'], head: await this.revParse(cwd, 'HEAD') };
+    return { ok: false, conflicts, head: await this.revParse(cwd, 'HEAD'), ...(conflicts.length ? {} : { refused: refusalOf(r.stderr) }) };
   }
   async resetHard(cwd: string, sha: string) { await git(cwd, ['reset', '-q', '--hard', sha]); }
   async commitPaths(cwd: string, paths: string[], message: string) {

@@ -333,6 +333,85 @@ describe('sync with base (p29)', () => {
     });
   });
 
+  describe('a sync git refuses over local changes is not a conflict (#212, HH-257, HH-260)', () => {
+    /** An open epic whose merge worktree a conflict session pushed from and left dirty (HH-260): git would not overwrite a tracked change or an untracked file. */
+    function dirtyEpic(ctx: Awaited<ReturnType<typeof setup>>) {
+      const epic = ctx.store.createItem({ title: 'Animate Jungle enemies', description: 'x', kind: 'epic' } as any);
+      const rel = `.claude/worktrees/merge-${epic.id.toLowerCase()}`, cwd = (ctx.engine as any).absWorktree(rel);
+      ctx.world.worktrees.set(cwd, { path: cwd, head: ctx.world.sha(), branch: 'feature/animate-jungle' });
+      ctx.store.mutateItem(epic.id, [{ set: { status: 'IN_PROGRESS', branch: 'feature/animate-jungle', worktree: rel } }], 'engine');
+      ctx.world.remoteBranches.set('feature/animate-jungle', ctx.world.sha());
+      ctx.world.dirty.add(cwd); ctx.world.untracked.set(cwd, ['LICENSES.md.orig']);
+      ctx.world.refuseFor = ['src/fake.ts', 'LICENSES.md.orig'];
+      return { id: epic.id, cwd };
+    }
+
+    it("an epic's merge worktree left dirty is set aside, its tips logged first, and the next sync merges", async () => {
+      const ctx = await setup({ conflictSession: async () => { throw new Error('no conflict session: nothing conflicted'); } });
+      const { id, cwd } = dirtyEpic(ctx);
+      await ctx.engine.start();
+      const r = await ctx.engine.syncWithBase(id);
+      expect(r).toMatch(/^synced: merged origin\/trunk into feature\/animate-jungle@f{7}/);
+      const log = activityOf(ctx.store, id);
+      const aside = log.indexOf(`the merge worktree ${cwd} has changes nothing committed (src/fake.ts, LICENSES.md.orig) at `);
+      expect(aside).toBeGreaterThan(-1);
+      expect(log).toMatch(/origin\/feature\/animate-jungle at \w{7}; setting them aside to \S+\.displaced\/\S+ \(nothing deleted\)/);
+      expect(aside).toBeLessThan(log.indexOf('merged origin/trunk into feature/animate-jungle'));
+      expect(ctx.log.some((l) => l.startsWith(`Would move LICENSES.md.orig from ${cwd} to `) && l.includes('.displaced/'))).toBe(true);
+      expect(ctx.log.some((l) => l.startsWith('Would git reset --hard') && l.includes(cwd))).toBe(true);
+      expect(ctx.world.dirty.has(cwd)).toBe(false);
+      expect(log).not.toContain('Aborting');
+      expect(ctx.prompts).toHaveLength(0);
+      expect(ctx.store.getItem(id)!.file.frontmatter.blocked).toBeUndefined();
+    });
+
+    it('in the merge chain, the dirty merge worktree is set aside and the epic PR merges', async () => {
+      const ctx = await setup();
+      const { id } = dirtyEpic(ctx);
+      ctx.world.prs.set(421, { number: 421, url: 'u', state: 'OPEN', headRefOid: ctx.world.remoteBranches.get('feature/animate-jungle')!, headRefName: 'feature/animate-jungle', baseRefName: 'trunk', polls: 0, failOnce: false });
+      ctx.store.mutateItem(id, [{ set: { status: 'IN_REVIEW', pr: 421 } }], 'engine');
+      await ctx.engine.start();
+      await waitFor(() => ['MERGED', 'FINISHED'].includes(ctx.store.getItem(id)!.file.frontmatter.status), 8000);
+      expect(activityOf(ctx.store, id)).toContain('has changes nothing committed (src/fake.ts, LICENSES.md.orig)');
+    });
+
+    it('a refusal over files that cannot be set aside says what git said and goes to no session; in the merge chain it blocks dirty_tree', async () => {
+      const ctx = await setup();
+      const { id } = worker(ctx, { pushed: true });
+      await ctx.engine.start();
+      ctx.world.refuseArmed = true;
+      const r = await ctx.engine.syncWithBase(id);
+      expect(r).toMatch(/^not synced: the rebase was refused by git: error: cannot rebase: You have unstaged changes\./);
+      expect(activityOf(ctx.store, id)).toMatch(/rebase onto origin\/trunk \(f{7}\) was refused by git: error: cannot rebase/);
+      expect(ctx.store.getItem(id)!.file.frontmatter.blocked).toBeUndefined();
+      // the merge chain: blocked as a dirty tree with git's words, never sync_conflict, never a fix turn
+      const pr = worker(ctx, { pushed: true });
+      ctx.world.prs.set(422, { number: 422, url: 'u', state: 'OPEN', headRefOid: ctx.world.remoteBranches.get(pr.branch)!, headRefName: pr.branch, baseRefName: 'trunk', polls: 0, failOnce: false });
+      ctx.world.refuseArmed = true;
+      ctx.store.mutateItem(pr.id, [{ set: { status: 'IN_REVIEW', pr: 422 } }], 'engine');
+      await waitFor(() => ctx.store.getItem(pr.id)!.file.frontmatter.blocked === true);
+      const fm = ctx.store.getItem(pr.id)!.file.frontmatter;
+      expect(fm.blocked_reason).toBe('dirty_tree');
+      expect(activityOf(ctx.store, pr.id)).toMatch(/the rebase onto origin\/trunk \(f{7}\) was refused by git: error: cannot rebase/);
+      expect(activityOf(ctx.store, pr.id)).not.toContain('conflicted in');
+      expect(ctx.prompts).toHaveLength(0);
+    });
+
+    it('an untracked byproduct the sync would overwrite is moved aside and the sync runs again', async () => {
+      const ctx = await setup();
+      ctx.store.updateConfig((doc) => { doc.setIn(['worktrees', 'byproducts'], ['*.import']); }, 'config: byproducts');
+      const { id, cwd } = worker(ctx, { pushed: true });
+      ctx.world.untracked.set(cwd, ['art/boss.png.import']);
+      ctx.world.refuseFor = ['art/boss.png.import'];
+      await ctx.engine.start();
+      const r = await ctx.engine.syncWithBase(id);
+      expect(r).toMatch(/^synced: rebased onto origin\/trunk@f{7}/);
+      expect(activityOf(ctx.store, id)).toMatch(/git would not overwrite 1 untracked file the sync brings in; moved it aside \(nothing deleted\) to \S+\.displaced\/\S+: art\/boss\.png\.import; syncing again/);
+      expect(ctx.world.untracked.get(cwd)).toEqual([]);
+      expect(ctx.log.filter((l) => l.includes('refused: local changes would be overwritten'))).toHaveLength(1);
+    });
+  });
+
   it("an epic's integration branch has the base merged in and is pushed plainly, never rebased", async () => {
     const ctx = await setup();
     const epic = ctx.store.createItem({ title: 'Big thing', description: 'x', kind: 'epic' } as any);

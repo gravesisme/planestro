@@ -6,8 +6,11 @@ import type { Runner, RateLimitSnapshot } from '@planestro/shared';
  * Lifecycle code never names a branch: every call receives the resolved base.
  */
 export interface WorktreeEntry { path: string; head: string; branch?: string; bare?: boolean; prunable?: boolean }
-/** `tookBase`: conflicted files the sync resolved by taking the base's copy (a `takeBase` pattern named them, #63). */
-export interface RebaseResult { ok: boolean; conflicts: string[]; head: string; tookBase?: string[] }
+/**
+ * `tookBase`: conflicted files the sync resolved by taking the base's copy (a `takeBase` pattern named them, #63).
+ * `refused`: nothing conflicted (`conflicts` is empty); git would not overwrite files in the worktree, `paths` (#212).
+ */
+export interface RebaseResult { ok: boolean; conflicts: string[]; head: string; tookBase?: string[]; refused?: { paths: string[]; message: string } }
 
 /** A path pattern as the worktree settings use them: without `/` it matches the file name at any depth, with `/` the path from the root. */
 export function matchesPathPattern(path: string, pattern: string): boolean {
