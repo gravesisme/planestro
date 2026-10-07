@@ -128,9 +128,16 @@ const MAX_TIMER_MS = 2 ** 31 - 1;
 type SyncOutcome =
   | { kind: 'current'; base: string; baseSha: string }
   | { kind: 'synced'; base: string; baseSha: string; head: string; pushed: boolean; integration: boolean }
-  | { kind: 'dirty'; base: string; behind: number; files: string[] }
+  | { kind: 'dirty'; base: string; behind: number; files: string[]; why?: string }
   | { kind: 'diverged'; base: string; local: string; remote: string }
   | { kind: 'conflict'; base: string; baseSha: string; files: string[]; integration: boolean; cwd: string };
+
+/** A sync that failed, in words (#212): the files it conflicted in, or what git would not overwrite to start it. */
+function syncFailed(r: RebaseResult): string {
+  if (!r.refused) return `conflicted in ${r.conflicts.join(', ')}`;
+  const { paths, message } = r.refused;
+  return paths.length ? `was refused by git: the worktree has local changes it would overwrite (${paths.slice(0, 5).join(', ')}${paths.length > 5 ? ` and ${paths.length - 5} more` : ''})` : `was refused by git: ${message}`;
+}
 
 export class LiveEngine implements Engine {
   readonly mode: 'live' | 'dry-run';
@@ -1957,17 +1964,18 @@ export class LiveEngine implements Engine {
     // 1. sync with the base — worker branches rebase, integration branches merge (never rewritten)
     this.store.mutateItem(id, [{ set: { op: integration ? 'syncing_base' : 'rebasing', op_started_at: this.now(), op_data: { ...(fm.op_data ?? {}), base_sha: null } } }], 'engine');
     await this.ports.git.fetch(this.repo);
-    const inTheWay = await this.clearForSync(id, cwd, base);
+    const inTheWay = integration ? await this.clearMergeWorktree(id, cwd, fm.branch!) : [];
+    if (!inTheWay.length) inTheWay.push(...await this.clearForSync(id, cwd, base));
     if (inTheWay.length) { this.store.journal.end(opId, id, 'aborted', { reason: 'dirty' }); this.block(id, 'dirty_tree', `the worktree has uncommitted changes, so it cannot be synced: ${inTheWay.slice(0, 5).join(', ')}${inTheWay.length > 5 ? ` and ${inTheWay.length - 5} more` : ''}`); return; }
     const baseSha = await this.ports.git.revParse(this.repo, `origin/${base}`);
     const expected = await this.ports.git.remoteBranchSha(this.repo, fm.branch!);
     // An integration branch moves on GitHub whenever a child merges into it: take that in before merging
     // the base, or the push is refused as non-fast-forward, and a retry refuses the same way (dogfood p53, HH-172).
     if (integration && expected && !(await this.ports.git.isAncestor(cwd, expected, 'HEAD'))) {
-      const own = await this.ports.git.merge(cwd, `origin/${fm.branch}`);
+      const own = await this.syncAside(id, cwd, () => this.ports.git.merge(cwd, `origin/${fm.branch}`));
       if (!own.ok) {
-        this.store.journal.end(opId, id, 'aborted', { reason: 'conflict', files: own.conflicts });
-        this.block(id, 'sync_conflict', `merging origin/${fm.branch} into its local copy in ${fm.worktree} conflicted in ${own.conflicts.join(', ')}; resolve by hand`);
+        this.store.journal.end(opId, id, 'aborted', own.refused ? { reason: 'dirty', files: own.refused.paths } : { reason: 'conflict', files: own.conflicts });
+        this.block(id, own.refused ? 'dirty_tree' : 'sync_conflict', `merging origin/${fm.branch} into its local copy in ${fm.worktree} ${syncFailed(own)}; resolve by hand`);
         return;
       }
       this.store.mutateItem(id, [{ activity: { actor: 'app', text: `took in origin/${fm.branch} (${expected.slice(0, 7)}) before syncing: it had moved on GitHub` } }], 'engine');
@@ -1991,11 +1999,18 @@ export class LiveEngine implements Engine {
       synced = `already on ${base}@${baseSha.slice(0, 7)}; no sync needed, reusing CI for ${headSha.slice(0, 7)}`;
     } else {
       const sync = await this.syncOnto(id, cwd, base, integration);
+      if (!sync.ok && sync.refused) {
+        // Nothing conflicted: git would not overwrite files in the worktree (#212). Not a session's conflict to resolve.
+        this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }], 'engine');
+        this.store.journal.end(opId, id, 'aborted', { reason: 'dirty', files: sync.refused.paths });
+        this.block(id, 'dirty_tree', `${integration ? 'the merge of' : 'the rebase onto'} origin/${base} (${baseSha.slice(0, 7)}) ${syncFailed(sync)}; look in ${fm.worktree}, then unblock`);
+        return;
+      }
       if (!sync.ok) {
         this.store.mutateItem(id, [
           { unset: ['op', 'op_started_at'] },
           { set: { ci_result: 'unknown', op_data: { ...(fm.op_data ?? {}), needs_session_rebase: canFix } } },
-          { activity: { actor: 'app', text: `${integration ? 'merge of' : 'rebase onto'} origin/${base} (${baseSha.slice(0, 7)}) conflicted in ${sync.conflicts.join(', ')}${sync.note ? ` (${sync.note})` : ''}${canFix ? '; handing to the session' : ''}` } },
+          { activity: { actor: 'app', text: `${integration ? 'merge of' : 'rebase onto'} origin/${base} (${baseSha.slice(0, 7)}) ${syncFailed(sync)}${sync.note ? ` (${sync.note})` : ''}${canFix ? '; handing to the session' : ''}` } },
         ], 'engine', { commit: `${id}: ${integration ? 'merge' : 'rebase'} conflict` });
         this.store.journal.end(opId, id, 'aborted', { reason: 'conflict', files: sync.conflicts });
         if (canFix) this.queueTurn(id, 'fix', this.store.renderPrompt('rebase-conflict', this.store.requireItem(id), { conflict_files: sync.conflicts.join('\n'), base_sha: baseSha.slice(0, 12) }), [], [], { fresh: 'auto' });
@@ -2258,12 +2273,61 @@ export class LiveEngine implements Engine {
     const stays = work.filter((f) => !hit.has(f));
     if (stays.length) return stays;
     if (!colliding.length) return [];
-    const dest = join(this.store.worktreesRoot(), '.displaced', `${id.toLowerCase()}-${this.now().replace(/[:+]/g, '-')}`);
+    const dest = this.displacedDir(id);
     await this.ports.git.moveAside(cwd, colliding, dest);
     const left = (await this.worktreeDirt(cwd)).dirty;
     if (left.length) return left;
     this.store.mutateItem(id, [{ activity: { actor: 'app', text: `moved ${colliding.length} untracked file${colliding.length === 1 ? '' : 's'} that ${base} now tracks out of the way (regenerated copies; nothing deleted) to ${dest}: ${colliding.slice(0, 12).join(', ')}${colliding.length > 12 ? ', …' : ''}` } }], 'engine', { commit: `${id}: set regenerated files aside` });
     return [];
+  }
+
+  /** Where a sync sets an item's files aside: outside every worktree, never deleted (invariant 7). */
+  private displacedDir(id: string): string {
+    return join(this.store.worktreesRoot(), '.displaced', `${id.toLowerCase()}-${this.now().replace(/[:+]/g, '-')}`);
+  }
+
+  /**
+   * Run a sync, and once more if git refused it only over untracked files it would overwrite (#212): files the
+   * incoming side now tracks (a byproduct regenerated here, an epic's child adding what this worktree made). They
+   * are set aside as clearForSync sets them aside, moved and never deleted. Any other refusal is returned as it is.
+   */
+  private async syncAside(id: string, cwd: string, run: () => Promise<RebaseResult>): Promise<RebaseResult> {
+    const r = await run();
+    const paths = r.refused?.paths ?? [];
+    if (!paths.length) return r;
+    const { untracked } = await this.ports.git.dirtyDetail(cwd);
+    if (!paths.every((p) => untracked.includes(p))) return r;
+    const dest = this.displacedDir(id);
+    await this.ports.git.moveAside(cwd, paths, dest);
+    this.store.mutateItem(id, [{ activity: { actor: 'app', text: `git would not overwrite ${paths.length} untracked file${paths.length === 1 ? '' : 's'} the sync brings in; moved ${paths.length === 1 ? 'it' : 'them'} aside (nothing deleted) to ${dest}: ${paths.slice(0, 12).join(', ')}${paths.length > 12 ? ', …' : ''}; syncing again` } }], 'engine', { commit: `${id}: set untracked files aside` });
+    return run();
+  }
+
+  /**
+   * An epic's merge worktree (`merge-<id>`) is written only by planestro and its one-shot sessions, so changes
+   * left in it are leftovers, not work (HH-260: a conflict session pushed, left the tree dirty, and the next sync
+   * was refused). Before merging, they are set aside (#212): the tips are logged first, untracked files are moved
+   * and changed tracked files copied to `.displaced/`, then the tree goes back to its own HEAD. Returns what is
+   * still in the way (empty: go on); a merge or rebase left half-done, or a path that cannot be copied, stays.
+   */
+  private async clearMergeWorktree(id: string, cwd: string, branch: string): Promise<string[]> {
+    if (basename(cwd) !== `merge-${id.toLowerCase()}`) return [];
+    const { tracked, untracked } = await this.ports.git.dirtyDetail(cwd);
+    const loose = untracked.filter((f) => !this.isByproduct(f));
+    const dirt = [...tracked, ...loose];
+    if (!dirt.length) return [];
+    // A rename shows as `old -> new`; a quoted path (unusual characters) cannot be copied by name, so a person looks.
+    const changed = tracked.flatMap((t) => t.split(' -> '));
+    if (changed.some((t) => t.startsWith('"')) || await this.ports.git.inProgressOp(cwd)) return dirt;
+    const head = await this.ports.git.revParse(cwd, 'HEAD');
+    const remote = await this.ports.git.remoteBranchSha(this.repo, branch);
+    const dest = this.displacedDir(id);
+    this.store.mutateItem(id, [{ activity: { actor: 'app', text: `the merge worktree ${cwd} has changes nothing committed (${dirt.slice(0, 12).join(', ')}${dirt.length > 12 ? ', …' : ''}) at ${head.slice(0, 7)}, origin/${branch} at ${remote ? remote.slice(0, 7) : '(not pushed)'}; setting them aside to ${dest} (nothing deleted) and putting the tree back on ${head.slice(0, 7)} before merging` } }], 'engine', { commit: `${id}: set merge worktree changes aside` });
+    if (loose.length) await this.ports.git.moveAside(cwd, loose, dest);
+    const files = await this.ports.git.filesUnder(cwd, changed);
+    if (files.length && (await this.ports.git.copyInto(cwd, files, dest)).collided.length) return dirt;
+    await this.ports.git.resetHard(cwd, head);
+    return (await this.worktreeDirt(cwd)).dirty;
   }
 
   private async onCiRed(id: string, opId: string, headSha: string, logText: string | undefined, source: 'github' | 'local', canFix = true): Promise<void> {
@@ -4064,7 +4128,7 @@ export class LiveEngine implements Engine {
     }
     if (r.kind === 'diverged') return `refused: the worktree (${r.local.slice(0, 7)}) and the pushed branch ${fm.branch} (${r.remote.slice(0, 7)}) have diverged; not pushing either way. Someone pushed commits the worktree lacks: bring them into the worktree (or reset it to them) first; nothing was rebased or pushed`;
     const said = r.kind === 'current' ? `already up to date: ${epic ? fm.branch : fm.branch ?? id} is on origin/${r.base}@${r.baseSha.slice(0, 7)}; nothing to sync`
-      : r.kind === 'dirty' ? `not synced: ${fm.worktree} has files in the way (${r.files.slice(0, 5).join(', ')}); commit or remove them first`
+      : r.kind === 'dirty' ? (r.why ? `not synced: the ${epic ? 'merge' : 'rebase'} ${r.why}; look in ${this.store.requireItem(id).file.frontmatter.worktree}` : `not synced: ${fm.worktree} has files in the way (${r.files.slice(0, 5).join(', ')}); commit or remove them first`)
       : `synced: ${r.integration ? `merged origin/${r.base} into ${fm.branch}` : `rebased onto origin/${r.base}`}@${r.baseSha.slice(0, 7)} (${r.head.slice(0, 7)})${r.pushed ? (r.integration ? ', pushed' : ', pushed with --force-with-lease') : ', local only (not pushed yet)'}`;
     if (r.kind === 'dirty') return said;
     if (opts.unblock) {
@@ -4088,7 +4152,7 @@ export class LiveEngine implements Engine {
     const generated = this.store.config.worktrees.generated;
     const patterns = Object.keys(generated);
     const before = patterns.length ? await this.ports.git.revParse(cwd, 'HEAD') : '';
-    const sync = integration ? await this.ports.git.merge(cwd, `origin/${base}`, patterns) : await this.ports.git.rebase(cwd, `origin/${base}`, patterns);
+    const sync = await this.syncAside(id, cwd, () => integration ? this.ports.git.merge(cwd, `origin/${base}`, patterns) : this.ports.git.rebase(cwd, `origin/${base}`, patterns));
     const took = sync.tookBase ?? [];
     if (!sync.ok || !took.length) return sync;
     const undo = async (why: string): Promise<RebaseResult & { note: string }> => {
@@ -4251,6 +4315,7 @@ export class LiveEngine implements Engine {
     this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, { activity: { actor: by, text: `resolving the sync conflict with a conflict session${hint?.trim() ? `: ${hint.trim().slice(0, 300)}` : ''}` } }], by, { commit: `${id}: resolve conflict` });
     this.runJob(id, async () => {
       const r = await this.syncBranch(id, by === 'orchestrator' ? 'for the orchestrator' : '');
+      if (r.kind === 'dirty') { this.block(id, 'dirty_tree', `merging ${r.base} into ${fm.branch}: ${r.why ?? `the merge worktree has changes in the way (${r.files.slice(0, 5).join(', ')})`}; look in ${this.store.requireItem(id).file.frontmatter.worktree}, then unblock`); return; }
       if (r.kind !== 'conflict') return;   // the base merged cleanly this time, or there was nothing to do: the chain carries on
       const out = await this.resolveEpicConflict(id, r.cwd!, r.base, r.baseSha, r.files, hint);
       if (out !== 'resolved') this.block(id, 'sync_conflict', `merging ${r.base} into ${fm.branch} conflicted in ${r.files.join(', ')}: ${out}; resolve it by hand in ${r.cwd}`);
@@ -4288,8 +4353,19 @@ export class LiveEngine implements Engine {
       cwd = fm.worktree ? this.absWorktree(fm.worktree) : join(this.store.worktreesRoot(), `merge-${id.toLowerCase()}`);
       if (!(await this.ports.git.worktreeList(this.repo)).some((w) => w.path === cwd && !w.prunable)) await this.ports.git.worktreeAdd(this.repo, cwd, branch, `origin/${branch}`);
       if (!fm.worktree) { this.store.mutateItem(id, [{ set: { worktree: cwd } }], 'engine'); fm = this.store.requireItem(id).file.frontmatter; }
+      const left = await this.clearMergeWorktree(id, cwd, branch);
+      if (left.length) {
+        const { behind } = await this.ports.git.aheadBehind(cwd, `origin/${base}`, 'HEAD');
+        done('aborted', { reason: 'dirty' }, `not synced with origin/${base}: the merge worktree has changes that could not be set aside (${left.slice(0, 5).join(', ')})`);
+        return { kind: 'dirty', base, behind, files: left };
+      }
       if (await this.ports.git.remoteBranchSha(this.repo, branch)) {
-        const own = await this.ports.git.merge(cwd, `origin/${branch}`);
+        const own = await this.syncAside(id, cwd, () => this.ports.git.merge(cwd, `origin/${branch}`));
+        if (own.refused) {
+          const { behind } = await this.ports.git.aheadBehind(cwd, `origin/${base}`, 'HEAD');
+          done('aborted', { reason: 'dirty', files: own.refused.paths }, `merge of origin/${branch} into its local copy ${syncFailed(own)}`);
+          return { kind: 'dirty', base, behind, files: own.refused.paths, why: syncFailed(own) };
+        }
         if (!own.ok) { done('aborted', { reason: 'conflict', files: own.conflicts }, `merge of origin/${branch} into its local copy conflicted in ${own.conflicts.join(', ')}`); return { kind: 'conflict', base, baseSha: await this.ports.git.revParse(this.repo, `origin/${base}`), files: own.conflicts, integration, cwd }; }
       }
     } else cwd = this.absWorktree(fm.worktree!);
@@ -4312,6 +4388,10 @@ export class LiveEngine implements Engine {
       }
     }
     const sync = await this.syncOnto(id, cwd, base, integration);
+    if (sync.refused) {
+      done('aborted', { reason: 'dirty', files: sync.refused.paths }, `${integration ? 'merge of' : 'rebase onto'} origin/${base} (${baseSha.slice(0, 7)}) ${syncFailed(sync)}; nothing was changed`);
+      return { kind: 'dirty', base, behind, files: sync.refused.paths, why: syncFailed(sync) };
+    }
     if (!sync.ok) {
       done('aborted', { reason: 'conflict', files: sync.conflicts }, `${integration ? 'merge of' : 'rebase onto'} origin/${base} (${baseSha.slice(0, 7)}) conflicted in ${sync.conflicts.join(', ')}${sync.note ? ` (${sync.note})` : ''}; aborted, the branch is unchanged`);
       return { kind: 'conflict', base, baseSha, files: sync.conflicts, integration, cwd };

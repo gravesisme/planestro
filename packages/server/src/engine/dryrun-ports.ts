@@ -43,6 +43,12 @@ export class FakeWorld {
   conflictArmed = this.ciMode === 'conflict-once';
   /** The files a simulated conflict is in. */
   conflictFiles: string[] = ['src/conflicted.ts'];
+  /**
+   * Files git would not overwrite (#212): a sync is refused while one of them is dirty in the worktree (a tracked
+   * change is `src/fake.ts`), as git refuses it. `refuseArmed` refuses the next sync once, over files it names none of.
+   */
+  refuseFor: string[] = [];
+  refuseArmed = false;
   /** Tracked files a regenerate command changed, by worktree (#63): set by a test's proc port, shown by dirtyDetail. */
   regenerated = new Map<string, string[]>();
   /** Commits a worktree is behind its base (default 1: the base is assumed to have moved, so every dry run exercises the sync). A sync puts it on the tip; a merge moves the tip under the others. */
@@ -104,6 +110,13 @@ export class DryRunGitPort implements GitPort {
   async aheadBehind(cwd: string) { return { ahead: this.w.commits.get(cwd) ?? 0, behind: this.w.behind.get(cwd) ?? 1 }; }
   /** A simulated conflict in `w.conflictFiles`: taken from the base when every one of them is a takeBase pattern's (#63). */
   private conflict(cwd: string, what: string, takeBase: string[]): RebaseResult | undefined {
+    const dirt = [...(this.w.dirty.has(cwd) ? ['src/fake.ts'] : []), ...(this.w.untracked.get(cwd) ?? [])];
+    const over = this.w.refuseFor.filter((p) => dirt.includes(p));
+    if (over.length || this.w.refuseArmed) {
+      this.w.refuseArmed = false;
+      this.say(`${what} in ${cwd} → refused: local changes would be overwritten (simulated)`);
+      return { ok: false, conflicts: [], head: this.w.worktrees.get(cwd)?.head ?? '', refused: { paths: over, message: over.length ? `error: Your local changes to the following files would be overwritten by merge: ${over.join(' ')} Aborting` : 'error: cannot rebase: You have unstaged changes.' } };
+    }
     if (!this.w.conflictArmed) return undefined;
     this.w.conflictArmed = false;
     const files = this.w.conflictFiles;
@@ -115,7 +128,7 @@ export class DryRunGitPort implements GitPort {
     this.say(`${what} in ${cwd} → CONFLICT (simulated)`);
     return { ok: false, conflicts: [...files], head: this.w.worktrees.get(cwd)?.head ?? '' };
   }
-  async resetHard(cwd: string, sha: string) { this.say(`git reset --hard ${sha.slice(0, 7)} (in ${cwd})`); const wt = this.w.worktrees.get(cwd); if (wt) wt.head = sha; this.w.regenerated.delete(cwd); }
+  async resetHard(cwd: string, sha: string) { this.say(`git reset --hard ${sha.slice(0, 7)} (in ${cwd})`); const wt = this.w.worktrees.get(cwd); if (wt) wt.head = sha; this.w.regenerated.delete(cwd); this.w.dirty.delete(cwd); }
   async commitPaths(cwd: string, paths: string[], message: string) {
     this.say(`git commit -m "${message.split('\n')[0]}" -- ${paths.join(' ')} (in ${cwd})`);
     // What was named is committed: the fake's one tracked change, and any untracked file among them.
