@@ -1438,6 +1438,45 @@ describe('budget and unblock (p36, p12)', () => {
     await engine.unblock(item.id);
     await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
   });
+
+  it('an engine_error unblocked with a message retries the engine step and starts no worker turn (#211)', async () => {
+    const phases: string[] = [];
+    const claude = (world: FakeWorld) => { const inner = new DryRunClaudePort(world); return { async runTurn(o: TurnOptions): Promise<TurnResult> { phases.push(o.phase); return inner.runTurn(o); }, runCustomTurn: inner.runCustomTurn.bind(inner) }; };
+    const { store, engine, world } = await setup({ claude });
+    const item = store.createItem({ title: 'Server git hiccup', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    const fm0 = store.getItem(item.id)!.file.frontmatter;
+    const cwd = (engine as any).absWorktree(fm0.worktree!);
+    const branch = fm0.branch!;
+    world.remoteBranches.set(branch, world.worktrees.get(cwd)!.head!);
+    world.prs.set(301, { number: 301, url: 'u', state: 'OPEN', headRefOid: world.worktrees.get(cwd)!.head!, headRefName: branch, baseRefName: 'trunk', polls: 0, failOnce: false });
+    store.mutateItem(item.id, [{ set: { status: 'IN_REVIEW', pr: 301, ci_result: 'unknown', blocked: true, blocked_reason: 'engine_error', awaiting: 'user' } }, { unset: ['awaiting_data'] }], 'engine');
+    const before = phases.length;
+    await engine.unblock(item.id, 'retry the step');
+    await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
+    expect(phases.slice(before)).toEqual([]); // the worker can't fix planestro's own git failure
+    expect(activityOf(store, item.id)).toContain('retrying the merge pipeline after engine_error: retry the step');
+  });
+
+  it('an engine_error in a session phase with nothing to retry resumes the session once, with the message (#211)', async () => {
+    const prompts: { phase: string; prompt: string }[] = [];
+    const claude = (world: FakeWorld) => { const inner = new DryRunClaudePort(world); return { async runTurn(o: TurnOptions): Promise<TurnResult> { prompts.push({ phase: o.phase, prompt: o.prompt }); return inner.runTurn(o); }, runCustomTurn: inner.runCustomTurn.bind(inner) }; };
+    const { store, engine } = await setup({ claude });
+    const item = store.createItem({ title: 'Nothing committed yet', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    store.mutateItem(item.id, [{ set: { status: 'IN_PROGRESS', blocked: true, blocked_reason: 'engine_error', awaiting: 'user' } }, { unset: ['awaiting_data'] }], 'engine');
+    const before = prompts.length;
+    await engine.unblock(item.id, 'mind the lockfile');
+    await waitFor(() => prompts.length > before);
+    const after = prompts.slice(before);
+    expect(after).toHaveLength(1);
+    expect(after[0].prompt).toContain('The user unblocked this item (it had stopped: engine_error)');
+    expect(after[0].prompt).toContain('mind the lockfile');
+  });
 });
 
 describe('structured parts (f4)', () => {

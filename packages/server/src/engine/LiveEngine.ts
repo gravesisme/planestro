@@ -3574,7 +3574,8 @@ export class LiveEngine implements Engine {
     return `re-running cancelled run ${ci.runId} (attempt ${attempt}); the CI wait already running counts only that attempt`;
   }
 
-  async retryOp(id: string, by: 'user' | 'orchestrator' = 'orchestrator'): Promise<string> {
+  /** With `message` (an unblock of an engine-owned stop, #211), it goes to Activity and with any session the retry resumes. */
+  async retryOp(id: string, by: 'user' | 'orchestrator' = 'orchestrator', message?: string): Promise<string> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
     if (fm.taken_over) return `not now: the user has taken ${id} over`;
@@ -3583,10 +3584,10 @@ export class LiveEngine implements Engine {
     const busy = this.busyWith(id); if (busy) return `not now: ${busy}`;
     const reason = fm.blocked_reason ?? 'blocked';
     const opData = LiveEngine.withoutDirtyCount(fm.op_data);
-    const clear = (text: string, extra: ItemOp[] = []): void => { this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, ...(opData !== fm.op_data ? [{ set: { op_data: opData } } as ItemOp] : []), ...extra, { activity: { actor: by, text } }], by, { commit: `${id}: retry${by === 'orchestrator' ? ' (orchestrator)' : ''}` }); };
-    const resume = by === 'orchestrator'
+    const clear = (text: string, extra: ItemOp[] = []): void => { this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, ...(opData !== fm.op_data ? [{ set: { op_data: opData } } as ItemOp] : []), ...extra, { activity: { actor: by, text: message ? `${text}: ${message}` : text } }], by, { commit: `${id}: retry${by === 'orchestrator' ? ' (orchestrator)' : ''}` }); };
+    const resume = (by === 'orchestrator'
       ? `The last step stopped on a transient failure (${reason}), which has been retried. Nothing of yours was lost: check your worktree and continue where you left off.`
-      : `The user unblocked this item (it had stopped: ${reason}). Nothing of yours was lost: check your worktree and continue where you left off.`;
+      : `The user unblocked this item (it had stopped: ${reason}). Nothing of yours was lost: check your worktree and continue where you left off.`) + (message ? `\n\n${message}` : '');
     // A conflict once handed to a session that never finished it is the pipeline's again: it re-syncs, and a conflict comes back to a session.
     if (fm.status === 'IN_REVIEW') { clear(`retrying the merge pipeline after ${reason}`, [{ set: { ci_result: 'pending', op_data: { ...(opData ?? {}), needs_session_rebase: false } } }]); this.poke(); return /^ci_red/.test(reason) ? 'retrying: it re-enters the merge pipeline, which reads the same CI run again (it does not run CI again: use rerun_ci to re-run its failed jobs)' : 'retrying: it re-enters the merge pipeline'; }
     if (fm.status === 'MERGED') { clear(`retrying cleanup after ${reason}`); this.runJob(id, () => this.cleanup(id)); return 'retrying the cleanup (it still needs positive evidence before deleting anything)'; }
@@ -3610,7 +3611,7 @@ export class LiveEngine implements Engine {
       }
     }
     if (!this.phaseFor(fm.status)) return `not possible: nothing in ${fm.status} to retry for ${id}`;
-    await this.unblock(id, resume, by);
+    await this.unblock(id, resume, by, { retried: true });
     return 'retrying: the session is resumed';
   }
 
@@ -4335,7 +4336,7 @@ export class LiveEngine implements Engine {
   }
 
   /** User-driven unblock: clears the flag and, if the item is in a session phase, resumes with a message. With `fresh`, in a new conversation that gets a brief. */
-  async unblock(id: string, message?: string, by: 'user' | 'orchestrator' = 'user', opts: { fresh?: boolean } = {}): Promise<void> {
+  async unblock(id: string, message?: string, by: 'user' | 'orchestrator' = 'user', opts: { fresh?: boolean; retried?: boolean } = {}): Promise<void> {
     const fm = this.store.requireItem(id).file.frontmatter;
     if (fm.taken_over) throw new Error(`${id} is taken over: hand it back instead`);
     const refusal = opts.fresh ? this.freshRefusal(fm, message) : undefined;
@@ -4344,8 +4345,11 @@ export class LiveEngine implements Engine {
     // it stopped": the same step retry_op takes (open the PR for committed work, re-enter the merge
     // pipeline, requeue a setup that never ran, resume the session). Clearing the flag alone left
     // items idle with nothing driving them (HH-115, HH-125).
-    if (!message && fm.blocked && !this.busyWith(id)) {
-      const r = await this.retryOp(id, by);
+    // A stop that is planestro's own (a server-side git or gh failure, a restart mid-op) is retried the
+    // same way with a message too: the session can't fix it, and resuming it cost a turn and a re-block (#211).
+    const engineStop = /^(engine_error|interrupted_)/.test(fm.blocked_reason ?? '');
+    if ((!message || (engineStop && !opts.fresh)) && !opts.retried && fm.blocked && !this.busyWith(id)) {
+      const r = await this.retryOp(id, by, message);
       if (!/^(not possible|nothing to retry|not now)/.test(r)) return;
     }
     const opData = LiveEngine.withoutDirtyCount(fm.op_data);
