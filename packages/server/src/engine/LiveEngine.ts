@@ -12,6 +12,7 @@ import { makePolicy, ruleFor, allowedByRules, sdkRules, BASE_ALLOWED } from './p
 import { answeredCommand, commandShape, rulingText, parkedRefusal, permissionGrantRefusal } from './parks.ts';
 import { hostNote, keptPathsNote, cwdNote } from './hostNote.ts';
 import { Orchestrator } from './orchestrator.ts';
+import { NeedsYouWatch, type Wait } from './needsYou.ts';
 import { pngSize } from './placeholderPng.ts';
 import { findWorkflow, prSkippedByPaths } from './ciFilters.ts';
 import type { ReviewImage } from './Engine.ts';
@@ -23,7 +24,8 @@ const MODEL_FILE = /\.(glb|gltf|obj|fbx)$/i;
 const reviewKind = (path: string): 'image' | 'audio' | 'model' | undefined => IMAGE_FILE.test(path) ? 'image' : AUDIO_FILE.test(path) ? 'audio' : MODEL_FILE.test(path) ? 'model' : undefined;
 
 /** `schedule` runs `fn` after `ms` and returns a cancel (tests capture it instead of waiting). */
-export interface EngineOptions { sleep?: (ms: number) => Promise<void>; tickMs?: number; now?: () => string; ciWorkflow?: string; schedule?: (fn: () => void, ms: number) => () => void }
+/** `listenUrl`: where the server answers (`http://127.0.0.1:4300`), the start of notification links unless notifications.base_url says otherwise. */
+export interface EngineOptions { sleep?: (ms: number) => Promise<void>; tickMs?: number; now?: () => string; ciWorkflow?: string; schedule?: (fn: () => void, ms: number) => () => void; listenUrl?: string }
 
 const RESUMABLE_TURN_OPS = new Set(['planning_turn', 'implement_turn']);
 /** How many of one item's permission requests the orchestrator may refuse before they go to the user instead. */
@@ -155,6 +157,7 @@ export class LiveEngine implements Engine {
   private runnerWaiters = new Map<string, (() => void)[]>();
   private localJobWaiters: (() => void)[] = [];
   readonly orchestrator: Orchestrator;
+  private readonly needsYou: NeedsYouWatch;
 
   constructor(private readonly store: DataStore, private readonly ports: Ports, private readonly emit: (e: ServerEvent) => void, private readonly opts: EngineOptions = {}) {
     this.mode = ports.mode;
@@ -201,6 +204,12 @@ export class LiveEngine implements Engine {
       poke: () => this.poke(),
       usageSeen: (r, runner) => this.usageSeen(r, runner),
     }, emit, (l, m) => this.note(l, m), () => this._paused || this.draining);
+    this.needsYou = new NeedsYouWatch(store, {
+      announce: (w) => this.announceWait(w),
+      now: () => Date.parse(this.now()),
+      schedule: (fn, ms) => this.schedule(fn, ms),
+      idleAfterMs: () => this.store.config.notifications.idle_after_min * 60_000,
+    });
   }
 
   /** Fire-and-forget judgment wake (invariant 4: never for anything a state machine can know). */
@@ -222,6 +231,7 @@ export class LiveEngine implements Engine {
     await this.resumeInterrupted();
     for (const q of this.orchestrator.resumeQuestions()) this.note('info', `${q}: answering the message a restart left unanswered`);
     this.armGuardResume();
+    this.needsYou.start();
     this.timer = setInterval(() => void this.tick(), this.opts.tickMs ?? 10_000);
     this.timer.unref?.();
     this.reconcileTimer = setInterval(() => void this.reconcile('periodic').catch(() => undefined), 5 * 60_000);
@@ -232,6 +242,7 @@ export class LiveEngine implements Engine {
     this.stopping = true;
     const orchestratorStopped = this.orchestrator.stop();
     this.cancelGuardResume?.(); this.cancelGuardResume = undefined;
+    this.needsYou.stop();
     if (this.timer) clearInterval(this.timer);
     if (this.reconcileTimer) clearInterval(this.reconcileTimer);
     for (const t of this.turns.values()) t.abort.abort();
@@ -294,16 +305,34 @@ export class LiveEngine implements Engine {
    * planestro tab shows as a desktop notification if this device opted in (under planestro's own icon once the
    * web app is installed), and the project's notifications.* command run with PLANESTRO_TITLE / PLANESTRO_MESSAGE.
    */
-  private announce(event: 'on_merge' | 'on_usage_pause', title: string, message: string, item?: string): void {
-    this.store.journal.append({ type: 'notification', ...(item ? { item } : {}), actor: 'engine', data: { event, title, message } });
+  private announce(event: 'on_merge' | 'on_usage_pause' | 'on_needs_you', title: string, message: string, item?: string, extra: { data?: Record<string, unknown>; env?: Record<string, string> } = {}): void {
+    this.store.journal.append({ type: 'notification', ...(item ? { item } : {}), actor: 'engine', data: { event, title, message, ...extra.data } });
     const cmd = this.store.config.notifications[event];
-    if (cmd) void this.ports.proc.run(cmd, { cwd: this.repo, timeoutMs: 30_000, env: { PLANESTRO_TITLE: title, PLANESTRO_MESSAGE: message } }).catch(() => undefined);
+    if (cmd) void this.ports.proc.run(cmd, { cwd: this.repo, timeoutMs: 30_000, env: { PLANESTRO_TITLE: title, PLANESTRO_MESSAGE: message, ...extra.env } }).catch(() => undefined);
   }
 
-  async testNotification(event: 'on_merge' | 'on_usage_pause'): Promise<{ code: number; output: string }> {
+  /** An item needs you or the orchestrator asks (#224): announced once per wait by the NeedsYouWatch, with a link to it. */
+  private announceWait(w: Wait): void {
+    const url = this.linkTo(w.path);
+    this.announce('on_needs_you', w.title, w.message, w.item, {
+      data: { kind: w.kind, url, wait: w.key, ...(w.question ? { question: w.question } : {}) },
+      env: { PLANESTRO_ITEM: w.item ?? '', PLANESTRO_KIND: w.kind, PLANESTRO_URL: url },
+    });
+  }
+  /** An absolute link into planestro: notifications.base_url, else the address the server listens on. */
+  private linkTo(path: string): string {
+    return `${(this.store.config.notifications.base_url ?? this.opts.listenUrl ?? 'http://127.0.0.1:4300').replace(/\/+$/, '')}${path}`;
+  }
+  /** A store event: whether an item now needs you, or a question opened (NeedsYouWatch). */
+  observe(e: ServerEvent): void { this.needsYou.observe(e); }
+  /** A client's heartbeat: someone is at a planestro tab, so a wait can be answered there before it is announced. */
+  clientActive(): void { this.needsYou.clientActive(); }
+
+  async testNotification(event: 'on_merge' | 'on_usage_pause' | 'on_needs_you'): Promise<{ code: number; output: string }> {
     const cmd = this.store.config.notifications[event];
     if (!cmd) throw new Error(`notifications.${event} is not set`);
-    const r = await this.ports.proc.run(cmd, { cwd: this.repo, timeoutMs: 30_000, env: { PLANESTRO_TITLE: 'planestro', PLANESTRO_MESSAGE: `a test of notifications.${event}` } });
+    const env = { PLANESTRO_TITLE: 'planestro', PLANESTRO_MESSAGE: `a test of notifications.${event}`, ...(event === 'on_needs_you' ? { PLANESTRO_ITEM: '', PLANESTRO_KIND: 'test', PLANESTRO_URL: this.linkTo('/') } : {}) };
+    const r = await this.ports.proc.run(cmd, { cwd: this.repo, timeoutMs: 30_000, env });
     return { code: r.code, output: `${r.stdout}${r.stderr}`.trim().slice(0, 2000) };
   }
 

@@ -60,6 +60,10 @@ export interface Engine {
   /** The CI workflow's runner queue as last read (#170); absent when the engine does not read it. */
   ciQueue?: { queued: number; running: number };
   /** Run a notification command now, as its event would (Settings → Notifications → Test). */
-  testNotification?(event: 'on_merge' | 'on_usage_pause'): Promise<{ code: number; output: string }>;
+  testNotification?(event: 'on_merge' | 'on_usage_pause' | 'on_needs_you'): Promise<{ code: number; output: string }>;
+  /** Every store event, so the engine can tell when an item comes to need you (#224). */
+  observe?(e: ServerEvent): void;
+  /** A client heartbeat (on input, at most once a minute): someone is using planestro now. */
+  clientActive?(): void;
   log: ServerEvent[];
 }

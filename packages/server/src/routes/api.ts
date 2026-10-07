@@ -323,7 +323,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   // Settings → Notifications → Test: the saved command, run the way its event runs it (dry-run only logs it).
   api.post('/config/notifications/test', async (c) => {
     try {
-      const { event } = z.object({ event: z.enum(['on_merge', 'on_usage_pause']) }).parse(await c.req.json());
+      const { event } = z.object({ event: z.enum(['on_merge', 'on_usage_pause', 'on_needs_you']) }).parse(await c.req.json());
       if (!engine.testNotification) throw new Error('no engine is running to run it');
       return c.json(await engine.testNotification(event));
     } catch (e) { return fail(c, e); }

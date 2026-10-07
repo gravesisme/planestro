@@ -233,7 +233,7 @@ function NumberCtl({ def, value }: { def: SettingDef; value: number | undefined 
 function TextCtl({ def, value, placeholder }: { def: SettingDef; value: string | undefined; placeholder?: string }) {
   const [out, setOut] = useState<string>();
   const commit = (el: HTMLInputElement) => { if (el.value.trim() !== (value ?? '')) void save(def, el.value.trim() || null); };
-  const notify = def.key.startsWith('notifications.') ? (def.key.split('.')[1] as 'on_merge' | 'on_usage_pause') : undefined;
+  const notify = def.key.startsWith('notifications.on_') ? (def.key.split('.')[1] as 'on_merge' | 'on_usage_pause' | 'on_needs_you') : undefined;
   return (
     <div className="ctl">
       <input className={def.mono ? 'mono' : ''} key={value ?? ''} defaultValue={value ?? ''} placeholder={placeholder} aria-label={def.label} onBlur={(e) => commit(e.target)} onKeyDown={(e) => { if (e.key === 'Enter') commit(e.currentTarget); }} />

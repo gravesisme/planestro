@@ -115,6 +115,7 @@ usage_guard:
   on_warning: true
   auto_resume: false
 # Commands to run on events, e.g. on_merge: say "PR merged", on_usage_pause: say "paused for usage".
+# on_needs_you runs once per wait on you, with PLANESTRO_URL; docs/configuration.md has a phone alert through ntfy.
 notifications: {}
 git:
   auto_commit: true

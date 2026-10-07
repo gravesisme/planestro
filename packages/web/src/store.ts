@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { JournalEntry } from '@planestro/shared';
 import { api, type State, type ItemView, type QuestionView } from './api.ts';
 import { showIfNotification } from './desktopNotify.ts';
+import { watchInput } from './heartbeat.ts';
 
 /** Journal entries the orchestrator chat shows (a wake's `done` only when it answered a message). */
 export const isChatEntry = (j: JournalEntry) => ['orchestrator.user_message', 'orchestrator.reply', 'orchestrator.question'].includes(j.type) || (j.type === 'orchestrator.done' && ((j.data?.events as string[] | undefined) ?? []).includes('user_message'));
@@ -30,6 +31,8 @@ interface Store {
 let refreshTimer: ReturnType<typeof setTimeout> | undefined;
 let questionsTimer: ReturnType<typeof setTimeout> | undefined;
 let questionsSeq = 0;
+/** The live connection, for the input heartbeat (#224). */
+let socket: WebSocket | undefined;
 
 // ---- self-reload: `planestro serve --watch` rebuilds the UI, and an open page should pick it up
 const BUNDLE = /\/assets\/index-[\w-]+\.js/;
@@ -66,6 +69,8 @@ export const useStore = create<Store>((set, get) => ({
   connect() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const ws = new WebSocket(`${proto}://${location.host}/ws`);
+    if (!socket) watchInput(() => socket);
+    socket = ws;
     ws.onopen = () => { set({ connected: true }); void get().refresh(); void get().loadNotes(); void get().loadQuestions(); void checkForNewBundle(); };
     ws.onclose = () => { set({ connected: false }); setTimeout(() => get().connect(), 2000); };
     ws.onmessage = (m) => {

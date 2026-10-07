@@ -438,7 +438,15 @@ export const Config = z.object({
     /** It resumes by itself at this many GiB free (a margin above min_free_gib, so it does not flap). */
     resume_free_gib: z.number().positive().default(15),
   }).default({ enabled: true, min_free_gib: 10, resume_free_gib: 15 }),
-  notifications: z.object({ on_merge: z.string().optional(), on_usage_pause: z.string().optional() }).default({}),
+  notifications: z.object({
+    on_merge: z.string().optional(), on_usage_pause: z.string().optional(),
+    /** Run once per wait when an item needs you or the orchestrator asks a question (#224), with PLANESTRO_ITEM, PLANESTRO_KIND and PLANESTRO_URL too. */
+    on_needs_you: z.string().optional(),
+    /** The address links in notifications start with (`http://studio.local:4300`); unset, the one the server listens on. */
+    base_url: z.string().url().optional(),
+    /** A wait is announced only once every planestro tab has been idle this long; one answered meanwhile is not. */
+    idle_after_min: z.number().min(0).default(2),
+  }).default({ idle_after_min: 2 }),
   git: z.object({
     auto_commit: z.boolean().default(true),
     auto_push: z.boolean().default(true),

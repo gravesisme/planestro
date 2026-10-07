@@ -1,8 +1,8 @@
 import type { JournalEntry } from '@planestro/shared';
 
 /**
- * Desktop notifications from this browser (#70): the server journals a `notification` for a merge or a usage
- * pause, and an open planestro tab on a device that opted in shows it. Installed as an app (Chrome's Install
+ * Desktop notifications from this browser (#70): the server journals a `notification` for a merge, a usage
+ * pause or a wait on you (#224), and an open planestro tab on a device that opted in shows it. Installed as an app (Chrome's Install
  * planestro), macOS files it under planestro's own name and icon; in a plain tab, under the browser's. The
  * choice is per device (localStorage), since the permission is too. A native helper is not used: on macOS 26 an
  * ad-hoc-signed one is never allowed to notify (server/src/notifier.ts).
