@@ -290,6 +290,23 @@ describe('the orchestrator creates epics from the chat (#69)', () => {
   });
 });
 
+describe('create_item under an epic in review (#208)', () => {
+  it('says the epic is reopened for the child and its PR reused', async () => {
+    const results: Record<string, unknown> = {};
+    const { store, engine } = await setup({ orchestrate: async (label, t) => {
+      if (!label.includes('user_message')) return;
+      results.child = await t('create_item').handler({ title: 'Wind', description: 'x', parent: 'TP-1' });
+      await t('reply_to_user').handler({ text: 'done' });
+    } });
+    const epic = store.createItem({ title: 'Sound pass', description: 'x', kind: 'epic' });
+    store.mutateItem(epic.id, [{ set: { status: 'IN_REVIEW', branch: 'feature/sound-pass', pr: 590, skip_merge: true, hold_reason: 'held', ci_result: 'pending' } }], 'engine');
+    await engine.start();
+    engine.orchestrator.wake({ type: 'user_message', data: { message: 'add a wind child' } });
+    await waitFor(() => results.child !== undefined);
+    expect(results.child).toBe('created TP-2 (not submitted; the user or submit_item queues it). Epic TP-1 is in review with PR #590 open: planestro moves it back to in progress for this child, keeping its PR and any hold, and submits the same PR again once every child has merged');
+  });
+});
+
 describe('the orchestrator submits on the user\'s word (#73)', () => {
   it('submit_item plans an epic\'s breakdown in the chat, refuses it in words anywhere else, and queues a worker item as before', async () => {
     const results: Record<string, unknown> = {};

@@ -728,7 +728,10 @@ export class Orchestrator {
           store.mutateItem(it.id, [{ activity: { actor: 'orchestrator', text: `created from the chat${epic ? ' as an epic' : ''}` } }], 'orchestrator');
           if (a.submit && epic) await this.hooks.planEpic(it.id, 'created from the chat and submitted');
           else if (a.submit) { store.transition(it.id, 'QUEUED', 'orchestrator'); this.hooks.poke(); }
-          return `created ${epic ? 'epic ' : ''}${it.id}${a.submit ? (epic ? ' and started planning its breakdown (the user approves the children)' : ' and queued it for planning') : (epic ? ' (not submitted; submit_item has its breakdown planned when the user asks, or they press "plan the breakdown" on its page)' : ' (not submitted; the user or submit_item queues it)')}`;
+          // A child of an epic already in review reopens it (#208): said, so nobody expects its PR to merge as it is.
+          const parent = a.parent ? store.getItem(String(a.parent))?.file.frontmatter : undefined;
+          const reopens = parent?.status === 'IN_REVIEW' && parent.pr ? `. Epic ${parent.id} is in review with PR #${parent.pr} open: planestro moves it back to in progress for this child, keeping its PR and any hold, and submits the same PR again once every child has merged` : '';
+          return `created ${epic ? 'epic ' : ''}${it.id}${a.submit ? (epic ? ' and started planning its breakdown (the user approves the children)' : ' and queued it for planning') : (epic ? ' (not submitted; submit_item has its breakdown planned when the user asks, or they press "plan the breakdown" on its page)' : ' (not submitted; the user or submit_item queues it)')}${reopens}`;
         } catch (e) { return `failed: ${(e as Error).message}`; }
       } },
       { name: 'done_with_wake', description: 'Finish this wake with a one-line summary of what you decided.', schema: { summary: z.string() }, handler: async (a) => { onDone(String(a.summary)); return 'Recorded. End your turn now.'; } },

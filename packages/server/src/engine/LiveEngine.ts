@@ -393,6 +393,7 @@ export class LiveEngine implements Engine {
       this.orchestrator.kick();
       this.drivePendingTurns();
       for (const item of this.store.listItems()) this.continueAfterProviderSwitch(item.id);
+      this.reopenEpics();
       this.admit();
       this.nudgeStaleReviews();
       this.driveStaleBlocks();
@@ -2743,6 +2744,38 @@ export class LiveEngine implements Engine {
     if (!(await this.ports.git.remoteBranchSha(this.repo, branch))) await this.ports.git.pushRef(this.repo, `origin/${base}`, branch);
     this.store.mutateItem(id, [{ set: { branch } }, { activity: { actor: 'app', text: `opened integration branch ${branch} from origin/${base}` } }], 'engine', { commit: `${id}: open epic` });
     this.note('info', `${id}: epic open on ${branch}`);
+  }
+
+  /**
+   * A child added to an epic whose PR is open (#208, HH-342): admission starts children of an epic in progress only,
+   * so the epic goes back to IN_PROGRESS for it, keeping its PR and any hold. Once every child has merged, submitEpic
+   * finds the same PR open and submits it again. Only on GitHub's word that the PR is still open, and never under a step.
+   */
+  private reopenCheckedAt = new Map<string, number>();
+  private reopenEpics(): void {
+    const now = Date.now();
+    for (const item of this.store.listItems()) {
+      const fm = item.file.frontmatter;
+      if (fm.kind !== 'epic' || fm.status !== 'IN_REVIEW' || !fm.pr || fm.taken_over || this.jobs.has(item.id) || this.turns.has(item.id) || (fm.op && fm.op !== 'awaiting_ci')) continue;
+      const fresh = this.store.derived(item).children.map((c) => this.store.requireItem(c).file.frontmatter).filter((c) => !['MERGED', 'FINISHED', 'ICEBOX'].includes(c.status));
+      // A PR GitHub says is not open is asked about again at most once a minute, not every tick.
+      if (!fresh.length || now - (this.reopenCheckedAt.get(item.id) ?? 0) < HELD_POLL_MS) continue;
+      this.reopenCheckedAt.set(item.id, now);
+      this.runJob(item.id, () => this.reopenEpic(item.id, fresh.map((c) => c.id)));
+    }
+  }
+
+  private async reopenEpic(id: string, children: string[]): Promise<void> {
+    const pr = await this.ports.gh.prView(this.github, this.store.requireItem(id).file.frontmatter.pr!);
+    const fm = this.store.requireItem(id).file.frontmatter;
+    if (pr.state !== 'OPEN' || fm.status !== 'IN_REVIEW' || (fm.op && fm.op !== 'awaiting_ci')) return;
+    this.store.mutateItem(id, [
+      { transition: { to: 'IN_PROGRESS', actor: 'engine' } },
+      { unset: ['op', 'op_started_at', 'ci_result'] },
+      { activity: { actor: 'app', text: `new child ${children.join(', ')}: epic back in progress; PR #${pr.number} stays open and is reused` } },
+    ], 'engine', { commit: `${id}: reopen for ${children.join(', ')}` });
+    this.note('info', `${id}: reopened for new child ${children.join(', ')}; PR #${pr.number} is reused`);
+    void this.tick();
   }
 
   /** Epic completion: every child merged → open the epic PR into its base. */
