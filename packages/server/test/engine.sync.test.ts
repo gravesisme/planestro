@@ -275,6 +275,27 @@ describe('sync with base (p29)', () => {
       expect(log).toMatch(/the conflict session resolved the merge \("kept both"\)/);
     });
 
+    it('a message while the conflict session runs is queued for it and the orchestrator is told; its merge is not pushed over it (#210, HH-375)', async () => {
+      const ctx = await epicConflict(async (o) => {
+        await ctx.engine.message(ctx.id, 'stop, change nothing');
+        await ctx.engine.message(ctx.id, 'leave the check edit out', 'orchestrator');
+        await o.tools.report_done('kept both'); return { done: 'kept both' };
+      });
+      await ctx.engine.syncWithBase(ctx.id);
+      await settled(ctx, ctx.id);
+      const log = activityOf(ctx.store, ctx.id);
+      expect(log).toContain('message queued for its running conflict session: stop, change nothing');
+      expect(log).toContain('message queued for its running conflict session: leave the check edit out');
+      expect(ctx.store.journal.read({ item: ctx.id, type: 'orchestrator.wake' }).filter((w) => w.data?.event === 'epic_message').map((w) => w.data?.message)).toEqual(['stop, change nothing']);
+      expect(log).toContain('the conflict session did not resolve it: messages arrived while it ran, and a one-shot session cannot read them: "stop, change nothing"; "leave the check edit out"');
+      expect(ctx.log.some((l) => l.startsWith('Would git push -u origin feature/animate-jungle'))).toBe(false);
+      const fm = ctx.store.getItem(ctx.id)!.file.frontmatter;
+      expect(fm.blocked_reason).toBe('sync_conflict');
+      expect(fm.op_data?.pending_messages ?? []).toEqual([]);
+      // with no session live, the #127 behaviour stands: the orchestrator is refused, the user's word goes to the orchestrator
+      await expect(ctx.engine.message(ctx.id, 'again', 'orchestrator')).rejects.toThrow(/no session past its breakdown/);
+    });
+
     it('the orchestrator retries a blocked one with resolve_epic_conflict and a hint; with the budget at 0 it blocks as before', async () => {
       let hinted = '';
       let second = false;
