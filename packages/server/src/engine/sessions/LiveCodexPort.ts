@@ -112,7 +112,7 @@ export class LiveCodexPort implements AgentPort {
     // There is no system-prompt flag: the worker rules ride at the top of the prompt, every turn.
     const prompt = `${o.systemAppend.trim()}\n\n${IMAGE_TOOL_NOTE}\n\n---\n\n${o.prompt.trim()}\n\nEnd your turn with ONLY the JSON object described above: {"outcome": "done" | "blocked" | "question", "summary": "...", "parts": [...] or null, "question": "..." or null, "hold": null or "<what the pull request waits for>", "hand_off": null or {"to": "<item id that waits on this one>", "paths": ["<files in your worktree, relative>"], "note": "<what they are and how to use them>"}}. Use hand_off only when another backlog item needs files you made before your branch merges. Use hold only with "done", and only when the pull request must not merge yet because the plan or the request says it waits for something ("until TD-12 has merged"): planestro then keeps it out of the merge queue until the user releases it.`;
 
-    let killed = false, capped = false;
+    let killed = false;
     this.lastError = undefined;
     let stderr = '';
     const exit = await new Promise<{ code: number | null; spawnError?: string }>((resolve) => {
@@ -126,7 +126,7 @@ export class LiveCodexPort implements AgentPort {
       child.stdout.on('data', (d: Buffer) => {
         buf += d.toString();
         let nl: number;
-        while ((nl = buf.indexOf('\n')) >= 0) { this.onLine(buf.slice(0, nl), result, o); buf = buf.slice(nl + 1); if (o.maxTokens !== undefined && (result.tokens ?? 0) >= o.maxTokens) { capped = true; child.kill('SIGTERM'); } }
+        while ((nl = buf.indexOf('\n')) >= 0) { this.onLine(buf.slice(0, nl), result, o); buf = buf.slice(nl + 1); }
       });
       child.stderr.on('data', (d: Buffer) => { stderr = (stderr + d.toString()).slice(-8000); });
       child.once('error', (e) => resolve({ code: null, spawnError: e.message }));
@@ -139,7 +139,8 @@ export class LiveCodexPort implements AgentPort {
 
     if (exit.spawnError) return { ...result, subtype: 'spawn_error', isError: true, error: `could not start ${this.codexBin}: ${exit.spawnError}` };
     // SIGTERM makes Codex exit 0 with no final message, so "killed" is what we remember, not what it reports.
-    if (capped) return { ...result, subtype: 'token_cap', isError: true, error: 'Token limit reached' };
+    // Exec publishes usage only once the turn has completed. Account for any overshoot,
+    // but let its final report land; admission checks stop the next turn at the item cap.
     if (killed) return { ...result, subtype: 'killed', isError: false };
     // Codex reports most failures as an `error` / `turn.failed` event on stdout and only then exits non-zero.
     if (exit.code !== 0) return { ...result, ...classifyFailure(`${stderr}\n${this.lastError ?? ''}`), isError: true };

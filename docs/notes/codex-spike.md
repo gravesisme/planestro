@@ -97,12 +97,28 @@ but this is one bounded task, not evidence that every large planning handoff fit
 The defaults remain **100,000 per planning turn, 50,000 per resumed wake,
 200,000 per fresh wake**, all configurable. No configured limits were changed.
 Notifications arrive after model responses; an in-flight response may overshoot
-a cap. Exec only reports usage at turn completion, so its observed ceiling may
-end the turn only then. Reasoning tokens are already included in output.
+a cap. Exec only reports usage at turn completion; Planestro must not kill the
+already completed turn before ingesting its final JSON. Its full usage is charged,
+and the engine checks the item cap before the next turn. Reasoning tokens are already included in output.
+
+Native app-server sandbox approval requests remain immediate-decline requests.
+The inspected 0.154.0 protocol has no exact prior-request grant that can be carried
+into a new turn: answering a later request with `accept` would change our
+always-decline contract, and widening the next turn's sandbox would grant more
+than the single requested operation. The UI therefore offers denial or manual
+takeover, not a nonfunctional Allow/Always rule. External MCP tools retain their
+separate permission policy and scoped call budgets.
+
+App-server credentials are seeded once into the dedicated home by atomically
+linking a complete private file. Subsequent turns preserve Codex's refresh-token
+rotation. Credential-free tests cover concurrent initialization and a simulated
+rotation; they do not claim to provoke a live OAuth refresh or change the user's
+login. Reauthentication in that home is documented in the provider-switch guide.
 
 A capped wake uses the existing plan/permission/triage/question end hooks and
 journals its outcome and tokens. Its batch is discarded. The wake queue stays in
-memory; restart derives needed wakes from persisted item/question state.
+memory; restart derives needed wakes from persisted item/question state. Shutdown
+interruptions skip those end hooks, leaving that persisted ownership intact.
 
 Reproduce manually (these are authenticated, never CI commands):
 

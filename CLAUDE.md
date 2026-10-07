@@ -142,11 +142,16 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
 - A report (`submit_plan`, `submit_breakdown`, `report_done`, `report_blocked`) whose call never reached planestro is applied
   from the turn's record (#167): the port keeps the session's last lost report with its arguments, the engine
   persists it in `op_data.outbox` and applies it through the same tool when the turn ends (or at the next start),
-  and those tools are idempotent. The prompt goes to the SDK as a stream held open while background work runs, so
+  and those tools are idempotent. Rejected/invalid reports are retained as `op_data.rejected_report`
+  for inspection, removed from the replay outbox, and active work blocks `connection_lost`; they do not retry forever. The prompt goes to the SDK as a stream held open while background work runs, so
   stdin is not closed under it (sdk-notes gotcha 11). A drop is shown on the item within the turn (`DropWatch` →
   `op_data.mcp_drop`, the card's **lost connection**, cleared by the next turn that runs with its connection); a work turn
   that ends after one with no report landed or applied blocks `connection_lost`, with the session's last message for the
   orchestrator to recover the report from.
+- An instruction waiting for a slot, pause, drain or provider guard is persisted in `op_data.pending_turn`;
+  `active_turn` preserves the instruction during execution for restart recovery. Answers include their exact
+  question/ruling. Ending a turn cannot erase a newer queued answer; a takeover/discard clears both intents.
+  Deferred work holds no process or slot, and a pending fix prevents its PR from merging over the instruction.
 - A session slot is held only while something drives the item (a turn, an engine step,
   an op), never by an epic. An active item that nothing drives for
   `concurrency.stall_after_min` is carried on once (`driveStalls`), then blocked `stalled`.

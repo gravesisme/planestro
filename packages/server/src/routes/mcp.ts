@@ -27,6 +27,9 @@ export function operatorMcpUrl(url: string, instances: (Pick<Instance, 'port'> &
   try { u = new URL(url); } catch { return false; }
   if (u.pathname.replace(/\/+$/, '') !== '/mcp') return false;
   const knownHosts = allowedHosts('0.0.0.0', aliases);
+  // Wildcard bind addresses can also route to the local server. They are not UI
+  // Host-header allowances, but must never be exposed as worker MCP endpoints.
+  knownHosts.add('0.0.0.0'); knownHosts.add('::');
   for (const i of instances) {
     if (i.host) knownHosts.add(hostnameOf(i.host));
     if (i.url) { try { knownHosts.add(hostnameOf(new URL(i.url).hostname)); } catch { /* invalid stale record */ } }

@@ -12,7 +12,7 @@ type Question = { question: string; header?: string; options: { label: string; d
  */
 export function AwaitingPanels({ item }: { item: ItemView }) {
   const fm = item.frontmatter;
-  const data = fm.awaiting_data as { kind?: string; questions?: Question[]; tool?: string; input?: Record<string, unknown>; handed_back?: boolean; escalated?: string } | undefined;
+  const data = fm.awaiting_data as { kind?: string; questions?: Question[]; tool?: string; input?: Record<string, unknown>; grantable?: boolean; handed_back?: boolean; escalated?: string } | undefined;
   const orchestrating = fm.awaiting === 'orchestrator' && data?.kind === 'permission';
   // The orchestrator's plain-words card replaces whatever it was made from (a block, the worker's questions).
   if (decisionOf(fm)) return null; // shown by DecisionCard, at the top of the page and the preview
@@ -24,6 +24,7 @@ export function AwaitingPanels({ item }: { item: ItemView }) {
     </div>
   );
   if ((fm.awaiting === 'permission' || orchestrating) && data) {
+    const nativeCodex = data.grantable === false || data.tool === 'CodexApproval';
     const command = data.tool === 'Bash' && typeof data.input?.command === 'string' ? data.input.command : undefined;
     const why = typeof data.input?.description === 'string' ? data.input.description : undefined;
     return (
@@ -33,10 +34,11 @@ export function AwaitingPanels({ item }: { item: ItemView }) {
         {!orchestrating && data.escalated === 'orchestrator_denials' && <p className="small" style={{ marginTop: 0 }}>This comes to you because the orchestrator denied this item's last three requests. Allowing it hands the item's next requests back to the orchestrator.</p>}
         {why && <p className="small" style={{ margin: '0 0 6px' }}>{why}</p>}
         <pre className="events">{command ?? JSON.stringify(data.input, null, 2)}</pre>
+        {nativeCodex && <p>Codex cannot carry this sandbox permission into a new turn. Take over to perform the action yourself, then hand back, or deny it and ask for another approach.</p>}
         {item.park_hint && <ParkHint hint={item.park_hint} />}
         <div className="row">
-          <button className="primary" onClick={() => act(() => api.respond(item.id, { kind: 'permission', decision: 'allow' }))}>Allow once</button>
-          <button title="Adds this exact command to permissions.allow" onClick={() => act(() => api.respond(item.id, { kind: 'permission', decision: 'always' }))}>Always allow</button>
+          {!nativeCodex && <><button className="primary" onClick={() => act(() => api.respond(item.id, { kind: 'permission', decision: 'allow' }))}>Allow once</button>
+          <button title="Adds this exact command to permissions.allow" onClick={() => act(() => api.respond(item.id, { kind: 'permission', decision: 'always' }))}>Always allow</button></>}
           <button className="danger" onClick={() => { const reason = prompt('Reason for denying?'); if (reason !== null) void act(() => api.respond(item.id, { kind: 'permission', decision: 'deny', reason })); }}>Deny</button>
         </div>
       </div>

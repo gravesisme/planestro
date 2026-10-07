@@ -1,6 +1,13 @@
 import type { JournalEntry } from '@planestro/shared';
 import { WORKTREE_SCOPE } from '@planestro/shared';
 import { literal, readShell } from './shell.ts';
+import type { PermissionRequest } from './ports.ts';
+
+/** Native approval callbacks cannot carry a grant into a later turn. Also covers
+ * requests persisted before the grantable flag was introduced. */
+export function permissionGrantRefusal(req: PermissionRequest): string | undefined {
+  if (req.tool === 'CodexApproval') return 'Codex sandbox permissions cannot be granted here. Take over to perform the action yourself, then hand back, or deny it and ask the worker for another approach.';
+}
 
 /**
  * What waiting on a person costs (#108). A park ends the turn (invariant 2) and the answer resumes it;

@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { mkdirSync, existsSync, copyFileSync, chmodSync } from 'node:fs';
+import { mkdirSync, existsSync, copyFileSync, chmodSync, linkSync, unlinkSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
@@ -46,7 +47,17 @@ export class ScopedTools {
 export function isolatedCodexHome(path: string, inheritAuth = true): string {
   mkdirSync(path, { recursive: true, mode: 0o700 });
   const auth = join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'auth.json');
-  if (inheritAuth && existsSync(auth)) { copyFileSync(auth, join(path, 'auth.json')); chmodSync(join(path, 'auth.json'), 0o600); }
+  const destination = join(path, 'auth.json');
+  if (inheritAuth && !existsSync(destination) && existsSync(auth)) {
+    // Seed once: Codex owns refresh-token rotation in this home thereafter. Publish
+    // a complete private file atomically; another process may win initialization.
+    const temporary = join(path, `.auth-${randomUUID()}`);
+    try {
+      copyFileSync(auth, temporary); chmodSync(temporary, 0o600);
+      try { linkSync(temporary, destination); }
+      catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e; }
+    } finally { if (existsSync(temporary)) unlinkSync(temporary); }
+  }
   return path;
 }
 function safeEnv(home: string): NodeJS.ProcessEnv {
