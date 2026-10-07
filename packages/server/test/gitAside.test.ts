@@ -115,4 +115,38 @@ describe('setting regenerated files aside (p17)', () => {
     expect(after.tracked).toEqual(['kept.ts']);
     expect(after.untracked).toEqual(['stray.log']);
   });
+  it('a merge or rebase git refuses over local changes is a refusal naming the paths, never a conflict in "Aborting" (#212)', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'planestro-refuse-'));
+    git(repo, 'init', '-q', '-b', 'trunk'); git(repo, 'config', 'user.email', 't@t'); git(repo, 'config', 'user.name', 't');
+    const write = (f: string, s: string) => { mkdirSync(join(repo, f, '..'), { recursive: true }); writeFileSync(join(repo, f), s); };
+    const commit = (m: string) => { git(repo, 'add', '-A'); git(repo, 'commit', '-q', '-m', m); };
+    write('src/a.ts', 'a\n'); commit('base');
+    git(repo, 'checkout', '-q', '-b', 'work'); write('src/w.ts', 'w\n'); commit('work');
+    git(repo, 'checkout', '-q', 'trunk'); write('src/a.ts', 'trunk a\n'); write('art/new.png.import', 'trunk\n'); commit('trunk');
+    git(repo, 'checkout', '-q', 'work');
+    const port = new LiveGitPort();
+    const before = await port.revParse(repo, 'HEAD');
+    // a tracked local change the merge would overwrite
+    write('src/a.ts', 'local edit\n');
+    const tracked = await port.merge(repo, 'trunk');
+    expect(tracked).toMatchObject({ ok: false, conflicts: [], head: before, refused: { paths: ['src/a.ts'] } });
+    expect(tracked.refused!.message).toMatch(/would be overwritten by merge/);
+    expect(readFileSync(join(repo, 'src/a.ts'), 'utf8')).toBe('local edit\n');                // nothing touched
+    git(repo, 'checkout', '-q', '--', 'src/a.ts');
+    // an untracked file the merge would bring in
+    write('art/new.png.import', 'regenerated\n');
+    const untracked = await port.merge(repo, 'trunk');
+    expect(untracked).toMatchObject({ ok: false, conflicts: [], head: before, refused: { paths: ['art/new.png.import'] } });
+    expect(untracked.refused!.message).toMatch(/untracked working tree files would be overwritten/);
+    const rebased = await port.rebase(repo, 'trunk');
+    expect(rebased).toMatchObject({ ok: false, conflicts: [], head: before, refused: { paths: ['art/new.png.import'] } });
+    expect(await port.inProgressOp(repo)).toBeNull();
+    for (const r of [tracked, untracked, rebased]) expect(r.conflicts).not.toContain('Aborting');
+    // a refusal git names no file for: its words, never its last line as a path
+    rmSync(join(repo, 'art/new.png.import'));
+    write('src/a.ts', 'unstaged\n');
+    const unstaged = await port.rebase(repo, 'trunk');
+    expect(unstaged).toMatchObject({ ok: false, conflicts: [], head: before, refused: { paths: [] } });
+    expect(unstaged.refused!.message).toMatch(/unstaged changes/);
+  });
 });
