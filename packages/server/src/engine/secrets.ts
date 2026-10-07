@@ -85,8 +85,8 @@ function wordText(word: Word, home: string): string {
 /**
  * The first secret a Bash command names in what resolves statically: its words, the pieces of a
  * word (`--file=~/.aws/credentials`, `HEAD:.env`), redirection targets and assignments. A bare
- * name (no `/`) counts when it is a redirection target, holds a glob, or exists, so `grep id_rsa src`
- * stays a search. A command the shell reader cannot follow is read as words split on blanks.
+ * name (no `/`, or prose with a blank in it) counts when it is a redirection target, holds a glob, or
+ * exists, so `grep id_rsa src` stays a search and `git commit -m "load .env"` a commit. A command the shell reader cannot follow is read as words split on blanks.
  * Arbitrary reads inside a program it runs (a script, `grep -r`) are not seen.
  */
 export function secretInCommand(command: string, cwd: string, o: SecretOptions = {}): { path: string; what: string } | null {
@@ -107,9 +107,10 @@ export function secretInCommand(command: string, cwd: string, o: SecretOptions =
   }
   for (const w of words) {
     const text = w.text.replace(URL, ' ');
-    for (const piece of new Set([text, ...text.split(/[\s=:,'"]+/)])) {
+    for (const piece of new Set([text, ...text.split(/[=:,'"]+/)])) {
       if (!piece || piece.startsWith('-') && !piece.includes('/')) continue;
-      const bare = !piece.includes('/') && piece !== '~';
+      // A piece with a blank in it is prose (a commit message) unless it is a file that is there.
+      const bare = (!piece.includes('/') || /\s/.test(piece)) && piece !== '~';
       if (bare && !w.target && !/[*?[]/.test(piece) && !exists(resolve(cwd, piece))) continue;
       const what = secretPath(piece, cwd, o);
       if (what) return { path: piece, what };

@@ -2,6 +2,7 @@ import { isAbsolute, join } from 'node:path';
 import { parseActivity, type ItemFile, type JournalEntry } from '@planestro/shared';
 import { allowedByRules, BASE_ALLOWED, normalizeSegment, unanchor, type ScopeOptions } from './policy.ts';
 import { commandShape, suggestedRule } from './parks.ts';
+import { secretInCommand } from './secrets.ts';
 import { literal, readShell } from './shell.ts';
 
 /**
@@ -301,7 +302,8 @@ export function suggestAllowRules(rulings: Ruling[], current: string[], opts: Su
   // Candidates: the kinds of safe command the approvals held, with how often.
   const have = new Set(base);
   const cands = new Map<string, { rule: string; shape: string; cls: CommandClass; rulings: Ruling[] }>();
-  for (const r of allowed) {
+  // An approval that named a secret file (#227) is support for no rule: the deny list refuses it whatever a rule says.
+  for (const r of allowed.filter((x) => !secretInCommand(x.command ?? '', x.worktree))) {
     const seen = new Set<string>();
     for (const s of segmentsOf(r.command ?? '', r.worktree) ?? []) {
       const rule = proposableRule(s);

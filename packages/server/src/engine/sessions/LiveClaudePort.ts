@@ -1,5 +1,5 @@
 import * as sdk from '@anthropic-ai/claude-agent-sdk';
-import { query, tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
+import { query, tool, createSdkMcpServer, type HookCallback } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { KNOWN_USAGE_LIMIT_PREFIXES, USAGE_ERROR_CODES, isUsageLimitText, resetTime, worseRateLimit, type RateLimitSnapshot } from '@planestro/shared';
 import type { ClaudePort, TurnOptions, TurnResult, CustomTurnOptions, ResumeQuote, UndeliveredReport, ConnectionDrop } from '../ports.ts';
 import { PARKED_REFUSAL } from '../parks.ts';
+import { secretDenial, type SecretOptions } from '../secrets.ts';
 
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] });
 import { workerTools } from './workerTools.ts';
@@ -46,6 +47,7 @@ export class LiveClaudePort implements ClaudePort {
         ...(o.fallbackModel && o.fallbackModel !== o.model ? { fallbackModel: o.fallbackModel } : {}),
         systemPrompt: { type: 'preset', preset: 'claude_code', append: o.systemAppend },
         ...resumed.options,
+        hooks: { ...(resumed.options.hooks as object | undefined), PreToolUse: [{ hooks: [secretHook(o.cwd)] }] },
         mcpServers: { planestro: server }, strictMcpConfig: true, settingSources: ['project'],
         // dontAsk (the orchestrator) never consults canUseTool: a tool not listed here is refused outright, so its
         // bare names and its own MCP tools are listed whole (#153; #58's split left it unable to call anything).
@@ -84,6 +86,8 @@ export class LiveClaudePort implements ClaudePort {
         ...(o.fallbackModel && o.fallbackModel !== o.model ? { fallbackModel: o.fallbackModel } : {}),
         systemPrompt: { type: 'preset', preset: 'claude_code', append: o.systemAppend },
         ...resumed.options,
+        // The secret-file deny list (#227) before anything else: allow rules and the CLI's own approvals never reach canUseTool.
+        hooks: { ...(resumed.options.hooks as object | undefined), PreToolUse: [{ hooks: [secretHook(o.cwd)] }] },
         // The model's own servers ride along; their tools are not allow-listed, so every call reaches canUseTool and the engine's count.
         mcpServers: { planestro, ...(o.mcpServers ?? {}) } as any, strictMcpConfig: true, settingSources: ['project'],
         allowedTools: allow.rules,
@@ -114,6 +118,19 @@ export class LiveClaudePort implements ClaudePort {
     await consume(q, result, o.onOutput, abortController, resumed, input, reports, drops);
     return result;
   }
+}
+
+/**
+ * The secret-file deny list (#227) as a PreToolUse hook. canUseTool never sees what the SDK approves by itself:
+ * an allow-listed `Bash(tail *)`, a built-in read-only command (sdk-notes gotcha 3), a read inside the working
+ * directory, an edit under acceptEdits. A hook runs before all of those, so the list holds whatever a rule says.
+ */
+export function secretHook(cwd: string, o: SecretOptions = {}): HookCallback {
+  return async (input) => {
+    if (input.hook_event_name !== 'PreToolUse') return { continue: true };
+    const why = secretDenial({ tool: input.tool_name, input: (input.tool_input ?? {}) as Record<string, unknown> }, cwd, o);
+    return why ? { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `Not allowed: ${why}` } } : { continue: true };
+  };
 }
 
 /**

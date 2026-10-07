@@ -80,7 +80,7 @@ describe('the built-in deny list for secret files (#227)', () => {
 
   it('leaves ordinary work alone: a bare name counts only when it is a file, a glob or a redirection target', () => {
     const o = { home };
-    for (const c of ['grep -rn id_rsa src', 'grep credentials.json src', 'jq .key package.json', 'cat .env.example', 'npm test', 'curl https://example.com/.env', 'tail -30 build.log'])
+    for (const c of ['grep -rn id_rsa src', 'grep credentials.json src', 'jq .key package.json', 'cat .env.example', 'npm test', 'curl https://example.com/.env', 'tail -30 build.log', 'git commit -m "Load .env and config/.env.local"'])
       expect(secretInCommand(c, wt, o), c).toBeNull();
     for (const c of ['echo TOKEN=2 > .env.local', 'cat *.pem', 'cp .env.example .env && cat .env', 'sed -n 1p --file=~/.ssh/config'])
       expect(secretInCommand(c, wt, o), c).not.toBeNull();

@@ -37,6 +37,12 @@ describe('allow rules suggested from the ruling history (#169)', () => {
     expect(rep.replay.proposed).toEqual({ allowed_now: 7, still_parks: 0, false_allows: 0 });
   });
 
+  it('never counts an approval that named a secret file toward a rule (#227)', () => {
+    expect(suggestAllowRules(many('xxd ~/.ssh/id_ed25519', 4), [], { scope }).suggestions).toEqual([]);
+    expect(suggestAllowRules([...many('xxd ~/.ssh/id_ed25519', 2), ...many('xxd build/out.bin', 2)], [], { scope }).suggestions).toEqual([]);
+    expect(suggestAllowRules(many('xxd build/out.bin', 4), [], { scope }).suggestions.map((s) => s.rule)).toEqual(['Bash(xxd *)@worktree']);
+  });
+
   it('never proposes one for a risky class, a bare multi-tool head, or what the rules already allow', () => {
     const rep = suggestAllowRules([
       ...many('python3 tools/x.py', 5), ...many('rm -rf tmp/a', 5), ...many('curl -s https://x', 5), ...many("sed -i '' s/a/b/ f", 5),
