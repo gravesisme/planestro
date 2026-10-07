@@ -231,6 +231,7 @@ export class LiveEngine implements Engine {
     await this.resumeInterrupted();
     for (const q of this.orchestrator.resumeQuestions()) this.note('info', `${q}: answering the message a restart left unanswered`);
     this.armGuardResume();
+    this.armModelResume();
     this.needsYou.start();
     this.timer = setInterval(() => void this.tick(), this.opts.tickMs ?? 10_000);
     this.timer.unref?.();
@@ -242,6 +243,7 @@ export class LiveEngine implements Engine {
     this.stopping = true;
     const orchestratorStopped = this.orchestrator.stop();
     this.cancelGuardResume?.(); this.cancelGuardResume = undefined;
+    this.cancelModelResume?.(); this.cancelModelResume = undefined;
     this.needsYou.stop();
     if (this.timer) clearInterval(this.timer);
     if (this.reconcileTimer) clearInterval(this.reconcileTimer);
@@ -324,7 +326,7 @@ export class LiveEngine implements Engine {
     return `${(this.store.config.notifications.base_url ?? this.opts.listenUrl ?? 'http://127.0.0.1:4300').replace(/\/+$/, '')}${path}`;
   }
   /** A store event: whether an item now needs you, or a question opened (NeedsYouWatch). */
-  observe(e: ServerEvent): void { this.needsYou.observe(e); }
+  observe(e: ServerEvent): void { this.needsYou.observe(e); if (e.type === 'config.updated') this.armModelResume(); }
   /** A client's heartbeat: someone is at a planestro tab, so a wait can be answered there before it is announced. */
   clientActive(): void { this.needsYou.clientActive(); }
 
@@ -368,6 +370,56 @@ export class LiveEngine implements Engine {
     for (const [runner, guard] of Object.entries(this.store.local.engine.provider_guards ?? {}))
       if (guard.resume_at && Date.parse(guard.resume_at) <= Date.now()) this.retryProvider(runner);
     this.armGuardResume();
+  }
+
+  // ---- model outages (#244): when a model's remembered unavailability ends, its usage_exhausted items are unblocked ----
+  private cancelModelResume?: () => void;
+  /** (Re)arm the earliest `model_unavailable` expiry from local config (at startup, when one is recorded); one already past runs now. */
+  private armModelResume(): void {
+    this.cancelModelResume?.(); this.cancelModelResume = undefined;
+    const due = this.modelResumeDue();
+    if (due === undefined || this.stopping) return;
+    const ms = due - Date.now();
+    if (ms <= 0) { if (this.modelResume()) void this.tick(); return; }
+    this.cancelModelResume = this.schedule(() => { this.cancelModelResume = undefined; if (ms > MAX_TIMER_MS) this.armModelResume(); else if (this.modelResume()) void this.tick(); }, Math.min(ms, MAX_TIMER_MS));
+  }
+  /** When the next model outage ends (epoch ms), or undefined when none will unblock anything by itself. */
+  private modelResumeDue(): number | undefined {
+    if (!this.store.config.usage_guard.auto_resume) return undefined;
+    const due = Object.values(this.store.local.model_unavailable ?? {}).map((e) => Date.parse(e.until)).map((t) => (Number.isFinite(t) ? t : 0));
+    return due.length ? Math.min(...due) : undefined;
+  }
+  /**
+   * Each ended outage is dropped from `model_unavailable` first, so it unblocks at most once, then the items it
+   * kept out are unblocked. Returns whether any outage ended.
+   */
+  private modelResume(): boolean {
+    if (this.stopping || !this.store.config.usage_guard.auto_resume) return false;
+    const map = this.store.local.model_unavailable ?? {};
+    const ended = Object.keys(map).filter((id) => !unavailableEntry(map, id, new Date(Date.now())));
+    if (ended.length) {
+      this.store.updateLocal({ model_unavailable: Object.fromEntries(Object.entries(map).filter(([id]) => !ended.includes(id))) });
+      for (const id of ended) this.unblockModel(id);
+    }
+    this.armModelResume();
+    return ended.length > 0;
+  }
+  /**
+   * Clear `usage_exhausted` on the items whose next turn can now run on `modelId`: their current-phase model
+   * (planner while planning, otherwise implementer) is that model, or, when they allow a fallback, has it in its chain.
+   * Items blocked for anything else, held, or taken over are left alone; they re-enter through ordinary admission.
+   */
+  private unblockModel(modelId: string): void {
+    const label = findModel(this.store.config, modelId)?.label ?? modelId;
+    for (const item of this.store.listItems()) {
+      const fm = item.file.frontmatter;
+      if (fm.blocked_reason !== 'usage_exhausted' || fm.taken_over || fm.skip_merge) continue;
+      const requested = findModel(this.store.config, fm.status === 'PLAN_IN_PROGRESS' ? fm.planner : fm.implementer);
+      if (!requested) continue;
+      const chain = fm.allow_model_fallback === true ? fallbackChain(this.store.config, requested) : [requested];
+      if (!chain.some((m) => m.id === modelId)) continue;
+      this.store.mutateItem(item.id, [...clearUsageStopOps(fm), { activity: { actor: 'app', text: `unblocked: ${label} usage window reset` } }], 'engine', { commit: `${item.id}: unblock (${modelId} usage window reset)` });
+    }
   }
   /**
    * Getting ready for a restart (f3). Like PAUSE AUTOMATION, nothing new starts (no admissions, no
@@ -414,6 +466,8 @@ export class LiveEngine implements Engine {
     // A backstop for the guard's timer (a machine that slept through it): resume once the reset has passed.
     const due = this.guardResumeDue();
     if (due !== undefined && due <= Date.now()) { this.guardResume(); return; }
+    const modelDue = this.modelResumeDue();
+    if (modelDue !== undefined && modelDue <= Date.now()) this.modelResume();
     // Read off the tick, not awaited in it: an await here let overlapping ticks interleave. A pause it sets holds from the next tick.
     void this.checkDisk().catch(() => undefined);
     void this.refreshCiQueue().catch(() => undefined);
@@ -3170,6 +3224,7 @@ export class LiveEngine implements Engine {
     this.store.updateLocal({ model_unavailable: markUnavailable(this.store.local.model_unavailable, def.id, { until, reason: limit?.message ?? 'usage limit', manual }, now) });
     this.store.journal.append({ type: 'model.unavailable', actor: manual ? 'user' : 'engine', data: { model: def.id, until: until.toISOString(), reason: limit?.message ?? '' } });
     this.note('warn', `${def.label} is out of usage until ${until.toISOString()}`);
+    this.armModelResume();
     return until.toISOString();
   }
 
