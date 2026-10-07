@@ -35,7 +35,7 @@ export function SwitchProviderPage() {
   const backlogCount = selectedItems.filter((item) => item.frontmatter.status === 'NOT_YET_SUBMITTED').length;
   const request = { model: chosen, orchestrator, defaults, items: selectedIds };
   const requestKey = JSON.stringify(request);
-  const visiblePreview = preview?.key === requestKey ? preview : undefined;
+  const visiblePreview = preview && (preview.applied || preview.key === requestKey) ? preview : undefined;
   const clear = () => { setPreview(undefined); setError(''); };
   const execute = async (apply: boolean, resume = false) => {
     setBusy(true); setError('');
