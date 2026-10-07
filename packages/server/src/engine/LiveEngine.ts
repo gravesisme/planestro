@@ -190,7 +190,7 @@ export class LiveEngine implements Engine {
       recreateWorktree: (id, message) => this.recreateWorktree(id, message),
       retryOp: (id) => this.retryOp(id),
       rerunCi: (id) => this.rerunCi(id, 'orchestrator'),
-      acceptScope: (id) => this.acceptScope(id),
+      unskipMerge: (id) => this.orchestratorUnskips(id),
       busyWith: (id) => this.busyWith(id),
       resumeAfter: (id, items, message, prs) => this.resumeAfter(id, items, message, 'orchestrator', prs ?? []),
       finishFromWorktree: (id) => this.finishFromWorktree(id, 'orchestrator'),
@@ -2071,7 +2071,15 @@ export class LiveEngine implements Engine {
     if (extra.length) {
       const list = extra.slice(0, 8).join(', ') + (extra.length > 8 ? `, and ${extra.length - 8} more` : '');
       const why = `commits after your approval touched ${extra.length} path${extra.length === 1 ? '' : 's'} the approved change did not: ${list}`;
-      this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, ...this.holdOps(why, 'app', 'agent')], 'engine', { commit: `${id}: held (changed after approval)` });
+      // A release approves the paths it lets through; the same paths held again on the same head mean it did not (#209).
+      const prior = this.store.requireItem(id).file.frontmatter.op_data?.scope_held as { sha?: string; paths?: string[] } | undefined;
+      const held = extra.slice(0, 50);
+      const again = prior?.sha === fm.ci_head_sha && prior?.paths?.join('\n') === held.join('\n');
+      this.store.mutateItem(id, [
+        { unset: ['op', 'op_started_at'] }, ...this.holdOps(why, 'app', 'agent'),
+        { set: { op_data: { ...(this.store.requireItem(id).file.frontmatter.op_data ?? {}), scope_held: { sha: fm.ci_head_sha, paths: held } } } },
+        ...(again ? [{ activity: { actor: 'app' as const, text: `the same path${extra.length === 1 ? '' : 's'} on the same head ${fm.ci_head_sha!.slice(0, 7)} ${extra.length === 1 ? 'was' : 'were'} held before and released, but the release did not approve ${extra.length === 1 ? 'it' : 'them'}: a planestro bug (#209), not something the session did` } }] : []),
+      ], 'engine', { commit: `${id}: held (changed after approval)` });
       this.store.journal.end(opId, id, 'aborted', { reason: 'outside_approved_scope', paths: extra.slice(0, 50) });
       this.wakeOrchestrator('scope_changed', id, { paths: extra.slice(0, 50).join('\n'), policy: 'Release the hold (unskip_merge) if these belong to the change: that approves them. Otherwise message_session to revert them, and the PR is checked again before it merges.' });
       return;
@@ -4431,14 +4439,22 @@ export class LiveEngine implements Engine {
     return { sha, paths };
   }
 
-  /** The orchestrator released a hold: an approved set the item had now covers its head, so the same paths are not held twice. */
-  private async acceptScope(id: string): Promise<string> {
-    const fm = this.store.requireItem(id).file.frontmatter;
-    if (!fm.op_data?.approved_scope) return '';
-    const now = await this.changedPaths(id).catch(() => undefined);
-    if (!now) return '';
-    this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), approved_scope: now } } }], 'orchestrator');
-    return `its approved change is now ${now.paths.length} path${now.paths.length === 1 ? '' : 's'} at ${now.sha.slice(0, 7)}`;
+  /**
+   * The orchestrator returns a held item to the merge queue (unskip_merge). A change held after review (#74) has its head's
+   * paths approved in the same write that drops the hold (#209): read first, so a merge that sees the release never sees
+   * the old approved set and holds the same paths again. Paths it cannot read are not approved blind: the hold stays.
+   */
+  private async orchestratorUnskips(id: string): Promise<string> {
+    const scoped = Boolean(this.store.requireItem(id).file.frontmatter.op_data?.approved_scope);
+    const scope = scoped ? await this.changedPaths(id).catch(() => undefined) : undefined;
+    if (scoped && !scope) return 'not returned: its changed paths could not be read, so releasing it would not approve them; try again';
+    this.store.mutateItem(id, [{ unset: ['skip_merge'] }, { set: { ci_result: 'pending', op_data: this.releasedOpData(id, scope) } }, { activity: { actor: 'orchestrator', text: 'returned to the merge queue' } }], 'orchestrator', { commit: `${id}: unskip merge` });
+    return scope ? `returned; its approved change is now ${scope.paths.length} path${scope.paths.length === 1 ? '' : 's'} at ${scope.sha.slice(0, 7)}` : 'returned';
+  }
+
+  /** A released hold's op_data, read after the release's awaits so nothing written meanwhile is lost: the hold is waived, and what it approved recorded. */
+  private releasedOpData(id: string, scope?: { sha: string; paths: string[] }): Record<string, unknown> {
+    return { ...(this.store.requireItem(id).file.frontmatter.op_data ?? {}), hold_waived: true, ...(scope ? { approved_scope: scope } : {}) };
   }
 
   /** Paths the head about to merge changes that the approved head did not (#74), or none: a CI fix turn or an engine commit after approval. */
@@ -4468,7 +4484,7 @@ export class LiveEngine implements Engine {
     this.store.mutateItem(id, [
       { unset: ['review_hold', 'skip_merge', ...(fm.awaiting === 'review' ? ['awaiting', 'awaiting_data'] : [])] },
       ...(keep ? [] : [{ set: { ci_result: 'pending' as const } }]),
-      { set: { op_data: { ...(fm.op_data ?? {}), hold_waived: true, ...(scope ? { approved_scope: scope } : {}) } } },
+      { set: { op_data: this.releasedOpData(id, scope) } },
       { activity: { actor: 'user', text: `approved for merge${note?.trim() ? `: ${note.trim()}` : ''}` } },
       ...(keep ? [{ activity: { actor: 'app' as const, text: `CI stays green: ${fm.ci_head_sha!.slice(0, 7)} is still the PR's head and on its base's tip, so it merges without a new run` } }] : []),
     ], 'user', { commit: `${id}: release hold` });

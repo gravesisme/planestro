@@ -50,9 +50,8 @@ describe('approved scope (#74)', () => {
     expect(fm.skip_merge).toBe(true);
     expect(fm.hold_reason).toBe('commits after your approval touched 2 paths the approved change did not: assets/crawler.png.import, assets/hound.png.import');
     expect(store.journal.read({ item: it.id, type: 'orchestrator.wake' }).some((w) => w.data?.event === 'scope_changed')).toBe(true);
-    // the orchestrator accepts them (unskip_merge → acceptScope): the same paths are not held again
-    expect(await e.acceptScope(it.id)).toBe(`its approved change is now 3 paths at ${s2.slice(0, 7)}`);
-    store.mutateItem(it.id, [{ unset: ['skip_merge'] }], 'orchestrator');
+    // the orchestrator accepts them (unskip_merge): the same paths are not held again
+    expect(await e.orchestratorUnskips(it.id)).toBe(`returned; its approved change is now 3 paths at ${s2.slice(0, 7)}`);
     await e.merge(it.id, store.journal.begin('merge', it.id), 'trunk', s2);
     expect(world.prs.get(300)!.state).toBe('MERGED');
     fm = store.requireItem(it.id).file.frontmatter;
@@ -103,5 +102,42 @@ describe('the orchestrator releases a scope hold (#209)', () => {
     await e.merge(it.id, store.journal.begin('merge', it.id), 'trunk', s2);
     expect(world.prs.get(301)!.state).toBe('MERGED');
     expect(store.journal.read({ item: it.id, type: 'orchestrator.wake' }).filter((w) => w.data?.event === 'scope_changed')).toHaveLength(1);
+  });
+
+  it('paths it cannot read are not approved blind, and the same paths held again on the same head are named as a bug', async () => {
+    const { dataDir, codeRepo } = makeFixture();
+    mkdirSync(join(codeRepo, '.git', 'info'), { recursive: true });
+    const cfg = join(dataDir, 'planestro.yml');
+    writeFileSync(cfg, readFileSync(cfg, 'utf8').replace(/^code_repo:\n/m, 'code_repo:\n  github: acme/repo\n'));
+    store = await DataStore.open(dataDir, { emit: () => {} });
+    const world = new FakeWorld(() => {}, { 'origin/trunk': 'f'.repeat(40) });
+    const git = new DryRunGitPort(world);
+    const files: Record<string, string[]> = {};
+    let unreadable = false;
+    git.changedFiles = async (_cwd: string, _base: string, head: string) => { if (unreadable) throw new Error('fatal: bad object'); return (files[head] ?? []).map((path) => ({ path, change: 'added' as const, bytes: 1 })); };
+    const ports: Ports = { mode: 'dry-run', git, gh: new DryRunGhPort(world), proc: new DryRunProcPort(world), agents: { claude: new DryRunClaudePort(world) } };
+    engine = new LiveEngine(store, ports, () => {}, { sleep: async () => {}, tickMs: 50 });
+    const e = engine as any;
+    e.tick = async () => {};
+    const it = store.createItem({ title: 'Check-impact policy', description: 'x' });
+    const rel = '.claude/worktrees/policy'; const branch = 'tp/policy'; const cwd = e.absWorktree(rel);
+    const s1 = world.sha(); files[s1] = ['tools/select_checks.py'];
+    world.worktrees.set(cwd, { path: cwd, head: s1, branch }); world.remoteBranches.set(branch, s1);
+    world.prs.set(302, { number: 302, url: 'u', state: 'OPEN', headRefOid: s1, headRefName: branch, baseRefName: 'trunk', polls: 0, failOnce: false });
+    store.mutateItem(it.id, [{ set: { status: 'IN_REVIEW', worktree: rel, branch, pr: 302, ci_result: 'green', ci_head_sha: s1, review_hold: true, awaiting: 'review' } }], 'engine');
+    await engine.releaseHold(it.id);
+    const s2 = world.sha(); files[s2] = ['tools/select_checks.py', 'tools/select_checks_test.py'];
+    world.remoteBranches.set(branch, s2); world.worktrees.get(cwd)!.head = s2;
+    store.mutateItem(it.id, [{ set: { ci_head_sha: s2 } }], 'engine');
+    await e.merge(it.id, store.journal.begin('merge', it.id), 'trunk', s2);
+    unreadable = true;
+    expect(await e.orchestratorUnskips(it.id)).toBe('not returned: its changed paths could not be read, so releasing it would not approve them; try again');
+    expect(store.requireItem(it.id).file.frontmatter.skip_merge).toBe(true);
+    unreadable = false;
+    // a release that drops the hold without approving the paths (the bug in #209)
+    store.mutateItem(it.id, [{ unset: ['skip_merge'] }], 'orchestrator');
+    await e.merge(it.id, store.journal.begin('merge', it.id), 'trunk', s2);
+    expect(store.requireItem(it.id).file.frontmatter.skip_merge).toBe(true);
+    expect(getSection(store.requireItem(it.id).file, 'Activity')).toContain(`the same path on the same head ${s2.slice(0, 7)} was held before and released, but the release did not approve it: a planestro bug (#209)`);
   });
 });
