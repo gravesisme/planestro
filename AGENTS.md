@@ -152,6 +152,10 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   `active_turn` preserves the instruction during execution for restart recovery. Answers include their exact
   question/ruling. Ending a turn cannot erase a newer queued answer; a takeover/discard clears both intents.
   Deferred work holds no process or slot, and a pending fix prevents its PR from merging over the instruction.
+  Saved turns use the item's permitted model fallback, without bypassing provider guards. The board shows
+  “waiting: saved instruction” and explains admission waits, including an incompatible phase or missing model.
+  Restart recovery replays the saved instruction in the compatible session, preserving its answer/ruling
+  rather than substituting a generic carry-on prompt.
 - A session slot is held only while something drives the item (a turn, an engine step,
   an op), never by an epic. An active item that nothing drives for
   `concurrency.stall_after_min` is carried on once (`driveStalls`), then blocked `stalled`.

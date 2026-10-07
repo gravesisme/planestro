@@ -35,6 +35,10 @@ A provider usage pause stops that provider's new turns. Already requested instru
 
 Codex quota telemetry is not assumed from protocol types. Without verified readings, model-specific unavailability is used; no utilization percentage or reset time is invented.
 
+An item with a saved instruction shows **waiting: saved instruction** on its board card. Hover over it for the reason: a pause, a missing or unavailable model, an incompatible phase, or another admission requirement. Saved turns honor the item's **Allow model fallback** setting, but a fallback cannot bypass a provider usage pause. If its phase or model no longer fits, review the item's status and model; the instruction stays saved instead of running in the wrong phase.
+
+After a restart, an interrupted turn receives its original saved instruction in its existing conversation, when that session is compatible. This intentionally preserves answers and permission rulings instead of replacing them with a generic “carry on.” It is not a new provider handoff: the conversation still contains the work already done. A provider switch still uses the fresh brief described above.
+
 ## Orchestrator changes
 
 The current wake finishes with its selected model. The change applies on the **next wake, with no server restart**. A provider change starts a fresh orchestrator conversation built from persisted project state. A capped wake runs the normal end-of-wake hooks; it does not persist or replay its batch.
@@ -64,5 +68,7 @@ orchestrator:
 Keep your other project settings. The model ID is configurable; choose one available to your Codex account. Existing Codex rows without `codex_transport` continue to use `exec` and cannot plan or orchestrate. Use Switch provider for existing unfinished work as well as defaults.
 
 Planestro keeps its app-server threads in a dedicated Codex home (`~/.planestro/codex`) and seeds it from the existing login once. Codex then manages refreshed credentials there; later turns do not overwrite them. If that dedicated login expires or you need to change accounts, stop Planestro and run `CODEX_HOME="$HOME/.planestro/codex" codex login`, then restart Planestro. Personal MCP servers and external-service credentials are not handed to the model process. Configured external MCP tools run through Planestro's scoped bridge, with permission and call-budget checks.
+
+Signing in again in your normal `~/.codex` home does not update this dedicated login. Use the command above for Planestro; copying credentials on every turn would overwrite refreshes made by its own Codex process.
 
 Schema v4 changes session IDs in `agent_sessions` into records. Older Planestro checkouts open the migrated data directory read-only; upgrade those checkouts before using it.
