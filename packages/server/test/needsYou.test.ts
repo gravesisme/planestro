@@ -21,7 +21,7 @@ async function setup() {
   const runs: { command: string; env?: Record<string, string> }[] = [];
   const world = new FakeWorld(() => {}, { 'origin/trunk': 'f'.repeat(40) });
   const proc = new DryRunProcPort(world); const inner = proc.run.bind(proc);
-  proc.run = async (command, opts) => { runs.push({ command, env: opts.env }); return inner(command, opts); };
+  proc.run = async (command: string, opts: { cwd: string; env?: Record<string, string> }) => { runs.push({ command, env: opts.env }); return inner(command, opts); };
   const make = () => new LiveEngine(store!, { mode: 'dry-run', git: new DryRunGitPort(world), gh: new DryRunGhPort(world), proc, agents: { claude: new DryRunClaudePort(world) } } as Ports, () => {}, {
     sleep: async () => {}, now: () => new Date(t).toISOString(), listenUrl: 'http://127.0.0.1:4300',
     schedule: (fn, ms) => { const timer = { at: t + ms, fn }; timers.push(timer); return () => { timers = timers.filter((x) => x !== timer); }; },
