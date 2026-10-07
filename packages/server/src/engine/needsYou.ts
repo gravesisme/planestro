@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { ItemFrontmatter, QuestionFrontmatter, ServerEvent } from '@planestro/shared';
 import { needsYou } from '@planestro/shared';
 import type { DataStore } from '../store/DataStore.ts';
@@ -26,7 +27,7 @@ export function itemWait(fm: ItemFrontmatter): Wait | undefined {
     permission: ['permission requested', String(d.requested_at ?? '')],
     question: ['the worker asks', String(d.requested_at ?? '')],
     review: ['ready for your review', String(fm.ci_head_sha ?? '')],
-    decision: ['decision needed', d.decision ? JSON.stringify(d.decision) : ''],
+    decision: ['decision needed', d.decision ? createHash('sha1').update(JSON.stringify(d.decision)).digest('hex').slice(0, 12) : ''],
     blocked: [`blocked (${fm.blocked_reason ?? 'no reason'})`, fm.blocked_reason ?? ''],
     hold: ['pull request held for you', fm.hold_reason ?? ''],
   };
