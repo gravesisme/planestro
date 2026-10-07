@@ -201,6 +201,9 @@ ended it. One that cannot be judged (`cd "$DIR"`, `cd -`) is left to the rules.
 | `review.nudge_after_min` | `240` | A review nobody has looked at for this long wakes the orchestrator, once. |
 | `notifications.on_merge` | none | A command run after each merge (`say "PR merged"`). |
 | `notifications.on_usage_pause` | none | A command run when the [usage guard](#usage-guard) pauses automation (`say "planestro paused for usage"`). |
+| `notifications.on_needs_you` | none | A command run once per wait when something [needs you](#notify-when-something-needs-you): a plan or breakdown ready, a permission request, a worker's question, a decision card, a block, a review or a hold, or a new orchestrator question. |
+| `notifications.base_url` | the address the server listens on | Where `PLANESTRO_URL` points, such as the name your phone reaches this machine by (`http://studio.local:4300`). |
+| `notifications.idle_after_min` | `2` | A wait is announced only once every planestro tab has gone this many minutes without input; one you answer meanwhile never is. `0` announces at once. |
 
 ### Orchestrator, engine, storage
 
@@ -256,6 +259,34 @@ Default: **Release notes** and **Notes**.
 | `engine.provider_guards` | Guards keyed by provider, each with window, status, optional utilization/reset, trip time and optional resume time. Other providers remain available. |
 | `engine.provider_guard_last` | Last crossing per provider. An explicit provider retry suppresses that same crossing until reset. |
 | `engine.mode` | This machine's override of `engine.mode`. |
+
+## Notify when something needs you
+
+When an item comes to need you (its card says *needs you*) or the orchestrator opens a question, planestro
+journals one `notification` for that wait and runs `notifications.on_needs_you`. An open planestro tab that
+turned on desktop notifications shows it too. One wait is announced once: more activity on the same wait says
+nothing new, and a stop the orchestrator is still triaging is not yours yet. While you are using planestro (any
+open tab had input in the last `notifications.idle_after_min` minutes) it is held back, and a wait you answer
+meanwhile is never sent.
+
+The command gets `PLANESTRO_TITLE` and `PLANESTRO_MESSAGE`, as the others do, and also `PLANESTRO_ITEM` (empty
+for a question about no item), `PLANESTRO_KIND` (`plan`, `breakdown`, `permission`, `question`, `review`,
+`decision`, `blocked` or `hold`) and `PLANESTRO_URL`, an absolute link to the item (`/items/<id>#<kind>`) or the
+question (`/questions/<id>`).
+
+A phone alert needs no new dependency. With [ntfy](https://ntfy.sh), hosted or one you run, subscribe to a
+topic in its app and set:
+
+```yaml
+notifications:
+  on_needs_you: curl -s -d "$PLANESTRO_MESSAGE" -H "Title: $PLANESTRO_TITLE" -H "Click: $PLANESTRO_URL" https://ntfy.sh/<your-topic>
+  base_url: http://studio.local:4300   # how the phone reaches this machine
+```
+
+The link opens planestro only where the server is reachable: your LAN, or a VPN you run. planestro has no remote
+access of its own. To be reached by another name, the server must listen beyond `127.0.0.1` (`planestro serve
+--host 0.0.0.0`) and accept that name (`allowed_hosts` in `planestro.local.yml`). Anyone who can read your topic
+sees the item titles, so pick a topic nobody can guess, or run your own server.
 
 ## Disk guard
 

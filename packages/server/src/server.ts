@@ -5,6 +5,7 @@ import { createNodeWebSocket } from '@hono/node-ws';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { hostname } from 'node:os';
 import type { ServerEvent } from '@planestro/shared';
 import { DataStore } from './store/DataStore.ts';
 import { apiRoutes, attachmentRoutes } from './routes/api.ts';
@@ -25,17 +26,19 @@ export async function startServer(o: ServeOptions) {
   const log = o.log ?? ((level, msg) => console.log(`[${level}] ${msg}`));
   const sockets = new Set<{ send(data: string): void }>();
   const consoles = new ConsoleBuffer();
-  const emit = (e: ServerEvent) => { consoles.handle(e); const data = JSON.stringify(e); for (const s of sockets) { try { s.send(data); } catch { /* closed */ } } };
+  // The engine sees every store event too, to tell when an item comes to need you (#224); it is made after the store.
+  let observer: Engine | undefined;
+  const emit = (e: ServerEvent) => { consoles.handle(e); const data = JSON.stringify(e); for (const s of sockets) { try { s.send(data); } catch { /* closed */ } } observer?.observe?.(e); };
   const store = await DataStore.open(o.dataDir, { emit, log: (l, m) => log(l, m) });
+  const port = o.port ?? 4300;
+  const host = o.host ?? '127.0.0.1';
   const defaultFactory = (s: DataStore, em: (e: ServerEvent) => void): Engine => {
     if (o.mock) return new MockEngine(s, em);
     const mode = s.local.engine.mode ?? s.config.engine.mode;
-    return new LiveEngine(s, makePorts(mode, (m) => { log('info', m); em({ type: 'engine.log', level: 'info', message: m }); }, s), em);
+    return new LiveEngine(s, makePorts(mode, (m) => { log('info', m); em({ type: 'engine.log', level: 'info', message: m }); }, s), em, { listenUrl: listenUrl(host, port) });
   };
   const engine = (o.engineFactory ?? defaultFactory)(store, emit);
-
-  const port = o.port ?? 4300;
-  const host = o.host ?? '127.0.0.1';
+  observer = engine;
   const app = new Hono();
   // Before every route, the WebSocket upgrade included: see guard.ts.
   app.use('*', requestGuard(allowedHosts(host, store.local.allowed_hosts), (l, m) => log(l, m)));
@@ -49,6 +52,8 @@ export async function startServer(o: ServeOptions) {
   app.get('/ws', upgradeWebSocket(() => ({
     onOpen(_evt, ws) { sockets.add(ws as any); (ws as any).send(JSON.stringify({ type: 'engine.paused', paused: engine.paused })); },
     onClose(_evt, ws) { sockets.delete(ws as any); },
+    // The client's heartbeat, sent on input at most once a minute: someone is at planestro now (#224).
+    onMessage(evt) { try { if (JSON.parse(String(evt.data)).type === 'client.active') engine.clientActive?.(); } catch { /* not ours */ } },
   })));
   app.get('/healthz', (c) => c.json({ ok: true, version: TOOL_VERSION }));
 
@@ -95,6 +100,12 @@ export async function startServer(o: ServeOptions) {
   process.once('SIGINT', () => void shutdown());
   process.once('SIGTERM', () => void shutdown());
   return { store, engine, server, shutdown };
+}
+
+/** The address the server answers on, for links in notifications: a wildcard bind is reached by this machine's name. */
+export function listenUrl(host: string, port: number): string {
+  const name = host === '0.0.0.0' || host === '::' ? hostname() : host;
+  return `http://${name.includes(':') ? `[${name}]` : name}:${port}`;
 }
 
 /** Only when a model actually runs on Codex: a project that never uses it should not hear about it. */

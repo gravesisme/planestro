@@ -22,7 +22,7 @@ export const SETTINGS_TABS = [
   { id: 'ci', name: 'CI & merging', hint: 'checks, holds, review', file: 'planestro.yml · ci: / review: / epics:',
     intro: 'How planestro decides a pull request is safe to merge, and when it stops to show you something first.' },
   { id: 'notifications', name: 'Notifications', hint: 'what tells you, and how', file: 'planestro.yml · notifications:',
-    intro: 'How you hear about merges and pauses: desktop notifications from this browser, and commands planestro runs on those events.' },
+    intro: 'How you hear about merges, pauses and anything that needs you: desktop notifications from this browser, and commands planestro runs on those events.' },
   { id: 'machine', name: 'This machine', hint: 'paths, programs, keys', file: 'planestro.local.yml (not committed)',
     intro: 'Settings that are true of this computer only. They are never committed, so the same data folder works on another machine with its own paths.' },
   { id: 'data', name: 'Data & releases', hint: 'git, attachments, release sections', file: 'planestro.yml · git: / attachments: / releases:',
@@ -202,8 +202,12 @@ export const SETTINGS: readonly SettingDef[] = [
 
   // ---- Notifications
   C({ key: 'notifications.on_merge', tab: 'notifications', group: 'Commands', label: 'When a PR merges', summary: 'Any shell command, run in the code repository.', control: 'text', mono: true, placeholder: 'say "PR merged"' }),
+  C({ key: 'notifications.on_needs_you', tab: 'notifications', group: 'Commands', label: 'When something needs you', summary: 'Run once per wait: a plan or breakdown ready, a permission request, a worker\'s question, a decision card, a block, a review or hold, a new orchestrator question.', control: 'text', mono: true, placeholder: 'curl -s -d "$PLANESTRO_MESSAGE" -H "Title: $PLANESTRO_TITLE" -H "Click: $PLANESTRO_URL" https://ntfy.sh/<your-topic>',
+    detail: ['Besides PLANESTRO_TITLE and PLANESTRO_MESSAGE it gets PLANESTRO_ITEM (the item, when there is one), PLANESTRO_KIND (plan, breakdown, permission, question, review, decision, blocked, hold) and PLANESTRO_URL, an absolute link to it.', 'The example sends a phone alert through ntfy.sh (or your own ntfy server). The link opens planestro only where the server is reachable: your LAN, or a VPN you run.'] }),
+  C({ key: 'notifications.base_url', tab: 'notifications', group: 'Commands', label: 'Link address', summary: 'Where PLANESTRO_URL points, e.g. the name your phone reaches this machine by. Unset, the address the server listens on.', control: 'text', mono: true, placeholder: 'http://studio.local:4300' }),
+  C({ key: 'notifications.idle_after_min', tab: 'notifications', group: 'Commands', label: 'Hold back while you are here', summary: 'While a planestro tab has been used in this many minutes, a wait is not announced; one you answer meanwhile never is. 0 announces at once.', control: 'number', unit: 'min', min: 0 }),
   C({ key: 'notifications.on_usage_pause', tab: 'notifications', group: 'Commands', label: 'When the usage guard pauses', summary: 'Run when automation pauses before a usage limit.', control: 'text', mono: true, placeholder: 'say "planestro paused for usage"',
-    detail: ['Both commands get PLANESTRO_TITLE and PLANESTRO_MESSAGE. `planestro notify "$PLANESTRO_TITLE" "$PLANESTRO_MESSAGE"` (from the planestro checkout) shows a desktop notification: osascript on a Mac, under Script Editor\'s icon. For planestro\'s own icon, turn on desktop notifications above in the installed app.'] }),
+    detail: ['Every command gets PLANESTRO_TITLE and PLANESTRO_MESSAGE. `planestro notify "$PLANESTRO_TITLE" "$PLANESTRO_MESSAGE"` (from the planestro checkout) shows a desktop notification: osascript on a Mac, under Script Editor\'s icon. For planestro\'s own icon, turn on desktop notifications above in the installed app.'] }),
 
   // ---- This machine
   L({ key: 'code_repo_path', group: 'Paths', label: 'Code repository', summary: 'Where the repository is on this computer, if not where planestro.yml says.', control: 'text', mono: true, restart: true }),

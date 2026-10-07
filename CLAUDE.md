@@ -185,6 +185,11 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   change"). An item reaching FINISHED or ICEBOX resolves its open questions in the store
   (`settleQuestions`), never by asking the model.
 - Provider switches in either direction keep item state, worktrees, PRs and decisions, using the existing fresh-brief intent. `agent_sessions` (schema 4) stores a session id, role and tool contract per runner. Provider usage guards are machine-local and independent of the global user/disk pause. Orchestrator model changes apply next wake without a restart; its queue remains in memory, including when a wake hits its token cap.
+- A wait on a person (an item whose `needs_you` turns true, an open orchestrator question) is announced once
+  (#224): `NeedsYouWatch` (`engine/needsYou.ts`) sees every store event, journals one `notification`
+  (`on_needs_you`, with an absolute link) per wait key and runs `notifications.on_needs_you`. It holds back while a
+  client's input heartbeat (`client.active` on the WebSocket) is under `notifications.idle_after_min` old; its memory
+  across restarts is the journal.
 - Schema changes go through `packages/server/src/migrations` and bump
   `SCHEMA_VERSION`; a newer data dir opens read-only.
 - `planestro sample` (`packages/server/src/sample.ts`) is the no-credentials demo
