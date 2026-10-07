@@ -169,3 +169,76 @@ it('never merges over a deferred fix and discards its instruction on a manual ta
   expect(store.requireItem(id).file.frontmatter.op_data?.active_turn).toBeUndefined();
   expect(ctx.calls).toHaveLength(0);
 });
+
+it.each([
+  { allow: true, stop: 'none', runs: true },
+  { allow: false, stop: 'none', runs: false },
+  { allow: true, stop: 'all-models', runs: false },
+  { allow: true, stop: 'provider', runs: false },
+])('admits a saved instruction with fallback=$allow, stop=$stop', async ({ allow, stop, runs }) => {
+  const ctx = await setup();
+  const id = ctx.item({ implementer: 'fable-5', allow_model_fallback: allow });
+  const turn = { key: 'saved', phase: 'implement', prompt: 'Keep the approved details', extraAllowed: ['Bash(npm test)'], oneShotCommands: ['npm test'], opts: {} };
+  (engine as any).savePendingTurn(id, turn);
+  const outage = { since: new Date().toISOString(), until: new Date(Date.now() + 60000).toISOString(), reason: 'usage limit' };
+  store.updateLocal({ model_unavailable: { 'fable-5': outage, ...(stop === 'all-models' ? { 'opus-5': outage } : {}) } });
+  if (stop === 'provider') (engine as any).usageSeen({ status: 'rejected', window: 'five_hour' });
+  (engine as any).drivePendingTurns();
+  await until(() => !(engine as any).jobs.has(id));
+  expect(ctx.calls).toHaveLength(runs ? 1 : 0);
+  if (runs) {
+    expect(ctx.calls[0]).toMatchObject({ model: 'claude-opus-5', prompt: expect.stringContaining(turn.prompt) });
+    expect(ctx.calls[0].allowedTools).toContain('Bash(npm test)');
+    expect(store.requireItem(id).file.frontmatter.op_data?.pending_turn).toBeUndefined();
+    expect(store.requireItem(id).file.frontmatter.implementer).toBe('fable-5');
+  } else expect(store.requireItem(id).file.frontmatter.op_data?.pending_turn).toEqual(turn);
+});
+
+it('does not let a deferred slot wait replace a newer saved instruction, even across restart', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  let first = true;
+  const ctx = await setup(async (o) => {
+    if (first) { first = false; await gate; }
+    await o.onQuestion([{ question: 'Review?' }]);
+    return { ...success, parked: 'question' };
+  });
+  const a = ctx.item(), b = ctx.item();
+  const active = (engine as any).runTurnFor(a, 'implement', 'Occupy the slot');
+  await until(() => ctx.calls.length === 1);
+  (engine as any).queueTurn(b, 'fix', 'Old instruction');
+  await until(() => engine.sessions().some((s) => s.item === b));
+  (engine as any).queueTurn(b, 'fix', 'New instruction', ['Bash(npm test)'], ['npm test']);
+  const latest = store.requireItem(b).file.frontmatter.op_data?.pending_turn;
+  engine.pause();
+  release(); await active;
+  await until(() => !(engine as any).jobs.has(b));
+  expect(store.requireItem(b).file.frontmatter.op_data?.pending_turn).toEqual(latest);
+  await ctx.restart(); engine.resume();
+  await until(() => ctx.calls.length === 2 && engine.sessions().length === 0);
+  expect(ctx.calls[1].prompt).toContain('New instruction');
+  expect(ctx.calls[1].prompt).not.toContain('Old instruction');
+  expect(ctx.calls[1].allowedTools).toContain('Bash(npm test)');
+  expect(store.requireItem(b).file.frontmatter.op_data?.pending_turn).toBeUndefined();
+});
+
+it('resumes an interrupted active turn with its saved instruction, permission ruling and existing session', async () => {
+  const ctx = await setup();
+  const turn = { key: 'active', phase: 'implement', prompt: 'Implement the approved plan; keep the existing edits', extraAllowed: ['Bash(npm test)'], oneShotCommands: ['npm test'], opts: {} };
+  const id = ctx.item({ op: 'implement_turn', op_data: { active_turn: turn } });
+  await ctx.restart(); engine.resume();
+  await until(() => ctx.calls.length === 1 && engine.sessions().length === 0);
+  expect(ctx.calls[0]).toMatchObject({ prompt: expect.stringContaining(turn.prompt), resume: 'prior-session' });
+  expect(ctx.calls[0].allowedTools).toContain('Bash(npm test)');
+  expect(store.requireItem(id).file.frontmatter.op_data?.pending_turn).toBeUndefined();
+});
+
+it('leaves operational data alone when stopping an item with no saved work', async () => {
+  const ctx = await setup();
+  for (const op_data of [undefined, { unrelated: 'keep', pending_messages: [] }]) {
+    const id = ctx.item({ op_data });
+    expect((engine as any).stopSessionWork(id, 'test')).toEqual({ said: [], ops: [] });
+    await engine.takeOver(id);
+    expect(store.requireItem(id).file.frontmatter.op_data).toEqual(op_data);
+  }
+});

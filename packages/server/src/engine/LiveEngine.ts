@@ -903,7 +903,10 @@ export class LiveEngine implements Engine {
       const phase = this.phaseFor(fm.status);
       if (!phase || (phase === 'plan') !== (turn.phase === 'plan')) continue;
       const model = findModel(this.store.config, turn.phase === 'plan' ? fm.planner : fm.implementer);
-      if (!model || model.external || this.store.local.engine.provider_guards?.[model.runner] || unavailableEntry(this.store.local.model_unavailable, model.id, new Date())) continue;
+      if (!model || model.external) continue;
+      const now = new Date();
+      const pick = resolveTurnModel(this.store.config, model, { allow: fm.allow_model_fallback === true, unavailable: this.store.local.model_unavailable, now });
+      if (this.store.local.engine.provider_guards?.[pick.def.runner] || unavailableEntry(this.store.local.model_unavailable, pick.def.id, now)) continue;
       this.runJob(item.id, () => this.runPendingTurn(item.id, turn));
     }
   }
@@ -1155,7 +1158,12 @@ export class LiveEngine implements Engine {
   private async runTurnFor(id: string, phase: TurnPhase, prompt: string, extraAllowed: string[] = [], oneShotCommands: string[] = [], opts: TurnOpts = {}, queued?: PendingTurn): Promise<TurnResult | undefined> {
     const oneShot = new Set(oneShotCommands.map((c) => c.trim()));
     const intent: PendingTurn = queued ?? { key: randomUUID(), phase, prompt, extraAllowed, oneShotCommands, opts };
-    const defer = () => { this.savePendingTurn(id, intent); return undefined; };
+    const defer = () => {
+      const pending = this.store.requireItem(id).file.frontmatter.op_data?.pending_turn as PendingTurn | undefined;
+      // A slot wait can finish after a newer instruction has been queued for this item.
+      if (!pending || pending.key === intent.key) this.savePendingTurn(id, intent);
+      return undefined;
+    };
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
     // The one door every turn goes through: nothing queued before a take-over (a fix, an answer, a resume) starts while a person has the item.
@@ -4713,7 +4721,7 @@ export class LiveEngine implements Engine {
     if (fm.triage) said.push('triage');
     const unset = [...(fm.resume_after ? ['resume_after'] : []), ...(fm.triage ? ['triage'] : []), ...(parked ? ['awaiting', 'awaiting_data'] : [])];
     return { said, ops: [
-      { set: { op_data: { ...keptData, pending_messages: [] } } },
+      ...(deferred !== undefined || _active !== undefined || pending.length ? [{ set: { op_data: { ...keptData, pending_messages: [] } } } as ItemOp] : []),
       ...(unset.length ? [{ unset } as ItemOp] : []),
     ] };
   }
