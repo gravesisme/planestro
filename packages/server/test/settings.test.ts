@@ -71,7 +71,7 @@ describe('Settings writes (#83)', () => {
     await refused({ code_repo: { github: 'not a repo' } }, /code_repo\.github/);
     await refused({ project: { name: '' } }, /project\.name/);
     await refused({ releases: { sections: [{ title: 'A' }, { title: 'A' }] } }, /two sections are called "A"/);
-    await refused({ orchestrator: { model: 'gpt-9' } }, /not a Claude model/);
+    await refused({ orchestrator: { model: 'gpt-9' } }, /orchestration capability/);
     await refused({ defaults: { implementer: 'nobody' } }, /defaults\.implementer: nobody is not a model/);
     expect(readFileSync(join(store.dataDir, 'planestro.yml'), 'utf8')).toBe(before);
     // The id prefix is free until the first item exists.

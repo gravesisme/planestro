@@ -10,6 +10,26 @@ export interface Migration { version: number; describe: string; up(dataDir: stri
 
 /** Ordered by version; each `up` takes the dir from version-1 to version. */
 export const MIGRATIONS: Migration[] = [
+  { version: 4, describe: 'runner sessions carry role and tool contract', up(dataDir, log) {
+    const dir = join(dataDir, 'items');
+    if (!existsSync(dir)) return;
+    let count = 0;
+    for (const file of readdirSync(dir).filter((f) => f.endsWith('.md'))) {
+      const path = join(dir, file); const text = readFileSync(path, 'utf8');
+      const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
+      if (!match) continue;
+      const doc = YAML.parseDocument(match[1]);
+      const sessions = doc.get('agent_sessions');
+      if (!YAML.isMap(sessions)) continue;
+      let changed = false;
+      for (const pair of sessions.items) if (YAML.isScalar(pair.value) && typeof pair.value.value === 'string') {
+        const runner = String(pair.key);
+        pair.value = doc.createNode({ session_id: pair.value.value, role: 'implement', tool_contract: runner === 'codex' ? 'exec-v1' : 'claude-v1', ...(runner === 'codex' ? { transport: 'exec' } : {}) }); changed = true;
+      }
+      if (changed) { atomicWrite(path, `---\n${doc.toString({ lineWidth: 0 })}---${text.slice(match[0].length)}`); count++; }
+    }
+    log(`  upgraded ${count} item session record(s)`);
+  } },
   { version: 1, describe: 'initial schema', up() { /* baseline: nothing to rewrite */ } },
   {
     version: 2,
@@ -96,7 +116,7 @@ export async function migrate(dataDir: string, log: (m: string) => void = () => 
   }
   if (!applied.length) stampVersion(dataDir, from);
   // One semantic commit for the whole migration, rather than a `manual: …` at the next start.
-  else new GitCommitter(dataDir, { autoCommit: YAML.parse(readFileSync(join(dataDir, CONFIG_FILE), 'utf8'))?.git?.auto_commit !== false, autoPush: false, toolVersion: TOOL_VERSION }).commit(`planestro: migrate schema ${from} → ${applied.at(-1)}`, applied.map((v) => `${v}: ${MIGRATIONS.find((m) => m.version === v)!.describe}`).join('\n'), [CONFIG_FILE, 'questions'].filter((p) => existsSync(join(dataDir, p))));
+  else new GitCommitter(dataDir, { autoCommit: YAML.parse(readFileSync(join(dataDir, CONFIG_FILE), 'utf8'))?.git?.auto_commit !== false, autoPush: false, toolVersion: TOOL_VERSION }).commit(`planestro: migrate schema ${from} → ${applied.at(-1)}`, applied.map((v) => `${v}: ${MIGRATIONS.find((m) => m.version === v)!.describe}`).join('\n'), [CONFIG_FILE, 'questions', 'items'].filter((p) => existsSync(join(dataDir, p))));
   return { from, to: SCHEMA_VERSION, applied };
 }
 

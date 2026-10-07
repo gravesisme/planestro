@@ -5,20 +5,20 @@ import type { JournalEntry } from '@planestro/shared';
  * turn already reported its cost and context size, so nothing is asked of a model (invariant 4). HH and LM
  * tuned rotation by guesswork because only the total was visible.
  */
-export interface Wake { at: string; events: string[]; items: string[]; cost: number; context_tokens?: number; model?: string; session?: string; wake?: number; fresh: boolean; summary: string; failed: boolean }
+export interface Wake { at: string; events: string[]; items: string[]; cost: number; runner?: string; tokens?: number; token_cap?: number; context_tokens?: number; model?: string; session?: string; wake?: number; fresh: boolean; summary: string; failed: boolean }
 export interface Spend {
   wakes: Wake[];
   /** Since local midnight. */
   today: { wakes: number; cost: number };
   /** The conversation the latest wake was in: it starts again on rotation. */
-  conversation: { wakes: number; cost: number; context_tokens?: number } | null;
+  conversation: { wakes: number; cost: number; runner?: string; tokens?: number; context_tokens?: number } | null;
 }
 
 export function orchestratorSpend(entries: JournalEntry[], now = new Date(), recent = 30): Spend {
   const all: Wake[] = entries.filter((e) => e.type === 'orchestrator.done').map((e) => {
     const d = e.data ?? {};
     return {
-      at: e.ts, events: (d.events as string[] | undefined) ?? [], items: (d.items as string[] | undefined) ?? [], cost: Number(d.cost ?? 0),
+      at: e.ts, events: (d.events as string[] | undefined) ?? [], items: (d.items as string[] | undefined) ?? [], cost: Number(d.cost ?? 0), runner: typeof d.runner === 'string' ? d.runner : 'claude', tokens: typeof d.tokens === 'number' ? d.tokens : undefined, token_cap: typeof d.token_cap === 'number' ? d.token_cap : undefined,
       ...(typeof d.context_tokens === 'number' ? { context_tokens: d.context_tokens } : {}), ...(typeof d.model === 'string' ? { model: d.model } : {}),
       ...(typeof d.session === 'string' ? { session: d.session } : {}), ...(typeof d.wake === 'number' ? { wake: d.wake } : {}),
       fresh: d.fresh === true, summary: String(d.summary ?? ''), failed: typeof d.subtype === 'string' && d.subtype !== 'success',
@@ -32,7 +32,7 @@ export function orchestratorSpend(entries: JournalEntry[], now = new Date(), rec
   if (last?.session) {
     const mine: Wake[] = [];
     for (let i = all.length - 1; i >= 0 && all[i].session === last.session; i--) { mine.push(all[i]); if (all[i].fresh) break; }
-    conversation = { wakes: mine.length, cost: round(mine.reduce((n, w) => n + w.cost, 0)), ...(last.context_tokens !== undefined ? { context_tokens: last.context_tokens } : {}) };
+    conversation = { runner: last.runner, tokens: mine.reduce((n, w) => n + (w.tokens ?? 0), 0), wakes: mine.length, cost: round(mine.reduce((n, w) => n + w.cost, 0)), ...(last.context_tokens !== undefined ? { context_tokens: last.context_tokens } : {}) };
   }
   return { wakes: all.slice(-recent).reverse(), today: { wakes: today.length, cost: round(today.reduce((n, w) => n + w.cost, 0)) }, conversation };
 }

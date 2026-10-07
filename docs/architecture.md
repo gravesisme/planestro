@@ -21,7 +21,7 @@ graph TB
   API --> STORE
   ENG --> ORCH
   ENG --> GIT & GH & PROC & AG
-  AG --> CL[Claude Code via the Agent SDK] & CX[codex exec]
+  AG --> CL[Claude Code via the Agent SDK] & CX[Codex app-server or exec]
   server -.-> shared
   web -.-> shared
 ```
@@ -34,13 +34,12 @@ The engine touches the world through four interfaces (`engine/ports.ts`): **git*
 in-memory `FakeWorld`. Nothing else in the engine knows which it has. That seam is why the
 test suite drives the real lifecycle — CI red then fixed, a conflict handed to the session,
 parked questions and permissions, a restart mid-turn, crash markers on disk, a mixed-agent
-epic — in under half a minute with no network, and why `sample` can show the whole product
+epic — without credentials or model network calls, and why `sample` can show the whole product
 without credentials.
 
-`TurnOptions` is split by type: `AgentTurnOptions` is what every runner needs;
-`ClaudeTurnExtras` (permission mode, tool allow-list, per-command decisions, dollar budget)
-is what only Claude can honour. The Codex port is typed on the first, so it *cannot* read
-the second. An invariant test keeps runner names out of lifecycle code.
+`TurnOptions` carries the shared tool, permission, recovery and accounting contract. Runner adapters own SDK options. Model capabilities determine eligibility: Claude and Codex app-server can plan and orchestrate; legacy Codex exec remains available for art. Dynamic app-server tools travel over the parent's stdio connection, bound to one item/role/thread/turn, while orchestrator tools have project scope. External MCP clients stay in the parent process and never connect to the operator endpoint. An invariant test keeps runner names out of lifecycle code.
+
+Provider switches reuse the persisted fresh-brief intent. A provider guard is independent of global user/disk pauses. The orchestrator queue remains in memory, and capped wakes finish through the existing hooks; restart recovery derives needed work from persisted item/question state. See [Switching providers](switching-providers.md).
 
 ## The state machine
 
@@ -54,7 +53,7 @@ orthogonal to status, so needing a human never loses an item its phase.
 
 1. Render the prompt from the library and the item's files — never from agent memory.
 2. Persist `op` and journal *begin*; take a runner slot; call `agents[runner].runTurn`.
-3. The agent reports through tools (Claude) or its final message (Codex). A question, a
+3. The agent reports through scoped tools (Claude and Codex app-server), or its final message (legacy Codex exec). A question, a
    permission request or a plan **parks**: persisted, the tool call answered "recorded — end
    your turn", the process exits.
 4. Book cost / tokens / conversation id; journal *end*.

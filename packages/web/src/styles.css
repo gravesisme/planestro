@@ -378,3 +378,7 @@ input.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; flex: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
+.provider-switch .check { display: flex; align-items: flex-start; gap: 8px; margin: 10px 0; }
+.provider-switch .check input { flex: 0 0 auto; margin-top: 3px; }
+.provider-switch fieldset { margin: 20px 0; padding: 8px 16px; border: 1px solid var(--border, #363b44); border-radius: 8px; }
+.provider-switch li { margin: 10px 0; line-height: 1.5; }

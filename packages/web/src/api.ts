@@ -2,9 +2,9 @@ import type { ItemFrontmatter, PromptFrontmatter, ReleaseFrontmatter, ReleaseSta
 import type { BreakdownChild, Priority } from '@planestro/shared';
 
 export interface OrchestratorSpend {
-  wakes: { at: string; events: string[]; items: string[]; cost: number; context_tokens?: number; model?: string; session?: string; wake?: number; fresh: boolean; summary: string; failed: boolean }[];
+  wakes: { at: string; events: string[]; items: string[]; cost: number; runner?: string; tokens?: number; token_cap?: number; context_tokens?: number; model?: string; session?: string; wake?: number; fresh: boolean; summary: string; failed: boolean }[];
   today: { wakes: number; cost: number };
-  conversation: { wakes: number; cost: number; context_tokens?: number } | null;
+  conversation: { wakes: number; runner?: string; tokens?: number; cost: number; context_tokens?: number } | null;
 }
 
 /** Allow rules suggested from the ruling history (#169): see packages/server/src/engine/allowSuggest.ts. */
@@ -46,7 +46,7 @@ export interface State {
   billing?: BillingMode; api_key?: 'local' | 'env' | 'none';
   items: ItemView[]; prompts: PromptView[]; releases?: ReleaseView[]; invalid: { path: string; error: string }[];
   update: { channel: string; running: string; checked_at: string; state: string; detail: string; target?: string } | null;
-  engine: { mode: string; paused: boolean; paused_by?: 'user' | 'usage_guard' | 'disk'; usage_guard?: UsageGuardState; disk_guard?: { free_gib: number; path: string; tripped_at: string }; ci_queue?: { queued: number; running: number }; sessions: SessionView[]; restart?: { draining: boolean; by?: 'user' | 'update'; idle: boolean; running: string[] } };
+  engine: { mode: string; paused: boolean; paused_by?: 'user' | 'disk'; provider_guards?: Record<string, UsageGuardState>; disk_guard?: { free_gib: number; path: string; tripped_at: string }; ci_queue?: { queued: number; running: number }; sessions: SessionView[]; restart?: { draining: boolean; by?: 'user' | 'update'; idle: boolean; running: string[] } };
   git: { dirty: string[]; branch: string; head?: string; ahead?: number };
   statuses: Status[];
 }
@@ -59,6 +59,10 @@ async function req<T>(method: string, url: string, body?: unknown, raw?: BodyIni
 }
 
 export const api = {
+  previewProviderSwitch: (body: unknown) => req<any>('POST', '/api/providers/preview', body),
+  applyProviderSwitch: (body: unknown) => req<any>('POST', '/api/providers/apply', body),
+  orchestratorSelection: () => req<{ configured?: string; current?: string; pending?: boolean }>('GET', '/api/orchestrator/selection'),
+  retryProvider: (runner: string) => req('POST', `/api/providers/${runner}/retry`),
   state: () => req<State>('GET', '/api/state'),
   createItem: (body: { title: string; category?: string; priority?: Priority; description?: string; kind?: 'item' | 'epic'; planner?: string; parent?: string; implementer?: string; status?: 'NOT_YET_SUBMITTED' | 'ICEBOX'; auto_approve_plan?: boolean; allow_model_fallback?: boolean }) => req<ItemView>('POST', '/api/items', body),
   patchItem: (id: string, body: { fields?: Record<string, unknown>; sections?: Record<string, string> }) => req<ItemView>('PATCH', `/api/items/${id}`, body),

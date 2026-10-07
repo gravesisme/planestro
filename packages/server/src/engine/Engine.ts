@@ -50,6 +50,9 @@ export interface Engine {
   /** The person is done with it: planestro carries on from the item's persisted state. */
   handBack(id: string, note?: string): Promise<void>;
   sessions(): SessionView[];
+  continueAfterProviderSwitch?(id: string): void;
+  modelSwitchRefusal?(id: string): string | undefined;
+  retryProvider?(runner: string): void;
   /** Getting ready for a restart: nothing new starts until undrain (or the restart). Engines without automation leave these out. */
   drain?(by?: 'user' | 'update'): void;
   undrain?(): void;

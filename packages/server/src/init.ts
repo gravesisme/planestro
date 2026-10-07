@@ -76,6 +76,7 @@ models:
   # breakdown, a cross-system mechanic): pick it as the planner on those items.
   # fallback: while a model is out of usage, items that allow it (and the orchestrator, if allowed) run on this one instead.
   - { id: opus-5-5, label: Opus 5.5, claude_model: claude-opus-5-5 }
+  - { id: codex-gpt-6-astra, label: Codex GPT-6 Astra, runner: codex, codex_model: gpt-6-astra, codex_transport: app-server, engine_commits: true }
   - { id: fable-5-1, label: Fable 5.1, claude_model: claude-fable-5-1, fallback: opus-5-5 }
   # A model on the Codex CLI implements but never plans. Its description is what the epic planner routes by;
   # hold_for_review parks its pull requests for your eye before they merge.

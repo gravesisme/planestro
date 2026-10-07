@@ -53,7 +53,7 @@ describe('mixed runners (dry-run ports)', () => {
     expect(fm.review_hold).toBe(true);
     expect(store.derived(store.getItem(item.id)!).needs_you).toBe(true);
     expect(fm.session_id).toBe(planSession);                       // the Claude conversation is untouched
-    expect(fm.agent_sessions?.codex).toMatch(/^dryrun-codex-/);    // Codex has its own thread
+    expect(fm.agent_sessions?.codex?.session_id).toMatch(/^dryrun-codex-/);    // Codex has its own thread
     expect(fm.agent_turns).toBe(1);
     expect(fm.tokens).toBe(1500);
     expect(activityOf(store, item.id)).toContain('waiting for your review before merging');
@@ -86,7 +86,7 @@ describe('mixed runners (dry-run ports)', () => {
     await waitFor(() => fmOf(store, item.id).status === 'PLAN_READY');
     await engine.approvePlan(item.id);
     await waitFor(() => fmOf(store, item.id).awaiting === 'question' && fmOf(store, item.id).agent_sessions !== undefined);
-    expect(fmOf(store, item.id).agent_sessions).toEqual({ codex: 'thread-7' });
+    expect(fmOf(store, item.id).agent_sessions).toMatchObject({ codex: { session_id: 'thread-7', transport: 'exec' } });
     expect(store.derived(store.getItem(item.id)!).needs_you).toBe(true);
     await engine.respond(item.id, { kind: 'question', answers: { 'Pixel art or painted?': 'Painted, like the potion' } });
     await waitFor(() => fmOf(store, item.id).status === 'FINISHED', 8000);
@@ -141,10 +141,10 @@ describe('mixed runners (dry-run ports)', () => {
     expect(await engine.reviewImage(item.id, images[0].path, 'before')).toBeNull();      // it is new
     expect(await engine.reviewImage(item.id, '../../etc/passwd', 'after')).toBeNull();     // only what the branch changed
     await expect(engine.requestReviewChanges(item.id, '  ')).rejects.toThrow(/what should change/);
-    const thread = fmOf(store, item.id).agent_sessions!.codex;
+    const thread = fmOf(store, item.id).agent_sessions!.codex.session_id;
     await engine.requestReviewChanges(item.id, 'warmer colours');
     await waitFor(() => fmOf(store, item.id).awaiting === 'review' && fmOf(store, item.id).agent_turns === 2);
-    expect(fmOf(store, item.id).agent_sessions!.codex).toBe(thread);
+    expect(fmOf(store, item.id).agent_sessions!.codex.session_id).toBe(thread);
     expect(fmOf(store, item.id).review_hold).toBe(true);
     const second = (await engine.reviewImage(item.id, images[0].path, 'after'))!;
     expect(second.equals(first)).toBe(false);                                            // a new picture, same path
@@ -560,4 +560,3 @@ describe('tools from outside: MCP servers per model (f5)', () => {
     expect(activityOf(store, item.id)).toContain('names the MCP server "nowhere", which planestro.local.yml on this machine does not define');
   });
 });
-

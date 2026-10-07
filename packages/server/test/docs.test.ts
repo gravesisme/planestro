@@ -52,6 +52,14 @@ describe('the manual cannot drift from the code', () => {
     expect(readFileSync(join(ROOT, 'AGENTS.md')).equals(readFileSync(join(ROOT, 'CLAUDE.md')))).toBe(true);
   });
 
+  it('links the provider guide from the README and switch screen', () => {
+    expect(readFileSync(join(ROOT, 'README.md'), 'utf8')).toContain('docs/switching-providers.md');
+    const screen = readFileSync(join(ROOT, 'packages/web/src/pages/SwitchProvider.tsx'), 'utf8');
+    expect(screen).toContain('docs/switching-providers.md');
+    expect(screen).toContain('href={PROVIDER_GUIDE}');
+    expect(doc('switching-providers.md')).toContain('Codex-only');
+  });
+
   it('every relative link in the manual and the README points at a file that exists', () => {
     const files = [join(ROOT, 'README.md'), ...readdirSync(join(ROOT, 'docs')).filter((f) => f.endsWith('.md')).map((f) => join(ROOT, 'docs', f)), ...readdirSync(join(ROOT, 'docs', 'notes')).map((f) => join(ROOT, 'docs', 'notes', f))];
     const broken: string[] = [];

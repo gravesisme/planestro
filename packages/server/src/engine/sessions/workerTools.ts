@@ -1,0 +1,34 @@
+import { z } from 'zod';
+import type { TurnOptions, TurnResult, CustomToolDef } from '../ports.ts';
+import { PARKED_REFUSAL } from '../parks.ts';
+const text = (s: string) => s;
+const PARTS = z.array(z.object({ name: z.string(), state: z.enum(['accepted', 'pending', 'rejected']), reason: z.string().optional() }));
+function tool<S extends z.ZodRawShape>(name: string, description: string, schema: S, handler: (args: z.infer<z.ZodObject<S>>) => Promise<string>): CustomToolDef {
+  return { name, description, schema, handler: async (args) => handler(z.strictObject(schema).parse(args) as z.infer<z.ZodObject<S>>) };
+}
+/** Shared schemas and handlers: workers never select their own item. */
+export function workerTools(o: TurnOptions, result: TurnResult): CustomToolDef[] {
+  const defs = [
+        tool('submit_plan', 'Submit your implementation plan to planestro (planning turns only). Call once, then end your turn.', { plan: z.string().describe('The plan in markdown') },
+          async ({ plan }) => { const answer = await o.tools.submit_plan(plan); if (!answer.startsWith('Rejected')) result.planSubmitted = plan; return text(answer); }),
+        tool('submit_breakdown', 'For an epic: submit the epic-level plan and the proposed child items. For a plain item only when the request is really an epic (several separately shippable pieces): the breakdown you would propose instead of a plan, which planestro records and flags for conversion to an epic. planestro checks the list and may answer with a rejection to fix. Call until accepted, then end your turn.',
+          { plan: z.string().describe('The epic-level plan in markdown'), children: z.array(z.object({ title: z.string(), description: z.string().describe('A complete brief: the child\'s worker sees only this'), implementer: z.string().describe('A model id from the list you were given'), category: z.string().optional(), depends_on: z.array(z.number().int()).optional().describe('Indexes of children in this list that must merge first'), planner: z.string().optional().describe('A planning-capable model id to plan this child; omit to use the epic\'s planner'), hold_for_review: z.boolean().optional().describe('true: its pull request waits for the user\'s review before merging (a designer look at art, a UX pass)') })) },
+          async ({ plan, children }) => { const answer = await o.tools.submit_breakdown(plan, children); if (!answer.startsWith('Rejected')) result.planSubmitted = plan; return text(answer); }),
+        tool('add_note', 'Record a note on the backlog item (markdown). `attach` puts images or videos from your worktree on the item for the user.', { markdown: z.string(), attach: z.array(z.string()).optional().describe('Worktree-relative paths of images or videos for the user to see on the item (verification screenshots, a capture): planestro copies them onto the item, including files in ignored folders. Not for files that belong in the change.') }, async ({ markdown, attach }) => text(await o.tools.add_note(markdown, attach))),
+        tool('append_activity', 'Append a one-line progress entry to the item activity log.', { text: z.string() }, async (a) => text(await o.tools.append_activity(a.text))),
+        tool('report_done', 'Report that the requested work is complete and committed on your worker branch. Then end your turn.', { summary: z.string().describe('One paragraph suitable for a pull request description'), parts: PARTS.optional().describe('Multi-part work: the final state of each part'), hold: z.string().optional().describe('Only when the pull request must NOT merge yet (the plan or the request says it waits for something): what it waits for, e.g. "until HH-12 has merged". planestro opens it and keeps it out of the merge queue until the user releases the hold. Leave it out otherwise.'), attach: z.array(z.string()).optional().describe('Worktree-relative paths of images or videos for the user to see on the item (verification screenshots, a capture): planestro copies them onto the item, including files in ignored folders. Not for files that belong in the change.'), review: z.string().optional().describe('Loop-until-green items only: the markdown of your REVIEW.md (each finding or check, before/after, the captures by path). planestro files it on the item for review.') },
+          async ({ summary, parts, hold, attach, review }) => { const answer = await o.tools.report_done(summary, parts, hold, attach, review); if (!answer.startsWith('Rejected')) result.done = summary; return text(answer); }),
+        tool('report_iteration', 'Loop-until-green items only: report one iteration of the loop (change, regenerate, run the checks): how many checks pass now, of how many, and one line on what you changed. planestro logs it and counts it against the item\'s iteration budget.', { passing: z.number().int().describe('Checks passing after this iteration'), total: z.number().int().describe('Checks this loop runs'), note: z.string().describe('One line: what this iteration changed, and what still fails') },
+          async ({ passing, total, note }) => text(await o.tools.report_iteration(passing, total, note))),
+        tool('report_progress', 'Multi-part work (an atlas of rows, a set of icons, a pack of sounds): the state of every part so far, accepted | pending | rejected, each rejection with the gate it failed. Replaces your last report; the user and the orchestrator read it instead of your prose.', { parts: PARTS },
+          async ({ parts }) => text(await o.tools.report_progress(parts))),
+        tool('report_blocked', 'Report that you cannot proceed without a human decision. Then end your turn.', { reason: z.string(), parts: PARTS.optional().describe('Multi-part work: the state of each part when you stopped') },
+          async ({ reason, parts }) => { const answer = await o.tools.report_blocked(reason, parts); if (!answer.startsWith(PARKED_REFUSAL)) result.blocked = reason; return text(answer); }),
+        tool('hand_off', 'Give files you made to another backlog item that waits on this one (its depends_on names your item, or you share an epic): planestro copies them into that item\'s attachments and tells its session. Use it when your output is needed by another item before your branch merges. Paths are relative to your worktree.',
+          { to: z.string().describe('The receiving item id'), paths: z.array(z.string()).min(1).describe('Files in your worktree, relative paths'), note: z.string().describe('What they are and how to use them') },
+          async ({ to, paths, note }) => text(await o.tools.hand_off(to, paths, note))),
+        tool('get_item', 'Read the backlog item file (frontmatter + sections).', {}, async () => text(await o.tools.get_item())),
+      
+  ];
+  return defs.filter((d) => o.phase === 'plan' ? !['report_done', 'report_iteration', 'hand_off'].includes(d.name) : !['submit_plan', 'submit_breakdown'].includes(d.name));
+}

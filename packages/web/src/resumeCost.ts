@@ -1,4 +1,4 @@
-import { resumeEstimate, resumeRates, type ResumeEstimate } from '@planestro/shared';
+import { resumeEstimate, resumeRates, modelCapabilities, type ResumeEstimate } from '@planestro/shared';
 import type { ItemView } from './api.ts';
 import { useStore } from './store.ts';
 
@@ -12,7 +12,7 @@ export function useResumeEstimate(item: ItemView): ResumeEstimate | undefined {
   if (!state || !fm.session_id) return undefined;
   const planning = fm.status === 'PLAN_IN_PROGRESS' || fm.status === 'PLAN_READY';
   const def = state.config.models.find((m) => m.id === (planning ? fm.planner : fm.implementer));
-  if (!def || (def.runner ?? 'claude') !== 'claude') return undefined;
+  if (!def || modelCapabilities(def).accounting !== 'dollars') return undefined;
   return resumeEstimate(fm, { now: new Date(), model: def.claude_model, rates: resumeRates(state.items.map((i) => i.frontmatter.session_context)) });
 }
 

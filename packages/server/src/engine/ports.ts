@@ -85,6 +85,9 @@ export interface GhPort {
   /** Mark a PR as a draft (true) or ready for review (false); ready_for_review is what starts CI on a draft. */
   setDraft(repo: string, number: number, draft: boolean): Promise<void>;
   prView(repo: string, number: number): Promise<PrInfo>;
+  prDetails?(repo: string, number: number): Promise<string>;
+  prDiff?(repo: string, number: number): Promise<string>;
+  runView?(repo: string, runId: number): Promise<string>;
   prList(repo: string, filter: { head?: string; base?: string; state?: 'open' | 'merged' | 'closed' | 'all' }): Promise<PrInfo[]>;
   /** Status of the named workflow for a PR's head sha (other checks such as Vercel are ignored). */
   ciForSha(repo: string, branch: string, sha: string, workflow: string): Promise<CiStatus>;
@@ -150,15 +153,18 @@ export interface AgentTurnOptions {
   extraDirs: string[];
   /** Files to attach to the prompt, for runners that take images (absolute paths). */
   images?: string[];
+  transport?: 'exec' | 'app-server';
+  maxTokens?: number;
+  onApproval?(req: PermissionRequest): Promise<void>;
   tools: TurnTools;
   onQuestion(questions: unknown[]): Promise<void>;
   onOutput(text: string): void;
   signal?: AbortSignal;
 }
 /**
- * What only the Claude runner can honour: a permission mode, a tool allow-list, per-command
- * permission decisions and a dollar budget. A runner typed on `AgentTurnOptions` cannot read these,
- * so ignoring them is a fact of its type rather than an oversight.
+ * Tool-capable turn options shared by Claude and app-server. Legacy exec accepts only the
+ * base contract. Dollar budgets, reload quotes and SDK allow-list syntax apply to Claude;
+ * app-server enforces the role through its sandbox and scoped dispatcher.
  */
 export interface ClaudeTurnExtras {
   model: string;
@@ -169,6 +175,8 @@ export interface ClaudeTurnExtras {
   fallbackModel?: string;
   /** Servers beyond planestro's own that this session gets, by name, as the SDK takes them. Their tools reach onPermission like any other. */
   mcpServers?: Record<string, McpServerSpec>;
+  /** Recognized aliases of Planestro's operator endpoint, never eligible external tools. */
+  operatorHosts?: string[];
   /**
    * Asked once, before a resumed conversation's first request, with the CLI's own quote for reloading
    * it. 'stop' ends the turn there (`resume_declined`), before anything is spent.
@@ -185,7 +193,7 @@ export interface ClaudeTurnExtras {
   onConnectionDrop?(drop: ConnectionDrop): void;
 }
 /** A report the session made whose call was lost on the way to planestro (sdk-notes gotcha 11), with the arguments it was made with. */
-export interface UndeliveredReport { tool: 'submit_plan' | 'report_done' | 'report_blocked'; args: Record<string, unknown>; error: string }
+export interface UndeliveredReport { tool: 'submit_plan' | 'submit_breakdown' | 'report_done' | 'report_blocked'; args: Record<string, unknown>; error: string }
 /**
  * The session lost its line to planestro (#167, HH-377): a planestro tool call or a permission request that died in transport
  * (`Stream closed`, an AbortError, "interrupted before a result was received"), or planestro's tools missing from the session.
@@ -244,6 +252,7 @@ export interface CustomToolDef {
   description: string;
   /** zod raw shape (loosely typed to keep ports dependency-free). */
   schema: Record<string, unknown>;
+  inputSchema?: Record<string, unknown>;
   handler: (args: Record<string, unknown>) => Promise<string>;
 }
 export interface CustomTurnOptions {
@@ -259,6 +268,8 @@ export interface CustomTurnOptions {
   allowedTools: string[];
   mcpTools: CustomToolDef[];
   maxTurns?: number;
+  maxTokens?: number;
+  onApproval?(req: PermissionRequest): Promise<void>;
   /** As for worker turns: the SDK's own fallback for an overloaded or unavailable model. */
   fallbackModel?: string;
   onOutput(text: string): void;
@@ -266,7 +277,7 @@ export interface CustomTurnOptions {
 }
 export interface AgentPort<O extends AgentTurnOptions = TurnOptions> {
   runTurn(opts: O): Promise<TurnResult>;
-  /** A turn with an arbitrary tool surface (the orchestrator). Non-planestro tool prompts are denied, never parked. Optional: test doubles may omit it. */
+  /** Project-scoped, read-only orchestration with validated tools, observed token caps and immediate approval declines. Optional for session-free mocks. */
   runCustomTurn?(opts: CustomTurnOptions): Promise<TurnResult>;
 }
 
@@ -275,9 +286,9 @@ export type ClaudePort = AgentPort;
 export type { Runner };
 
 /**
- * Agents by runner. Claude is always present (it plans, and the orchestrator is a Claude session);
- * another runner is present when its CLI is usable. The engine always passes full `TurnOptions`;
- * each port's own type says how much of it it can see.
+ * Runner adapters are lazy: presence here never requires authentication or an installed CLI.
+ * The selected model's capabilities determine whether its port may plan or orchestrate.
+ * Claude's member remains required for existing port factories and test doubles.
  */
-export interface AgentPorts { claude: AgentPort; codex?: AgentPort<AgentTurnOptions> }
+export interface AgentPorts { claude: AgentPort; codex?: AgentPort }
 export interface Ports { git: GitPort; gh: GhPort; proc: ProcPort; agents: AgentPorts; mode: 'live' | 'dry-run' }

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "license": "MIT",
-  "description": "Local-first backlog planning and Claude Code orchestration tool",
+  "description": "Local-first backlog planning and orchestration with Claude Code or Codex",
   "type": "module",
   "workspaces": [
     "packages/*"

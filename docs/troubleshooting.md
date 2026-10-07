@@ -16,6 +16,7 @@ and brings you only a plain decision card. See [Needs-you triage](concepts.md#ne
 | Reason | Meaning | Do |
 |---|---|---|
 | `agent_blocked` | The worker reported it cannot proceed and said what it needs (a decision, a missing reference image, a sandbox refusal of something the task requires). | Answer in the unblock message, or fix the item (attach the reference, correct the brief) and unblock. |
+| `provider_usage` | This item's provider has a usage guard. Other providers can continue. | Wait for its reset with auto_resume, retry that provider explicitly, or use Switch provider. |
 | `cli_too_old` | The Claude Code that runs the sessions is too old for the item's model ("does not support this model; version … or newer is required"). | Update Claude Code, or point `claude_bin` at a newer `claude`, restart planestro, and unblock. |
 | `waited_on_gone` | The item was waiting to resume after other items merged (**resume when merged**), and one of them was deleted. | Unblock with the instruction it was waiting to act on (it is in the block reason), or park it on the item that replaced it. |
 | `mcp_missing` | The item's model names an MCP server (`mcp` on the model row) that `planestro.local.yml` on this machine does not define under `mcp_servers`. | Add the server to `mcp_servers` in planestro.local.yml (command/args/env, or url), restart planestro, and unblock. |

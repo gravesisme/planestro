@@ -1,8 +1,12 @@
-import { execFileSync, spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative, isAbsolute } from 'node:path';
-import type { AgentPort, AgentTurnOptions, TurnResult } from '../ports.ts';
+import { join } from 'node:path';
+import { gitWritableRoots } from './gitWritableRoots.ts';
+export { gitWritableRoots } from './gitWritableRoots.ts';
+import { budgetTokens } from '@planestro/shared';
+import { CodexAppServerPort } from './CodexAppServerPort.ts';
+import type { AgentPort, AgentTurnOptions, TurnOptions, CustomTurnOptions, TurnResult } from '../ports.ts';
 
 /**
  * Worker turns on the Codex CLI (`codex exec`). Codex has no plan mode and no planestro tools, so it
@@ -82,31 +86,15 @@ export const IMAGE_TOOL_NOTE = [
   '- Copy each image you keep into the worktree: the final file at the path the plan names, raw generations under tmp/ when the plan asks for them. "Nothing outside the worktree" is about what your commands write.',
 ].join('\n');
 
-/**
- * What a commit writes outside a linked worktree, as sandbox roots (HH-273, HH-281, HH-286): its own git dir
- * (index, HEAD, rebase state) and, in the shared one, objects/, refs/heads/ and logs/refs/heads/. Never the
- * shared dir itself: config and hooks/ stay read-only to the worker. Without them every commit failed on
- * index.lock ("Operation not permitted"); the spike missed it because it ran under the temp dir, which the
- * sandbox always lets a turn write. A worktree that holds its own .git needs nothing. packed-refs stays out:
- * git only warns when it cannot tidy it.
- */
-export function gitWritableRoots(cwd: string): string[] {
-  let gitDir: string, common: string;
-  try { [gitDir, common] = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim().split('\n'); }
-  catch { return []; }
-  const here = (() => { try { return realpathSync(cwd); } catch { return cwd; } })();
-  const inside = (p: string) => { const r = relative(here, p); return !r.startsWith('..') && !isAbsolute(r); };
-  if (!gitDir || !common || inside(gitDir)) return [];
-  const shared = ['objects', 'refs/heads', 'logs/refs/heads'].map((d) => join(common, d));
-  for (const d of shared) { try { mkdirSync(d, { recursive: true }); } catch { /* git makes it on first use; the root is then simply missing */ } }
-  return [gitDir, ...shared];
-}
 
-export class LiveCodexPort implements AgentPort<AgentTurnOptions> {
+export class LiveCodexPort implements AgentPort {
   private lastError?: string;
   constructor(private readonly codexBin = 'codex', private readonly extraArgs: string[] = []) {}
 
-  async runTurn(o: AgentTurnOptions): Promise<TurnResult> {
+  async runCustomTurn(o: CustomTurnOptions): Promise<TurnResult> { return new CodexAppServerPort(this.codexBin).runCustomTurn(o); }
+
+  async runTurn(o: AgentTurnOptions | TurnOptions): Promise<TurnResult> {
+    if (o.transport === 'app-server') return new CodexAppServerPort(this.codexBin).runTurn(o as TurnOptions);
     const result: TurnResult = { sessionId: o.resume, subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '' };
     const scratch = mkdtempSync(join(tmpdir(), 'planestro-codex-'));
     const schemaFile = join(scratch, 'final.schema.json');
@@ -124,7 +112,7 @@ export class LiveCodexPort implements AgentPort<AgentTurnOptions> {
     // There is no system-prompt flag: the worker rules ride at the top of the prompt, every turn.
     const prompt = `${o.systemAppend.trim()}\n\n${IMAGE_TOOL_NOTE}\n\n---\n\n${o.prompt.trim()}\n\nEnd your turn with ONLY the JSON object described above: {"outcome": "done" | "blocked" | "question", "summary": "...", "parts": [...] or null, "question": "..." or null, "hold": null or "<what the pull request waits for>", "hand_off": null or {"to": "<item id that waits on this one>", "paths": ["<files in your worktree, relative>"], "note": "<what they are and how to use them>"}}. Use hand_off only when another backlog item needs files you made before your branch merges. Use hold only with "done", and only when the pull request must not merge yet because the plan or the request says it waits for something ("until TD-12 has merged"): planestro then keeps it out of the merge queue until the user releases it.`;
 
-    let killed = false;
+    let killed = false, capped = false;
     this.lastError = undefined;
     let stderr = '';
     const exit = await new Promise<{ code: number | null; spawnError?: string }>((resolve) => {
@@ -138,7 +126,7 @@ export class LiveCodexPort implements AgentPort<AgentTurnOptions> {
       child.stdout.on('data', (d: Buffer) => {
         buf += d.toString();
         let nl: number;
-        while ((nl = buf.indexOf('\n')) >= 0) { this.onLine(buf.slice(0, nl), result, o); buf = buf.slice(nl + 1); }
+        while ((nl = buf.indexOf('\n')) >= 0) { this.onLine(buf.slice(0, nl), result, o); buf = buf.slice(nl + 1); if (o.maxTokens !== undefined && (result.tokens ?? 0) >= o.maxTokens) { capped = true; child.kill('SIGTERM'); } }
       });
       child.stderr.on('data', (d: Buffer) => { stderr = (stderr + d.toString()).slice(-8000); });
       child.once('error', (e) => resolve({ code: null, spawnError: e.message }));
@@ -151,6 +139,7 @@ export class LiveCodexPort implements AgentPort<AgentTurnOptions> {
 
     if (exit.spawnError) return { ...result, subtype: 'spawn_error', isError: true, error: `could not start ${this.codexBin}: ${exit.spawnError}` };
     // SIGTERM makes Codex exit 0 with no final message, so "killed" is what we remember, not what it reports.
+    if (capped) return { ...result, subtype: 'token_cap', isError: true, error: 'Token limit reached' };
     if (killed) return { ...result, subtype: 'killed', isError: false };
     // Codex reports most failures as an `error` / `turn.failed` event on stdout and only then exits non-zero.
     if (exit.code !== 0) return { ...result, ...classifyFailure(`${stderr}\n${this.lastError ?? ''}`), isError: true };
@@ -176,7 +165,7 @@ export class LiveCodexPort implements AgentPort<AgentTurnOptions> {
     if (e.type === 'thread.started' && e.thread_id) result.sessionId = e.thread_id;
     if (e.type === 'turn.completed' && e.usage) {
       const u = e.usage;
-      result.tokens = (result.tokens ?? 0) + Math.max(0, Number(u.input_tokens ?? 0) - Number(u.cached_input_tokens ?? 0)) + Number(u.output_tokens ?? 0);
+      result.tokens = (result.tokens ?? 0) + budgetTokens(u);
     }
     if (e.type === 'item.completed' && e.item?.type === 'agent_message' && e.item.text) result.text += `${e.item.text}\n`;
     if (e.type === 'error' || e.type === 'turn.failed') this.lastError = String(e.message ?? e.error?.message ?? JSON.stringify(e)).slice(0, 400);

@@ -172,6 +172,9 @@ export class DryRunGitPort implements GitPort {
 }
 
 export class DryRunGhPort implements GhPort {
+  async prDetails(repo: string, number: number) { return `Would read PR #${number} details in ${repo}`; }
+  async prDiff(repo: string, number: number) { return `Would read PR #${number} diff in ${repo}`; }
+  async runView(repo: string, runId: number) { return `Would read run ${runId} in ${repo}`; }
   constructor(private readonly w: FakeWorld) {}
   private say(m: string) { this.w.log(`Would ${m}`); }
   async createPr(repo: string, a: { base: string; head: string; title: string; draft?: boolean }) {
@@ -240,9 +243,11 @@ export class DryRunProcPort implements ProcPort {
 }
 
 /** The Codex runner's stand-in: implements only, reports through its result like the live port's closing JSON. */
-export class DryRunCodexPort implements AgentPort<AgentTurnOptions> {
+export class DryRunCodexPort implements AgentPort {
   constructor(private readonly w: FakeWorld) {}
-  async runTurn(o: AgentTurnOptions): Promise<TurnResult> {
+  async runCustomTurn(o: CustomTurnOptions): Promise<TurnResult> { return { ...await new DryRunClaudePort(this.w).runCustomTurn(o), tokens: 1500 }; }
+  async runTurn(o: AgentTurnOptions | TurnOptions): Promise<TurnResult> {
+    if (o.transport === 'app-server') return { ...await new DryRunClaudePort(this.w).runTurn(o as TurnOptions), tokens: 1500 };
     this.w.log(`Would run codex exec${o.resume ? ` resume ${o.resume.slice(0, 8)}` : ''} for ${o.itemId} (${o.phase}) in ${o.cwd} under the workspace-write sandbox${o.images?.length ? ` with ${o.images.length} image(s)` : ''}`);
     const sessionId = o.resume ?? `dryrun-codex-${o.itemId}-${this.w.sha().slice(-6)}`;
     o.onOutput(`(dry-run codex) prompt: ${o.prompt.slice(0, 120).replace(/\n/g, ' ')}…`);

@@ -1,6 +1,7 @@
+import { itemModelSwitchOps, clearUsageStopOps } from '../providerSwitch.ts';
 import { join, relative, isAbsolute, extname, basename, matchesGlob } from 'node:path';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
-import { resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem } from '@planestro/shared';
+import { resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote, type CiQueue, type UndeliveredReport, type ConnectionDrop } from './ports.ts';
@@ -191,11 +192,12 @@ export class LiveEngine implements Engine {
       busyWith: (id) => this.busyWith(id),
       resumeAfter: (id, items, message, prs) => this.resumeAfter(id, items, message, 'orchestrator', prs ?? []),
       finishFromWorktree: (id) => this.finishFromWorktree(id, 'orchestrator'),
+      ciWorkflow: this.ciWorkflow,
       askUserDecision: (id, input) => this.askUserDecision(id, input),
       withdrawDecision: (id, reason) => this.withdrawDecision(id, reason),
       triageEnded: (id) => this.endTriage(id, 'the orchestrator looked at it without resolving it'),
       poke: () => this.poke(),
-      usageSeen: (r) => this.usageSeen(r),
+      usageSeen: (r, runner) => this.usageSeen(r, runner),
     }, emit, (l, m) => this.note(l, m), () => this._paused || this.draining);
   }
 
@@ -226,37 +228,36 @@ export class LiveEngine implements Engine {
   }
   async stop(): Promise<void> {
     this.stopping = true;
-    this.orchestrator.stop();
+    const orchestratorStopped = this.orchestrator.stop();
     this.cancelGuardResume?.(); this.cancelGuardResume = undefined;
     if (this.timer) clearInterval(this.timer);
     if (this.reconcileTimer) clearInterval(this.reconcileTimer);
     for (const t of this.turns.values()) t.abort.abort();
-    await Promise.allSettled([...this.jobs.values()]);
+    await Promise.allSettled([...this.jobs.values(), orchestratorStopped]);
   }
   /** The lever by hand. A manual pause is the user's: the usage guard never resumes it. */
   pause(): void { this.setPaused(true, 'user'); this.note('warn', 'AUTOMATION PAUSED — running steps finish, nothing new starts'); }
-  /** By hand this also dismisses a usage-guard pause (and its timer) for the rest of that window crossing. */
+  /** Global automation control is independent of provider usage guards. */
   resume(message = 'automation resumed'): void { this.setPaused(false); this.note('info', message); this.orchestrator.kick(); void this.tick(); }
-  private setPaused(paused: boolean, by?: 'user' | 'usage_guard' | 'disk', guard?: UsageGuardState, disk?: { free_gib: number; path: string; tripped_at: string }): void {
-    this.cancelGuardResume?.(); this.cancelGuardResume = undefined;
+  private setPaused(paused: boolean, by?: 'user' | 'disk', guard?: UsageGuardState, disk?: { free_gib: number; path: string; tripped_at: string }): void {
     this._paused = paused;
-    this.store.updateLocal({ engine: { ...this.store.local.engine, paused, paused_by: paused ? by : undefined, usage_guard: guard, disk_guard: paused ? disk : undefined, ...(guard ? { usage_guard_last: { window: guard.window, ...(guard.resets_at ? { resets_at: guard.resets_at } : {}), tripped_at: guard.tripped_at } } : {}) } });
+    this.store.updateLocal({ engine: { ...this.store.local.engine, paused, paused_by: paused ? by : undefined, disk_guard: paused ? disk : undefined } });
     this.emit({ type: 'engine.paused', paused, ...(paused && by ? { by } : {}) });
   }
 
   // ---- usage guard: pause before a subscription window runs out, resume once it resets ----
-  /** Read after every Claude turn and orchestrator wake. Trips once per window crossing, and never over a pause already in place. */
-  private usageSeen(r: RateLimitSnapshot | undefined): void {
+  /** Read after turns and wakes with verified telemetry; trips once per provider/window crossing. */
+  private usageSeen(r: RateLimitSnapshot | undefined, runner = 'claude'): void {
     const cfg = this.store.config.usage_guard;
-    if (!r || this.stopping || this._paused || !usageGuardTrips(cfg, r)) return;
-    const last = this.store.local.engine.usage_guard_last;
+    if (!r || this.stopping || !usageGuardTrips(cfg, r)) return;
+    const last = this.store.local.engine.provider_guard_last?.[runner];
     if (last && last.window === r.window && (r.resetsAt && last.resets_at ? Math.abs(Date.parse(r.resetsAt) - Date.parse(last.resets_at)) < SAME_CROSSING_MS : !r.resetsAt && !last.resets_at && Date.now() - Date.parse(last.tripped_at) < 3_600_000)) return;
     const resumeAt = cfg.auto_resume && r.resetsAt ? new Date(Date.parse(r.resetsAt) + USAGE_RESUME_GRACE_MS).toISOString() : undefined;
     const guard: UsageGuardState = { window: r.window, status: r.status, ...(r.utilization !== undefined ? { utilization: r.utilization } : {}), ...(r.resetsAt ? { resets_at: r.resetsAt } : {}), tripped_at: new Date(Date.now()).toISOString(), ...(resumeAt ? { resume_at: resumeAt } : {}) };
-    this.setPaused(true, 'usage_guard', guard);
-    this.store.journal.append({ type: 'usage.guard_tripped', actor: 'engine', data: { ...guard, threshold: cfg.threshold } });
-    this.note('warn', `USAGE GUARD: ${usageWindowLabel(r.window)} window ${usagePercent(r.utilization) ? `at ${usagePercent(r.utilization)}` : r.status === 'rejected' ? 'is exhausted' : 'sent a usage warning'} — automation paused ${resumeAt ? `until ${localClock(resumeAt)}` : r.resetsAt ? `(the window resets at ${localClock(r.resetsAt)}; resume by hand)` : 'until you resume it'}; running turns finish, nothing new starts`);
-    this.announce('on_usage_pause', 'planestro paused', `Automation paused: the ${usageWindowLabel(r.window)} usage window ${usagePercent(r.utilization) ? `is at ${usagePercent(r.utilization)}` : 'is near its limit'}`);
+    this.store.updateLocal({ engine: { ...this.store.local.engine, provider_guards: { ...this.store.local.engine.provider_guards, [runner]: guard }, provider_guard_last: { ...this.store.local.engine.provider_guard_last, [runner]: guard } } });
+    this.store.journal.append({ type: 'usage.guard_tripped', actor: 'engine', data: { provider: runner, ...guard, threshold: cfg.threshold } });
+    this.note('warn', `${runner} USAGE GUARD: ${usageWindowLabel(r.window)} window ${usagePercent(r.utilization) ? `at ${usagePercent(r.utilization)}` : r.status === 'rejected' ? 'is exhausted' : 'sent a usage warning'} — ${runner} paused ${resumeAt ? `until ${localClock(resumeAt)}` : r.resetsAt ? `(the window resets at ${localClock(r.resetsAt)}; resume by hand)` : 'until you resume it'}; running turns finish, nothing new starts`);
+    this.announce('on_usage_pause', `${runner} paused for usage`, `${runner} paused: the ${usageWindowLabel(r.window)} usage window ${usagePercent(r.utilization) ? `is at ${usagePercent(r.utilization)}` : 'is near its limit'}`);
     this.armGuardResume();
   }
 
@@ -315,16 +316,27 @@ export class LiveEngine implements Engine {
   }
   /** When a guard-made pause is due to resume (epoch ms), or undefined when nothing will resume it. */
   private guardResumeDue(): number | undefined {
-    const e = this.store.local.engine;
-    if (!this._paused || e.paused_by !== 'usage_guard' || !e.usage_guard?.resume_at || !this.store.config.usage_guard.auto_resume) return undefined;
-    const t = Date.parse(e.usage_guard.resume_at);
-    return Number.isFinite(t) ? t : undefined;
+    if (!this.store.config.usage_guard.auto_resume) return undefined;
+    const due = Object.values(this.store.local.engine.provider_guards ?? {}).flatMap((g) => g.resume_at && Number.isFinite(Date.parse(g.resume_at)) ? [Date.parse(g.resume_at)] : []);
+    return due.length ? Math.min(...due) : undefined;
+  }
+  retryProvider(runner: string): void {
+    const { [runner]: _guard, ...guards } = this.store.local.engine.provider_guards ?? {};
+    this.store.updateLocal({ engine: { ...this.store.local.engine, provider_guards: guards } });
+    for (const item of this.store.listItems()) {
+      const fm = item.file.frontmatter;
+      const def = findModel(this.store.config, fm.status === 'PLAN_IN_PROGRESS' ? fm.planner : fm.implementer);
+      if (fm.blocked_reason === 'provider_usage' && (def?.runner ?? 'claude') === runner)
+        this.store.mutateItem(item.id, clearUsageStopOps(fm), 'engine');
+    }
+    this.store.journal.append({ type: 'usage.guard_resumed', actor: 'engine', data: { provider: runner } });
+    this.armGuardResume(); this.orchestrator.kick(); void this.tick();
   }
   private guardResume(): void {
-    if (this.stopping || this.guardResumeDue() === undefined) return;
-    const g = this.store.local.engine.usage_guard!;
-    this.store.journal.append({ type: 'usage.guard_resumed', actor: 'engine', data: { window: g.window, resets_at: g.resets_at } });
-    this.resume(`automation resumed: the ${usageWindowLabel(g.window)} usage window has reset`);
+    if (this.stopping || !this.store.config.usage_guard.auto_resume) return;
+    for (const [runner, guard] of Object.entries(this.store.local.engine.provider_guards ?? {}))
+      if (guard.resume_at && Date.parse(guard.resume_at) <= Date.now()) this.retryProvider(runner);
+    this.armGuardResume();
   }
   /**
    * Getting ready for a restart (f3). Like PAUSE AUTOMATION, nothing new starts (no admissions, no
@@ -376,6 +388,8 @@ export class LiveEngine implements Engine {
     void this.refreshCiQueue().catch(() => undefined);
     if (this._paused) return;
     try {
+      this.orchestrator.kick();
+      for (const item of this.store.listItems()) this.continueAfterProviderSwitch(item.id);
       this.admit();
       this.nudgeStaleReviews();
       this.driveStaleBlocks();
@@ -431,6 +445,8 @@ export class LiveEngine implements Engine {
       if (free <= 0) break;
       const fm = item.file.frontmatter;
       if (fm.status !== 'QUEUED' || this.jobs.has(item.id) || fm.taken_over) continue;
+      const planner = findModel(this.store.config, fm.planner);
+      if (planner && this.store.local.engine.provider_guards?.[planner.runner]) continue;
       let d = this.store.derived(item);
       if (d.flavor !== 'worker' || !d.deps_satisfied) continue;
       if (fm.parent) {
@@ -1063,7 +1079,7 @@ export class LiveEngine implements Engine {
    * not, where it last stopped, and the task. All of it from the item file and git, none of it from a
    * conversation (invariant 3).
    */
-  private async freshBrief(id: string, task: string): Promise<string> {
+  private async freshBrief(id: string, task: string, phase: TurnPhase): Promise<string> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
     const cwd = this.absWorktree(fm.worktree!);
@@ -1074,10 +1090,11 @@ export class LiveEngine implements Engine {
     const lines = getSection(item.file, 'Activity').split('\n').filter((l) => l.trim());
     const stopped = [...lines].reverse().find((l) => l.includes('BLOCKED ('));
     const github = this.store.config.code_repo.github;
-    return this.store.renderPrompt('fresh-brief', item, {
+    const brief = this.store.renderPrompt('fresh-brief', item, {
       approval_notes: String(fm.op_data?.approval_notes ?? '').trim() || '(none)',
       brief: {
         task,
+        rules: phase === 'plan' ? 'This is read-only planning. Do not edit, commit or implement. Submit your plan with submit_plan, or an epic breakdown with submit_breakdown, then end the turn.' : `Implement the approved task. ${this.commitsFor(fm) ? 'Planestro commits your changes; report the completed work.' : 'Commit your changes and leave the tree clean.'} Call report_done with the summary, then end the turn.`,
         stopped: stopped ? `It last stopped with: ${stopped.replace(/^[-*\s]+/, '').slice(0, 400)}` : 'It has not been blocked.',
         commits: commits.trim() || '(none yet)',
         dirty: dirty.join('\n') || '(clean)',
@@ -1087,6 +1104,7 @@ export class LiveEngine implements Engine {
         activity: lines.slice(-12).join('\n') || '(none)',
       },
     });
+    return `${brief}\n\n## Current item record (including notes, attachments, decisions and pending messages)\n\n${serializeItemFile(item.file)}`;
   }
 
   // ---- turns ----
@@ -1111,28 +1129,33 @@ export class LiveEngine implements Engine {
     const def = pick.def;
     if (pick.fellBackFrom) this.store.mutateItem(id, [{ activity: { actor: 'app', text: `${pick.fellBackFrom.label} is unavailable until ${pick.skipped?.until ?? 'later'} (${(pick.skipped?.reason ?? 'usage limit').slice(0, 120)}): this ${phase} turn runs on ${def.label}` } }], 'engine');
     const runner = def.runner ?? 'claude';
-    if (phase === 'plan' && !canPlan(def)) { this.block(id, 'planner_cannot_plan', `${def.label} runs on ${runner}, which cannot plan; pick a Claude model as the planner`); return undefined; }
+    if (phase === 'plan' && !canPlan(def)) { this.block(id, 'planner_cannot_plan', `${def.label} runs on ${runner}, which cannot plan; pick a model with planning capability`); return undefined; }
     const agent = this.ports.agents[runner];
     if (!agent) { this.block(id, 'runner_unavailable', `${def.label} needs the ${runner} runner, which is not available in this engine`); return undefined; }
     const model = runner === 'claude' ? def.claude_model : def[`${runner}_model`];
     if (runner === 'claude' && !model) throw new Error(`model ${def.id} has no claude_model`);
     // Runners that report tokens instead of dollars are budgeted in worker turns.
-    const metered = runner === 'claude';
+    const metered = modelCapabilities(def).accounting === 'dollars';
+    if (this.store.local.engine.provider_guards?.[runner]) { this.block(id, 'provider_usage', `${runner} is paused for usage`); return undefined; }
     const budget = this.budgetOf(fm);
     if (!metered && (fm.agent_turns ?? 0) >= budget.turns) { this.block(id, 'turn_budget', `${def.label} has used ${fm.agent_turns} of ${budget.turns} turns on this item (${budget.turnsKey}); raise it on the item and unblock, or take the item over by hand`); return undefined; }
     if (!metered && (fm.tokens ?? 0) >= budget.tokens) { this.block(id, 'token_budget', `${def.label} has used ${(fm.tokens ?? 0).toLocaleString()} of ${budget.tokens.toLocaleString()} tokens on this item (${budget.tokensKey}); raise it on the item and unblock, or take the item over by hand`); return undefined; }
     // A turn with less than MIN_TURN_USD left ends at error_max_budget_usd before it can finish
     // anything (HH-125's $0.50 conflict fix, HH-122's CI fix): say what the item needs instead.
     const usdLeft = budget.usd - (fm.cost_usd ?? 0);
-    let resumeId = metered ? fm.session_id : fm.agent_sessions?.[runner];
+    const contract = modelCapabilities(def).toolContract;
+    const saved = fm.agent_sessions?.[runner];
+    const incompatible = saved && (saved.tool_contract !== contract || (modelCapabilities(def).roleBound && (saved.role === 'plan') !== (phase === 'plan')));
+    let resumeId = incompatible ? undefined : metered ? fm.session_id : saved?.session_id;
     // What the turn costs before it does anything (#64): a resume sends the whole conversation again.
     // One the item cannot pay for, or whose reload is above budget_usd_fresh_above, becomes a fresh
     // conversation with a brief when the turn's prompt stands on its own; only when nothing fits is it
     // stopped, and then before anything is spent (HH-184 spent a +$15 raise on the reload alone).
-    const pending = fm.op_data?.fresh_brief as { task?: string; from_session?: string } | undefined;
-    const mayBeFresh = phase !== 'plan' && !opts.opener;
+    const intent = fm.op_data?.fresh_brief as { task?: string; from_session?: string; role?: 'plan' } | undefined;
+    const pending = intent?.role && phase !== intent.role ? undefined : intent;
+    const mayBeFresh = Boolean(pending) || Boolean(incompatible) || (phase !== 'plan' && !opts.opener);
     const estimate = opts.estimate ?? (metered && resumeId ? this.resumeEstimateFor(fm, model as string) : undefined);
-    const path = chooseTurnPath({ left: metered ? usdLeft : Infinity, estimate, hasSession: Boolean(resumeId), fresh: !mayBeFresh ? undefined : pending || opts.fresh === true ? true : opts.fresh, freshAboveUsd: this.store.config.budget_usd_fresh_above });
+    const path = chooseTurnPath({ left: metered ? usdLeft : Infinity, estimate, hasSession: Boolean(resumeId || pending || incompatible), fresh: !mayBeFresh ? undefined : pending || incompatible || opts.fresh === true ? true : opts.fresh, freshAboveUsd: this.store.config.budget_usd_fresh_above });
     if (path.path === 'stop') {
       this.block(id, 'over_budget', usdLeft < MIN_TURN_USD
         ? `this item has spent $${(fm.cost_usd ?? 0).toFixed(2)} of its $${budget.usd} budget (${budget.usdKey}), too little for a ${phase} turn; raise the budget on the item and unblock, or take the item over by hand`
@@ -1145,9 +1168,10 @@ export class LiveEngine implements Engine {
       // The brief is rendered from the item file and git (invariant 3). The intent is persisted before the
       // turn: one that dies before its conversation has an id is still a fresh turn after a restart.
       const task = (opts.carryOn && pending?.task) || prompt;
-      replaced = resumeId; resumeId = undefined;
-      prompt = await this.freshBrief(id, task);
-      this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), fresh_brief: { task, from_session: replaced } } } }, { activity: { actor: 'app', text: `starting a fresh ${def.label} conversation with a brief instead of resuming ${replaced?.slice(0, 8) ?? 'its own'}: ${path.why}` } }], 'engine');
+      replaced = pending?.from_session ?? resumeId ?? saved?.session_id; resumeId = undefined;
+      prompt = await this.freshBrief(id, task, phase);
+      if (phase === 'plan') prompt += '\n\nThis is a planning turn. Do not implement. Submit the plan or epic breakdown, then end the turn.';
+      this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), fresh_brief: { ...pending, task, from_session: replaced } } } }, { activity: { actor: 'app', text: `starting a fresh ${def.label} conversation with a brief instead of resuming ${replaced?.slice(0, 8) ?? 'its own'}: ${path.why}` } }], 'engine');
     } else if (path.path === 'fresh') { replaced = resumeId; resumeId = undefined; }
     else if (opts.note && !opts.final) prompt = `${this.resumeNote(id, opts.note)}\n\n${prompt}`;
     // "Continue where you left off" presumes a conversation to continue. When there is none — the
@@ -1163,11 +1187,11 @@ export class LiveEngine implements Engine {
     // Tools from outside (f5): the model row names MCP servers, the machine-local file holds them with
     // their keys. A name with no server on this machine is a stop, not a session without its tools.
     const mcpServers: Record<string, McpServerSpec> = {};
-    for (const name of metered ? def.mcp : []) {
+    for (const name of modelCapabilities(def).permissions ? def.mcp : []) {
       const spec = this.store.local.mcp_servers[name];
       if (!spec || (!spec.command && !spec.url)) { this.block(id, 'mcp_missing', `${def.label} names the MCP server "${name}", which planestro.local.yml on this machine does not define (mcp_servers.${name} needs a command or a url)`); return undefined; }
       // Workers never touch planning state (invariant 1): a planestro server's operator endpoint is not a worker's tool (#175).
-      if (spec.url && operatorMcpUrl(spec.url, listInstances({ prune: false }).live)) { this.block(id, 'mcp_missing', `${def.label} names the MCP server "${name}", whose url (${spec.url}) is a planestro server's operator endpoint; workers never get that one: remove it from the model's mcp list`); return undefined; }
+      if (spec.url && operatorMcpUrl(spec.url, listInstances({ prune: false }).live, this.store.local.allowed_hosts)) { this.block(id, 'mcp_missing', `${def.label} names the MCP server "${name}", whose url (${spec.url}) is a planestro server's operator endpoint; workers never get that one: remove it from the model's mcp list`); return undefined; }
       mcpServers[name] = spec.url ? { type: 'http', url: spec.url, headers: spec.headers } : { command: spec.command!, args: spec.args, env: spec.env };
     }
     // A person's budget for this item first (#157); a model whose plans are theirs to approve makes no paid call without one.
@@ -1190,12 +1214,17 @@ export class LiveEngine implements Engine {
     // A planning turn is capped on its own (dogfood p41): past the cap it is asked for the plan it has, not for more research.
     // The cap is for the work: what the resume reloads first is on top of it.
     const turnCap = phase === 'plan' ? Math.min(budgetLeft, this.store.config.budget_usd_per_plan_turn + (resumeId ? estimate?.usd ?? 0 : 0)) : budgetLeft;
-    const known = resumeId && fm.session_context?.session === resumeId ? fm.session_context : undefined;
+    const known = metered && resumeId && fm.session_context?.session === resumeId ? fm.session_context : undefined;
     let declined: ResumeEstimate | undefined;
     let result: TurnResult;
     try {
-      result = await this.withRunnerSlot(runner, () => this.withSessionSlot(id, () => { if (abort.signal.aborted) return Promise.resolve<TurnResult>({ subtype: 'killed', isError: false, costUsd: 0, numTurns: 0, text: '' }); admitted(); return agent.runTurn({
-        itemId: id, phase, cwd, model: model as string, permissionMode: phase === 'plan' ? 'plan' : 'acceptEdits', prompt, resume: resumeId, images,
+      result = await this.withRunnerSlot(runner, () => this.withSessionSlot(id, () => { if (abort.signal.aborted || this._paused || this.draining || this.store.local.engine.provider_guards?.[runner]) return Promise.resolve<TurnResult>({ subtype: 'killed', isError: false, costUsd: 0, numTurns: 0, text: '' }); admitted(); return agent.runTurn({
+        itemId: id, phase, cwd, model: model as string,
+        transport: modelCapabilities(def).transport,
+        maxTokens: metered ? undefined : Math.min(budget.tokens - (fm.tokens ?? 0), phase === 'plan' ? fm.op_data?.plan_retry_turns ? 10_000 : this.store.config.budget_tokens_per_plan_turn : Infinity),
+        onApproval: async (req) => {
+          this.store.mutateItem(id, [{ set: { awaiting: 'permission', awaiting_data: { tool: req.tool, input: req.input, requested_at: this.now() } } }, { activity: { actor: 'app', text: 'Runner permission request recorded; turn ended for a decision' } }], 'engine', { commit: `${id}: awaiting permission` });
+        }, permissionMode: phase === 'plan' ? 'plan' : 'acceptEdits', prompt, resume: resumeId, images,
         ...(known?.total_usd !== undefined ? { resumeTotalUsd: known.total_usd } : {}),
         // The CLI's own quote, before the first request: the same choice as above, on its numbers. It is
         // what stops a conversation nothing was recorded for (every one that predates the record).
@@ -1206,9 +1235,9 @@ export class LiveEngine implements Engine {
           declined = quoted;
           return 'stop';
         },
-        systemAppend: `${this.store.renderPrompt(metered ? 'worker-system' : `worker-system-${runner}`, item)}\n\n${this.hostNote}${metered ? cwdNote(cwd) : ''}${keptPathsNote(this.store.config.worktrees.copy_to_checkout, this.repo)}`,
+        systemAppend: `${this.store.renderPrompt(modelCapabilities(def).workerPrompt, item)}\n\n${this.hostNote}${metered ? cwdNote(cwd) : ''}${keptPathsNote(this.store.config.worktrees.copy_to_checkout, this.repo)}`,
         ...(pick.sdkFallback ? { fallbackModel: pick.sdkFallback } : {}),
-        ...(Object.keys(mcpServers).length ? { mcpServers } : {}),
+        ...(Object.keys(mcpServers).length ? { mcpServers, operatorHosts: this.store.local.allowed_hosts } : {}),
         // Scoped rules (…@worktree) are planestro's to judge in onPermission; the SDK's allow-list never sees them.
         allowedTools: sdkRules([...BASE_ALLOWED[phase], ...this.store.config.permissions.allow, ...extraAllowed]),
         extraDirs: [this.store.dataDir], maxBudgetUsd: turnCap,
@@ -1257,18 +1286,19 @@ export class LiveEngine implements Engine {
       this.turns.delete(id);
     }
     const after = this.store.requireItem(id).file.frontmatter;
-    const sessionNow = metered ? result.sessionId ?? after.session_id : result.sessionId ?? after.agent_sessions?.[runner];
+    const sessionNow = metered ? result.sessionId ?? after.session_id : result.sessionId ?? after.agent_sessions?.[runner]?.session_id;
     // A fresh conversation has its id: it is the item's from here on, and the brief's marker has done its work.
-    const started = replaced !== undefined && result.sessionId !== undefined && result.sessionId !== replaced;
+    const started = path.path === 'fresh' && result.sessionId !== undefined && result.sessionId !== replaced;
     const { fresh_brief: _brief, ...opDataAfter } = after.op_data ?? {};
     const context = metered ? sessionContextAfter(after.session_context, sessionNow, model as string, result, this.now()) : undefined;
     this.store.mutateItem(id, [
       { set: {
-        ...(metered ? { session_id: sessionNow } : result.sessionId ? { agent_sessions: { ...(after.agent_sessions ?? {}), [runner]: result.sessionId } } : {}),
+        ...(metered ? { session_id: sessionNow } : {}),
+        ...(result.sessionId ? { agent_sessions: { ...(after.agent_sessions ?? {}), [runner]: { session_id: result.sessionId, model: def.id, role: phase, tool_contract: contract, ...(modelCapabilities(def).transport ? { transport: modelCapabilities(def).transport } : {}) } } } : {}),
         ...(context ? { session_context: context } : {}),
         ...(started && after.op_data?.fresh_brief ? { op_data: opDataAfter } : {}),
         cost_usd: Math.round(((after.cost_usd ?? 0) + result.costUsd) * 10000) / 10000, turns: (after.turns ?? 0) + result.numTurns,
-        ...(metered || result.subtype === 'resume_declined' ? {} : { agent_turns: (after.agent_turns ?? 0) + 1 }),
+        ...(metered || result.numTurns === 0 ? {} : { agent_turns: (after.agent_turns ?? 0) + 1 }),
         ...(result.tokens ? { tokens: (after.tokens ?? 0) + result.tokens } : {}),
       } },
       ...(started ? [{ activity: { actor: 'app', text: `this item's conversation is now ${result.sessionId!.slice(0, 8)}; the one before it (${replaced}) was not resumed and is kept on disk` } } as ItemOp] : []),
@@ -1280,7 +1310,7 @@ export class LiveEngine implements Engine {
     // The quote beside what the turn really cost, so an estimate that drifts from the bill is seen (HH-247's resume was quoted nowhere).
     this.store.journal.end(opId, id, result.isError ? 'failed' : 'ok', { subtype: result.subtype, cost: result.costUsd, parked: result.parked, ...(result.sessionTotalUsd !== undefined ? { session_total: result.sessionTotalUsd } : {}), ...(result.contextTokens ? { context_tokens: result.contextTokens } : {}), ...(result.resumeQuote ? { quoted_reload_usd: result.resumeQuote.cacheWriteUsd, quoted_tokens: result.resumeQuote.contextTokens, quoted_cache_expired: result.resumeQuote.cacheExpired } : {}), ...(replaced !== undefined ? { fresh: true, replaced_session: replaced } : {}) });
     if (started) this.store.journal.append({ type: 'session.replaced', item: id, actor: 'engine', data: { from: replaced, to: result.sessionId, why: path.path === 'fresh' ? path.why : 'fresh' } });
-    this.usageSeen(result.rateLimit);
+    this.usageSeen(result.rateLimit, runner);
     this.emit({ type: 'session.ended', id, subtype: result.subtype });
     for (const f of result.toolFailures ?? []) this.store.mutateItem(id, [{ activity: { actor: 'app', text: `planestro tool ${f.tool} failed before reaching planestro (nothing was recorded): ${f.error}` } }], 'engine');
     // A report lost on its way here is applied now (#167); a turn the engine's stop killed keeps it for the restart, one a person stopped drops it.
@@ -1319,7 +1349,7 @@ export class LiveEngine implements Engine {
       }
     }
     // A planning turn that ran out of its cap with no plan is not an error to judge: it is asked for the plan (afterTurn).
-    if (result.isError && phase === 'plan' && result.subtype === 'error_max_budget_usd' && !result.planSubmitted) { await this.afterTurn(id, phase, result); return result; }
+    if (result.isError && phase === 'plan' && ['error_max_budget_usd', 'token_cap'].includes(result.subtype) && !result.planSubmitted) { await this.afterTurn(id, phase, result); return result; }
     if (result.isError) {
       // A failure the person can act on keeps its own name; the rest are turn errors for the orchestrator to judge.
       const reason = ACTIONABLE_FAILURES.has(result.subtype) ? result.subtype : 'turn_error';
@@ -1386,20 +1416,21 @@ export class LiveEngine implements Engine {
   private async ingestOutbox(id: string, result: TurnResult): Promise<void> {
     const fm = this.store.requireItem(id).file.frontmatter;
     const box = (fm.op_data?.outbox as UndeliveredReport | undefined) ?? result.undelivered;
-    this.recordOutbox(id, undefined);
     if (!box || fm.taken_over) return;
     const a = box.args ?? {};
     const str = (v: unknown) => (typeof v === 'string' && v.trim() !== '' ? v : undefined);
     const list = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : undefined);
-    const text = box.tool === 'submit_plan' ? str(a.plan) : box.tool === 'report_done' ? str(a.summary) : str(a.reason);
-    const fits = box.tool === 'submit_plan' ? fm.status === 'PLAN_IN_PROGRESS' || fm.status === 'PLAN_READY' : fm.status === 'IN_PROGRESS' || fm.status === 'IN_REVIEW' || (box.tool === 'report_blocked' && fm.status === 'PLAN_IN_PROGRESS');
-    if (!text || !fits) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `the session's ${box.tool} never reached planestro (${box.error}); not applied: ${!text ? 'it carried nothing to record' : `the item is ${fm.status} now`}` } }], 'engine'); return; }
+    const text = ['submit_plan', 'submit_breakdown'].includes(box.tool) ? str(a.plan) : box.tool === 'report_done' ? str(a.summary) : str(a.reason);
+    const fits = ['submit_plan', 'submit_breakdown'].includes(box.tool) ? fm.status === 'PLAN_IN_PROGRESS' || fm.status === 'PLAN_READY' : fm.status === 'IN_PROGRESS' || fm.status === 'IN_REVIEW' || (box.tool === 'report_blocked' && fm.status === 'PLAN_IN_PROGRESS');
+    if (!text || !fits) { this.recordOutbox(id, undefined); this.store.mutateItem(id, [{ activity: { actor: 'app', text: `the session's ${box.tool} never reached planestro (${box.error}); not applied: ${!text ? 'it carried nothing to record' : `the item is ${fm.status} now`}` } }], 'engine'); return; }
     this.store.mutateItem(id, [{ activity: { actor: 'app', text: `the session's ${box.tool} never reached planestro (${box.error}); applying it from the turn's record` } }], 'engine');
     const tools = this.makeTools(id);
     try {
       if (box.tool === 'submit_plan') { if (!(await tools.submit_plan(text)).startsWith('Rejected')) result.planSubmitted = text; }
-      else if (box.tool === 'report_done') { await tools.report_done(text, a.parts, str(a.hold), list(a.attach)); result.done = text; }
-      else { await tools.report_blocked(text, a.parts); result.blocked = text; }
+      else if (box.tool === 'submit_breakdown') { if (!(await tools.submit_breakdown(text, a.children)).startsWith('Rejected')) result.planSubmitted = text; }
+      else if (box.tool === 'report_done') { if (!(await tools.report_done(text, a.parts, str(a.hold), list(a.attach), str(a.review))).startsWith('Rejected')) result.done = text; }
+      else { if (!(await tools.report_blocked(text, a.parts)).startsWith('Rejected')) result.blocked = text; }
+      this.recordOutbox(id, undefined);
     } catch (e) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `could not apply the session's ${box.tool}: ${(e as Error).message.slice(0, 200)}` } }], 'engine'); }
   }
 
@@ -1453,10 +1484,10 @@ export class LiveEngine implements Engine {
       // while still researching, or the model simply stopped. Only a second miss is a block.
       const tool = fm.kind === 'epic' ? 'submit_breakdown' : 'submit_plan';
       const failed = result.toolFailures?.find((f) => f.tool === 'submit_plan' || f.tool === 'submit_breakdown');
-      const capped = result.subtype === 'error_max_budget_usd';
-      const cap = `$${this.store.config.budget_usd_per_plan_turn}`;
+      const capped = ['error_max_budget_usd', 'token_cap'].includes(result.subtype);
+      const cap = result.subtype === 'token_cap' ? `${this.store.config.budget_tokens_per_plan_turn} tokens` : `$${this.store.config.budget_usd_per_plan_turn}`;
       const retried = Number(fm.op_data?.plan_retry_turns ?? 0);
-      const why = failed ? `its ${failed.tool} call failed in transport (${failed.error})` : capped ? `it hit the ${cap} planning-turn cap (budget_usd_per_plan_turn) while still working` : 'it ended without calling submit_plan';
+      const why = failed ? `its ${failed.tool} call failed in transport (${failed.error})` : capped ? `it hit the ${cap} planning-turn cap (${result.subtype === 'token_cap' ? 'budget_tokens_per_plan_turn' : 'budget_usd_per_plan_turn'}) while still working` : 'it ended without calling submit_plan';
       if (retried < 1) {
         this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), plan_retry_turns: retried + 1 } } }, { activity: { actor: 'app', text: `no plan yet: ${why}; asking the session for it now` } }], 'engine');
         await this.runTurnFor(id, phase, failed
@@ -1477,7 +1508,8 @@ export class LiveEngine implements Engine {
    */
   private cannotStart(fm: ItemFrontmatter, phase: TurnPhase, fresh?: true | 'auto'): string | undefined {
     const def = this.store.config.models.find((m) => m.id === (phase === 'plan' ? fm.planner : fm.implementer));
-    if (!def || (def.runner ?? 'claude') !== 'claude') return undefined;
+    if (!def) return undefined;
+    if (modelCapabilities(def).accounting === 'tokens') return (fm.tokens ?? 0) >= this.budgetOf(fm).tokens ? 'token budget exhausted' : (fm.agent_turns ?? 0) >= this.budgetOf(fm).turns ? 'turn budget exhausted' : undefined;
     const path = chooseTurnPath({ left: this.budgetOf(fm).usd - (fm.cost_usd ?? 0), estimate: fm.session_id ? this.resumeEstimateFor(fm, def.claude_model) : undefined, hasSession: Boolean(fm.session_id), fresh: phase === 'plan' ? undefined : fresh, freshAboveUsd: this.store.config.budget_usd_fresh_above });
     return path.path === 'stop' ? path.why : undefined;
   }
@@ -2471,6 +2503,16 @@ export class LiveEngine implements Engine {
   private async resumeInterrupted(): Promise<void> {
     for (const item of this.store.listItems()) {
       const fm = item.file.frontmatter;
+      if (fm.op_data?.outbox && !fm.taken_over) {
+        const phase = this.phaseFor(fm.status);
+        this.store.mutateItem(item.id, [{ unset: ['op', 'op_started_at'] }], 'engine');
+        this.runJob(item.id, async () => {
+          const r: TurnResult = { subtype: 'success', isError: false, costUsd: 0, numTurns: 0, text: '' };
+          await this.ingestOutbox(item.id, r);
+          if (phase && (r.done || r.planSubmitted || r.blocked)) await this.afterTurn(item.id, phase, r);
+        });
+        continue;
+      }
       if (!fm.op) continue;
       if (RESUMABLE_TURN_OPS.has(fm.op)) {
         const phase = this.phaseFor(fm.status);
@@ -2721,6 +2763,7 @@ export class LiveEngine implements Engine {
           const proposed = list.map((c) => ({ title: c.title.trim(), ...(typeof c.description === 'string' ? { description: c.description.trim() } : {}), ...(typeof c.implementer === 'string' && c.implementer ? { implementer: c.implementer } : {}), ...(Array.isArray(c.depends_on) && c.depends_on.length ? { depends_on: c.depends_on } : {}) }));
           return handIn(plan, { reason: `its planner handed in a breakdown of ${list.length} child items instead of one plan`, source: 'breakdown', children: proposed });
         }
+        if (cur.status === 'PLAN_READY' && getSection(s.requireItem(id).file, 'Plan').trim() === demoteH1(plan).trim() && JSON.stringify(cur.awaiting_data?.children) === JSON.stringify(children)) return 'Breakdown already recorded by planestro. End your turn now.';
         const problem = validateBreakdown(children, s.config.models, s.config.categories);
         if (problem) { s.mutateItem(id, [{ activity: { actor: 'app', text: `breakdown rejected back to the planner: ${problem}` } }], 'engine'); return `Rejected: ${problem}. Fix that and call submit_breakdown again.`; }
         const ops: ItemOp[] = [{ section: 'Plan', body: plan }];
@@ -3016,6 +3059,14 @@ export class LiveEngine implements Engine {
     this.note('info', `${id}: needs you — ${why}`);
   }
 
+  continueAfterProviderSwitch(id: string): void {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    if (this._paused || this.draining || this.stopping || !fm.op_data?.fresh_brief || fm.awaiting || fm.blocked || fm.taken_over || fm.resume_after || this.busyWith(id)) return;
+    if (fm.status !== 'IN_PROGRESS' && fm.status !== 'PLAN_IN_PROGRESS') return;
+    if ((fm.op_data.fresh_brief as { role?: string }).role === 'plan' && fm.status !== 'PLAN_IN_PROGRESS') return;
+    this.queueFollowUp(id, () => this.runTurnFor(id, fm.status === 'PLAN_IN_PROGRESS' ? 'plan' : 'implement', 'Continue from the current persisted state.', [], [], { carryOn: true }));
+  }
+  modelSwitchRefusal(id: string): string | undefined { return this.busyWith(id); }
   private busyWith(id: string): string | undefined { return this.jobs.has(id) || this.turns.has(id) ? `${id} has a step running; let it finish first` : undefined; }
 
   private async orchestratorUnblocks(id: string, message?: string, syncFirst = false, fresh = false): Promise<string> {
@@ -3112,7 +3163,13 @@ export class LiveEngine implements Engine {
       }
     }
     const said = [...Object.entries(set).map(([k, v]) => `${k} = ${Array.isArray(v) ? `[${v.join(', ')}]` : String(v)}`), ...unset.map((k) => `${k} cleared`)].join(', ');
-    this.store.mutateItem(id, [...(Object.keys(set).length ? [{ set } as ItemOp] : []), ...(unset.length ? [{ unset } as ItemOp] : []), { activity: { actor: 'orchestrator', text: `set ${said}` } }], 'orchestrator', { commit: `${id}: fields (orchestrator)` });
+    let modelOps: ItemOp[] = [];
+    if ('implementer' in set || unset.includes('implementer')) {
+      try { modelOps = itemModelSwitchOps(this.store, this, id, { implementer: String(set.implementer ?? this.store.config.defaults.implementer) }); }
+      catch (e) { return `not changed: ${(e as Error).message}`; }
+      delete set.implementer; const index = unset.indexOf('implementer'); if (index >= 0) unset.splice(index, 1);
+    }
+    this.store.mutateItem(id, [...modelOps, ...(Object.keys(set).length ? [{ set } as ItemOp] : []), ...(unset.length ? [{ unset } as ItemOp] : []), { activity: { actor: 'orchestrator', text: `set ${said}` } }], 'orchestrator', { commit: `${id}: fields (orchestrator)` });
     const d = this.store.derived(this.store.requireItem(id));
     this.poke();
     return `set ${said}. Base branch is now ${d.base_branch ?? `unresolved (${d.base_branch_error})`}${item.file.frontmatter.worktree && ('parent' in fields || 'base_branch_override' in fields) ? '; the existing worktree was not moved (recreate_worktree does that)' : ''}.`;
@@ -3418,8 +3475,9 @@ export class LiveEngine implements Engine {
     const phase = fm ? this.phaseFor(fm.status) : null;
     if (!fm || !phase) return undefined;
     const def = this.store.config.models.find((m) => m.id === (phase === 'plan' ? fm.planner : fm.implementer));
-    if (!def || (def.runner ?? 'claude') !== 'claude') return undefined;
+    if (!def) return undefined;
     const b = this.budgetOf(fm);
+    if (modelCapabilities(def).accounting === 'tokens') return `${def.label}: ${(fm.tokens ?? 0).toLocaleString()} / ${b.tokens.toLocaleString()} tokens, ${fm.agent_turns ?? 0} / ${b.turns} turns; dollar cost not reported`;
     const left = b.usd - (fm.cost_usd ?? 0);
     const e = fm.session_id ? this.resumeEstimateFor(fm, def.claude_model) : undefined;
     const head = `Budget: $${(fm.cost_usd ?? 0).toFixed(2)} spent of $${b.usd} (${b.usdKey}), $${left.toFixed(2)} left.`;
@@ -3752,7 +3810,7 @@ export class LiveEngine implements Engine {
         });
         return `conflict: ${where}. A one-shot session is resolving it in ${r.cwd}; the Activity log says how it went`;
       }
-      if (r.integration || !phase || !cur.session_id) { this.block(id, 'sync_conflict', `${where}, and ${r.integration ? 'an integration branch has' : 'it has'} no session to hand it to; resolve it by hand${r.integration ? ` in ${r.cwd}` : ''}`); return `conflict: ${where}; blocked for a person to resolve`; }
+      if (r.integration || !phase || (!cur.session_id && !Object.keys(cur.agent_sessions ?? {}).length)) { this.block(id, 'sync_conflict', `${where}, and ${r.integration ? 'an integration branch has' : 'it has'} no session to hand it to; resolve it by hand${r.integration ? ` in ${r.cwd}` : ''}`); return `conflict: ${where}; blocked for a person to resolve`; }
       if (cur.blocked && !opts.unblock) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `${where}; ${id} stays blocked (${cur.blocked_reason}), so the conflict waits for it to be unblocked with a sync first` } }], 'engine'); return `conflict: ${where}. ${id} stays blocked (${cur.blocked_reason}); unblock it with sync_first to hand the conflict to its session`; }
       const then = opts.unblock?.message?.trim() ? `Then continue with this:\n\n${opts.unblock.message.trim()}` : 'Once the rebase is done, carry on with your work on this item where you left off.';
       this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, { activity: { actor: by, text: `${opts.unblock ? 'unblocked; ' : ''}the sync conflict goes to the session` } }], by, { commit: `${id}: sync conflict to the session` });
@@ -3828,9 +3886,14 @@ export class LiveEngine implements Engine {
     if (pick.exhaustedUntil) return `${requested.label} is out of usage until ${pick.exhaustedUntil}`;
     const def = pick.def;
     const runner = def.runner ?? 'claude';
+    if (this._paused || this.store.local.engine.provider_guards?.[runner]) return `${runner} is paused`;
     const agent = this.ports.agents[runner];
     if (!agent) return `${def.label} needs the ${runner} runner, which is not available here`;
     const model = runner === 'claude' ? def.claude_model : def[`${runner}_model`];
+    const remainingTokens = this.budgetOf(fm).tokens - (fm.tokens ?? 0);
+    const tokenAccounting = modelCapabilities(def).accounting === 'tokens';
+    const limitLabel = tokenAccounting ? `up to ${remainingTokens.toLocaleString()} remaining item tokens` : `up to $${cap}, epics.conflict_budget_usd`;
+    if (tokenAccounting && (remainingTokens <= 0 || (fm.agent_turns ?? 0) >= this.budgetOf(fm).turns)) return 'the item token or turn budget is exhausted';
     const before = await this.ports.git.revParse(cwd, 'HEAD');
     const remote = await this.ports.git.remoteBranchSha(this.repo, branch);
     const desc = getSection(item.file, 'Description').trim();
@@ -3849,7 +3912,7 @@ export class LiveEngine implements Engine {
       `Never rebase, reset, push or force: ${branch} is shared, and planestro pushes it after checking your merge. If a conflict needs a decision the code cannot settle (two changes that truly contradict), run \`git merge --abort\` and report_blocked with that decision in one or two sentences.`,
     ].join('\n\n');
     const opId = this.store.journal.begin('conflict_session', id, { base, base_sha: baseSha, files, model: model ?? def.label });
-    this.store.mutateItem(id, [{ set: { op: 'syncing_base', op_started_at: this.now() } }, { activity: { actor: 'app', text: `merging origin/${base} (${baseSha.slice(0, 7)}) into ${branch} conflicted in ${files.join(', ')}; a one-shot ${def.label} session resolves it in ${cwd} (up to $${cap}, epics.conflict_budget_usd)${hint?.trim() ? ` with the hint: ${hint.trim().slice(0, 200)}` : ''}` } }], 'engine', { commit: `${id}: conflict session` });
+    this.store.mutateItem(id, [{ set: { op: 'syncing_base', op_started_at: this.now() } }, { activity: { actor: 'app', text: `merging origin/${base} (${baseSha.slice(0, 7)}) into ${branch} conflicted in ${files.join(', ')}; a one-shot ${def.label} session resolves it in ${cwd} (${limitLabel})${hint?.trim() ? ` with the hint: ${hint.trim().slice(0, 200)}` : ''}` } }], 'engine', { commit: `${id}: conflict session` });
     const reported: { done?: string; blocked?: string } = {};
     const none = async () => 'not available in a conflict session: resolve the merge, then report_done or report_blocked';
     const tools: TurnTools = {
@@ -3865,9 +3928,13 @@ export class LiveEngine implements Engine {
     this.turns.set(id, { model: model ?? def.label, phase: 'fix', startedAt: this.now(), lastOutput: '', abort });
     let result: TurnResult;
     try {
-      result = await this.withRunnerSlot(runner, () => this.withSessionSlot(id, () => agent.runTurn({
-        itemId: id, phase: 'fix', cwd, model: model as string, permissionMode: 'acceptEdits', prompt,
-        systemAppend: `${this.store.renderPrompt(runner === 'claude' ? 'worker-system' : `worker-system-${runner}`, item)}\n\n${this.hostNote}${runner === 'claude' ? cwdNote(cwd) : ''}`,
+      result = await this.withRunnerSlot(runner, () => this.withSessionSlot(id, async () => {
+        // A pause may arrive while this turn is waiting for another runner to release its slot.
+        if (this._paused || this.draining || this.stopping || abort.signal.aborted || this.store.local.engine.provider_guards?.[runner])
+          return { subtype: 'killed', isError: false, costUsd: 0, numTurns: 0, text: '' };
+        return agent.runTurn({
+        itemId: id, phase: 'fix', cwd, model: model as string, transport: modelCapabilities(def).transport, maxTokens: remainingTokens, permissionMode: 'acceptEdits', prompt,
+        systemAppend: `${this.store.renderPrompt(modelCapabilities(def).workerPrompt, item)}\n\n${this.hostNote}${runner === 'claude' ? cwdNote(cwd) : ''}`,
         ...(pick.sdkFallback ? { fallbackModel: pick.sdkFallback } : {}),
         allowedTools: sdkRules(allowed), extraDirs: [this.store.dataDir], maxBudgetUsd: cap, tools,
         // One shot, so nothing parks: what the rules do not allow is refused with a way forward.
@@ -3877,20 +3944,23 @@ export class LiveEngine implements Engine {
           if (allowedByRules(req, allowed, cwd)) return { action: 'allow' };
           return { action: 'deny', message: 'Not allowed in a conflict session: resolve the merge with git and file edits. If you need something else, git merge --abort and report_blocked saying what.' };
         },
-        onQuestion: async () => undefined,
+        onApproval: async (req) => { this.store.journal.append({ type: 'permission.declined', item: id, actor: 'engine', data: { ...req, reason: 'conflict session' } }); },
+        onQuestion: async (questions) => { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `conflict session question: ${JSON.stringify(questions)}` } }], 'engine', { commit: `${id}: record conflict question` }); },
         onOutput: (text) => { const t = this.turns.get(id); if (t) t.lastOutput = text.slice(-400); this.emit({ type: 'session.output', id, text }); },
         signal: abort.signal,
-      })));
+      });
+      }));
     } finally { this.turns.delete(id); }
     const after = this.store.requireItem(id).file.frontmatter;
-    this.store.mutateItem(id, [{ set: { cost_usd: Math.round(((after.cost_usd ?? 0) + result.costUsd) * 10000) / 10000, turns: (after.turns ?? 0) + result.numTurns } }, { unset: ['op', 'op_started_at'] }], 'engine');
-    this.usageSeen(result.rateLimit);
+    this.store.mutateItem(id, [{ set: { cost_usd: Math.round(((after.cost_usd ?? 0) + result.costUsd) * 10000) / 10000, turns: (after.turns ?? 0) + result.numTurns, tokens: (after.tokens ?? 0) + (result.tokens ?? 0), agent_turns: (after.agent_turns ?? 0) + (result.numTurns > 0 ? 1 : 0) } }, { unset: ['op', 'op_started_at'] }], 'engine');
+    this.usageSeen(result.rateLimit, runner);
+    const spendLabel = tokenAccounting ? `${(result.tokens ?? 0).toLocaleString()} tokens; dollar cost not reported` : `$${result.costUsd.toFixed(2)}`;
     const fail = async (why: string): Promise<string> => {
       await this.ports.git.abortInProgress(cwd).catch(() => undefined);
       const attempt = await this.ports.git.revParse(cwd, 'HEAD').catch(() => before);
       if (attempt !== before) await this.ports.git.resetHard(cwd, before);
       this.store.journal.end(opId, id, 'failed', { reason: why, attempt });
-      this.store.mutateItem(id, [{ activity: { actor: 'app', text: `the conflict session did not resolve it: ${why}${attempt !== before ? `; its attempt is ${attempt.slice(0, 12)} (git show it), the worktree is back on ${before.slice(0, 7)}` : ''} ($${result.costUsd.toFixed(2)})` } }], 'engine', { commit: `${id}: conflict session failed` });
+      this.store.mutateItem(id, [{ activity: { actor: 'app', text: `the conflict session did not resolve it: ${why}${attempt !== before ? `; its attempt is ${attempt.slice(0, 12)} (git show it), the worktree is back on ${before.slice(0, 7)}` : ''} (${spendLabel})` } }], 'engine', { commit: `${id}: conflict session failed` });
       return why;
     };
     if (result.subtype === 'killed') return fail('the session was stopped');
@@ -3907,7 +3977,7 @@ export class LiveEngine implements Engine {
     try { await this.ports.git.pushSetUpstream(cwd, branch); } catch (e) { return fail(`the push was refused (${(e as Error).message.replace(/\s+/g, ' ').slice(0, 200)})`); }
     const head = await this.ports.git.revParse(cwd, 'HEAD');
     this.store.journal.end(opId, id, 'ok', { head, cost: result.costUsd });
-    this.store.mutateItem(id, [{ activity: { actor: 'app', text: `the conflict session resolved the merge ("${done.slice(0, 300)}"); checked it (finished, clean, contains origin/${base} and origin/${branch}) and pushed ${head.slice(0, 7)} ($${result.costUsd.toFixed(2)})` } }], 'engine', { commit: `${id}: conflict resolved` });
+    this.store.mutateItem(id, [{ activity: { actor: 'app', text: `the conflict session resolved the merge ("${done.slice(0, 300)}"); checked it (finished, clean, contains origin/${base} and origin/${branch}) and pushed ${head.slice(0, 7)} (${spendLabel})` } }], 'engine', { commit: `${id}: conflict resolved` });
     return 'resolved';
   }
 

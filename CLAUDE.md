@@ -1,9 +1,9 @@
 # planestro
 
-Local-first backlog planning and Claude Code orchestration for a solo developer.
+Local-first backlog planning and agent orchestration for a solo developer.
 Markdown files with YAML frontmatter are the source of truth (one item per file,
 a prompt library, a journal), deterministic code runs the git / GitHub / CI
-mechanics, and Claude sessions are consulted only for judgment. TypeScript,
+mechanics, and model sessions are consulted only for judgment. TypeScript,
 Node 24, npm workspaces: `packages/shared` (schema + file codecs + pure logic),
 `packages/server` (store, engine, Hono API, CLI), `packages/web` (React + Vite).
 `npm test` (vitest), `npm run typecheck`, `npm run build`, `npm run dev` /
@@ -15,7 +15,7 @@ one, then copy it over the other.
 
 Evaluate every change against these; they are the architecture.
 
-1. **planestro owns state; Claude proposes changes to state.** While planestro
+1. **planestro owns state; models propose changes to state.** While planestro
    runs it is the only writer of a data dir. Workers and the orchestrator talk
    to it through MCP tools (`submit_plan`, `add_note`, `append_activity`,
    `report_done`, `report_blocked`); they never edit item files. Humans may
@@ -26,7 +26,7 @@ Evaluate every change against these; they are the architecture.
    tool call with "recorded by planestro — end this turn", let the turn end,
    let the process exit, set `awaiting`, resume later with the decision as the
    next message. No timeouts, no held promises.
-3. **Claude is never the sole holder of anything needed to recover.** Every
+3. **A model is never the sole holder of anything needed to recover.** Every
    turn and every orchestrator wake is rendered from persisted state; the
    orchestrator session is rotated freely because the files are its memory.
 4. **Don't ask an LLM what a state machine can know.** Git, worktrees, GitHub,
@@ -136,10 +136,10 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   price the CLI quoted for reloading it; every turn goes one of three ways on that estimate
   (`chooseTurnPath`): resume, a **fresh session** with a brief rendered from the item file and
   git (`fresh-brief`; the resume is unaffordable or above `budget_usd_fresh_above`, only for a
-  prompt that stands on its own, never planning or an answer to the session's own question), or
+  prompt that stands on its own; explicit provider handoffs may plan or answer a persisted question when both the original question and answer are carried), or
   `over_budget` before anything is spent. The fresh session replaces `session_id`; its intent is
   persisted first (`op_data.fresh_brief`). `commit_paths` commits named dirty files with no turn.
-- A report (`submit_plan`, `report_done`, `report_blocked`) whose call never reached planestro is applied
+- A report (`submit_plan`, `submit_breakdown`, `report_done`, `report_blocked`) whose call never reached planestro is applied
   from the turn's record (#167): the port keeps the session's last lost report with its arguments, the engine
   persists it in `op_data.outbox` and applies it through the same tool when the turn ends (or at the next start),
   and those tools are idempotent. The prompt goes to the SDK as a stream held open while background work runs, so
@@ -175,6 +175,7 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   (which ends in `resolve_question` / `update_question`, or planestro notes "reviewed, no
   change"). An item reaching FINISHED or ICEBOX resolves its open questions in the store
   (`settleQuestions`), never by asking the model.
+- Provider switches in either direction keep item state, worktrees, PRs and decisions, using the existing fresh-brief intent. `agent_sessions` (schema 4) stores a session id, role and tool contract per runner. Provider usage guards are machine-local and independent of the global user/disk pause. Orchestrator model changes apply next wake without a restart; its queue remains in memory, including when a wake hits its token cap.
 - Schema changes go through `packages/server/src/migrations` and bump
   `SCHEMA_VERSION`; a newer data dir opens read-only.
 - `planestro sample` (`packages/server/src/sample.ts`) is the no-credentials demo
