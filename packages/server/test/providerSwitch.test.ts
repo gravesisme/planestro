@@ -29,6 +29,29 @@ async function setup() {
   return { ...fixture, calls, world, ports };
 }
 describe('provider handoff', () => {
+  it('switches selected queued and underway work without submitting backlog or changing new-item defaults', async () => {
+    await setup(); engine.pause();
+    const backlog = store.createItem({ title: 'Future work after reset' });
+    const before = store.requireItem(backlog.id).file;
+    const defaults = store.config.defaults;
+    const statuses = ['QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW'] as const;
+    const active = statuses.map((status) => {
+      const item = store.createItem({ title: `Selected ${status}` });
+      store.mutateItem(item.id, [{ set: { status, ...(status === 'PLAN_READY' ? { awaiting: 'plan_approval' } : {}),
+        ...(status === 'IN_REVIEW' ? { pr: 12, skip_merge: true, hold_reason: 'Review first' } : {}) } }], 'user');
+      return item.id;
+    });
+    const result = applySwitch(store, engine, { model: 'code-agent', items: active, defaults: false });
+    expect(result.items.map((item) => item.result)).toEqual(statuses.map(() => 'applied'));
+    expect(active.map((id) => store.requireItem(id).file.frontmatter.status)).toEqual(statuses);
+    expect(store.requireItem(active[2]).file.frontmatter.awaiting).toBe('plan_approval');
+    expect(store.requireItem(active[4]).file.frontmatter).toMatchObject({ pr: 12, skip_merge: true, hold_reason: 'Review first' });
+    expect(store.requireItem(backlog.id).file).toEqual(before);
+    expect(store.config.defaults).toEqual(defaults);
+    // Even an explicit backlog selection only changes its model, never its phase.
+    applySwitch(store, engine, { model: 'code-agent', items: [backlog.id] });
+    expect(store.requireItem(backlog.id).file.frontmatter).toMatchObject({ status: 'NOT_YET_SUBMITTED', planner: 'code-agent' });
+  });
   it('round trips on the same worktree, retaining state and never resuming the original Claude session', async () => {
     const { codeRepo, calls } = await setup();
     const item = store.createItem({ title: 'Approved edits', description: 'Implement the approved change' });

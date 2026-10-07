@@ -10,23 +10,24 @@ import { connectionDropOf, decisionOf, heldReasonOf, previewOf, waitsFor } from 
 
 export function statusLabel(s: string): string { return s.replace(/_/g, ' '); }
 
-export function ItemCard({ item, sortable = true, onSelect }: { item: ItemView; sortable?: boolean; onSelect?: (id: string) => void }) {
+export function ItemCard({ item, sortable = true, onSelect, selection }: {
+  item: ItemView; sortable?: boolean; onSelect?: (id: string) => void;
+  selection?: { checked: boolean; onChange: (checked: boolean) => void };
+}) {
   const nav = useNavigate();
   const state = useStore((s) => s.state);
   const fm = item.frontmatter;
   const d = item.derived;
   const pendingWait = pendingTurnWait(fm, state);
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id, disabled: !sortable, data: { status: fm.status } });
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id, disabled: !sortable || !!selection, data: { status: fm.status } });
   const style = { transform: CSS.Transform.toString(transform), transition };
   const lane = d.lane;
   const modelLabel = (id?: string) => state?.config.models.find((m) => m.id === id)?.label ?? id;
   const children = d.children.map((c) => state?.items.find((i) => i.id === c)).filter(Boolean) as ItemView[];
   const merged = children.filter((c) => ['MERGED', 'FINISHED'].includes(c.frontmatter.status)).length;
-  return (
-    <ContextMenu.Root>
-      <ContextMenu.Trigger asChild>
-        <div ref={setNodeRef} style={style} {...attributes} {...listeners} className={`card ${d.needs_you ? 'needs' : ''} ${fm.blocked && !fm.triage ? 'blocked' : ''} ${isDragging ? 'dragging' : ''}`} onClick={() => onSelect?.(item.id)} onDoubleClick={() => nav(`/items/${item.id}`)}>
-          <div><span className="id">{item.id}</span><span className="title">{fm.title}</span></div>
+  const heading = <><span className="id">{item.id}</span>{' '}<span className="title">{fm.title}</span></>;
+  const content = <>
+          {selection ? <label className="provider-card-check"><input type="checkbox" checked={selection.checked} onChange={(e) => selection.onChange(e.target.checked)} /><span>{heading}</span></label> : <div>{heading}</div>}
           {fm.awaiting === 'review' && <div className="checker card-thumb"><img src={`/api/items/${item.id}/thumb?v=${encodeURIComponent(fm.updated_at)}`} alt="" onError={(e) => { (e.currentTarget.parentElement as HTMLElement).hidden = true; }} /></div>}
           <div className="meta">
             <span className="tag">{fm.category}</span>
@@ -51,6 +52,15 @@ export function ItemCard({ item, sortable = true, onSelect }: { item: ItemView; 
             {fm.resume_after && <span className="tag" title={`Resumes when these have merged, with: ${fm.resume_after.message}`}>resumes after {waitsFor(fm.resume_after)}</span>}
             {lane === 'done' && fm.finished_at && <span>{fm.finished_at.slice(0, 16).replace('T', ' ')}</span>}
           </div>
+  </>;
+  const cardClass = `card ${d.needs_you ? 'needs' : ''} ${fm.blocked && !fm.triage ? 'blocked' : ''}`;
+  // Selection cards have no navigation, drag/drop, or lifecycle context menu.
+  if (selection) return <div className={`${cardClass} provider-select-card ${selection.checked ? 'selected' : ''}`}>{content}</div>;
+  return (
+    <ContextMenu.Root>
+      <ContextMenu.Trigger asChild>
+        <div ref={setNodeRef} style={style} {...attributes} {...listeners} className={`${cardClass} ${isDragging ? 'dragging' : ''}`} onClick={() => onSelect?.(item.id)} onDoubleClick={() => nav(`/items/${item.id}`)}>
+          {content}
         </div>
       </ContextMenu.Trigger>
       <ContextMenu.Portal>
