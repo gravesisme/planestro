@@ -453,7 +453,7 @@ export class Orchestrator {
       }
     }
     if (e.type === 'user_message') lines.push(CHAT_POLICY);
-    if (e.type === 'epic_message') lines.push(EPIC_MESSAGE_POLICY);
+    if (e.type === 'epic_message') lines.push(e.data?.queued_for ? `The user sent this message to the epic while ${String(e.data.queued_for)} was live: it is queued for that session, which reads it when its turn ends (a one-shot conflict session never does: its merge is not pushed, and the epic stops for you). message_session reaches that session too. Children it changes still hear of it only through you.\n${EPIC_MESSAGE_POLICY.split('\n').slice(1).join('\n')}` : EPIC_MESSAGE_POLICY);
     const q = questionOf(e);
     if (q) { lines.push(this.questionPacket(e, q)); return lines.join('\n'); }
     for (const [k, v] of Object.entries(e.data ?? {})) lines.push(`${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`.slice(0, 2000));

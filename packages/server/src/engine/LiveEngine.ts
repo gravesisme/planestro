@@ -136,7 +136,7 @@ export class LiveEngine implements Engine {
   private _paused: boolean;
   private jobs = new Map<string, Promise<void>>();
   /** Turns this engine started. `waiting` names the slot the turn is still queued for, a runner's (concurrency.runner_limits) or `session` (max_sessions): no process yet. */
-  private turns = new Map<string, { model: string; phase: TurnPhase; startedAt: string; lastOutput: string; abort: AbortController; waiting?: string }>();
+  private turns = new Map<string, { model: string; phase: TurnPhase; startedAt: string; lastOutput: string; abort: AbortController; waiting?: string; oneShot?: string }>();
   /** Agent turns holding one of `concurrency.max_sessions` slots, and the turns queued for one (withSessionSlot). */
   private sessionTurns = 0;
   private sessionWaiters: Array<() => void> = [];
@@ -1007,6 +1007,16 @@ export class LiveEngine implements Engine {
     // word goes to the orchestrator, which instructs them; resuming a session there blocked the epic
     // with engine_error on every message (HH-256, HH-259).
     if (fm.kind === 'epic' && phase !== 'plan') {
+      // Unless a session of its own is running (its merge worktree's, or a one-shot conflict session): the word is
+      // queued for that session like any item's, and the orchestrator is told the user's (#210, HH-375: a "stop" was lost).
+      const live = this.turns.get(id);
+      if (live) {
+        const what = live.oneShot ?? 'session';
+        const pending = [...((fm.op_data?.pending_messages as string[] | undefined) ?? []), text];
+        this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), pending_messages: pending } } }, { activity: { actor: by, text: `message queued for its running ${what}: ${text}` } }], by, { commit: `${id}: message` });
+        if (by === 'user') this.wakeOrchestrator('epic_message', id, { message: text, queued_for: `its running ${what}` });
+        return;
+      }
       if (by === 'orchestrator') throw new Error(`epic ${id} has no session past its breakdown; message its children (${this.store.derived(item).children.join(', ') || 'none yet'}) or annotate_item the epic`);
       this.store.mutateItem(id, [{ activity: { actor: 'user', text: `message: ${text}` } }, { activity: { actor: 'app', text: 'an epic has no session of its own past its breakdown: passed to the orchestrator for its children' } }], 'user', { commit: `${id}: message` });
       this.wakeOrchestrator('epic_message', id, { message: text });
@@ -4075,7 +4085,8 @@ export class LiveEngine implements Engine {
     const allowed = [...BASE_ALLOWED.fix, 'Bash(git merge *)', ...this.store.config.permissions.allow];
     const policy = makePolicy(this.store.config, base, cwd);
     const abort = new AbortController();
-    this.turns.set(id, { model: model ?? def.label, phase: 'fix', startedAt: this.now(), lastOutput: '', abort });
+    const waiting = ((fm.op_data?.pending_messages as string[] | undefined) ?? []).length;
+    this.turns.set(id, { model: model ?? def.label, phase: 'fix', startedAt: this.now(), lastOutput: '', abort, oneShot: 'conflict session' });
     let result: TurnResult;
     try {
       result = await this.withRunnerSlot(runner, () => this.withSessionSlot(id, async () => {
@@ -4113,6 +4124,13 @@ export class LiveEngine implements Engine {
       this.store.mutateItem(id, [{ activity: { actor: 'app', text: `the conflict session did not resolve it: ${why}${attempt !== before ? `; its attempt is ${attempt.slice(0, 12)} (git show it), the worktree is back on ${before.slice(0, 7)}` : ''} (${spendLabel})` } }], 'engine', { commit: `${id}: conflict session failed` });
       return why;
     };
+    // A one-shot session is never resumed, so what was said to it while it ran (#210) never reached it: its merge is not pushed over that word.
+    const queued = ((this.store.requireItem(id).file.frontmatter.op_data?.pending_messages as string[] | undefined) ?? []);
+    const arrived = queued.slice(waiting);
+    if (arrived.length) {
+      this.store.mutateItem(id, [{ set: { op_data: { ...(this.store.requireItem(id).file.frontmatter.op_data ?? {}), pending_messages: queued.slice(0, waiting) } } }], 'engine');
+      return fail(`messages arrived while it ran, and a one-shot session cannot read them: ${arrived.map((m) => `"${m.slice(0, 200)}"`).join('; ')}`);
+    }
     if (result.subtype === 'killed') return fail('the session was stopped');
     const blocked = reported.blocked ?? result.blocked;
     if (blocked) return fail(`it needs a decision: ${blocked}`);
