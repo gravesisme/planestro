@@ -282,6 +282,24 @@ export function ciFromRuns(runs: any[], sha: string): CiStatus {
   return { ...base, state: 'failure' };
 }
 
+/** A job conclusion that did not fail the run: it succeeded, or it never ran. */
+const ok = (c: string | null | undefined) => !c || c === 'success' || c === 'skipped' || c === 'neutral';
+/**
+ * A completed run GitHub calls `failure` whose jobs only ended cancelled or skipped (a job's
+ * `timeout-minutes`, a cancelled job a `needs:` job waits on) checked nothing and failed nothing:
+ * it is cancelled, which is re-run once and then `ci_cancelled`, never a fix turn (#213, HH-344).
+ */
+export function onlyCancelled(jobs: any[]): boolean {
+  return jobs.some((j) => j.conclusion === 'cancelled') && jobs.every((j) => j.conclusion === 'cancelled' || ok(j.conclusion));
+}
+/** The jobs and steps of a run that did not succeed, as `job: conclusion` and `job › step: conclusion` (#213). */
+export function unsuccessful(jobs: any[]): string[] {
+  return jobs.filter((j) => !ok(j.conclusion)).flatMap((j) => {
+    const steps = ((j.steps ?? []) as any[]).filter((st) => !ok(st.conclusion));
+    return steps.length ? steps.map((st) => `${j.name} › ${st.name}: ${st.conclusion}`) : [`${j.name}: ${j.conclusion}`];
+  });
+}
+
 const PR_FIELDS = 'number,url,state,mergedAt,headRefOid,headRefName,baseRefName,mergeCommit,title,isDraft,author,updatedAt';
 function toPr(p: any): PrInfo { return { number: p.number, url: p.url, state: p.state, mergedAt: p.mergedAt ?? undefined, headRefOid: p.headRefOid, headRefName: p.headRefName, baseRefName: p.baseRefName, mergeCommit: p.mergeCommit?.oid, title: p.title, isDraft: Boolean(p.isDraft), author: p.author?.login ?? undefined, updatedAt: p.updatedAt ?? undefined }; }
 
@@ -303,7 +321,11 @@ export class LiveGhPort implements GhPort {
   }
   async ciForSha(repo: string, branch: string, sha: string, workflow: string): Promise<CiStatus> {
     const runs = JSON.parse(await ghRead(['run', 'list', '--repo', repo, '--branch', branch, '--workflow', workflow, '--limit', '10', '--json', 'databaseId,status,conclusion,headSha,url,createdAt,attempt'])) as any[];
-    return ciFromRuns(runs.filter((r) => r.headSha === sha), sha);
+    const ci = ciFromRuns(runs.filter((r) => r.headSha === sha), sha);
+    if (ci.state !== 'failure' || !ci.runId) return ci;
+    // GitHub's `failure` is not proof that anything failed: read the jobs (#213).
+    const jobs = await ghRead(['run', 'view', String(ci.runId), '--repo', repo, '--json', 'jobs']).then((v) => (JSON.parse(v).jobs ?? []) as any[], () => []);
+    return onlyCancelled(jobs) ? { ...ci, state: 'cancelled' } : ci;
   }
   async ciQueue(repo: string, workflow: string): Promise<CiQueue> {
     const count = async (status: string) => (JSON.parse(await ghRead(['run', 'list', '--repo', repo, '--workflow', workflow, '--status', status, '--limit', '100', '--json', 'databaseId'])) as any[]).length;
@@ -315,7 +337,15 @@ export class LiveGhPort implements GhPort {
     const lines = log.split('\n').map((l) => l.replace(/^[^\t]*\t[^\t]*\t\S+\s?/, '')).filter((l) => l.trim());
     const fails = lines.filter((l) => /FAIL|Error|error:|assert/i.test(l));
     const tail = lines.slice(-maxLines);
-    return [...new Set([...fails.slice(-40), '…', ...tail])].join('\n');
+    // What did not succeed leads, so an empty log is never a bare "…" (#213).
+    const view = await ghRead(['run', 'view', String(runId), '--repo', repo, '--json', 'jobs,url']).then((v) => JSON.parse(v), () => ({}));
+    const jobs = (view.jobs ?? []) as any[];
+    const head = [...unsuccessful(jobs), ...(view.url ? [`run: ${view.url}`] : [])];
+    const count = (c: string) => jobs.filter((j) => j.conclusion === c).length;
+    const plural = (n: number, c: string) => `${n} ${n === 1 ? 'job' : 'jobs'} ${c}`;
+    const empty = `GitHub returned no failed-job log: ${[plural(count('cancelled'), 'cancelled'), `${count('skipped')} skipped`].join(', ')}`;
+    const body = lines.length ? [...fails.slice(-40), ...(fails.length ? ['…'] : []), ...tail] : [empty];
+    return [...new Set([...head, ...body])].join('\n');
   }
   async isBillingBlocked(repo: string, runId: number) {
     try {
