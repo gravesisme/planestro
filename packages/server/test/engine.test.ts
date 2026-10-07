@@ -942,6 +942,55 @@ describe('epics and external watchers (dry-run ports)', () => {
   });
 });
 
+describe('a child added to an epic whose PR is open (#208, HH-342)', () => {
+  it('reopens the epic: the child starts and merges, and the epic goes back to review on the same PR with its hold', async () => {
+    const { store, engine, world } = await setup();
+    const epic = store.createItem({ title: 'Sound pass', description: 'x', kind: 'epic' });
+    const done = store.createItem({ title: 'Footsteps', description: 'x', parent: epic.id });
+    const last = store.createItem({ title: 'Ambience', description: 'x', parent: epic.id });
+    world.remoteBranches.set('feature/sound-pass', world.sha());
+    store.mutateItem(epic.id, [{ set: { status: 'IN_PROGRESS', branch: 'feature/sound-pass' } }], 'engine');
+    store.mutateItem(done.id, [{ set: { status: 'FINISHED' } }], 'engine');
+    store.transition(last.id, 'QUEUED', 'user');
+    // The last unfinished child is discarded to be replaced: the epic PR opens, and the orchestrator holds it.
+    await engine.discard(last.id, 'replaced by new children');
+    await engine.start();
+    await waitFor(() => status(store, epic.id) === 'IN_REVIEW');
+    const pr = store.getItem(epic.id)!.file.frontmatter.pr!;
+    store.mutateItem(epic.id, [{ set: { skip_merge: true, hold_reason: "waiting on the designer's new children" } }], 'orchestrator');
+    // The replacement child, three seconds later.
+    const child = store.createItem({ title: 'Wind', description: 'x', parent: epic.id });
+    store.transition(child.id, 'QUEUED', 'user');
+    engine.poke();
+    await waitFor(() => status(store, child.id) === 'PLAN_READY', 8000);
+    let fm = store.getItem(epic.id)!.file.frontmatter;
+    expect(fm).toMatchObject({ status: 'IN_PROGRESS', pr, skip_merge: true, hold_reason: "waiting on the designer's new children" });
+    expect(activityOf(store, epic.id)).toContain(`new child ${child.id}: epic back in progress; PR #${pr} stays open and is reused`);
+    await engine.approvePlan(child.id);
+    await waitFor(() => status(store, child.id) === 'FINISHED', 10000);
+    await waitFor(() => status(store, epic.id) === 'IN_REVIEW', 8000);
+    fm = store.getItem(epic.id)!.file.frontmatter;
+    expect(fm).toMatchObject({ pr, skip_merge: true, hold_reason: "waiting on the designer's new children" });
+    expect([...world.prs.values()].filter((p) => p.headRefName === 'feature/sound-pass')).toHaveLength(1);
+  });
+
+  it('a merged epic PR is not reopened', async () => {
+    const { store, engine, world } = await setup();
+    const epic = store.createItem({ title: 'Merged', description: 'x', kind: 'epic' });
+    const branch = 'feature/merged';
+    world.remoteBranches.set(branch, world.sha());
+    world.prs.set(300, { number: 300, url: 'u', state: 'MERGED', mergedAt: new Date().toISOString(), headRefOid: world.sha(), headRefName: branch, baseRefName: 'trunk', polls: 0, failOnce: false });
+    store.mutateItem(epic.id, [{ set: { status: 'IN_REVIEW', branch, pr: 300, skip_merge: true, hold_reason: 'held', ci_result: 'pending' } }], 'engine');
+    const child = store.createItem({ title: 'Late', description: 'x', parent: epic.id });
+    store.transition(child.id, 'QUEUED', 'user');
+    await engine.start();
+    await sleep(400);
+    expect(['IN_REVIEW', 'MERGED', 'FINISHED']).toContain(status(store, epic.id));
+    expect(activityOf(store, epic.id)).not.toContain('epic back in progress');
+    expect(status(store, child.id)).toBe('QUEUED');
+  });
+});
+
 describe('pull requests into a branch that deploys open held (review.hold_into, LM-2)', () => {
   it("an epic's PR into it is held and the orchestrator hears of it; an item's too; any other base merges as before", async () => {
     const { store, engine, world } = await setup();
