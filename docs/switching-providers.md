@@ -4,7 +4,13 @@ Switch when one subscription runs out, when you want a different model's judgmen
 
 Open **Settings → Switch provider**, or use the usage banner. The banner offers the other provider when it has an available configured model. Choose Claude or Codex, then a model with planning capability. You can change the orchestrator, defaults for new items, and selected unfinished items independently.
 
+The item picker uses the board's status columns. **Select only queued and underway** selects Queued, Plan in progress, Plan ready, In progress and In review, leaving the backlog unselected. Use each column's checkbox or individual cards to narrow the selection. Cards keep the board's model, PR, hold and waiting labels; the preview checks whether each selected item can switch now.
+
+**Not yet submitted** is collapsed separately. Open it only if you also want to change models for future backlog work. Switching never submits an item or approves its plan. **Change defaults for new items** starts unchecked, so you can keep future work on Claude while continuing current work on Codex (or the reverse).
+
 **Preview changes** explains each selected item in one line, including what it is waiting for if it cannot switch. **Save changes** keeps the global automation setting. **Save and resume automation** also releases the global pause. The result lists applied, skipped and failed items; retrying a partially completed batch does not repeat completed changes.
+
+Resuming automation allows already queued work to continue, including unselected items whose provider is available. Not yet submitted items stay unsubmitted; holds, pending approvals and dependencies still apply.
 
 ## What carries over
 
