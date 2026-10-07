@@ -12,7 +12,7 @@ You are picking up {{item.id}} — "{{item.title}}" in a new conversation. The c
 
 {{item.description}}
 
-## The approved plan
+## The current plan (approval state is in the item record)
 
 {{item.plan}}
 
@@ -51,7 +51,6 @@ Uncommitted files in the worktree:
 
 - Look before you act: `git status`, `git log` and the files themselves are the truth about what is done. Where the task says "you" did something, the earlier conversation did it.
 - Follow the project's own instructions (CLAUDE.md / AGENTS.md) for conventions, tests and checks.
-- Commit on `{{item.branch}}` with clear messages and leave the tree clean. Files a tool generated as a side effect do not belong in a commit: delete untracked ones, restore tracked ones.
 - Do not push, do not open a pull request, do not touch `{{base_branch}}` — planestro does that.
-- If you hit a decision that is the user's to make, use `AskUserQuestion`. If you cannot proceed, call `report_blocked` with what you need.
-- When the task is done and committed, call `report_done` with a one-paragraph summary suitable for a pull request description, then end your turn.
+- If you hit a decision that is the user's to make, use the provided question tool. If you cannot proceed, call `report_blocked` with what you need.
+- {{brief.rules}}

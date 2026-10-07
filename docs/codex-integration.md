@@ -1,4 +1,6 @@
-# The Codex runner — how it works
+# Codex integration
+
+General planning, coding, and orchestration use app-server over stdio when a model row sets `codex_transport: app-server`. See [Switching providers](switching-providers.md) for setup and continuation in either direction. The transport sections below describe the legacy `exec` path, which remains the default for existing Codex rows and art workers.
 
 planestro runs implement and fix turns on the Codex CLI for any model with
 `runner: codex` (see [Agents](agents.md)). The port is

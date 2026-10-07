@@ -328,7 +328,7 @@ describe('what a new project starts with (#49)', () => {
     store = await DataStore.open(dataDir);
     const c = store.config;
     expect(c.defaults).toMatchObject({ planner: 'opus-5-5', implementer: 'opus-5-5' });
-    expect(c.models.map((m) => [m.id, m.claude_model, m.fallback])).toEqual([['opus-5-5', 'claude-opus-5-5', undefined], ['fable-5-1', 'claude-fable-5-1', 'opus-5-5']]);
+    expect(c.models.map((m) => [m.id, m.claude_model, m.fallback])).toEqual([['opus-5-5', 'claude-opus-5-5', undefined], ['codex-gpt-6-astra', undefined, undefined], ['fable-5-1', 'claude-fable-5-1', 'opus-5-5']]);
     expect(c.orchestrator).toMatchObject({ model: 'opus-5-5', rotate_after_wakes: 10 });
     // the project's own standing decisions, empty to start with, are part of every wake's instructions
     expect(existsSync(join(dataDir, 'prompts', 'standing-decisions.md'))).toBe(true);

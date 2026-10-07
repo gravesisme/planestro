@@ -5,7 +5,7 @@
 **Your backlog, shipped by agents — with you at the decision points.**
 Local-first planning and agent orchestration for a solo developer: a web app,
 an API, anything that lives in a git repository with CI. Write an item in
-markdown; [Claude Code](https://claude.com/claude-code) plans it; Claude Code or
+markdown; [Claude Code](https://claude.com/claude-code) or Codex plans it; Claude Code or
 the [Codex CLI](https://developers.openai.com/codex/cli) implements it; planestro
 does everything mechanical in between.
 
@@ -21,8 +21,7 @@ red. Answer whenever, even after a restart, and the same conversation resumes.
 - **Parallel work without babysitting.** Several items in flight, each in its
   own worktree. A merge queue syncs each branch with the base and waits for
   green CI, so they land one after another on a base that stays green.
-- **Pick the agent per item.** A Claude planner writes every plan; Claude or
-  Codex implements it. An orchestrator session reviews plans, handles a second
+- **Pick the agent per item.** Claude or Codex can plan, implement, and orchestrate; Claude remains the default. An orchestrator session reviews plans, handles a second
   red CI run or a rebase conflict, and brings you only what needs you.
 - **Nothing lives only in a conversation.** Items are markdown files in a
   git-versioned data dir, and every turn is rebuilt from them: kill the
@@ -67,7 +66,7 @@ in-memory fakes the test suite drives, so the whole lifecycle really runs:
 ## Features split across two agents
 
 Each model in `planestro.yml` carries a one-line description of what it is
-for. Write one epic, and the Claude planner proposes the children, routes each
+for. Write one epic, and the selected planner proposes the children, routes each
 to the model whose description fits, and wires which waits on which. Code
 checks the list (known implementers, no cycles) before you ever see it; you
 edit it and approve. The children land on the epic's integration branch and
@@ -133,6 +132,8 @@ full list, with reasons, is in [`CLAUDE.md`](CLAUDE.md)):
 - **Project-neutral.** A project is `{code_repo, data_dir}`. The data dir can
   live anywhere — for example an orphan branch of the code repo checked out as
   a nested worktree, so planning history never touches the code's branches.
+
+See [Switching providers](docs/switching-providers.md) for continuing paused work in either direction, preserved decisions, token budgets, and a Codex-only setup without Claude installed.
 
 ## Lifecycle
 

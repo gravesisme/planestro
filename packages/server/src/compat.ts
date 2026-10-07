@@ -10,4 +10,4 @@ export const VALIDATED_ON = '2026-09-28';
 
 /** The Codex CLI the Codex runner was validated against (spikes/codex-spike.ts, docs/notes/codex-spike.md). */
 export const VALIDATED_CODEX_VERSION = '0.154.0';
-export const CODEX_VALIDATED_ON = '2026-09-17';
+export const CODEX_VALIDATED_ON = '2026-10-07';

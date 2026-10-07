@@ -1,0 +1,110 @@
+import { it, expect, afterEach } from 'vitest';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { z } from 'zod';
+import { execFileSync } from 'node:child_process';
+import { gitWritableRoots } from '../src/engine/sessions/gitWritableRoots.ts';
+import { CodexAppServerPort, ScopedTools } from '../src/engine/sessions/CodexAppServerPort.ts';
+import type { TurnOptions } from '../src/engine/ports.ts';
+
+const roots: string[] = [];
+afterEach(() => { roots.forEach((p) => rmSync(p, { recursive: true, force: true })); roots.length = 0; });
+function fixture(mode: string) {
+  const root = mkdtempSync(join(tmpdir(), 'planestro-fake-appserver-')); roots.push(root);
+  const log = join(root, 'protocol.jsonl'); const bin = join(root, 'codex');
+  const script = `#!/usr/bin/env node
+const fs = require('node:fs');
+const readline = require('node:readline');
+const log = ${JSON.stringify(log)};
+const mode = ${JSON.stringify(mode)};
+const send = (m) => process.stdout.write(JSON.stringify(m)+'\\n');
+process.stdin.on('end', () => fs.writeFileSync(log+'.stdin-ended','yes'));
+readline.createInterface({ input: process.stdin }).on('line', (line) => {
+ const m=JSON.parse(line); fs.appendFileSync(log,JSON.stringify(m)+'\\n');
+ if (m.id===100) { send({method:'turn/completed',params:{threadId:'thread',turn:{id:'turn'}}}); return; }
+ if (m.method==='initialize') send({id:m.id,result:{}});
+ if (m.method==='config/read') send({id:m.id,result:{config:{mcp_servers:{}},layers:[{config:{mcp_servers:{unrelated:{command:'never-run'}}},disabledReason:'untrusted'}]}});
+ if (m.method==='thread/start'||m.method==='thread/resume') {
+  if(m.method==='thread/resume') send({method:'thread/tokenUsage/updated',params:{threadId:'thread',turnId:'old',tokenUsage:{total:{inputTokens:100,cachedInputTokens:50,outputTokens:10},last:{totalTokens:60}}}});
+  send({id:m.id,result:{thread:{id:'thread'},model:m.params.model}});
+ }
+ if (m.method==='turn/start') {
+  send({id:m.id,result:{turn:{id:'turn'}}});
+  send({method:'turn/started',params:{threadId:'thread',turn:{id:'turn'}}});
+  if(mode==='cap') { send({method:'thread/tokenUsage/updated',params:{threadId:'thread',turnId:'turn',tokenUsage:{total:{inputTokens:200,cachedInputTokens:100,outputTokens:20},last:{totalTokens:120}}}}); return; }
+  if(mode==='approval') send({id:100,method:'item/commandExecution/requestApproval',params:{threadId:'thread',turnId:'turn',command:'network command'}});
+  else send({id:100,method:'item/tool/call',params:{threadId:'thread',turnId:'turn',callId:'call',tool:mode==='plan'?'submit_plan':'report_done',arguments:mode==='plan'?{plan:'A synthetic plan'}:{summary:'Done',attach:['capture.png'],review:'Loop review'}}});
+ }
+ if(m.method==='turn/interrupt') { send({id:m.id,result:{}}); send({method:'turn/completed',params:{threadId:'thread',turn:{id:'turn'}}}); }
+});
+`;
+  writeFileSync(bin, script, { mode: 0o755 });
+  return { root, log, port: new CodexAppServerPort(bin, join(root, 'home'), false) };
+}
+function options(root: string, overrides: Partial<TurnOptions> = {}): TurnOptions {
+  const noop = async () => 'recorded';
+  return { itemId: 'TEST-1', cwd: root, phase: 'implement', model: 'test-model', permissionMode: 'acceptEdits', prompt: 'Test', systemAppend: 'Test', allowedTools: [], extraDirs: [], onOutput: () => {}, onQuestion: async () => {}, onPermission: async () => ({ action: 'park' }), tools: {
+    submit_plan: noop, submit_breakdown: noop, report_done: noop, report_blocked: noop, get_item: noop, hand_off: noop, add_note: noop, append_activity: noop, report_iteration: noop, report_progress: noop,
+  }, ...overrides };
+}
+it('binds calls to a role, item handler, thread and turn; rejects forged arguments and stale calls', async () => {
+  let calls = 0;
+  const scope = new ScopedTools('thread', 'turn', [{ name: 'report_done', description: 'bound report', schema: { summary: z.string() }, handler: async () => { calls++; return 'TEST-1'; } }]);
+  const p = { threadId: 'thread', turnId: 'turn', callId: 'call', tool: 'report_done', arguments: { summary: 'done' } };
+  expect(await scope.call(p)).toBe('TEST-1'); expect(await scope.call(p)).toBe('TEST-1'); expect(calls).toBe(1);
+  await expect(scope.call({ ...p, namespace: 'foreign' })).rejects.toThrow('namespace');
+  await expect(scope.call({ ...p, arguments: { summary: 'different' } })).rejects.toThrow('reused call id');
+  await expect(scope.call({ ...p, threadId: 'other' })).rejects.toThrow('foreign');
+  await expect(scope.call({ ...p, tool: 'approve_plan' })).rejects.toThrow('role');
+  await expect(scope.call({ ...p, arguments: { summary: 'done', id: 'TEST-2' } })).rejects.toThrow('invalid');
+  scope.close(); await expect(scope.call(p)).rejects.toThrow('stale');
+});
+it('plans through scoped tools and keeps stdin open, with explicit read-only policy and inherited MCP disabled', async () => {
+  const { root, log, port } = fixture('plan');
+  const result = await port.runTurn(options(root, { phase: 'plan', permissionMode: 'plan', images: [join(root, 'reference.png')] }));
+  expect(result.planSubmitted).toBe('A synthetic plan');
+  expect(existsSync(log+'.stdin-ended')).toBe(false);
+  const records = readFileSync(log,'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  expect(records.find((r) => r.method==='thread/start').params).toMatchObject({ sandbox: 'read-only', config: { mcp_servers: { unrelated: { enabled: false } }, 'features.image_generation': false } });
+  expect(records.find((r) => r.method==='turn/start').params.input).toContainEqual({ type: 'localImage', path: join(root, 'reference.png') });
+  expect(records.find((r) => r.method==='turn/start').params.sandboxPolicy).toEqual({ type: 'readOnly', networkAccess: false });
+  expect(records.find((r) => r.method==='thread/start').params.dynamicTools.map((t: any) => t.name)).not.toContain('report_done');
+});
+it('records approvals then declines them in the same cycle and exits without a human', async () => {
+  const { root, log, port } = fixture('approval'); let persisted = false;
+  const result = await port.runTurn(options(root, { onApproval: async () => {
+    expect(readFileSync(log,'utf8')).not.toContain('"decision":"decline"'); persisted = true;
+  } }));
+  expect(persisted).toBe(true); expect(result.parked).toBe('permission');
+  expect(readFileSync(log,'utf8')).toContain('"decision":"decline"');
+});
+it('retains complete lost-report arguments and exposes a connection drop', async () => {
+  const { root, port } = fixture('lost'); let saved: unknown; let dropped = false;
+  const o = options(root, { onUndelivered: (r) => { saved = r; }, onConnectionDrop: () => { dropped = true; } });
+  o.tools.report_done = async () => { throw new Error('transport dropped'); };
+  const result = await port.runTurn(o);
+  expect(saved).toMatchObject({ tool: 'report_done', args: { summary: 'Done', attach: ['capture.png'], review: 'Loop review' } });
+  expect(result.undelivered).toEqual(saved); expect(dropped).toBe(true);
+});
+it('subtracts resumed totals, interrupts at its token cap, and restates the sandbox', async () => {
+  const { root, log, port } = fixture('cap');
+  const result = await port.runTurn(options(root, { resume: 'thread', maxTokens: 50 }));
+  expect(result.tokens).toBe(60); expect(result.subtype).toBe('token_cap');
+  const records = readFileSync(log,'utf8');
+  expect(records).toContain('"method":"thread/resume"'); expect(records).toContain('"sandbox":"workspace-write"');
+});
+it('restates narrow linked-worktree Git roots on both a start and a resume', async () => {
+  const { root, log, port } = fixture('worker');
+  const git = (...args: string[]) => execFileSync('git', args, { cwd: root, stdio: 'ignore' });
+  git('init', '-q'); git('-c', 'user.name=test', '-c', 'user.email=test@example.test', 'commit', '--allow-empty', '-m', 'init');
+  const cwd = join(root, 'linked'); git('worktree', 'add', '-b', 'worker', cwd);
+  for (const resume of [undefined, 'thread']) await port.runTurn(options(cwd, { resume }));
+  const records = readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  const expected = [cwd, ...gitWritableRoots(cwd)];
+  expect(expected.length).toBe(5);
+  for (const r of records.filter((r) => ['thread/start', 'thread/resume'].includes(r.method)))
+    expect(r.params.config['sandbox_workspace_write.writable_roots']).toEqual(expected);
+  for (const r of records.filter((r) => r.method === 'turn/start'))
+    expect(r.params.sandboxPolicy).toEqual({ type: 'workspaceWrite', writableRoots: expected, networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true });
+});

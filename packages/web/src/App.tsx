@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router';
 import { useStore, act } from './store.ts';
 import { api } from './api.ts';
-import { usageWindowLabel, usagePercent, localClock, type UsageGuardState } from '@planestro/shared';
+import { canPlan, unavailableEntry, usageWindowLabel, usagePercent, localClock, type UsageGuardState } from '@planestro/shared';
 import { OrchestratorChat } from './components/OrchestratorChat.tsx';
 import { setTitle, setNeeds } from './tabBadge.ts';
 
@@ -36,7 +36,9 @@ export function App() {
   const active = state?.items.filter((i) => ['PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW', 'MERGED'].includes(i.frontmatter.status)) ?? [];
   const inReview = state?.items.filter((i) => i.frontmatter.status === 'IN_REVIEW') ?? [];
   const paused = state?.engine.paused ?? false;
-  const guard = paused && state?.engine.paused_by === 'usage_guard' ? state.engine.usage_guard : undefined;
+  const guards = Object.entries(state?.engine.provider_guards ?? {});
+  const availableProvider = (provider: string) => !state?.engine.provider_guards?.[provider] && state?.config.models.some((m) => m.runner === provider && canPlan(m) && !unavailableEntry(state.local.model_unavailable, m.id, new Date()));
+  const unavailableProviders = ['claude', 'codex'].filter((p) => state?.engine.provider_guards?.[p] || state?.config.models.some((m) => m.runner === p && unavailableEntry(state.local.model_unavailable, m.id, new Date())));
   // A turn queued for its runner's slot is not an agent running yet.
   const running = state?.engine.sessions.filter((s) => s.busy).length ?? 0;
   const notes = useStore((s) => s.notes); const notesSeen = useStore((s) => s.notesSeen);
@@ -68,7 +70,8 @@ export function App() {
             : <span className="summary">{paused ? '⏸ PAUSED' : `● ${state?.engine.mode === 'live' ? 'LIVE' : 'DRY-RUN'}`} · {running} agents active · {active.length} active items · {inReview.length} PR{inReview.length === 1 ? '' : 's'} in review</span>}
           {paused && state?.engine.paused_by === 'disk' && state.engine.disk_guard && <span className="usage-pill" title={`The disk guard paused automation at ${new Date(state.engine.disk_guard.tripped_at).toLocaleString()}: ${state.engine.disk_guard.free_gib} GiB free on ${state.engine.disk_guard.path}. Running turns finish, nothing new starts; it resumes by itself once there is ${state.config.disk_guard.resume_free_gib} GiB free.`}>disk nearly full · {state.engine.disk_guard.free_gib} GiB free</span>}
           {state?.engine.ci_queue && state.engine.ci_queue.queued > 0 && <span className="usage-pill" title={`CI runners: ${state.engine.ci_queue.queued} runs waiting for a runner, ${state.engine.ci_queue.running} running. Time queued does not count toward a run's timeout.${state.config.ci.max_queued_runs > 0 ? ` New items wait to start while ${state.config.ci.max_queued_runs} or more are queued.` : ''}`}>CI queue · {state.engine.ci_queue.queued} waiting{state.config.ci.max_queued_runs > 0 && state.engine.ci_queue.queued >= state.config.ci.max_queued_runs ? ' · starts held' : ''}</span>}
-          {guard && <span className="usage-pill" title={`The usage guard paused automation at ${new Date(guard.tripped_at).toLocaleString()}; running turns finish, nothing new starts.${guard.resume_at ? ' It resumes on its own once the window resets.' : ''}`}>{guardPill(guard)}</span>}
+          {guards.map(([provider, guard]) => <span key={provider} className="usage-pill">{provider}: {guardPill(guard)} <button onClick={() => act(() => api.retryProvider(provider))}>Retry {provider}</button></span>)}
+          {unavailableProviders.map((provider) => { const other = provider === 'claude' ? 'codex' : 'claude'; return availableProvider(other) ? <Link key={provider} to={`/switch-provider?provider=${other}`}>{provider} paused for usage; switch to {other === 'codex' ? 'Codex' : 'Claude'}</Link> : null; })}
           <button className={`lever ${paused ? 'paused' : ''}`} onClick={() => act(() => (paused ? api.resume() : api.pause()))}>{paused ? 'RESUME' : 'PAUSE'}<span className="desk-only"> AUTOMATION</span></button>
           <span className={`dot ${connected ? 'on' : 'off'}`} title={connected ? 'connected' : 'reconnecting'} />
         </div>

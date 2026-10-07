@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
-import { getSection, planToolsMissing, epicFlagOf, holdShapeOf, heldReasonOf, previewOf, type HoldFlag, partsSummary, serializeItemFile, serializeQuestionFile, parseThread, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent, parseActivity } from '@planestro/shared';
+import { modelCapabilities, type Runner, getSection, planToolsMissing, epicFlagOf, holdShapeOf, heldReasonOf, previewOf, type HoldFlag, partsSummary, serializeItemFile, serializeQuestionFile, parseThread, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent, parseActivity } from '@planestro/shared';
 import { parkHint } from './parks.ts';
 import { hostNote, keptPathsNote } from './hostNote.ts';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
@@ -76,6 +76,7 @@ const HANDS_OFF = new Set([
 ]);
 
 export interface OrchestratorHooks {
+  ciWorkflow?: string;
   message(id: string, text: string): Promise<void>;
   /** `hold`: the pull request it opens stays out of the merge queue, for this reason (#97). */
   approvePlan(id: string, notes?: string, hold?: string): Promise<void>;
@@ -142,11 +143,11 @@ export interface OrchestratorHooks {
   resumeAfter(id: string, items: string[], message: string, prs?: number[]): Promise<string>;
   poke(): void;
   /** Every wake's rate-limit reading, for the usage guard (a wake spends the same subscription as a worker turn). */
-  usageSeen?(rateLimit: RateLimitSnapshot | undefined): void;
+  usageSeen?(rateLimit: RateLimitSnapshot | undefined, runner?: string): void;
 }
 
 /** `total_usd`: the running total the conversation last reported; a resumed wake's cost is what it rose by (#64). */
-interface OrchState { session_id?: string; started_at?: string; wakes_served: number; total_usd?: number }
+interface OrchState { runner?: Runner; model?: string; tool_contract?: string; session_id?: string; started_at?: string; wakes_served: number; total_usd?: number }
 
 /**
  * The judgment layer: one resumable Fable session, woken with a compact structured
@@ -157,6 +158,9 @@ interface OrchState { session_id?: string; started_at?: string; wakes_served: nu
 export class Orchestrator {
   private queue: WakeEvent[] = [];
   private running = false;
+  private activeModel?: string;
+  private activeAbort?: AbortController;
+  private activeWake?: Promise<void>;
   /** A wake is being served now. */
   get busy(): boolean { return this.running; }
   private stopped = false;
@@ -178,7 +182,8 @@ export class Orchestrator {
     private readonly pausedRef: () => boolean,
   ) {}
 
-  get enabled(): boolean { return typeof this.ports.agents.claude.runCustomTurn === 'function'; }
+  get enabled(): boolean { const pick = this.modelForWake(); const def = findModel(this.store.config, pick.model); return (!def || modelCapabilities(def).orchestrate) && typeof this.ports.agents[pick.runner]?.runCustomTurn === 'function'; }
+  get selection() { const configured = this.modelForWake(); const current = this.readState(); return { configured: configured.label, current: this.activeModel ?? current.model, pending: this.busy && this.activeModel !== configured.model, restart_required: false }; }
 
   private get stateFile(): string { return join(this.store.dataDir, '.planestro', 'orchestrator.yml'); }
   private readState(): OrchState {
@@ -186,7 +191,7 @@ export class Orchestrator {
   }
   private writeState(s: OrchState): void { mkdirSync(join(this.store.dataDir, '.planestro'), { recursive: true }); writeFileSync(this.stateFile, YAML.stringify(s)); }
 
-  stop(): void { this.stopped = true; }
+  async stop(): Promise<void> { this.stopped = true; this.activeAbort?.abort(); await this.activeWake?.catch(() => {}); }
 
   /** Queue an event; coalesced into one turn if more arrive while a wake is running. */
   wake(event: WakeEvent): void {
@@ -222,18 +227,24 @@ export class Orchestrator {
   /** Serve what queued up while automation was paused. */
   kick(): void { void this.drain(); }
 
+  private unavailable(): boolean {
+    const pick = this.modelForWake();
+    const def = findModel(this.store.config, pick.model);
+    return Boolean(pick.exhaustedUntil || (def && unavailableEntry(this.store.local.model_unavailable, def.id, new Date())));
+  }
+
   private async drain(): Promise<void> {
-    if (this.running || this.stopped || this.pausedRef()) return;
+    if (!this.enabled || this.unavailable() || this.running || this.stopped || this.pausedRef() || this.store.local.engine.provider_guards?.[this.modelForWake().runner]) return;
     if (!this.queue.length) return;
     this.running = true;
     try {
-      while (this.queue.length && !this.stopped && !this.pausedRef()) {
+      while (this.queue.length && !this.unavailable() && !this.stopped && !this.pausedRef() && !this.store.local.engine.provider_guards?.[this.modelForWake().runner]) {
         const batch = this.queue.splice(0, this.queue.length);
         this.inFlight = new Set(batch.flatMap((e) => (e.item ? [e.item] : [])));
         this.questionsInFlight = new Set(batch.flatMap((e) => questionOf(e) ?? []));
         this.reviewsInFlight = new Set(batch.flatMap((e) => (e.type === 'question_review' ? questionOf(e) ?? [] : [])));
         this.questionsChanged = new Set(); this.questionsAnswered = new Set(); this.lastOutcome = '';
-        try { await this.runWake(batch).catch((e) => { this.lastOutcome = `the wake failed: ${(e as Error).message}`; this.log('error', `orchestrator wake failed: ${(e as Error).message}`); }); }
+        try { this.activeWake = this.runWake(batch); await this.activeWake.catch((e) => { this.lastOutcome = `the wake failed: ${(e as Error).message}`; this.log('error', `orchestrator wake failed: ${(e as Error).message}`); }); }
         finally {
           this.inFlight = new Set();
           const asked = this.questionsInFlight; this.questionsInFlight = new Set(); this.reviewsInFlight = new Set();
@@ -246,7 +257,7 @@ export class Orchestrator {
           for (const id of new Set(batch.flatMap((e) => (e.item ? [e.item] : [])))) if (!this.queue.some((q) => q.item === id)) this.hooks.triageEnded(id);
         }
       }
-    } finally { this.running = false; }
+    } finally { this.running = false; this.activeModel = undefined; }
   }
 
   /**
@@ -272,13 +283,13 @@ export class Orchestrator {
    * Claude model string) or is a raw model string; with `allow_model_fallback`, a row that is out of
    * usage on this machine yields to its fallback chain, as a worker's turn does.
    */
-  modelForWake(now = new Date(Date.now())): { model: string; label: string; fellBackFrom?: string; sdkFallback?: string; exhaustedUntil?: string } {
+  modelForWake(now = new Date(Date.now())): { runner: Runner; model: string; label: string; fellBackFrom?: string; sdkFallback?: string; exhaustedUntil?: string } {
     const cfg = this.store.config.orchestrator;
     const def = findModel(this.store.config, cfg.model);
-    if (!def || (def.runner ?? 'claude') !== 'claude') return { model: def?.claude_model ?? cfg.model, label: def?.label ?? cfg.model };
+    if (!def) return { runner: 'claude', model: cfg.model, label: cfg.model };
     const pick = resolveTurnModel(this.store.config, def, { allow: cfg.allow_model_fallback, unavailable: this.store.local.model_unavailable, now });
     return {
-      model: pick.model ?? cfg.model, label: pick.def.label,
+      runner: pick.def.runner ?? 'claude', model: pick.model ?? cfg.model, label: pick.def.label,
       ...(pick.fellBackFrom ? { fellBackFrom: pick.fellBackFrom.label } : {}),
       ...(pick.sdkFallback ? { sdkFallback: pick.sdkFallback } : {}),
       ...(pick.exhaustedUntil ? { exhaustedUntil: pick.exhaustedUntil } : {}),
@@ -287,7 +298,11 @@ export class Orchestrator {
 
   private async runWake(events: WakeEvent[], retried = false): Promise<void> {
     const cfg = this.store.config.orchestrator;
+    if (!retried) this.activeAbort = new AbortController();
+    const pick = this.modelForWake();
     let state = this.readState();
+    const contract = modelCapabilities(findModel(this.store.config, pick.model) ?? { runner: pick.runner, external: false }).toolContract;
+    if ((state.runner ?? 'claude') !== pick.runner || (state.tool_contract && state.tool_contract !== contract)) state = { wakes_served: 0 };
     const tooOld = state.started_at && (Date.now() - Date.parse(state.started_at)) / 86_400_000 > cfg.rotate_after_days;
     if (state.session_id && (state.wakes_served >= cfg.rotate_after_wakes || tooOld)) {
       this.log('info', `orchestrator: rotating session after ${state.wakes_served} wakes (the files are its memory)`);
@@ -297,21 +312,23 @@ export class Orchestrator {
     const carried = state.session_id ? '' : this.recentChat();
     const prompt = `${state.session_id ? '' : this.systemIntro() + '\n\n'}${carried ? carried + '\n\n' : ''}# Wake: ${events.map((e) => e.type).join(', ')} — ${isoLocal()}\n\n${packet}\n\nHandle what needs judgment using the planestro tools, then call done_with_wake with a one-line summary. Everything mechanical is already handled by the app; do not attempt git or gh operations.`;
     let doneSummary = '';
-    const pick = this.modelForWake();
     if (pick.fellBackFrom) this.log('info', `orchestrator: ${pick.fellBackFrom} is out of usage; waking on ${pick.label}`);
-    if (pick.exhaustedUntil) this.log('warn', `orchestrator: every model in its fallback chain is out of usage until ${pick.exhaustedUntil}; trying ${pick.label} anyway`);
     const model = pick.model;
-    const result: TurnResult = await this.ports.agents.claude.runCustomTurn!({
+    this.activeModel = model;
+    const result: TurnResult = await this.ports.agents[pick.runner]!.runCustomTurn!({
+      signal: this.activeAbort?.signal,
       label: events.map((e) => e.type).join(','), cwd: this.store.codeRepoPath(), model,
       ...(pick.sdkFallback ? { fallbackModel: pick.sdkFallback } : {}),
       permissionMode: 'dontAsk', prompt, resume: state.session_id, maxTurns: 30,
+      maxTokens: state.session_id ? cfg.budget_tokens_per_wake : cfg.budget_tokens_per_fresh_wake,
+      onApproval: async (req) => { this.store.journal.append({ type: 'orchestrator.permission_declined', actor: 'orchestrator', data: { ...req } }); },
       ...(state.session_id && state.total_usd !== undefined ? { resumeTotalUsd: state.total_usd } : {}),
       systemAppend: this.systemIntro(),
-      allowedTools: ['Read', 'Grep', 'Glob', 'Bash(git log*)', 'Bash(git diff*)', 'Bash(git show*)', 'Bash(gh pr view*)', 'Bash(gh pr diff*)', 'Bash(gh run view*)'],
+      allowedTools: ['Read', 'Grep', 'Glob', 'Bash(git log*)', 'Bash(git diff*)', 'Bash(git show*)'],
       mcpTools: this.tools((s) => { doneSummary = s; }, events.some((e) => e.type === 'user_message' || e.type === 'question_message')),
       onOutput: (t) => this.emit({ type: 'engine.log', level: 'info', message: `[orchestrator] ${t.slice(0, 300)}` }),
     });
-    this.hooks.usageSeen?.(result.rateLimit);
+    this.hooks.usageSeen?.(result.rateLimit, pick.runner);
     if (result.subtype === 'usage_exhausted') {
       const def = findModel(this.store.config, model);
       const now = new Date(Date.now());
@@ -333,11 +350,11 @@ export class Orchestrator {
     this.lastOutcome = doneSummary ? `it ended with: ${doneSummary}` : result.isError ? `the wake failed: ${result.subtype}${result.error ? ` ${result.error}` : ''}` : '';
     const session = result.sessionId ?? state.session_id;
     const total = result.sessionTotalUsd ?? (session === state.session_id ? state.total_usd : undefined);
-    this.writeState({ session_id: session, started_at: state.started_at ?? isoLocal(), wakes_served: state.wakes_served + 1, ...(total !== undefined ? { total_usd: total } : {}) });
+    this.writeState({ runner: pick.runner, model, tool_contract: contract, session_id: session, started_at: state.started_at ?? isoLocal(), wakes_served: state.wakes_served + 1, ...(total !== undefined ? { total_usd: total } : {}) });
     // What the Console's spend panel reads (#49): which items, which conversation (it resets on rotation), how big it has grown.
     const items = [...new Set(events.map((e) => e.item).filter((i): i is string => Boolean(i)))];
     this.store.journal.append({ type: 'orchestrator.done', actor: 'orchestrator', data: {
-      events: events.map((e) => e.type), summary: doneSummary || (result.isError ? `(failed: ${result.subtype}) ${result.error ?? ''}` : result.text.slice(-300)), cost: result.costUsd, subtype: result.subtype,
+      events: events.map((e) => e.type), summary: doneSummary || (result.isError ? `(failed: ${result.subtype}) ${result.error ?? ''}` : result.text.slice(-300)), cost: result.costUsd, runner: pick.runner, tokens: result.tokens, token_cap: state.session_id ? cfg.budget_tokens_per_wake : cfg.budget_tokens_per_fresh_wake, subtype: result.subtype,
       ...(items.length ? { items } : {}), ...(session ? { session } : {}), wake: state.wakes_served + 1, ...(state.session_id ? {} : { fresh: true }), model: pick.label,
       ...(result.contextTokens !== undefined ? { context_tokens: result.contextTokens } : {}),
     } });
@@ -605,9 +622,25 @@ export class Orchestrator {
   private allTools(onDone: (summary: string) => void, chat: boolean): CustomToolDef[] {
     const store = this.store;
     const idArg = { id: z.string() };
+    const prArg = { id: z.string().optional(), pr: z.number().int().positive().optional() };
+    const prNumber = (a: Record<string, unknown>) => a.id ? store.requireItem(String(a.id)).file.frontmatter.pr : a.pr as number | undefined;
     return [
       { name: 'list_items', description: 'List backlog items (id, status, flags), optionally filtered by status.', schema: { status: z.string().optional() }, handler: async (a) => store.listItems().filter((i) => !a.status || i.file.frontmatter.status === a.status).map((i) => { const f = i.file.frontmatter; return `${f.id} [${f.status}${f.blocked ? ' BLOCKED:' + f.blocked_reason : ''}${f.awaiting ? ' awaiting:' + f.awaiting : ''}${f.taken_over ? ' TAKEN_OVER' : ''}${f.skip_merge ? ` HELD${heldReasonOf(f) ? ':' + heldReasonOf(f) : ''}` : ''}]${f.priority ? ` priority=${f.priority}` : ''} rank=${f.rank ?? '—'} pr=${f.pr ?? '—'} ${f.kind === 'epic' ? 'EPIC ' : ''}${f.title}`; }).join('\n') || '(no items)' },
       { name: 'read_item', description: 'Read one item file in full.', schema: idArg, handler: async (a) => serializeItemFile(store.requireItem(String(a.id)).file) },
+      { name: 'pr_view', description: 'Read PR details, description and reviews in this project. Supply an item id or a PR number (including work outside Planestro).', schema: prArg, handler: async (a) => {
+        const n = prNumber(a); const repo = store.config.code_repo.github;
+        if (!n || !repo) return 'supply an item with a PR or a project PR number';
+        return this.ports.gh.prDetails ? this.ports.gh.prDetails(repo, n) : JSON.stringify(await this.ports.gh.prView(repo, n));
+      } },
+      { name: 'pr_diff', description: 'Read a project PR diff; supply an item id or project PR number.', schema: prArg, handler: async (a) => { const n = prNumber(a); const repo = store.config.code_repo.github; return n && repo && this.ports.gh.prDiff ? this.ports.gh.prDiff(repo, n) : 'no PR diff available'; } },
+      { name: 'run_view', description: 'Read the project CI run result and failed logs for an item.', schema: idArg, handler: async (a) => {
+        const fm = store.requireItem(String(a.id)).file.frontmatter; const repo = store.config.code_repo.github;
+        if (!repo || !fm.pr) return 'no PR';
+        const pr = await this.ports.gh.prView(repo, fm.pr);
+        const ci = await this.ports.gh.ciForSha(repo, pr.headRefName, pr.headRefOid, this.hooks.ciWorkflow ?? 'CI');
+        if (!ci.runId) return JSON.stringify(ci);
+        return [this.ports.gh.runView ? await this.ports.gh.runView(repo, ci.runId) : JSON.stringify(ci), await this.ports.gh.runFailedLog(repo, ci.runId, 120)].join('\n');
+      } },
       { name: 'pr_status', description: 'Pull request + CI status for an item.', schema: idArg, handler: async (a) => { const fm = store.requireItem(String(a.id)).file.frontmatter; if (!fm.pr) return 'no PR'; const gh = store.config.code_repo.github; if (!gh) return 'no github remote configured'; const pr = await this.ports.gh.prView(gh, fm.pr); return `#${pr.number} ${pr.state} base=${pr.baseRefName} head=${pr.headRefName}@${pr.headRefOid.slice(0, 7)} ci=${fm.ci_result ?? '—'} (${fm.ci_failed_count ?? 0} red)`; } },
       { name: 'set_merge_order', description: 'Override the merge order of the given IN_REVIEW items (first merges first). Items not listed keep rank order after these.', schema: { ids: z.array(z.string()) }, handler: async (a) => { (a.ids as string[]).forEach((id, i) => store.mutateItem(id, [{ set: { merge_order: i + 1 } }, { activity: { actor: 'orchestrator', text: `merge order ${i + 1}` } }], 'orchestrator', { commit: `${id}: merge order ${i + 1}` })); this.hooks.poke(); return 'merge order set'; } },
       { name: 'set_queue_order', description: 'Reorder the QUEUED items (first is admitted first) within each priority: the queue admits high before medium before low before none whatever their order here; a priority is the user\'s to change.', schema: { ids: z.array(z.string()) }, handler: async (a) => { const ids = a.ids as string[]; const ranks = renormalize(ids); for (const id of ids) { const it = store.requireItem(id); if (laneOf(it.file.frontmatter.status) !== 'board') throw new Error(`${id} is not on the board`); store.mutateItem(id, [{ rank: ranks.get(id)! }], 'orchestrator'); } this.hooks.poke(); return 'queue order set'; } },
@@ -679,7 +712,7 @@ export class Orchestrator {
       { name: 'resolve_question', description: 'Close a question: resolved (it was answered: say the answer in a sentence) or withdrawn (it is moot: say why). The user can reopen it.', schema: { ...idArg, status: z.enum(['resolved', 'withdrawn']), resolution: z.string() }, handler: async (a) => { const q = store.requireQuestion(String(a.id)); if (q.file.frontmatter.status !== 'open') return `${a.id} is already ${q.file.frontmatter.status}`; store.resolveQuestion(String(a.id), a.status as 'resolved' | 'withdrawn', String(a.resolution), 'orchestrator'); this.questionsChanged.add(String(a.id)); this.questionsAnswered.add(String(a.id)); return a.status === 'resolved' ? 'resolved' : 'withdrawn'; } },
       { name: 'resume_after', description: "Park a stopped item until other items merge, then resume its session with `message`: for a worker that needs what another item delivers (a flag, an asset) before it can go on. `prs` waits for pull requests by number that no item stands for (one a person opened). It stops needing the user; planestro rebases its branch onto the base first. Use it instead of unblocking into a wait.", schema: { ...idArg, items: z.array(z.string()).default([]), prs: z.array(z.number().int().positive()).optional().describe('Pull request numbers to wait for, merged into this item\'s base'), message: z.string() }, handler: async (a) => this.hooks.resumeAfter(String(a.id), (a.items as string[] | undefined) ?? [], String(a.message), (a.prs as number[] | undefined) ?? []) },
       { name: 'reply_to_user', description: 'Answer the user in the planestro chat. In a user_message wake this is the only thing they read: say what you found and what you did, briefly. Call it once, near the end of the wake.', schema: { text: z.string(), item: z.string().optional() }, handler: async (a) => { store.journal.append({ type: 'orchestrator.reply', item: a.item ? String(a.item) : undefined, actor: 'orchestrator', data: { text: String(a.text) } }); return 'sent to the chat'; } },
-      { name: 'create_item', description: 'CHAT ONLY (outside the chat, offer it as a decision card option\'s action instead): create a backlog item the user asked for, as NOT_YET_SUBMITTED unless `submit` is true (then it is queued for planning at once; an epic has its breakdown planned). Write a complete brief: its worker sees only the title and description. Choose `kind` deliberately: "item" (the default) is one piece of work that one implementer finishes in one pull request; "epic" is several separately shippable pieces (art an image model makes plus the code that uses it, or parts that each deserve their own worker and pull request): its planner breaks it into child items, each with its own worker and pull request, merged through an integration branch. Never write "EPIC" into an item\'s description instead; if you are unsure which it is, ask.', schema: { title: z.string(), description: z.string(), kind: z.enum(['item', 'epic']).optional().describe('item (default) or epic'), planner: z.string().optional().describe('A Claude model id that plans it (for an epic, the breakdown and, by default, its children); the project default if omitted'), implementer: z.string().optional().describe('The model id that implements it; the project default if omitted'), parent: z.string().optional().describe('The epic it belongs to, when it is one more piece of that epic: it is cut from the epic\'s branch and merges into it'), category: z.string().optional().describe('One of the project categories; default if omitted'), priority: z.enum(['high', 'medium', 'low']).optional().describe('high | medium | low, when the user said how much it matters; none if omitted. The queue admits by priority first, then rank'), depends_on: z.array(z.string()).optional(), submit: z.boolean().optional().describe('Queue it for planning now (only if the user said so)') }, handler: async (a) => {
+      { name: 'create_item', description: 'CHAT ONLY (outside the chat, offer it as a decision card option\'s action instead): create a backlog item the user asked for, as NOT_YET_SUBMITTED unless `submit` is true (then it is queued for planning at once; an epic has its breakdown planned). Write a complete brief: its worker sees only the title and description. Choose `kind` deliberately: "item" (the default) is one piece of work that one implementer finishes in one pull request; "epic" is several separately shippable pieces (art an image model makes plus the code that uses it, or parts that each deserve their own worker and pull request): its planner breaks it into child items, each with its own worker and pull request, merged through an integration branch. Never write "EPIC" into an item\'s description instead; if you are unsure which it is, ask.', schema: { title: z.string(), description: z.string(), kind: z.enum(['item', 'epic']).optional().describe('item (default) or epic'), planner: z.string().optional().describe('A planning-capable model id that plans it (for an epic, the breakdown and, by default, its children); the project default if omitted'), implementer: z.string().optional().describe('The model id that implements it; the project default if omitted'), parent: z.string().optional().describe('The epic it belongs to, when it is one more piece of that epic: it is cut from the epic\'s branch and merges into it'), category: z.string().optional().describe('One of the project categories; default if omitted'), priority: z.enum(['high', 'medium', 'low']).optional().describe('high | medium | low, when the user said how much it matters; none if omitted. The queue admits by priority first, then rank'), depends_on: z.array(z.string()).optional(), submit: z.boolean().optional().describe('Queue it for planning now (only if the user said so)') }, handler: async (a) => {
         if (!chat) return 'not permitted: only when the user asks you to in the chat (a user_message wake). On a stopped item, offer it on its decision card instead: an option with the action { tool: "create_item", args: { … } } creates the item when the user picks it.';
         try {
           const epic = a.kind === 'epic';

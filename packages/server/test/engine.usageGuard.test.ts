@@ -1,10 +1,10 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { usageGuardTrips, type RateLimitSnapshot } from '@planestro/shared';
+import { ModelDef, usageGuardTrips, type RateLimitSnapshot } from '@planestro/shared';
 import { DataStore } from '../src/store/DataStore.ts';
 import { LiveEngine } from '../src/engine/LiveEngine.ts';
-import { FakeWorld, DryRunGitPort, DryRunGhPort, DryRunProcPort, DryRunClaudePort } from '../src/engine/dryrun-ports.ts';
+import { FakeWorld, DryRunGitPort, DryRunGhPort, DryRunProcPort, DryRunCodexPort, DryRunClaudePort } from '../src/engine/dryrun-ports.ts';
 import type { Ports, TurnOptions, TurnResult, CustomTurnOptions } from '../src/engine/ports.ts';
 import { makeFixture, sleep } from './helpers.ts';
 
@@ -40,7 +40,7 @@ async function setup(opts: { reading?: { current?: RateLimitSnapshot }; edit?: (
   mkdirSync(join(store.codeRepoPath(), '.git', 'info'), { recursive: true });
   const lines: string[] = [];
   const world = new FakeWorld((l: string) => lines.push(l), { 'origin/trunk': 'f'.repeat(40) });
-  const ports: Ports = { mode: 'dry-run', git: new DryRunGitPort(world), gh: new DryRunGhPort(world), proc: new DryRunProcPort(world), agents: { claude: readingClaude(opts.reading ?? {})(world) } };
+  const ports: Ports = { mode: 'dry-run', git: new DryRunGitPort(world), gh: new DryRunGhPort(world), proc: new DryRunProcPort(world), agents: { claude: readingClaude(opts.reading ?? {})(world), codex: new DryRunCodexPort(world) } };
   const timers: Timer[] = [];
   engine = new LiveEngine(store, ports, () => {}, { sleep: async () => {}, tickMs: 50, schedule: (fn, ms) => { const t = { fn, ms, cancelled: false }; timers.push(t); return () => { t.cancelled = true; }; } });
   return { store, engine, timers, lines, dataDir };
@@ -64,144 +64,69 @@ describe('usage guard rule', () => {
   });
 });
 
-describe('usage guard in the engine', () => {
-  it('a worker turn over the threshold pauses automation, records it, notifies and arms the resume', async () => {
-    const reading = { current: snap() as RateLimitSnapshot | undefined };
-    const { store, engine, timers, lines } = await setup({ reading, edit: (y) => y.replace('notifications: {}', 'notifications:\n  on_usage_pause: say "paused for usage"') });
-    const a = store.createItem({ title: 'First', description: 'x' });
-    store.transition(a.id, 'QUEUED', 'user');
-    await engine.start();
-    await waitFor(() => engine.paused);
-    expect(store.local.engine).toMatchObject({ paused: true, paused_by: 'usage_guard', usage_guard: { window: 'five_hour', status: 'allowed', utilization: 0.87, resets_at: reading.current!.resetsAt } });
-    const g = store.local.engine.usage_guard!;
-    expect(Date.parse(g.resume_at!)).toBe(Date.parse(reading.current!.resetsAt!) + 60_000);
-    expect(trips(store)).toHaveLength(1);
-    expect(engine.log.some((e) => e.type === 'engine.log' && e.level === 'warn' && e.message.startsWith('USAGE GUARD: 5-hour window at 87% — automation paused until '))).toBe(true);
-    await waitFor(() => lines.some((l) => l.includes('Would run `say "paused for usage"`')));
-    const live = timers.filter((t) => !t.cancelled);
-    expect(live).toHaveLength(1);
-    expect(Math.abs(live[0].ms - (Date.parse(g.resume_at!) - Date.now()))).toBeLessThan(5000);
-    // Nothing new starts while paused; the in-flight turn still finished.
-    const b = store.createItem({ title: 'Second', description: 'y' });
-    store.transition(b.id, 'QUEUED', 'user');
-    await engine.tick();
-    expect(store.getItem(b.id)!.file.frontmatter.status).toBe('QUEUED');
-    expect(store.getItem(a.id)!.file.frontmatter.status).toBe('PLAN_READY');
-  });
-
-  it('an orchestrator wake reports its reading too', async () => {
-    const { store, engine } = await setup({ reading: { current: snap({ status: 'allowed_warning', utilization: 0.4 }) } });
-    await (engine.orchestrator as any).runWake([{ type: 'user_message', data: { text: 'hello' } }]);
-    expect(engine.paused).toBe(true);
-    expect(store.local.engine).toMatchObject({ paused_by: 'usage_guard', usage_guard: { status: 'allowed_warning', utilization: 0.4 } });
-  });
-
-  it('below the threshold nothing happens; a disabled guard ignores everything', async () => {
-    const off = await setup({ edit: (y) => y.replace('  enabled: true\n  threshold', '  enabled: false\n  threshold') });
-    expect(off.store.config.usage_guard.enabled).toBe(false);
-    seen(off.engine, snap({ utilization: 0.99 }));
-    seen(off.engine, snap({ status: 'rejected' }));
-    expect(off.engine.paused).toBe(false);
-    expect(trips(off.store)).toHaveLength(0);
-    await off.engine.stop(); off.store.close(); engine = undefined; store = undefined;
-    const second = await setup();
-    seen(second.engine, snap({ utilization: 0.5 }));
-    expect(second.engine.paused).toBe(false);
-    expect(trips(second.store)).toHaveLength(0);
-    seen(second.engine, snap({ status: 'allowed_warning', utilization: 0.5, window: 'seven_day' }));
-    expect(second.engine.paused).toBe(true); // the warning, not the 50%
-    expect(second.store.local.engine.usage_guard?.window).toBe('seven_day');
-  });
-
-  it('trips once per window crossing: a manual resume inside it holds, the next crossing trips again', async () => {
-    const { store, engine, timers } = await setup();
-    const first = snap();
-    seen(engine, first);
-    seen(engine, snap({ utilization: 0.95 }));
-    expect(trips(store)).toHaveLength(1);
-    engine.resume();
-    expect(timers.every((t) => t.cancelled)).toBe(true);
-    expect(store.local.engine.paused_by).toBeUndefined();
-    expect(store.local.engine.usage_guard).toBeUndefined();
-    seen(engine, snap({ utilization: 0.97, resetsAt: new Date(Date.parse(first.resetsAt!) + 30_000).toISOString() }));
+describe('provider usage guards in the engine', () => {
+  it('a Claude reading pauses only Claude, leaving Codex admissions and the global lever alone', async () => {
+    const { store, engine } = await setup();
+    seen(engine, snap());
     expect(engine.paused).toBe(false);
+    expect(store.local.engine.provider_guards?.claude?.utilization).toBe(0.87);
+    const model = ModelDef.parse({ id: 'test-codex', label: 'Codex', runner: 'codex', codex_transport: 'app-server' });
+    store.updateConfig((doc) => doc.set('models', [...store.config.models, model]), 'config: add test runner');
+    const a = store.createItem({ title: 'Claude plan', description: 'x' });
+    const b = store.createItem({ title: 'Codex plan', description: 'x', planner: model.id, implementer: model.id });
+    store.transition(a.id, 'QUEUED', 'user'); store.transition(b.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => store.requireItem(b.id).file.frontmatter.status === 'PLAN_READY');
+    expect(store.requireItem(a.id).file.frontmatter.status).toBe('QUEUED');
+  });
+  it('an orchestrator wake reports the selected provider', async () => {
+    const { store, engine } = await setup({ reading: { current: snap() } });
+    await (engine.orchestrator as any).runWake([{ type: 'user_message', data: { text: 'hello' } }]);
+    expect(store.local.engine.provider_guards?.claude).toBeDefined();
+    expect(engine.paused).toBe(false);
+  });
+  it('global resume never dismisses the provider guard; explicit provider retry suppresses only its crossing', async () => {
+    const { store, engine } = await setup();
+    const r = snap(); seen(engine, r);
+    engine.pause(); engine.resume();
+    expect(store.local.engine.provider_guards?.claude).toBeDefined();
+    engine.retryProvider('claude');
+    expect(store.local.engine.provider_guards?.claude).toBeUndefined();
+    seen(engine, r);
     expect(trips(store)).toHaveLength(1);
-    seen(engine, snap({ resetsAt: new Date(Date.parse(first.resetsAt!) + 5 * HOUR).toISOString() }));
-    expect(engine.paused).toBe(true);
+    seen(engine, snap({ resetsAt: new Date(Date.now() + 8 * HOUR).toISOString() }));
     expect(trips(store)).toHaveLength(2);
   });
-
-  it('auto-resumes when its timer fires, and a manual resume cancels the timer', async () => {
+  it('auto_resume releases only the due provider and preserves a user pause', async () => {
     const { store, engine, timers } = await setup();
     seen(engine, snap());
-    expect(timers).toHaveLength(1);
-    timers[0].fn();
-    expect(engine.paused).toBe(false);
-    expect(store.local.engine.paused_by).toBeUndefined();
-    expect(store.journal.read({ type: 'usage.guard_resumed' })).toHaveLength(1);
-    expect(engine.log.some((e) => e.type === 'engine.log' && e.message === 'automation resumed: the 5-hour usage window has reset')).toBe(true);
-  });
-
-  it('never takes over or resumes a manual pause; auto_resume off leaves the resume to you', async () => {
-    const { store, engine, timers } = await setup({ edit: (y) => y.replace('auto_resume: true', 'auto_resume: false') });
+    (engine as any).usageSeen(snap(), 'codex');
     engine.pause();
-    seen(engine, snap());
+    store.updateLocal({ engine: { ...store.local.engine, provider_guards: { ...store.local.engine.provider_guards, claude: { ...store.local.engine.provider_guards!.claude, resume_at: new Date(Date.now() - 1000).toISOString() } } } });
+    timers.filter((t) => !t.cancelled).at(-1)!.fn();
+    expect(store.local.engine.provider_guards?.claude).toBeUndefined();
+    expect(store.local.engine.provider_guards?.codex).toBeDefined();
+    expect(engine.paused).toBe(true);
     expect(store.local.engine.paused_by).toBe('user');
-    expect(trips(store)).toHaveLength(0);
-    engine.resume();
-    seen(engine, snap());
-    expect(store.local.engine.paused_by).toBe('usage_guard');
-    expect(store.local.engine.usage_guard?.resume_at).toBeUndefined();
-    expect(timers).toHaveLength(0);
-    await engine.tick();
-    expect(engine.paused).toBe(true);
   });
-
-  it('a manual pause over a guard pause becomes the user\'s and is not resumed at the reset', async () => {
-    const { store, engine, timers } = await setup();
-    seen(engine, snap({ resetsAt: new Date(Date.now() - 2 * 60_000).toISOString() }));
-    // The reset already passed: the guard resumed at once.
-    expect(engine.paused).toBe(false);
-    seen(engine, snap());
-    engine.pause();
-    expect(timers.every((t) => t.cancelled)).toBe(true);
-    expect(store.local.engine).toMatchObject({ paused: true, paused_by: 'user' });
-    expect(store.local.engine.usage_guard).toBeUndefined();
-    await engine.tick();
-    expect(engine.paused).toBe(true);
-  });
-
-  it('a restart re-arms a pending resume from local config, or resumes one already due', async () => {
-    const first = await setup();
-    seen(first.engine, snap());
+  it('re-arms provider reset timers at startup', async () => {
+    const first = await setup(); seen(first.engine, snap());
     const dataDir = first.dataDir;
     await first.engine.stop(); first.store.close(); engine = undefined; store = undefined;
-
-    const again = await setup({ dataDir });
-    expect(again.engine.paused).toBe(true);
-    await again.engine.start();
-    expect(again.engine.paused).toBe(true);
-    const live = again.timers.filter((t) => !t.cancelled);
-    expect(live).toHaveLength(1);
-    expect(Math.abs(live[0].ms - (Date.parse(again.store.local.engine.usage_guard!.resume_at!) - Date.now()))).toBeLessThan(5000);
-    again.store.updateLocal({ engine: { ...again.store.local.engine, usage_guard: { ...again.store.local.engine.usage_guard!, resume_at: new Date(Date.now() - 1000).toISOString() } } });
-    await again.engine.stop(); again.store.close(); engine = undefined; store = undefined;
-
-    const third = await setup({ dataDir });
-    expect(third.engine.paused).toBe(true);
-    await third.engine.start();
-    expect(third.engine.paused).toBe(false);
-    expect(third.store.local.engine.paused_by).toBeUndefined();
-    expect(third.store.journal.read({ type: 'usage.guard_resumed' })).toHaveLength(1);
+    const again = await setup({ dataDir }); await again.engine.start();
+    expect(again.engine.paused).toBe(false);
+    expect(again.timers.filter((t) => !t.cancelled)).toHaveLength(1);
+    expect(again.store.local.engine.provider_guards?.claude).toBeDefined();
   });
-  it('by default a guard pause waits for you: auto_resume is off, so no resume is armed', async () => {
-    const { store, engine, timers } = await setup({ defaults: true, reading: { current: snap({ utilization: 0.9 }) } });
-    expect(store.config.usage_guard.auto_resume).toBe(false);
-    const a = store.createItem({ title: 'default guard', description: 'x' });
-    store.transition(a.id, 'QUEUED', 'user');
-    await engine.start();
-    await waitFor(() => engine.paused);
-    expect(store.local.engine.paused_by).toBe('usage_guard');
-    expect(timers.filter((t) => !t.cancelled)).toHaveLength(0);
+  it('default auto_resume is off and does not arm a timer', async () => {
+    const { store, engine, timers } = await setup({ defaults: true });
+    seen(engine, snap());
+    expect(store.local.engine.provider_guards?.claude?.resume_at).toBeUndefined();
+    expect(timers).toHaveLength(0);
+  });
+  it('disabled guards ignore readings', async () => {
+    const { store, engine } = await setup({ edit: (y) => y.replace('  enabled: true\\n  threshold', '  enabled: false\\n  threshold') });
+    store.updateConfig((doc) => doc.setIn(['usage_guard', 'enabled'], false), 'config: disabled usage guard');
+    seen(engine, snap()); expect(trips(store)).toHaveLength(0);
   });
 });

@@ -1,8 +1,8 @@
 import { canPlan, type ModelDef } from './schema.ts';
 
 /** What a breakdown needs to know of a model: its id, and whether it can plan. */
-type ModelRef = Pick<ModelDef, 'id'> & Partial<Pick<ModelDef, 'runner' | 'external'>>;
-const plans = (m: ModelRef) => canPlan({ runner: m.runner ?? 'claude', external: m.external ?? false });
+type ModelRef = Pick<ModelDef, 'id'> & Partial<Pick<ModelDef, 'runner' | 'external' | 'codex_transport'>>;
+const plans = (m: ModelRef) => canPlan({ runner: m.runner ?? 'claude', external: m.external ?? false, codex_transport: m.codex_transport });
 
 /** One proposed child of an epic. `depends_on` holds indexes into the same list, not item ids: the items do not exist yet. */
 export interface BreakdownChild {

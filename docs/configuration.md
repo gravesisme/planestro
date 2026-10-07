@@ -32,7 +32,7 @@ orchestrator or an open item cannot be removed.
 
 What stays read-only: `project.id_prefix` once items exist, `mcp_servers` (its entries carry
 API keys: edit `planestro.local.yml`), and the stamps and runtime state (`schema_version`,
-`tool_version`, `engine.paused`, `engine.usage_guard*`, `model_unavailable`, which the model
+`tool_version`, `engine.paused`, `engine.provider_guards`, `model_unavailable`, which the model
 cards write). The Anthropic API key is never sent to the page: it shows *set here*, *set in the
 environment* or *not set*, and takes a replacement.
 
@@ -78,11 +78,12 @@ dollar figures elsewhere carry a short hint.
 |---|---|---|
 | `models.id` | — | What items store as `planner` / `implementer`. |
 | `models.label` | — | What the UI shows. |
-| `models.runner` | `claude` | `claude` or `codex`. A `codex` model implements but never plans. See [Agents](agents.md). |
+| `models.codex_transport` | `exec` | `exec` preserves existing art workers; `app-server` enables planning and orchestration through scoped tools. |
+| `models.runner` | `claude` | `claude` or `codex`. A `codex` model with `codex_transport: app-server` plans and orchestrates as well as implements. The default `exec` transport remains for art. See [Agents](agents.md). |
 | `models.claude_model` | — | The Claude model id; required for a `claude` runner. |
-| `models.codex_model` | Codex's own default | Passed to `codex exec -m`. |
+| `models.codex_model` | Codex's own default | The runner's model ID, passed to the selected exec or app-server transport. |
 | `models.description` | none | One line on what the model is for. The epic planner routes children by it. |
-| `models.mcp` | `[]` | MCP servers this model's sessions get, by the names in `mcp_servers` (planestro.local.yml). This is what makes a worker an audio or a 3D worker: a Claude session with the service's tools, usually with `hold_for_review` so what it made is auditioned before it merges. |
+| `models.mcp` | `[]` | MCP servers this model's sessions get, by the names in `mcp_servers` (planestro.local.yml). This is what makes a worker an audio or a 3D worker: a tool-capable session with the service's tools, usually with `hold_for_review` so what it made is auditioned before it merges. |
 | `models.mcp_calls_per_item` | none | How many calls to those servers one item may make in all: a spend cap planestro counts itself (`op_data.mcp_calls`). Past it the calls are refused and the worker is told to finish or report what it still needs. |
 | `models.user_approves_plans` | false | Paid tools (#157): a plan for this model is the user's to approve, never the orchestrator's, and its MCP calls need a budget the user sets at approval (the item's `mcp_budget`, prefilled from the plan's `MCP budget:` line). With no budget the worker makes no MCP call. The item's `mcp_budget` replaces `mcp_calls_per_item` when set. |
 | `models.hold_for_review` | `false` | Park this model's pull requests on `awaiting: review` after CI until you approve them. |
@@ -93,7 +94,7 @@ dollar figures elsewhere carry a short hint.
 | `defaults.implementer` | — | For new items. |
 | `defaults.category` | — | For new items. |
 | `defaults.allow_model_fallback` | `false` | New items start with **allow fallback model** ticked; an epic's children inherit the epic's setting. |
-| `defaults.auto_approve_plan` | `false` | New items start with **let the orchestrator approve the plan** ticked (the New item dialog, the orchestrator's `create_item`, an epic's children), except items whose implementer runs outside Claude (an art runner such as Codex), whose plans you review. Untick it on any item. Only matters while `orchestrator.may_approve_plans` is on. |
+| `defaults.auto_approve_plan` | `false` | New items start with **let the orchestrator approve the plan** ticked (the New item dialog, the orchestrator's `create_item`, an epic's children), except art models that require your approval or use legacy exec. General Codex app-server models can delegate plan review. Untick it on any item. Only matters while `orchestrator.may_approve_plans` is on. |
 | `categories` | — | The list items choose from. Rename and remove in Settings, which reassigns items. |
 
 ### Budgets and concurrency
@@ -103,6 +104,9 @@ dollar figures elsewhere carry a short hint.
 | `budget_usd_per_item` | `25` | Dollar ceiling across all of an item's Claude turns; each turn starts with what remains. An item's own `budget_usd` (item page, or a decision card's "+$N and resume" option) replaces it for that item. At 80% of any budget the Activity log warns once. What is counted is what each turn spent: a resumed session reports its running total, and only what that rose by is the turn's. A resume the item cannot pay for is never started (see `budget_usd_fresh_above`). |
 | `budget_usd_fresh_above` | `10` | A resumed session sends its whole conversation again before it does anything; the item page shows what that costs. When it is more than this, a turn whose instruction stands on its own (a CI fix, a rebase conflict, a reminder to commit, an unblock with a message, a review's changes) starts a **fresh session** with a brief instead: the item, its plan, what is committed and what is not, and the task. The same happens, whatever this is set to, when the item cannot pay for the resume but can for a fresh session. The fresh session becomes the item's; the old one is named in the Activity log. Never for planning, nor for an answer to something the session itself asked. `0` turns the price threshold off. |
 | `budget_turns_per_item` | `20` | Worker turns per item for runners that report tokens instead of dollars (Codex). Blocks as `turn_budget`. An item's own `budget_turns` replaces it. |
+| `budget_tokens_per_plan_turn` | `100000` | Observed tokens per Codex planning turn; the bounded hand-in retry has a separate 10,000-token allowance within the item cap. |
+| `orchestrator.budget_tokens_per_wake` | `50000` | Observed tokens per resumed Codex wake. |
+| `orchestrator.budget_tokens_per_fresh_wake` | `200000` | First wake after a new conversation, provider switch or rotation. |
 | `budget_tokens_per_item` | `600000` | Uncached tokens per item for those runners. Blocks as `token_budget`. An item's own `budget_tokens` replaces it. All three are also in Settings → Budgets & limits. |
 | `concurrency.max_sessions` | `3` | Items being worked on at once: a slot is taken by an item with a live turn, a running engine step or an operation in flight, never by an epic or by an item that is only waiting. |
 | `concurrency.stall_after_min` | `10` | An item planning or in progress that nothing has driven for this long (no turn, no step, no operation, not waiting on anyone) is stalled. planestro carries it on once, the way an unblock does; a second stall within the hour blocks it as `stalled`. `0` turns this off. |
@@ -202,7 +206,7 @@ ended it. One that cannot be judged (`cd "$DIR"`, `cd -`) is left to the rules.
 
 | Key | Default | |
 |---|---|---|
-| `orchestrator.model` | `claude-opus-5-5` (`opus-5-5` from `init`) | The judgment layer's model: a model id from `models:` (Settings writes the id) or a Claude model string. |
+| `orchestrator.model` | `claude-opus-5-5` (`opus-5-5` from `init`) | The judgment layer's model: a model id from `models:` (Settings writes the id) or a configured runner model string. Changes apply on the next wake without a restart. |
 | `orchestrator.allow_model_fallback` | `false` | While the orchestrator's model is out of usage, wake on its `fallback` instead. |
 | `orchestrator.may_approve_plans` | `false` | Whether it may approve plans of items that opted in (**let the orchestrator approve the plan** on the item). It can never approve an epic's breakdown or release a review hold. |
 | `orchestrator.may_decide_permissions` | `false` | Whether workers' permission requests go to it before you. It allows ordinary work in the worktree, denies with a reason (three denials on one item and the rest come to you), and hands over anything outside the worktree, installing software or touching credentials. The hard rules run first regardless. |
@@ -245,19 +249,12 @@ Default: **Release notes** and **Notes**.
 | `anthropic_api_key` | Bills Claude sessions to the API under the Commercial Terms instead of a claude.ai login. `ANTHROPIC_API_KEY` in the environment does the same. |
 | `model_unavailable` | Models this machine's account cannot use right now, by model id: `{ until, reason, since, manual }`. Written when a turn fails on a usage limit and by **mark unavailable** in Settings; cleared there or when `until` passes. Per machine because usage belongs to the account logged in here. |
 | `engine.paused` | The PAUSE AUTOMATION lever, persisted. |
-| `engine.paused_by` | `user` (the lever), `usage_guard` or `disk`. A `usage_guard` pause (with `auto_resume`) and a `disk` pause resume automatically; yours never does. |
+| `engine.paused_by` | `user` (the lever) or `disk`. Provider guards are independent. Only a disk pause can automatically release this global lever; a user pause never does. |
 | `engine.disk_guard.free_gib` | While the [disk guard](#disk-guard) holds automation paused: the GiB free when it tripped… |
 | `engine.disk_guard.path` | …on which volume (the repo or the worktrees root, whichever had less)… |
 | `engine.disk_guard.tripped_at` | …and when. |
-| `engine.usage_guard.window` | While the [usage guard](#usage-guard) holds automation paused: the rate-limit window that tripped it (`five_hour`, `seven_day`, …)… |
-| `engine.usage_guard.status` | …its status (`allowed`, `allowed_warning`, `rejected`)… |
-| `engine.usage_guard.utilization` | …how full it was (0–1, when reported)… |
-| `engine.usage_guard.resets_at` | …when it resets… |
-| `engine.usage_guard.tripped_at` | …when the guard paused… |
-| `engine.usage_guard.resume_at` | …and when it resumes (`resets_at` + 60 s, with `usage_guard.auto_resume`). A restart re-arms the resume from here, or resumes at once if the time has passed. |
-| `engine.usage_guard_last.window` | The window crossing the guard last tripped on (`window`, `resets_at`, `tripped_at`): it trips once per crossing, so resuming by hand inside a window that is still over the threshold is respected until that window resets. |
-| `engine.usage_guard_last.resets_at` | See `engine.usage_guard_last.window`. |
-| `engine.usage_guard_last.tripped_at` | See `engine.usage_guard_last.window`. |
+| `engine.provider_guards` | Guards keyed by provider, each with window, status, optional utilization/reset, trip time and optional resume time. Other providers remain available. |
+| `engine.provider_guard_last` | Last crossing per provider. An explicit provider retry suppresses that same crossing until reset. |
 | `engine.mode` | This machine's override of `engine.mode`. |
 
 ## Disk guard
@@ -288,15 +285,9 @@ current reading for its window, and planestro stops itself *before* the limit ra
 | `usage_guard.on_warning` | `true` | Also pause on an `allowed_warning` reading, whatever the utilization. |
 | `usage_guard.auto_resume` | `false` | Resume a guard-made pause 60 s after the window resets. Off by default: resuming on its own restarts spending while nobody is watching, so a guard pause waits for you unless you opt in. |
 
-A `rejected` reading (the window is spent) always trips it. Tripping is the ordinary PAUSE
-AUTOMATION lever: turns already running finish, nothing new starts. planestro records the reading
-in `planestro.local.yml` (`engine.usage_guard`), journals `usage.guard_tripped`, logs a warning
-(`USAGE GUARD: 5-hour window at 87% — automation paused until 6:20 pm`), runs
-`notifications.on_usage_pause` if set, and the header shows **PAUSED — usage 87% of 5-hour window ·
-resets 6:20 pm · resume by hand** beside the RESUME button (with `auto_resume`, *resumes 6:20 pm*). It trips once per window crossing and never takes over a
-pause you made yourself. **RESUME** by hand cancels the automatic resume and keeps going for the rest
-of that window; a pause you pulled by hand is never resumed automatically. API-key billing reports
-no subscription windows, so the guard stays idle there.
+A `rejected` reading always trips the affected provider's guard. Running turns finish; new turns on other providers and deterministic CI/merge operations can continue. The machine-local `engine.provider_guards` records guards by provider; `engine.provider_guard_last` suppresses duplicate crossings. Global user and disk pauses remain authoritative. Global RESUME never clears a provider guard; Retry provider overrides only its crossing. `auto_resume` releases only that provider after its reset plus 60 seconds.
+
+Legacy `paused_by: usage_guard` is normalized to a Claude guard and its global pause is cleared on each machine's startup. User/disk pauses are untouched. Codex uses model-specific unavailability unless quota telemetry has been verified; no quota readings are invented. See [Switching providers](switching-providers.md).
 
 ## Model fallback
 
@@ -314,4 +305,3 @@ same conversation. Later turns go straight to the fallback until the reset; afte
 original model is tried first again. An item that does not allow a fallback blocks as
 `usage_exhausted` instead. You can also **mark unavailable until…** a model in Settings when you
 already know it is out, so no turn is spent discovering it.
-

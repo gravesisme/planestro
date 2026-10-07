@@ -1,5 +1,6 @@
 import { parkSummary } from '../engine/parks.ts';
 import { suggestForStore } from '../engine/allowSuggest.ts';
+import { previewSwitch, applySwitch, itemModelSwitchOps } from '../providerSwitch.ts';
 import { orchestratorSpend } from '../engine/orchestratorSpend.ts';
 import { Hono } from 'hono';
 import { z } from 'zod';
@@ -36,6 +37,10 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   const pending = (id: string) => Boolean(orchestratorOf(engine)?.questionPending?.(id));
   const awake = (): Orch => { const o = orchestratorOf(engine); if (!o?.enabled) throw new Error('the orchestrator is not available with this engine'); return o; };
 
+  api.post('/providers/preview', async (c) => { try { return c.json(previewSwitch(store, engine, await c.req.json())); } catch (e) { return fail(c, e); } });
+  api.post('/providers/apply', async (c) => { try { return c.json(applySwitch(store, engine, await c.req.json())); } catch (e) { return fail(c, e); } });
+  api.post('/providers/:runner/retry', (c) => { try { const runner = z.enum(['claude', 'codex']).parse(c.req.param('runner')); engine.retryProvider?.(runner); return c.json({ ok: true }); } catch (e) { return fail(c, e); } });
+  api.get('/orchestrator/selection', (c) => c.json((engine as any).orchestrator?.selection ?? { restart_required: false }));
   api.get('/state', async (c) => c.json(stateView(store, engine, await store.git.status())));
   api.post('/reload', async (c) => { store.reload(); return c.json({ ok: true, invalid: store.invalid }); });
   api.post('/reconcile', async (c) => { const e = engine as Engine & { reconcile?: (s: 'manual') => Promise<string[]> }; if (!e.reconcile) return c.json({ corrections: [], note: 'no reconciler with this engine' }); return c.json({ corrections: await e.reconcile('manual') }); });
@@ -77,6 +82,8 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
         if (set.parent) { const p = store.requireItem(set.parent as string); if (p.file.frontmatter.kind !== 'epic') throw new Error(`${set.parent} is not an epic`); }
         // A pull request attached by hand (finished outside planestro) must enter the merge pipeline
         // like one planestro opened: only ci_result 'pending' gets it picked up (dogfood p44).
+        ops.push(...itemModelSwitchOps(store, engine, id, { planner: body.fields.planner, implementer: body.fields.implementer }));
+        delete set.planner; delete set.implementer;
         const cur = store.requireItem(id).file.frontmatter;
         if (set.pr !== undefined && cur.status === 'IN_REVIEW' && (cur.ci_result === undefined || cur.ci_result === 'unknown')) set.ci_result = 'pending';
         if (Object.keys(set).length) ops.push({ set });

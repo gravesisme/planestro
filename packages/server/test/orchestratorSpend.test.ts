@@ -16,7 +16,7 @@ describe("the orchestrator's cost per wake (#49)", () => {
     ];
     const s = orchestratorSpend(j, now);
     expect(s.today).toEqual({ wakes: 3, cost: 4.25 });
-    expect(s.conversation).toEqual({ wakes: 2, cost: 2.25, context_tokens: 41_000 });
+    expect(s.conversation).toMatchObject({ wakes: 2, cost: 2.25, context_tokens: 41_000 });
     expect(s.wakes.map((w) => w.at)).toEqual(['2026-09-29T11:00:00', '2026-09-29T10:00:00', '2026-09-29T09:00:00', '2026-09-28T22:00:00']);
     expect(s.wakes[0]).toMatchObject({ items: ['HH-3'], failed: true, fresh: false });
     expect(s.wakes[1]).toMatchObject({ fresh: true, items: [] });

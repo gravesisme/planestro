@@ -27,4 +27,103 @@ Still unprovoked, so unverified: an expired login and a rate limit. The port cla
 them from stderr patterns (`auth_required`, `rate_limited`); a real occurrence should
 confirm the patterns.
 
+## App-server validation — 2026-10-07
+
+Validated with **codex-cli 0.154.0** and the configurable model **gpt-6-astra**,
+using the existing login in disposable fixtures. The adapter verifies that the
+thread returns the requested model; there is no engine branch for this model ID.
+Protocol bindings were generated locally with `codex app-server generate-ts`.
+
+- `thread/start`, `thread/resume`, `turn/start`, dynamic `item/tool/call`,
+  replies, token notifications and `turn/interrupt` were exercised.
+  An initial small tool turn consumed 13,977 budget tokens; its resume consumed
+  573, confirming that the adapter subtracts the earlier conversation total.
+- Unlike exec finding **a**, **app-server stdin must remain open**. It carries
+  JSON-RPC replies throughout the turn and outstanding tool work. A delayed shell
+  command followed by a dynamic tool call succeeded. This is the same open-stream
+  requirement as [sdk-notes gotcha 11](sdk-notes.md). Approval requests are recorded
+  then declined in their handling cycle; no RPC waits for a human.
+- Every start and resume specifies sandbox policy. Fresh and resumed workspace
+  turns both wrote their expected fixture file. Coding turns share exec's narrow
+  linked-worktree Git write paths (index/HEAD, objects and branch refs/logs); the
+  shared Git configuration and hooks remain read-only. Read-only planning handed in its
+  plan through Planestro, with Claude absent from the selected model rows.
+  Scoped call tests reject foreign threads/turns, forged item arguments and roles.
+- **Isolation regression found live:** an empty `mcp_servers` override alone
+  did not stop a project server starting. The effective config concealed that
+  server, while the raw project layer still contained it. The adapter now reads
+  **all** config layers, replaces every listed server with a complete disabled
+  transport, and disables personal plugins/app tools/skill MCP installation and
+  native web search. PR/diff/run inspection uses deterministic Planestro tools.
+  A harmless server-start canary stayed absent on corrected fresh and resumed
+  turns. Missing config-layer support fails closed. External tools use parent-owned
+  clients over the scoped stdio dispatch, never the operator `/mcp` endpoint.
+- Native image generation produced a completed `imageGeneration` event.
+  **Image-to-image did not produce a validated image result**, so app-server art
+  remains disabled (`features.image_generation: false`); art workers stay on exec.
+  **Reference reading was separately validated** in a read-only session with image
+  generation disabled: the model identified a blue fixture via a scoped tool,
+  without commands or an image-generation event. Code/planning attachments may
+  therefore be read without enabling art creation or editing.
+- An isolated home without login returned HTTP 401 and is classified
+  `auth_required`. The user's login was never removed or changed. Expired OAuth
+  refresh and actual quota exhaustion/reset were **not** provoked.
+- `account/rateLimits/read` returned `primary.usedPercent`,
+  `windowDurationMins`, `resetsAt`, and optional/null secondary/limit fields.
+  This proves the reading's shape, **not exhaustion/reset semantics or reliable
+  live notifications**. No Codex `RateLimitSnapshot` is constructed yet; manual
+  `model_unavailable` suspension remains available. A later capacity failure
+  (`serverOverloaded`) remains an explicit runner error, not an invented quota
+  outage. Legacy exec stderr exhaustion patterns remain unconfirmed.
+
+### Fresh-context measurements
+
+The representative fixture supplies synthetic backlog items and real code-reading
+work. The fresh wake inspects schema/orchestrator source and the backlog; the
+fresh planner reads schema, settings, GitHub ports, orchestration and related tests
+before submitting its plan. Measurements count exactly
+`max(0, input_tokens - cached_input_tokens) + output_tokens`.
+
+| Turn | Budget tokens | Last context | Outcome |
+|---|---:|---:|---|
+| Fresh orchestrator wake, first run | 48,537 | 47,330 | Completed |
+| Fresh orchestrator wake, corrected isolation | 50,204 | 48,958 | Completed |
+| Fresh planning turn, first run | 62,417 | 59,572 | Plan submitted |
+| Fresh planning repeat | 0 | Not reported | Provider at capacity |
+
+The 200,000 fresh-wake allowance accommodated both wakes; the second already
+exceeded the regular 50,000 allowance. The measured plan fitted within 100,000,
+but this is one bounded task, not evidence that every large planning handoff fits.
+The defaults remain **100,000 per planning turn, 50,000 per resumed wake,
+200,000 per fresh wake**, all configurable. No configured limits were changed.
+Notifications arrive after model responses; an in-flight response may overshoot
+a cap. Exec only reports usage at turn completion, so its observed ceiling may
+end the turn only then. Reasoning tokens are already included in output.
+
+A capped wake uses the existing plan/permission/triage/question end hooks and
+journals its outcome and tokens. Its batch is discarded. The wake queue stays in
+memory; restart derives needed wakes from persisted item/question state.
+
+Reproduce manually (these are authenticated, never CI commands):
+
+- `npx tsx spikes/app-server-validation.ts`: dynamic tools and resume.
+- `npx tsx spikes/app-server-representative.ts`: fresh-context measurements and isolated auth.
+- `npx tsx spikes/app-server-capabilities.ts`: writable resume, open stream and isolation;
+  add `--images` for the optional raw-protocol art validation.
+- `npx tsx spikes/app-server-reference-image.ts`: read-only attachment recognition,
+  with generation disabled.
+
+### Manual backlog acceptance after upgrade
+
+These are the user's real backlog, not automated fixtures. They were not changed
+by implementation or live validation.
+
+- HH-345 / HH-429: select explicitly, inspect the preview, then verify approved work
+  continues from current dirty files/commits with the existing worktree and branch.
+- HH-438: keep the pending plan approval and its conditions.
+- HH-433: keep the existing art implementer, exec transport, PR and review state.
+- Switch a selected coding item back to Claude and verify a new brief includes the
+  Codex work; the original Claude conversation must not resume.
+
+
 **Later finding (2026-09-17):** `-i/--image` takes one or more files, so a prompt placed right after it is read as another image and `codex exec` falls back to stdin ("No prompt provided via stdin"). The port ends the options with `--` before the prompt.

@@ -20,8 +20,11 @@ export function readConfig(dataDir: string): Config {
 export function readLocalConfig(dataDir: string): LocalConfig {
   const path = join(dataDir, LOCAL_CONFIG_FILE);
   if (!existsSync(path)) return LocalConfig.parse({});
-  const parsed = LocalConfig.safeParse(YAML.parse(readFileSync(path, 'utf8')) ?? {});
+  const raw = YAML.parse(readFileSync(path, 'utf8')) ?? {};
+  const changed = normalizeLocalUsage(raw);
+  const parsed = LocalConfig.safeParse(raw);
   if (!parsed.success) throw new Error(`invalid ${LOCAL_CONFIG_FILE}: ${parsed.error.issues.map((i) => i.message).join('; ')}`);
+  if (changed) writeLocalConfig(dataDir, parsed.data);
   return parsed.data;
 }
 
@@ -55,6 +58,18 @@ export type SchemaStatus = 'current' | 'needs_migration' | 'too_new';
 export function schemaStatus(config: Config): SchemaStatus {
   if (config.schema_version === SCHEMA_VERSION) return 'current';
   return config.schema_version < SCHEMA_VERSION ? 'needs_migration' : 'too_new';
+}
+
+/** Normalize local usage state before schema parsing, independently on each machine. */
+export function normalizeLocalUsage(raw: any): boolean {
+  const e = raw?.engine;
+  if (!e || typeof e !== 'object') return false;
+  const changed = e.usage_guard !== undefined || e.usage_guard_last !== undefined || e.paused_by === 'usage_guard';
+  if (e.usage_guard) e.provider_guards = { claude: e.usage_guard, ...e.provider_guards };
+  if (e.usage_guard_last) e.provider_guard_last = { claude: e.usage_guard_last, ...e.provider_guard_last };
+  if (e.paused_by === 'usage_guard') { e.paused = false; delete e.paused_by; }
+  delete e.usage_guard; delete e.usage_guard_last;
+  return changed;
 }
 
 // ---- project registry (~/.planestro/projects.yml) ----

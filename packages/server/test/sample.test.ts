@@ -67,7 +67,7 @@ describe('planestro sample', () => {
       for (const id of code) { await wait(`${id} planned`, () => fmOf(id).status === 'PLAN_READY'); expect(art.every((a) => ['MERGED', 'FINISHED'].includes(fmOf(a).status))).toBe(true); await engine.approvePlan(id); }
       await wait('the epic landed', () => fmOf(chart.id).status === 'FINISHED');
       expect(art.every((id) => fmOf(id).agent_sessions?.codex && fmOf(id).agent_turns === 1)).toBe(true);
-      expect(code.every((id) => !fmOf(id).agent_sessions)).toBe(true);
+      expect(code.every((id) => !fmOf(id).agent_sessions?.codex)).toBe(true);
       await engine.stop();
     } finally { store.close(); }
   }, 60000);

@@ -76,7 +76,8 @@
             <h2>Prepare your tools.</h2>
             <p>
               Use <strong>Node.js 24</strong>, <strong>Git</strong>, the
-              <strong>GitHub CLI</strong>, and <strong>Claude Code</strong>.
+              <strong>GitHub CLI</strong>, and either <strong>Claude Code</strong>
+              or the <strong>Codex CLI</strong>.
               Planestro is developed on macOS; Linux runs its test suite.
               Windows is untried.
             </p>
@@ -84,8 +85,8 @@
               Install from <a href="https://nodejs.org/en/download">Node.js</a>,
               <a href="https://git-scm.com/downloads">Git</a>,
               <a href="https://cli.github.com/">GitHub CLI</a>, and
-              <a href="https://code.claude.com/docs/en/overview">Claude Code</a
-              >. Configure your Git name and email if this machine has not made
+              <a href="https://code.claude.com/docs/en/overview">Claude Code</a>
+              or <a href="https://developers.openai.com/codex/cli">Codex CLI</a>. Configure your Git name and email if this machine has not made
               a commit before.
             </p>
             <div class="code-block">
@@ -108,10 +109,11 @@ gh auth status
 claude --version</code></pre>
             </div>
             <div class="note">
-              <h3>Claude is required. Codex is optional.</h3>
+              <h3>Choose Claude or Codex.</h3>
               <p>
-                Claude plans and orchestrates; Claude or Codex can implement. A
-                Codex subscription alone cannot run Planestro’s live workflow.
+                Claude remains the default. Codex app-server can also plan,
+                orchestrate, and implement using your Codex login. A Codex-only
+                setup does not require Claude installed.
               </p>
               <p>
                 <strong>There is no Planestro account or login.</strong>
@@ -412,7 +414,7 @@ npm run planestro -- init ../myproject-planning --repo ../myproject --name &quot
           </section>
           <section class="guide-step" id="codex">
             <p class="eyebrow">OPTIONAL / A MIXED FLEET</p>
-            <h2>Add Codex as an implementer.</h2>
+            <h2>Add Codex for coding, planning, or orchestration.</h2>
             <p>
               Install the
               <a href="https://developers.openai.com/codex/cli">Codex CLI</a>
@@ -444,11 +446,11 @@ codex login status</code></pre>
             </p>
             <p>
               In <strong>Settings → Models</strong>, add a model with runner
-              <strong>Codex (implements only)</strong>, a unique ID such as
+              <strong>Codex</strong>, a unique ID such as
               <code>codex-code</code>, and a description such as “Implement code
               and tests.” Set a Codex model ID supported by your CLI, or leave
               it empty for its default. Choose it as the item’s implementer;
-              keep Claude as planner.
+              select the app-server transport for planning and orchestration. Keep existing art workers on exec. See the <a href="https://github.com/gravesisme/planestro/blob/main/docs/switching-providers.md">provider switching guide</a> for continuing unfinished work.
             </p>
             <p>
               Claude workers use a permission policy and can park for approval.

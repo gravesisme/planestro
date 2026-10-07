@@ -156,7 +156,7 @@ export async function seedSample(out: string, opts: { reset?: boolean; log?: (m:
       if (!s.done) continue;
       const h = history(item.id, s.done, s.title);
       const ops: ItemOp[] = [
-        { set: { status: 'FINISHED', pr: s.done.pr, ci_result: 'green', ci_failed_count: s.done.ciRedOnce ? 1 : 0, ...h.stamps, ...(s.done.art ? { agent_turns: 2, tokens: 58_240, agent_sessions: { codex: '01a0b002-6e04-7290-aeda-82f4cfe444c0' }, delivered: [{ path: s.done.art.path, change: 'added' as const, bytes: placeholderPng('tidepool-icon', 128).length, width: 128, height: 128 }] } : {}) } },
+        { set: { status: 'FINISHED', pr: s.done.pr, ci_result: 'green', ci_failed_count: s.done.ciRedOnce ? 1 : 0, ...h.stamps, ...(s.done.art ? { agent_turns: 2, tokens: 58_240, agent_sessions: { codex: { session_id: '01a0b002-6e04-7290-aeda-82f4cfe444c0', role: 'implement' as const, tool_contract: 'exec-v1', transport: 'exec' as const } }, delivered: [{ path: s.done.art.path, change: 'added' as const, bytes: placeholderPng('tidepool-icon', 128).length, width: 128, height: 128 }] } : {}) } },
         { section: 'Plan', body: s.done.plan },
         { section: 'Activity', body: h.body },
       ];

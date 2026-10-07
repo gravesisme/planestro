@@ -127,7 +127,7 @@ describe('the static marketing site', () => {
     expect(guide).toContain('complete Claude Code’s sign-in');
     expect(guide).not.toMatch(/API[- ]keys?/i);
     expect(mainText(read(join(SITE, 'index.html')))).not.toContain('Claude API access');
-    expect(guide).toContain('A Codex subscription alone cannot run');
+    expect(guide).toContain('Codex-only');
     expect(guide).toContain('npm run sample');
     expect(guide).toContain('gh repo create myproject --private');
     expect(guide).toContain('on: [push, pull_request]');

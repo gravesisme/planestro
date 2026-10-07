@@ -70,7 +70,8 @@ export async function startServer(o: ServeOptions) {
     server.once('listening', () => listening());
     server.once('error', (e: NodeJS.ErrnoException) => { store.close(); failed(e.code === 'EADDRINUSE' ? new PortInUseError(host, port) : e); });
   });
-  warnOnClaudeDrift(log);
+  const selected = [store.config.defaults.planner, store.config.defaults.implementer, store.config.orchestrator.model, ...store.listItems().filter((i) => !['FINISHED', 'ICEBOX'].includes(i.file.frontmatter.status)).flatMap((i) => [i.file.frontmatter.planner, i.file.frontmatter.implementer])];
+  if (store.config.models.some((m) => (m.runner ?? 'claude') === 'claude' && selected.some((ref) => ref === m.id || ref === m.claude_model))) warnOnClaudeDrift(log);
   warnOnCodexDrift(store, log);
   await engine.start();
 
@@ -98,7 +99,8 @@ export async function startServer(o: ServeOptions) {
 
 /** Only when a model actually runs on Codex: a project that never uses it should not hear about it. */
 function warnOnCodexDrift(store: DataStore, log: (level: string, msg: string) => void): void {
-  if (!store.config.models.some((m) => m.runner === 'codex')) return;
+  const selected = [store.config.defaults.planner, store.config.defaults.implementer, store.config.orchestrator.model, ...store.listItems().filter((i) => !['FINISHED', 'ICEBOX'].includes(i.file.frontmatter.status)).flatMap((i) => [i.file.frontmatter.planner, i.file.frontmatter.implementer])];
+  if (!store.config.models.some((m) => m.runner === 'codex' && selected.some((ref) => ref === m.id || ref === m.codex_model))) return;
   try {
     const v = execFileSync(store.local.codex_bin ?? 'codex', ['--version'], { encoding: 'utf8' }).trim().split(' ').pop();
     if (v !== VALIDATED_CODEX_VERSION) log('warn', `⚠ Codex CLI changed ${VALIDATED_CODEX_VERSION} → ${v} since the Codex runner was last validated (docs/notes/codex-spike.md)`);

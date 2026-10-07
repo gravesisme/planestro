@@ -270,6 +270,9 @@ const PR_FIELDS = 'number,url,state,mergedAt,headRefOid,headRefName,baseRefName,
 function toPr(p: any): PrInfo { return { number: p.number, url: p.url, state: p.state, mergedAt: p.mergedAt ?? undefined, headRefOid: p.headRefOid, headRefName: p.headRefName, baseRefName: p.baseRefName, mergeCommit: p.mergeCommit?.oid, title: p.title, isDraft: Boolean(p.isDraft), author: p.author?.login ?? undefined, updatedAt: p.updatedAt ?? undefined }; }
 
 export class LiveGhPort implements GhPort {
+  async prDetails(repo: string, number: number) { return ghRead(['pr', 'view', String(number), '--repo', repo, '--json', 'number,url,title,body,state,headRefName,headRefOid,baseRefName,comments,reviews,reviewDecision']); }
+  async prDiff(repo: string, number: number) { return (await ghRead(['pr', 'diff', String(number), '--repo', repo])).slice(0, 100_000); }
+  async runView(repo: string, runId: number) { return ghRead(['run', 'view', String(runId), '--repo', repo, '--json', 'status,conclusion,jobs,headSha,url']); }
   async createPr(repo: string, a: { base: string; head: string; title: string; body: string; draft?: boolean }) {
     const url = (await gh(['pr', 'create', '--repo', repo, '--base', a.base, '--head', a.head, '--title', a.title, '--body', a.body, ...(a.draft ? ['--draft'] : [])])).trim().split('\n').pop()!;
     const number = Number(url.split('/').pop());

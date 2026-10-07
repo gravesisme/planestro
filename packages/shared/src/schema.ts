@@ -4,7 +4,7 @@
  */
 import { z } from 'zod';
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export const STATUSES = [
   'NOT_YET_SUBMITTED', 'QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY',
@@ -112,8 +112,12 @@ export const ItemFrontmatter = z.object({
   worktree: z.string().optional(),
   pr: z.number().int().positive().optional(),
   session_id: z.string().optional(),
-  /** Conversation ids of runners other than Claude, by runner: a Codex thread cannot resume a Claude session or vice versa. */
-  agent_sessions: z.record(z.string(), z.string()).optional(),
+  /** Conversations by runner and role contract: a Codex thread cannot resume a Claude session or vice versa. */
+  agent_sessions: z.record(z.string(), z.object({
+    session_id: z.string(), model: z.string().optional(),
+    role: z.enum(['plan', 'implement', 'fix']), tool_contract: z.string(),
+    transport: z.enum(['exec', 'app-server']).optional(),
+  })).optional(),
   /**
    * What the conversation in `session_id` held when its last turn ended (#64): its window, its
    * model, the price the CLI quoted for reloading it and the running total it reported. It names the
@@ -282,15 +286,16 @@ export const ModelDef = z.object({
   label: z.string().min(1),
   runner: z.enum(RUNNERS).default('claude'),
   claude_model: z.string().optional(),
-  /** Passed to `codex exec -m`; omitted, Codex uses the model its own config names. */
+  /** Passed to the selected Codex transport; keep explicit for isolated app-server sessions. */
   codex_model: z.string().optional(),
+  codex_transport: z.enum(['exec', 'app-server']).optional(),
   /** One line on what the model is for. The epic planner routes children by it. */
   description: z.string().optional(),
   /** Hold this model's pull requests before merge until a person releases them (art is reviewed by eye). */
   hold_for_review: z.boolean().optional(),
   /** Another model id on the same runner. An item that allows fallback runs on it while this one is out of usage. */
   fallback: z.string().min(1).optional(),
-  /** MCP servers this model's Claude sessions get (names from `mcp_servers` in planestro.local.yml): a sound service, a 3D service. What makes a worker an audio or model worker, with `hold_for_review` for the audition. */
+  /** MCP servers this model's tool-capable sessions get (names from `mcp_servers` in planestro.local.yml): a sound service, a 3D service. What makes a worker an audio or model worker, with `hold_for_review` for the audition. */
   mcp: z.array(z.string().min(1)).default([]),
   /** How many calls to those servers one item may make in all: a spend cap that planestro can count itself. Past it the calls are refused and the worker is told. */
   mcp_calls_per_item: z.number().int().positive().optional(),
@@ -312,8 +317,16 @@ export const ModelUnavailable = z.object({
 });
 export type ModelUnavailable = z.infer<typeof ModelUnavailable>;
 
-/** A planner needs plan mode and the `submit_plan` tool: only the Claude runner has them. */
-export function canPlan(m: Pick<ModelDef, 'runner' | 'external'>): boolean { return !m.external && (m.runner ?? 'claude') === 'claude'; }
+/** Transport capabilities, including a scoped planning tool contract and accounting mode. */
+export function modelCapabilities(m: Pick<ModelDef, 'runner' | 'external' | 'codex_transport'>) {
+  const claude = (m.runner ?? 'claude') === 'claude';
+  const tools = claude || m.codex_transport === 'app-server';
+  return { workerPrompt: !claude && (m.codex_transport ?? 'exec') === 'exec' ? 'worker-system-codex' : 'worker-system',
+    toolContract: claude ? 'claude-v1' : m.codex_transport === 'app-server' ? 'app-server-v1' : 'exec-v1', transport: claude ? undefined : m.codex_transport ?? 'exec', roleBound: !claude && m.codex_transport === 'app-server',
+    plan: !m.external && tools, orchestrate: !m.external && tools,
+    implement: !m.external, permissions: tools, accounting: claude ? 'dollars' as const : 'tokens' as const };
+}
+export function canPlan(m: Pick<ModelDef, 'runner' | 'external' | 'codex_transport'>): boolean { return modelCapabilities(m).plan; }
 
 export const Config = z.object({
   schema_version: z.number().int().positive(),
@@ -344,7 +357,7 @@ export const Config = z.object({
     planner: z.string(), implementer: z.string(), category: z.string(),
     /** New items (and an epic's children, unless the epic says otherwise) start with fallback allowed. */
     allow_model_fallback: z.boolean().default(false),
-    /** New items start with "let the orchestrator approve the plan" ticked, unless their implementer runs outside Claude (art, reviewed by a person): see planReviewByDefault. */
+    /** New items start with "let the orchestrator approve the plan" ticked, unless their implementer uses legacy exec or requires human plan approval: see planReviewByDefault. */
     auto_approve_plan: z.boolean().default(false),
   }),
   categories: z.array(z.string().min(1)).min(1),
@@ -358,6 +371,7 @@ export const Config = z.object({
   budget_turns_per_item: z.number().int().positive().default(20),
   /** …and uncached tokens per item. A live art turn measured 20–35k; the default leaves room for a dozen revisions. */
   budget_tokens_per_item: z.number().int().positive().default(600_000),
+  budget_tokens_per_plan_turn: z.number().int().positive().default(100_000),
   concurrency: z.object({
     max_sessions: z.number().int().positive().default(3), max_local_jobs: z.number().int().positive().default(1),
     /** Simultaneous turns per runner, for runners with their own rate limits (image generation is slow). Unlisted runners are unlimited. */
@@ -385,6 +399,8 @@ export const Config = z.object({
     stall_wake_min: z.number().min(0).default(30),
   }).default({ mode: 'github', require_green_base: true, start_timeout_min: 10, timeout_min: 45, queue_timeout_min: 720, max_queued_runs: 0, draft_while_held: true, flaky_checks: [], stall_wake_min: 30 }),
   orchestrator: z.object({
+    budget_tokens_per_wake: z.number().int().positive().default(50_000),
+    budget_tokens_per_fresh_wake: z.number().int().positive().default(200_000),
     model: z.string().default('claude-opus-5-5'),
     /** When the orchestrator's model is out of usage, wake on its model row's `fallback` instead. */
     allow_model_fallback: z.boolean().default(false),
@@ -397,7 +413,7 @@ export const Config = z.object({
     triage_timeout_min: z.number().positive().default(10),
     rotate_after_wakes: z.number().int().positive().default(10),
     rotate_after_days: z.number().positive().default(3),
-  }).default({ model: 'claude-opus-5-5', allow_model_fallback: false, may_approve_plans: false, max_plan_revisions: 2, may_decide_permissions: false, triage: true, triage_timeout_min: 10, rotate_after_wakes: 10, rotate_after_days: 3 }),
+  }).default({ budget_tokens_per_wake: 50_000, budget_tokens_per_fresh_wake: 200_000, model: 'claude-opus-5-5', allow_model_fallback: false, may_approve_plans: false, max_plan_revisions: 2, may_decide_permissions: false, triage: true, triage_timeout_min: 10, rotate_after_wakes: 10, rotate_after_days: 3 }),
   engine: z.object({ mode: z.enum(['live', 'dry-run']).default('dry-run') }).default({ mode: 'dry-run' }),
   epics: z.object({
     auto_submit: z.boolean().default(true),
@@ -442,7 +458,7 @@ export const Config = z.object({
 });
 export type Config = z.infer<typeof Config>;
 
-/** What the usage guard recorded when it paused automation. */
+/** What the usage guard recorded when it paused a provider. */
 export const UsageGuardState = z.object({
   window: z.string(),
   status: z.enum(['allowed', 'allowed_warning', 'rejected']),
@@ -483,14 +499,14 @@ export const LocalConfig = z.object({
   }).default({ channel: 'off', poll_min: 15, min_age_hours: 0 }),
   engine: z.object({
     paused: z.boolean().default(false), mode: z.enum(['live', 'dry-run']).optional(),
-    /** Who pulled the lever: only a `usage_guard` pause is ever resumed automatically. */
-    paused_by: z.enum(['user', 'usage_guard', 'disk']).optional(),
+    /** Who pulled the global lever; provider usage guards are independent. */
+    paused_by: z.enum(['user', 'disk']).optional(),
     /** Set while the disk guard holds automation paused (#161). */
     disk_guard: z.object({ free_gib: z.number(), path: z.string(), tripped_at: z.string() }).optional(),
-    /** Set while the usage guard holds automation paused. */
-    usage_guard: UsageGuardState.optional(),
+    /** Each provider whose usage guard is holding its new turns. */
+    provider_guards: z.record(z.string(), UsageGuardState).optional(),
     /** The window crossing the guard last tripped on, so it trips once per crossing (a manual resume inside it is respected). */
-    usage_guard_last: z.object({ window: z.string(), resets_at: z.string().optional(), tripped_at: z.string() }).optional(),
+    provider_guard_last: z.record(z.string(), z.object({ window: z.string(), resets_at: z.string().optional(), tripped_at: z.string() })).optional(),
   }).default({ paused: false }),
 }).passthrough();
 export type LocalConfig = z.infer<typeof LocalConfig>;

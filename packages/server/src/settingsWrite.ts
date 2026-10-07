@@ -86,7 +86,7 @@ export function applyConfigSettings(store: DataStore, body: unknown): Config {
     if (def.lockedWithItems && store.items.size && v !== getPath(store.config, def.key)) throw new Error(`${def.key}: fixed once the project has items (${store.items.size} now)`);
     if (def.key === 'orchestrator.model' && typeof v === 'string') {
       const m = findModel(next, v);
-      if (!m || !canPlan(m)) throw new Error(`orchestrator.model: ${v} is not a Claude model in models:`);
+      if (!m || !canPlan(m)) throw new Error(`orchestrator.model: ${v} does not have orchestration capability in models:`);
       w[1] = m.id; // Settings writes the id, whatever it was given
     }
   }
@@ -158,10 +158,10 @@ function relationProblems(cfg: Config): string[] {
   const out: string[] = [];
   const planner = findModel(cfg, cfg.defaults.planner);
   if (!planner) out.push(`defaults.planner: ${cfg.defaults.planner} is not a model in models:`);
-  else if (!canPlan(planner)) out.push(`defaults.planner: ${planner.label} cannot plan (only Claude models can)`);
+  else if (!canPlan(planner)) out.push(`defaults.planner: ${planner.label} cannot plan with its configured transport`);
   if (!findModel(cfg, cfg.defaults.implementer)) out.push(`defaults.implementer: ${cfg.defaults.implementer} is not a model in models:`);
   const orch = findModel(cfg, cfg.orchestrator.model);
-  if (orch && !canPlan(orch)) out.push(`orchestrator.model: ${orch.label} is not a Claude model`);
+  if (orch && !canPlan(orch)) out.push(`orchestrator.model: ${orch.label} does not have orchestration capability`);
   if (!cfg.categories.includes(cfg.defaults.category)) out.push(`defaults.category: ${cfg.defaults.category} is not a category`);
   return out;
 }

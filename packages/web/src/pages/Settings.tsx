@@ -1,3 +1,4 @@
+import { Link } from 'react-router';
 import { useState, type ReactNode } from 'react';
 import {
   SETTINGS, SETTINGS_TABS, canPlan, fallbackChain, fallbackProblems, findModel, getPath, looksOneOff, settingChanged, settingDefault, shownNumber, storedNumber, suggestedAllowRules, unavailableEntry,
@@ -38,6 +39,7 @@ export function SettingsPage() {
 
   return (
     <div className="settings-page">
+      <Link to="/switch-provider">Switch provider</Link>
       <div className="settings-shell">
         <aside className="settings-rail">
           <input type="search" placeholder="Search all settings" aria-label="Search settings" value={q} onChange={(e) => setQ(e.target.value)} autoComplete="off" />
@@ -426,7 +428,7 @@ function ModelsCtl({ state }: { state: State }) {
           </div>
         );
       })}
-      <div><button className="primary" onClick={() => setEditing('new')}>Add a model</button></div>
+      <div><button className="primary" onClick={() => setEditing('new')}>Add a model</button>{!state.config.models.some((m) => m.id === 'codex-gpt-6-astra') && <button onClick={() => void act(() => api.putModel('codex-gpt-6-astra', { id: 'codex-gpt-6-astra', label: 'Codex GPT-6 Astra', runner: 'codex', codex_model: 'gpt-6-astra', codex_transport: 'app-server', engine_commits: true }))}>Add Codex GPT-6 Astra preset</button>}</div>
       {editing && <ModelDialog cfg={cfg} mcpNames={Object.keys(state.local.mcp_servers ?? {})} model={editing === 'new' ? undefined : editing} onClose={() => setEditing(undefined)} />}
     </div>
   );
@@ -451,16 +453,17 @@ function ModelDialog({ cfg, model, mcpNames, onClose }: { cfg: Config; model?: M
         <h3 style={{ margin: 0 }}>{model ? `Edit ${model.label}` : 'Add a model'}</h3>
         <label>Label <input value={m.label ?? ''} onChange={(e) => set({ label: e.target.value })} placeholder="Opus 5.5" required /></label>
         <label>Id <input className="mono" value={m.id ?? ''} disabled={Boolean(model)} onChange={(e) => set({ id: e.target.value })} placeholder="opus-5-5" title={model ? 'Items store the id, so it cannot change' : 'What items store as their planner or implementer'} required /></label>
-        <label>Runner <select value={runner} onChange={(e) => set({ runner: e.target.value as ModelDef['runner'], fallback: undefined })}>{RUNNERS.map((r) => <option key={r} value={r}>{r === 'claude' ? 'Claude (plans and implements)' : 'Codex (implements only)'}</option>)}</select></label>
+        <label>Runner <select value={runner} onChange={(e) => set({ runner: e.target.value as ModelDef['runner'], fallback: undefined })}>{RUNNERS.map((r) => <option key={r} value={r}>{r === 'claude' ? 'Claude (plans and implements)' : 'Codex'}</option>)}</select></label>
         {runner === 'claude'
           ? <label>Claude model <input className="mono" value={m.claude_model ?? ''} onChange={(e) => set({ claude_model: e.target.value })} placeholder="claude-opus-5-5" /></label>
           : <label>Codex model <input className="mono" value={m.codex_model ?? ''} onChange={(e) => set({ codex_model: e.target.value })} placeholder="Codex's own default" /></label>}
+        {runner === 'codex' && <label>Transport <select value={m.codex_transport ?? 'exec'} onChange={(e) => set({ codex_transport: e.target.value as 'exec' | 'app-server' })}><option value="exec">exec — existing art workers</option><option value="app-server">app-server — planning, coding, orchestrator</option></select></label>}
         <label>What it is for <input value={m.description ?? ''} onChange={(e) => set({ description: e.target.value })} placeholder="One line; the epic planner routes children by it" /></label>
         <label>When out of usage <select value={m.fallback ?? ''} onChange={(e) => set({ fallback: e.target.value || undefined })}><option value="">Block (no fallback)</option>{fallbacks.map((x) => <option key={x.id} value={x.id}>Fall back to {x.label}</option>)}</select></label>
         <label className="check"><input type="checkbox" checked={m.hold_for_review ?? false} onChange={(e) => set({ hold_for_review: e.target.checked })} /> Hold its pull requests for your review</label>
         <label className="check"><input type="checkbox" checked={m.engine_commits ?? false} onChange={(e) => set({ engine_commits: e.target.checked })} /> planestro commits for it (a sandbox that cannot write git's files)</label>
         <label className="check"><input type="checkbox" checked={m.external ?? false} onChange={(e) => set({ external: e.target.checked })} /> External: not run by planestro, its items are only watched</label>
-        {runner === 'claude' && <fieldset><legend className="small muted">MCP servers its sessions get {servers.length ? '' : '(none in planestro.local.yml)'}</legend>
+        {(runner === 'claude' || m.codex_transport === 'app-server') && <fieldset><legend className="small muted">MCP servers its sessions get {servers.length ? '' : '(none in planestro.local.yml)'}</legend>
           {servers.map((s) => <label key={s} className="check"><input type="checkbox" checked={(m.mcp ?? []).includes(s)} onChange={(e) => set({ mcp: e.target.checked ? [...(m.mcp ?? []), s] : (m.mcp ?? []).filter((x) => x !== s) })} /> {s}</label>)}
           {(m.mcp ?? []).length > 0 && <label>Calls per item <input type="number" min={1} value={m.mcp_calls_per_item ?? ''} placeholder="no cap" onChange={(e) => set({ mcp_calls_per_item: e.target.value ? Number(e.target.value) : undefined })} /></label>}
         </fieldset>}

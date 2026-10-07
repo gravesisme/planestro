@@ -254,8 +254,8 @@ function OrchestratorSpendPanel() {
   return (
     <div style={{ margin: '8px 0 10px' }}>
       <p className="small" style={{ margin: 0 }}>
-        <b>Spend:</b> today ${spend.today.cost.toFixed(2)} over {spend.today.wakes} wake{spend.today.wakes === 1 ? '' : 's'}
-        {c ? <> · this conversation ${c.cost.toFixed(2)} over {c.wakes} wake{c.wakes === 1 ? '' : 's'}{rotate ? ` (a fresh one every ${rotate})` : ''}{c.context_tokens ? `, now ${k(c.context_tokens)}` : ''}</> : null}
+        <b>Claude spend:</b> today ${spend.today.cost.toFixed(2)} over {spend.today.wakes} wake{spend.today.wakes === 1 ? '' : 's'}
+        {c ? <> · this conversation {c.runner === 'codex' ? `Codex: ${(c.tokens ?? 0).toLocaleString()} tokens; cost not reported` : `$${c.cost.toFixed(2)}`} over {c.wakes} wake{c.wakes === 1 ? '' : 's'}{rotate ? ` (a fresh one every ${rotate})` : ''}{c.context_tokens ? `, now ${k(c.context_tokens)}` : ''}</> : null}
         {' '}<button className="small" onClick={() => setOpen(!open)}>{open ? 'Hide wakes' : 'Wakes'}</button>
       </p>
       {open && (
@@ -266,7 +266,7 @@ function OrchestratorSpendPanel() {
               <td>{w.at.slice(5, 16).replace('T', ' ')}{w.fresh ? ' ✦' : ''}</td>
               <td>{w.events.join(', ').replace(/_/g, ' ')}{w.failed ? ' (failed)' : ''}</td>
               <td>{w.items.map((id) => <Link key={id} to={`/items/${id}`}>{id} </Link>)}</td>
-              <td style={{ textAlign: 'right' }}>${w.cost.toFixed(2)}</td>
+              <td style={{ textAlign: 'right' }}>{w.runner === 'codex' ? `${(w.tokens ?? 0).toLocaleString()} / ${w.token_cap?.toLocaleString() ?? '—'} tokens; cost not reported` : `$${w.cost.toFixed(2)}`}<br />{w.model}</td>
               <td style={{ textAlign: 'right' }} className="muted">{k(w.context_tokens)}</td>
             </tr>))}
           </tbody>

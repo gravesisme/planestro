@@ -20,13 +20,30 @@ describe('migrations', () => {
     expect(() => store.createItem({ title: 'x' })).toThrow(/read-only/);
     store.close();
   });
+  it('schema 4 converts legacy session strings without replacing the item or its art thread', async () => {
+    const { dataDir } = makeFixture({ git: false });
+    let store = await DataStore.open(dataDir, { lock: false });
+    const item = store.createItem({ title: 'Legacy art' });
+    store.mutateItem(item.id, [{ set: { session_id: 'old-claude', cost_usd: 4, agent_sessions: { codex: { session_id: 'old-art', role: 'implement', tool_contract: 'exec-v1', transport: 'exec' } } } }, { section: 'Notes', body: 'Keep this context' }], 'user');
+    const path = item.path; store.close();
+    const yaml = readFileSync(path, 'utf8').replace(/agent_sessions:\n  codex:\n(?:    .*\n)+/, 'agent_sessions:\n  codex: old-art\n');
+    writeFileSync(path, yaml);
+    const cfg = join(dataDir, 'planestro.yml');
+    writeFileSync(cfg, readFileSync(cfg, 'utf8').replace('schema_version: 4', 'schema_version: 3'));
+    expect((await migrate(dataDir)).applied).toEqual([4]);
+    store = await DataStore.open(dataDir, { lock: false });
+    expect(store.requireItem(item.id).file.frontmatter).toMatchObject({ session_id: 'old-claude', cost_usd: 4, agent_sessions: { codex: { session_id: 'old-art', transport: 'exec', tool_contract: 'exec-v1' } } });
+    expect(readFileSync(path, 'utf8')).toContain('Keep this context');
+    store.close();
+    expect((await migrate(dataDir)).applied).toEqual([]);
+  });
   it('an older dir migrates forward and stamps the version', async () => {
     const { dataDir } = makeFixture({ git: false });
     const cfg = join(dataDir, 'planestro.yml');
     writeFileSync(cfg, readFileSync(cfg, 'utf8').replace(`schema_version: ${SCHEMA_VERSION}`, 'schema_version: 0'));
     const r = await migrate(dataDir);
     expect(r.from).toBe(0);
-    expect(r.applied).toEqual([1, 2, 3]);
+    expect(r.applied).toEqual([1, 2, 3, 4]);
     expect(currentVersion(dataDir)).toBe(SCHEMA_VERSION);
     expect(readFileSync(cfg, 'utf8')).toContain('# planestro project config'); // comments preserved
   });
@@ -38,7 +55,7 @@ describe('migrations', () => {
     expect(before.readOnly).toBe(true); // an older dir is never rewritten behind the user's back
     before.close();
     const r = await migrate(dataDir);
-    expect(r.applied).toEqual([2, 3]); // and 3, which finds no questions to import
+    expect(r.applied).toEqual([2, 3, 4]); // and 3, which finds no questions to import
     const text = readFileSync(cfg, 'utf8');
     expect(text).toContain('max_local_jobs: 4');
     expect(text).not.toContain('godot');

@@ -5,6 +5,7 @@ import { App } from './App.tsx';
 import { BoardPage } from './pages/Board.tsx';
 import { ItemPage } from './pages/Item.tsx';
 import { SessionsPage } from './pages/Sessions.tsx';
+import { SwitchProviderPage } from './pages/SwitchProvider.tsx';
 import { SettingsPage } from './pages/Settings.tsx';
 import { ConsolePage } from './pages/Console.tsx';
 import { PromptsPage } from './pages/Prompts.tsx';
@@ -28,6 +29,7 @@ createRoot(document.getElementById('root')!).render(
           <Route path="releases/:version" element={<ReleasesPage />} />
           <Route path="console" element={<ConsolePage />} />
           <Route path="questions/:id" element={<QuestionPage />} />
+          <Route path="switch-provider" element={<SwitchProviderPage />} />
           <Route path="settings" element={<SettingsPage />} />
         </Route>
       </Routes>

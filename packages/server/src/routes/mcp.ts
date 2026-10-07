@@ -8,6 +8,7 @@ import type { Engine } from '../engine/Engine.ts';
 import { TOOL_VERSION } from '../config.ts';
 import { listInstances, readInstance, pgidOf, uptime, type Instance } from '../instances.ts';
 import { itemView } from './views.ts';
+import { allowedHosts, hostnameOf } from '../guard.ts';
 
 // ---- the operator MCP endpoint (#175, step 2) ----
 // `/mcp` on the running server: the backlog for whoever operates planestro from an MCP client
@@ -21,13 +22,17 @@ import { itemView } from './views.ts';
 export const OPERATOR_TOOLS = ['list_items', 'get_item', 'get_state'] as const;
 
 /** Whether a URL is some planestro server's operator endpoint: `/mcp` on a host and port a recorded instance serves, or any loopback `/mcp` on a known port. */
-export function operatorMcpUrl(url: string, instances: Pick<Instance, 'port'>[] = []): boolean {
+export function operatorMcpUrl(url: string, instances: (Pick<Instance, 'port'> & Partial<Pick<Instance, 'host' | 'url'>>)[] = [], aliases: readonly string[] = []): boolean {
   let u: URL;
   try { u = new URL(url); } catch { return false; }
   if (u.pathname.replace(/\/+$/, '') !== '/mcp') return false;
-  const loopback = ['127.0.0.1', 'localhost', '[::1]', '0.0.0.0'].includes(u.hostname);
+  const knownHosts = allowedHosts('0.0.0.0', aliases);
+  for (const i of instances) {
+    if (i.host) knownHosts.add(hostnameOf(i.host));
+    if (i.url) { try { knownHosts.add(hostnameOf(new URL(i.url).hostname)); } catch { /* invalid stale record */ } }
+  }
   const port = Number(u.port || (u.protocol === 'https:' ? 443 : 80));
-  return loopback && instances.some((i) => i.port === port);
+  return knownHosts.has(hostnameOf(u.hostname)) && instances.some((i) => i.port === port);
 }
 
 /** One line per item, enough to triage from: the rest is in get_item. */

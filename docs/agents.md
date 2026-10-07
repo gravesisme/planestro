@@ -5,13 +5,13 @@ planestro runs workers on two agent CLIs. The engine knows neither by name: it a
 
 | | **Claude runner** (`runner: claude`, the default) | **Codex runner** (`runner: codex`) |
 |---|---|---|
-| CLI | Claude Code, through the Agent SDK | `codex exec` |
-| Can plan | yes — plan mode, `submit_plan`, `submit_breakdown` | **no** — it only implements (and fixes) |
-| Reports through | planestro's tools: `report_done`, `report_blocked`, `add_note`, `hand_off`, `AskUserQuestion` | its **final message**, constrained to `{outcome, summary, question, hold, parts, hand_off}` |
-| Images | cannot generate them | built-in image generation and editing, headless |
-| What it may do | a **per-command policy**: pushes, PR operations and protected branches are denied outright; an allow-list covers the routine, ordinary commands that stay inside the worktree included; its shell starts every command in the worktree and a `cd` out of it is refused; anything else *parks* as a permission request you answer | a **sandbox**: writes confined to the worktree (and temp), no network for its commands. No per-command decisions, no permission parking |
+| CLI | Claude Code, through the Agent SDK | app-server for general work; exec for existing art |
+| Can plan | yes — plan mode, `submit_plan`, `submit_breakdown` | yes with app-server; exec implements and fixes |
+| Reports through | planestro's tools: `report_done`, `report_blocked`, `add_note`, `hand_off`, `AskUserQuestion` | app-server: scoped tools over stdio; exec: a constrained final message |
+| Images | cannot generate them | validated on exec only; app-server art stays disabled |
+| What it may do | a **per-command policy**: pushes, PR operations and protected branches are denied outright; an allow-list covers the routine, ordinary commands that stay inside the worktree included; its shell starts every command in the worktree and a `cd` out of it is refused; anything else *parks* as a permission request you answer | a **sandbox**: writes confined to the worktree (and temp), no network for its commands. app-server approvals are recorded and declined immediately, ending the turn for a later decision; exec has no permission callback |
 | Budget | dollars: `budget_usd_per_item` | turns and tokens: `budget_turns_per_item`, `budget_tokens_per_item` |
-| Conversation id | `session_id` | `agent_sessions.codex` — a Codex thread cannot resume a Claude session or the reverse |
+| Conversation id | `session_id` | `agent_sessions.codex.session_id` with role and tool contract — a Codex thread cannot resume a Claude session or the reverse |
 | Concurrency | `concurrency.max_sessions` admits items | `concurrency.runner_limits.codex` (default 1: image generation is slow and rate-limited) |
 
 Both are verified the same way afterwards: a clean tree and commits ahead of the base, or
@@ -19,9 +19,10 @@ the item blocks. Neither can push — Claude because the policy refuses it, Code
 its sandbox has no network. Both read your repository's own `CLAUDE.md` / `AGENTS.md`.
 
 **Say the trust difference out loud.** A Claude worker that wants to do something unusual
-asks you first. A Codex worker cannot ask: it is simply unable to write outside its
-worktree or reach the network, and what it produced is checked when it finishes. The item
+asks you first. A Codex worker remains confined to its sandbox. App-server can record questions and approval requests, decline them immediately, and end its turn; no process waits for the user's answer. Exec art retains its existing final-message question flow. The item
 page says which one an item runs under.
+
+The orchestrator can use either provider. Explicit switching in both directions starts from current persisted context; see [Switching providers](switching-providers.md).
 
 ## Models
 
