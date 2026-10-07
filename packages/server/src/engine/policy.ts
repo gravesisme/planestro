@@ -4,6 +4,7 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { WORKTREE_SCOPE, type Config } from '@planestro/shared';
 import type { PermissionRequest } from './ports.ts';
 import { literal, readShell, type Command, type Item, type Word } from './shell.ts';
+import { secretDenial, type SecretOptions } from './secrets.ts';
 
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
 
@@ -177,8 +178,9 @@ function leavesWorktree(command: string, worktree: string): boolean {
 /**
  * Hard denials with an explanation. Everything else that reaches `canUseTool` is parked for
  * the user (invariant 2). Branch names come from config — never literals (invariant 8).
+ * The secret-file deny list (#227) is judged first, for every tool.
  */
-export function makePolicy(config: Config, baseBranch: string, worktree: string): Policy {
+export function makePolicy(config: Config, baseBranch: string, worktree: string, secrets: SecretOptions = {}): Policy {
   const protectedBranches = [baseBranch, config.code_repo.release_branch].filter((b): b is string => Boolean(b)).map(esc).join('|');
   const rules: { re: RegExp; why: string }[] = [
     { re: /^\s*git\b[^|;&]*?\bpush\b/, why: 'planestro pushes for you; commit on your worker branch and report_done.' },
@@ -198,6 +200,8 @@ export function makePolicy(config: Config, baseBranch: string, worktree: string)
   const userDeny = config.permissions.deny.map((d) => d.trim()).filter(Boolean).map((d) => { const m = /^Bash\((.*)\)$/.exec(d); return m ? m[1].replace(/\s*\*$/, '').trim() : d; }).filter(Boolean);
   return {
     deny(req) {
+      const secret = secretDenial(req, worktree, secrets);
+      if (secret) return secret;
       if (req.tool !== 'Bash') {
         const path = String(req.input.file_path ?? req.input.path ?? '');
         if ((req.tool === 'Write' || req.tool === 'Edit' || req.tool === 'MultiEdit') && path.startsWith('/') && !path.startsWith(worktree + '/')) return `writes outside your worktree (${worktree}) are not allowed.`;

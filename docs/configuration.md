@@ -128,6 +128,24 @@ runs: leading `NAME=value` assignments and wrappers such as `timeout 120` are lo
 `git -C <the worktree>` is judged as plain `git`, and `cd` into the worktree is a no-op; `git -C`
 anywhere else matches nothing and parks. Codex workers are governed by their sandbox instead.
 
+**Secret files** are on a built-in deny list (`engine/secrets.ts`, #227) that no rule overrides:
+`~/.ssh`, `~/.aws`, `~/.gnupg`, gcloud config (`~/.config/gcloud`, `$CLOUDSDK_CONFIG`), `.git/config`,
+`.env*` (except `.env.example`), `*.pem`, `*.key`, `id_rsa*` / `id_ed25519*`, `credentials.json`,
+`secrets.*`, and Codex's login (`$CODEX_HOME/auth.json` and the copy in `~/.planestro/codex`). Paths
+are judged as written and through symlinks. For Claude workers it is checked before everything else,
+in a PreToolUse hook: before the built-in read-only helpers (`tail`, `head`, `wc`, `git --no-pager …`),
+before `@worktree` rules and `permissions.allow`, and before what the CLI approves by itself (its own
+read-only commands, reads in the worktree, edits under acceptEdits). It covers the file tools' paths
+and the Bash arguments that resolve statically (words, `--flag=path`, `HEAD:path`, redirections,
+`~` and `$HOME`); a bare name such as `id_rsa` counts only when it is a file there, a glob or a
+redirection target, so `grep -rn id_rsa src` stays a search. `planestro permissions suggest` never
+counts an approval that named one of these toward a rule. **The gaps:** a program a command runs reads
+what it likes (`grep -r TOKEN .`, a script, `$(…)` that builds the path), and Codex workers are not
+covered: the `workspace-write` and `read-only` sandboxes of the validated Codex CLI restrict writes,
+not reads, and a command inside the sandbox raises no approval for planestro to see, so a Codex worker
+can still read these files (`cat ~/.ssh/id_ed25519`). Keep secrets a Codex worker must not see off
+the machine it runs on, or out of its user's reach.
+
 Rules match each segment of a chained or piped command (`&&`, `||`, `;`, `|`), and every
 segment must match. Before matching, each segment is reduced to the command it actually runs:
 leading plain `NAME=value` assignments and the harmless wrappers `timeout N`/`gtimeout N`,

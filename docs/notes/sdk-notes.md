@@ -211,6 +211,13 @@ a live worker) would have matched it.
    Workers run with it (#96): the policy resolves every relative path against
    the worktree, which is only true if each command starts there. Passing `env`
    replaces the child's environment, so it is `{ ...process.env, … }`.
+19. **The secret-file deny list rides a PreToolUse hook (#227), not
+   `canUseTool`.** The callback never sees what the CLI approves by itself (an
+   allow-listed `Bash(tail *)`, gotcha 3's read-only commands, reads in `cwd`,
+   edits under acceptEdits); a PreToolUse hook answering
+   `permissionDecision: 'deny'` runs before all of them, per the SDK's typings
+   (0.3.251). Not yet exercised by the spike against a live CLI: re-validation
+   should run `tail ~/.ssh/<file>` in a worker turn and see it refused.
 
 ## Engine decisions confirmed by the spike
 
