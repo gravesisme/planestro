@@ -12,6 +12,12 @@ import type { GhPort, IssueInfo } from './ports.ts';
  */
 export const NOTE_TYPE = 'orchestrator.planestro_note';
 export const NOTE_LINK_TYPE = 'orchestrator.planestro_note_link';
+/**
+ * The Console's read marker (#305): every note up to `up_to` has been read, on every device. Kept in the journal beside
+ * the notes and their links (committed with the quiet checkpoint, never per click), heard by every open page as
+ * `journal.appended`, and only ever moved forward.
+ */
+export const NOTES_SEEN_TYPE = 'orchestrator.planestro_notes_seen';
 /** How many of the feedback repo's issues are searched for a marker or a likely match. */
 const SEARCH_LIMIT = 1000;
 
@@ -40,6 +46,26 @@ export function notesWithLinks(store: DataStore): NoteView[] {
   }
   const notes = all.filter((e) => e.type === NOTE_TYPE).map((e) => ({ ...e, links: links.get(e.ts) ?? { issues: [], handled: false, comments: [] } }));
   return notes;
+}
+
+/** The read marker: the latest `up_to` recorded, '' while nothing has been marked read. */
+export function notesSeen(store: DataStore): string {
+  let seen = '';
+  for (const e of store.journal.read({ type: NOTES_SEEN_TYPE })) { const t = String(e.data?.up_to ?? ''); if (t > seen) seen = t; }
+  return seen;
+}
+
+/**
+ * Mark read every note up to `upTo`, held to the newest note there is so it never covers one nobody has seen. An older
+ * marker than the one kept (a stale page) changes nothing and writes nothing. Returns the marker as it now stands.
+ */
+export function markNotesSeen(store: DataStore, upTo: string): string {
+  const seen = notesSeen(store);
+  const newest = store.journal.read({ type: NOTE_TYPE }).reduce((m, e) => (e.ts > m ? e.ts : m), '');
+  const next = upTo > newest ? newest : upTo;
+  if (next <= seen) return seen;
+  store.journal.append({ type: NOTES_SEEN_TYPE, actor: 'user', data: { up_to: next } });
+  return next;
 }
 
 const isDone = (l: NoteLinks): boolean => l.handled || l.issues.length > 0;

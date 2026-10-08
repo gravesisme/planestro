@@ -165,6 +165,8 @@ export const api = {
   resolveQuestion: (id: string, status: 'resolved' | 'withdrawn' = 'resolved', resolution?: string) => req<QuestionView>('POST', `/api/questions/${encodeURIComponent(id)}/resolve`, { status, resolution }),
   reopenQuestion: (id: string) => req<QuestionView>('POST', `/api/questions/${encodeURIComponent(id)}/reopen`),
   orchestratorNotes: () => req<NoteView[]>('GET', '/api/orchestrator/notes'),
+  notesSeen: () => req<{ seen: string }>('GET', '/api/orchestrator/notes/seen'),
+  markNotesSeen: (upTo: string) => req<{ seen: string }>('POST', '/api/orchestrator/notes/seen', { up_to: upTo }),
   fileNote: (note: string, force?: boolean) => req<FileNoteOutcome>('POST', '/api/orchestrator/notes/file', { note, ...(force ? { force: true } : {}) }),
   markNotes: (links: { note: string; issues?: number[]; handled?: boolean; comment?: string }[]) => req<{ ok: true }>('POST', '/api/orchestrator/notes/mark', { links }),
   gitCommit: () => req<{ committed: boolean }>('POST', '/api/git/commit'),

@@ -1,6 +1,6 @@
 import { parkSummary } from '../engine/parks.ts';
 import { suggestForStore } from '../engine/allowSuggest.ts';
-import { notesWithLinks, fileNote, markNotes } from '../engine/feedback.ts';
+import { notesWithLinks, fileNote, markNotes, notesSeen, markNotesSeen } from '../engine/feedback.ts';
 import type { GhPort } from '../engine/ports.ts';
 import { previewSwitch, applySwitch, itemModelSwitchOps } from '../providerSwitch.ts';
 import { orchestratorSpend } from '../engine/orchestratorSpend.ts';
@@ -493,6 +493,14 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   // The orchestrator's suggestions about planestro itself (dogfood f8): a list of their own, not buried in Activity.
   // Each with what became of it (#231): the issues it was filed as, or handled by hand.
   api.get('/orchestrator/notes', (c) => c.json(notesWithLinks(store)));
+  // The read marker (#305), one for every device: it only moves forward, and every open page hears it as `journal.appended`.
+  api.get('/orchestrator/notes/seen', (c) => c.json({ seen: notesSeen(store) }));
+  api.post('/orchestrator/notes/seen', async (c) => {
+    try {
+      const { up_to } = z.object({ up_to: z.string().min(1) }).parse(await c.req.json());
+      return c.json({ seen: markNotesSeen(store, up_to) });
+    } catch (e) { return fail(c, e); }
+  });
   // File as issue in feedback.issue_repo (#231): a marked issue is linked, a likely match is offered first unless `force`.
   api.post('/orchestrator/notes/file', async (c) => {
     try {
