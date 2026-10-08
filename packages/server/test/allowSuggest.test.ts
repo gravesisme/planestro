@@ -146,12 +146,14 @@ describe('redirects, drift and precedent (#203)', () => {
 
   it('offers a redirect for a kind of command that is denied every time, with the reason it was given', () => {
     const rep = suggestAllowRules([
-      at('git stash', 'deny', 'HH-1', 10, { reason: 'commit your work instead of stashing it' }),
-      at('git stash push -m wip', 'deny', 'HH-2', 11, { reason: 'commit your work instead of stashing it' }),
-      at('git stash && npm test', 'deny', 'HH-3', 12, { reason: 'no stash: commit instead' }),
+      at('pkill -f vite', 'deny', 'HH-1', 10, { reason: 'stop only what you started' }),
+      at('pkill node', 'deny', 'HH-2', 11, { reason: 'stop only what you started' }),
+      at('pkill -f soak && npm test', 'deny', 'HH-3', 12, { reason: 'leave other processes alone' }),
     ], [], { scope });
-    expect(rep.redirects).toEqual([expect.objectContaining({ rule: 'Bash(git stash)', shape: 'git stash', denials: 3, items: 3, message: 'commit your work instead of stashing it' })]);
-    expect(formatSuggestReport(rep)).toContain('Bash(git stash)');
+    expect(rep.redirects).toEqual([expect.objectContaining({ rule: 'Bash(pkill)', shape: 'pkill', denials: 3, items: 3, message: 'stop only what you started' })]);
+    expect(formatSuggestReport(rep)).toContain('Bash(pkill)');
+    // a denial the rules allow today (planestro's own `git stash*`) is not a redirect: it would never park
+    expect(suggestAllowRules([1, 2, 3].map((i) => at('git stash', 'deny', `HH-${i}`, 10 + i, { reason: 'commit instead' })), [], { scope }).redirects).toEqual([]);
   });
 
   it('never offers one that would have denied a past approval, a safe kind of command, or one planestro already refuses', () => {
@@ -167,7 +169,7 @@ describe('redirects, drift and precedent (#203)', () => {
 
   it('reports the project rules nothing recorded has matched in the window, and only once something is recorded', () => {
     const rules = ['Bash(npm run *)', 'Bash(make *)', 'Bash(cat *)@worktree', 'WebFetch'];
-    const rep = suggestAllowRules([], rules, { scope, now: NOW, windowDays: 14, runs: [run('npm run test 2>&1 | tail -5', 25), run('make lint', 2), run('cat .env', 26)] });
+    const rep = suggestAllowRules([], rules, { scope, now: NOW, windowDays: 14, runs: [run('npm run test 2>&1 | tail -5', 25), run('make lint', 2), run('cat ~/.ssh/config', 26)] });
     expect(rep.drift.recorded_since).toBe(day(2));
     expect(rep.drift.idle_rules).toEqual([
       { rule: 'Bash(make *)', last_matched: day(2) },
@@ -199,9 +201,9 @@ describe('redirects, drift and precedent (#203)', () => {
   });
 
   it('finds the earlier rulings on the same kind of command, newest first', () => {
-    const past = [at('git stash', 'deny', 'HH-1', 10, { reason: 'commit instead' }), at('ls', 'allow', 'HH-2', 11), at('cd x && git stash pop', 'deny', 'HH-3', 12, { reason: 'no stash' }), at('git status', 'allow', 'HH-3', 13)];
-    expect(precedents(past, 'git stash list', WT).map((x) => x.reason)).toEqual(['no stash', 'commit instead']);
-    expect(precedents(past, 'git stash list', WT, 1)).toHaveLength(1);
+    const past = [at('pkill -f a', 'deny', 'HH-1', 10, { reason: 'not yours' }), at('ls', 'allow', 'HH-2', 11), at('cd x && pkill node', 'deny', 'HH-3', 12, { reason: 'leave it' }), at('git status', 'allow', 'HH-3', 13)];
+    expect(precedents(past, 'pkill -f b', WT).map((x) => x.reason)).toEqual(['leave it', 'not yours']);
+    expect(precedents(past, 'pkill -f b', WT, 1)).toHaveLength(1);
     expect(precedents(past, 'make', WT)).toEqual([]);
   });
 });

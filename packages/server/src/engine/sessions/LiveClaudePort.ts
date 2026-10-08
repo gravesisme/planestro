@@ -79,6 +79,27 @@ export class LiveClaudePort implements ClaudePort {
     const input = new InputGate();
     const reports = new ReportWatch((r) => { result.undelivered = r; o.onUndelivered?.(r); });
     const drops = new DropWatch((d) => { result.connectionDrop = d; o.onConnectionDrop?.(d); });
+    const ran = new RanWatch();
+    // What a worker's tool call gets: planestro's tools and bare-named ones allowed, plans and questions recorded, the rest the engine's to judge.
+    const decide = async (toolName: string, input: Record<string, unknown>): Promise<{ behavior: 'allow'; updatedInput: Record<string, unknown> } | { behavior: 'deny'; message: string }> => {
+      // planestro's own tools, and a whole tool a rule names bare, are always fine (plan mode routes even allow-listed tools here).
+      if (toolName.startsWith('mcp__planestro__') || allow.whole.has(toolName)) return { behavior: 'allow', updatedInput: input };
+      if (toolName === 'ExitPlanMode') {
+        const plan = String((input as any).plan ?? '');
+        if (plan) { result.planSubmitted = plan; await o.tools.submit_plan(plan); }
+        return { behavior: 'deny', message: 'Plan recorded by planestro. Do not use ExitPlanMode; end your turn now.' };
+      }
+      if (toolName === 'AskUserQuestion') {
+        await o.onQuestion(((input as any).questions ?? []) as unknown[]);
+        result.parked = 'question';
+        return { behavior: 'deny', message: 'Questions recorded by planestro. End your turn now; you will be resumed with the answers.' };
+      }
+      const decision = await o.onPermission({ tool: toolName, input });
+      if (decision.action === 'allow') return { behavior: 'allow', updatedInput: input };
+      if (decision.action === 'deny') return { behavior: 'deny', message: decision.message };
+      result.parked = 'permission';
+      return { behavior: 'deny', message: PARK_MSG };
+    };
     const q = query({
       prompt: input.open(o.prompt),
       options: {
@@ -87,35 +108,24 @@ export class LiveClaudePort implements ClaudePort {
         systemPrompt: { type: 'preset', preset: 'claude_code', append: o.systemAppend },
         ...resumed.options,
         // The secret-file deny list (#227) before anything else: allow rules and the CLI's own approvals never reach canUseTool.
-        hooks: { ...(resumed.options.hooks as object | undefined), PreToolUse: [{ hooks: [secretHook(o.cwd)] }] },
+        // What ran without a park is counted from the tool calls that ran (#203): the SDK's own approvals never reach canUseTool.
+        hooks: { ...(resumed.options.hooks as object | undefined), PreToolUse: [{ hooks: [secretHook(o.cwd, {}, (id) => ran.refused(id))] }], PostToolUse: [{ hooks: [ran.hook()] }], PostToolUseFailure: [{ hooks: [ran.hook()] }] },
         // The model's own servers ride along; their tools are not allow-listed, so every call reaches canUseTool and the engine's count.
         mcpServers: { planestro, ...(o.mcpServers ?? {}) } as any, strictMcpConfig: true, settingSources: ['project'],
         allowedTools: allow.rules,
         additionalDirectories: o.extraDirs, maxBudgetUsd: o.maxBudgetUsd, abortController,
         ...(this.claudeBin ? { pathToClaudeCodeExecutable: this.claudeBin } : {}),
         env: { ...process.env, ...PINNED, ...(this.apiKey ? { ANTHROPIC_API_KEY: this.apiKey } : {}) },
-        canUseTool: async (toolName, input) => {
-          // planestro's own tools, and a whole tool a rule names bare, are always fine (plan mode routes even allow-listed tools here).
-          if (toolName.startsWith('mcp__planestro__') || allow.whole.has(toolName)) return { behavior: 'allow', updatedInput: input };
-          if (toolName === 'ExitPlanMode') {
-            const plan = String((input as any).plan ?? '');
-            if (plan) { result.planSubmitted = plan; await o.tools.submit_plan(plan); }
-            return { behavior: 'deny', message: 'Plan recorded by planestro. Do not use ExitPlanMode; end your turn now.' };
-          }
-          if (toolName === 'AskUserQuestion') {
-            await o.onQuestion(((input as any).questions ?? []) as unknown[]);
-            result.parked = 'question';
-            return { behavior: 'deny', message: 'Questions recorded by planestro. End your turn now; you will be resumed with the answers.' };
-          }
-          const decision = await o.onPermission({ tool: toolName, input });
-          if (decision.action === 'allow') return { behavior: 'allow', updatedInput: input };
-          if (decision.action === 'deny') return { behavior: 'deny', message: decision.message };
-          result.parked = 'permission';
-          return { behavior: 'deny', message: PARK_MSG };
+        canUseTool: async (toolName, input, { toolUseID }) => {
+          const res = await decide(toolName, input);
+          if (res.behavior !== 'allow') ran.refused(toolUseID);
+          return res;
         },
       },
     });
     await consume(q, result, o.onOutput, abortController, resumed, input, reports, drops);
+    const list = ran.list();
+    if (list.length) result.ran = list;
     return result;
   }
 }
@@ -125,12 +135,41 @@ export class LiveClaudePort implements ClaudePort {
  * an allow-listed `Bash(tail *)`, a built-in read-only command (sdk-notes gotcha 3), a read inside the working
  * directory, an edit under acceptEdits. A hook runs before all of those, so the list holds whatever a rule says.
  */
-export function secretHook(cwd: string, o: SecretOptions = {}): HookCallback {
+export function secretHook(cwd: string, o: SecretOptions = {}, onDeny?: (toolUseId: string) => void): HookCallback {
   return async (input) => {
     if (input.hook_event_name !== 'PreToolUse') return { continue: true };
     const why = secretDenial({ tool: input.tool_name, input: (input.tool_input ?? {}) as Record<string, unknown> }, cwd, o);
+    if (why) onDeny?.(input.tool_use_id);
     return why ? { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `Not allowed: ${why}` } } : { continue: true };
   };
+}
+
+const RAN_MAX = 300;
+const RAN_COMMAND = 1000;
+
+/**
+ * The tool calls a turn ran (#203), for drift over the allow rules: Bash by command (as run, with a count), any other
+ * tool by name, planestro's own tools left out. Counted when a call has run (PostToolUse, or PostToolUseFailure for a
+ * command that failed), never when the deny list, the policy or a park refused it, nor when it was interrupted.
+ */
+export class RanWatch {
+  private readonly denied = new Set<string>();
+  private readonly seen = new Map<string, { tool: string; command?: string; n: number }>();
+  refused(toolUseId: string | undefined): void { if (toolUseId) this.denied.add(toolUseId); }
+  hook(): HookCallback {
+    return async (input) => {
+      if (input.hook_event_name !== 'PostToolUse' && input.hook_event_name !== 'PostToolUseFailure') return { continue: true };
+      if ((input.hook_event_name === 'PostToolUseFailure' && input.is_interrupt) || this.denied.has(input.tool_use_id) || input.tool_name.startsWith('mcp__planestro__')) return { continue: true };
+      const command = input.tool_name === 'Bash' ? String((input.tool_input as { command?: unknown } | undefined)?.command ?? '').trim().slice(0, RAN_COMMAND) : undefined;
+      if (command === '') return { continue: true };
+      const key = `${input.tool_name}\0${command ?? ''}`;
+      const e = this.seen.get(key);
+      if (e) e.n++;
+      else if (this.seen.size < RAN_MAX) this.seen.set(key, { tool: input.tool_name, ...(command !== undefined ? { command } : {}), n: 1 });
+      return { continue: true };
+    };
+  }
+  list(): { tool: string; command?: string; n: number }[] { return [...this.seen.values()]; }
 }
 
 /**

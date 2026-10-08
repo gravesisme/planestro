@@ -6,6 +6,7 @@ import YAML from 'yaml';
 import { z } from 'zod';
 import { modelCapabilities, runnerTurnSettings, type ModelDef, type Runner, getSection, planToolsMissing, epicFlagOf, holdShapeOf, heldReasonOf, previewOf, type HoldFlag, partsSummary, serializeItemFile, serializeQuestionFile, parseThread, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent, parseActivity } from '@planestro/shared';
 import { parkHint } from './parks.ts';
+import { precedents, rulingsFromJournal, worktreeFinder, worstOf } from './allowSuggest.ts';
 import { hostNote, keptPathsNote } from './hostNote.ts';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Ports, CustomToolDef, TurnResult } from './ports.ts';
@@ -612,7 +613,30 @@ export class Orchestrator {
       '- deny — not needed for this item or plainly the wrong way to do it. Say why and what to do instead; the worker continues without it.',
       '- ask_user — anything that writes or deletes outside the worktree and temp dirs, installs or downloads software, talks to the network beyond the project\'s own tooling, reads or writes credentials, keys or env files, uses sudo, changes git config or history, or that you cannot fully read and understand. When in doubt, ask_user: the user sees the request exactly as you did.',
       'Judge the command, not the worker\'s description of it. If you decide nothing, it goes to the user.',
+      data.tool === 'Bash' ? this.earlierRulings(what, fm) : '',
+      this.rulingRubric(),
     ].filter(Boolean).join('\n');
+  }
+
+  /** The project's ruling rubric (#203), a partial the project may edit; a copy that does not render is left out. */
+  private rulingRubric(): string {
+    try { return this.store.renderPrompt('permission-rubric', undefined).trim(); } catch { return ''; }
+  }
+
+  /** The rulings on this kind of command so far (#203), so equivalent requests get the same answer. From the journal (#169 on). */
+  private earlierRulings(command: string, fm: { worktree?: string }): string {
+    const own = (fm as { id?: string }).id;
+    const worktree = (id: string) => { const w = this.store.getItem(id)?.file.frontmatter.worktree; return typeof w === 'string' ? w : undefined; };
+    const find = worktreeFinder(this.store.worktreesRoot(), this.store.codeRepoPath(), worktree);
+    const here = own ? find(own, command) : this.store.worktreesRoot();
+    const shape = worstOf({ command, worktree: here })?.shape;
+    if (!shape) return '';
+    const past = precedents(rulingsFromJournal(this.store.journal.read({ type: 'permission.answered' }), find), command, here);
+    if (!past.length) return '';
+    return [
+      `Earlier rulings on \`${shape}\` commands (answer an equivalent request the same way, with the same reason; if this one differs, say how in your reason):`,
+      ...past.map((r) => `- ${r.at.slice(0, 10)} ${r.item}: ${r.decision} (${r.by})${r.reason ? `: ${r.reason.replace(/\s+/g, ' ').slice(0, 200)}` : ''} — \`${(r.command ?? '').replace(/\s+/g, ' ').slice(0, 120)}\``),
+    ].join('\n');
   }
 
   /**

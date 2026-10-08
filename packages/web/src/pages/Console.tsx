@@ -280,6 +280,13 @@ function AllowSuggestions() {
         {report.current_false_allows.length > 0 && <details className="small"><summary>{report.current_false_allows.length} past denials the current rules would let through today</summary>
           <ul>{report.current_false_allows.map((d, i) => <li key={i}>{d.item}: <code>{d.command.slice(0, 120)}</code></li>)}</ul>
         </details>}
+        {(report.redirects?.length ?? 0) > 0 && <details className="small"><summary>{report.redirects!.length === 1 ? '1 kind' : `${report.redirects!.length} kinds`} of command denied every time (a refusal with the reason up front would spare the wait)</summary>
+          <ul>{report.redirects!.map((x) => <li key={x.rule} title={x.examples.join('\n')}><code>{x.rule}</code> ({x.denials} denials, {x.items} items): “{x.message.slice(0, 160)}”</li>)}</ul>
+        </details>}
+        {report.drift && (report.drift.idle_rules.length > 0 || report.drift.rising.length > 0) && <details className="small"><summary>Drift over the last {report.drift.window_days} days: {report.drift.idle_rules.length === 1 ? '1 rule' : `${report.drift.idle_rules.length} rules`} nothing matched, {report.drift.rising.length === 1 ? '1 kind' : `${report.drift.rising.length} kinds`} of command approved more often</summary>
+          {report.drift.idle_rules.length > 0 && <ul>{report.drift.idle_rules.map((x) => <li key={x.rule}><code>{x.rule}</code> {x.last_matched ? `last matched ${x.last_matched.slice(0, 10)}` : 'never matched'}</li>)}</ul>}
+          {report.drift.rising.length > 0 && <ul>{report.drift.rising.map((x) => <li key={x.shape}><code>{x.shape}</code>: {x.recent} approvals (was {x.before}), {x.items} items{x.rule ? <> → <code>{x.rule}</code></> : null}</li>)}</ul>}
+        </details>}
         <div className="row"><button className="small" disabled={busy} onClick={load}>{busy ? 'Reading…' : 'Refresh'}</button></div>
       </>)}
     </div>
