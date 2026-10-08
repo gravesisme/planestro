@@ -17,8 +17,10 @@ start agents, so only do it on a network you trust.
 Under 840px the same UI rearranges for one hand: tabs along the bottom (Board, Icebox and Done
 share the first one), the pause lever still in the header, and the board as a single scroll under a
 strip of its seven stages — tap a stage to jump to it; an amber one holds a decision waiting on you, a red one something blocked.
-Cards do not drag there, because a drag and a scroll are the same gesture: tap a card for its
-next steps, long-press it for the move menu. Added to the home screen it opens full-screen.
+A card drags by the grip on its right edge, so the rest of it still scrolls: within its stage to
+reorder it, or onto another stage or that stage's cell in the strip. Tap a card for its next steps,
+long-press it for the move menu (up or down one, after a chosen item, top or bottom). Added to the
+home screen it opens full-screen.
 
 ## Watch mode
 
