@@ -448,6 +448,12 @@ original model is tried first again. An item that does not allow a fallback bloc
 `usage_exhausted` instead. You can also **mark unavailable until…** a model in Settings when you
 already know it is out, so no turn is spent discovering it.
 
+A `usage_exhausted` stop of work already authorized can wait out the reset (#296): the orchestrator's
+`retry_at_reset` from triage, or **Wait for the reset** on the account card, records `op_data.usage_retry.due_at`
+(the recorded reset plus a minute, or a later `at`). Meanwhile the item does not need you, and nothing sleeps until
+then: the tick retries its step once when it is due, as `retry_op` would. A second exhaustion stops it as before, and
+the orchestrator may not park it again (the user may). This works with `usage_guard.auto_resume` off.
+
 ## A second account for the same provider
 
 Two Claude subscriptions, or a subscription and an API key, or two Codex logins (#242). Name each extra one in

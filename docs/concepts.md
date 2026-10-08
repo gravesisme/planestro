@@ -342,7 +342,8 @@ not counted as needing you. It then does one of two things:
   the instruction goes to a fresh session with a brief instead of the old conversation),
   `commit_paths` for work that is done but uncommitted (no session turn), `answer_question`
   when the brief already answers the worker, `retry_op` for a transient GitHub 5xx or network
-  failure, `set_item_fields` for a wrong parent / base / dependency / implementer / fallback
+  failure, `retry_at_reset` for a `usage_exhausted` stop of work already authorized (it waits
+  for the recorded reset, not needing you, and is retried once from the tick), `set_item_fields` for a wrong parent / base / dependency / implementer / fallback
   setting (a whitelist — nothing else), `sync_with_base` (or `unblock_item` with
   `sync_first`) for an item whose dependency merged after its worktree was cut, and
   `recreate_worktree` for a missing worktree or one

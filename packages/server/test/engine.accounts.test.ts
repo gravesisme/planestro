@@ -112,6 +112,9 @@ describe('a second account for the same provider (#242)', () => {
     const after = fm(store, a.id);
     expect(after.blocked_reason).toBe('usage_exhausted');
     expect(decisionOf(after)).toBeUndefined();
+    // It waits for the reset without needing anyone, and planestro retries it once then (#296).
+    expect(after.op_data?.usage_retry).toEqual({ due_at: new Date(Date.parse(RESET) + 60_000).toISOString(), by: 'user' });
+    expect(store.derived(store.getItem(a.id)!).needs_you).toBe(false);
   });
 
   it("a model row's account is where its turns run; one this machine lacks is a stop, not the default login", async () => {

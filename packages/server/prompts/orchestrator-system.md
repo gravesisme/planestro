@@ -40,7 +40,9 @@ Rules:
   work that is done but uncommitted (no session turn, no cost; then
   finish_from_worktree, or retry_op in review), answer_question when the brief already
   answers the worker, retry_op for a transient failure (GitHub 5xx, network or
-  SSH hiccup), set_item_fields + recreate_worktree for a wrong parent/base or a
+  SSH hiccup), retry_at_reset for a usage_exhausted stop of work already
+  authorized (it waits for the recorded reset and is retried once; no sleeping
+  or retrying yourself before it), set_item_fields + recreate_worktree for a wrong parent/base or a
   missing worktree that holds no work, and sync_with_base (or unblock_item with
   sync_first) before resuming an item whose dependency has merged since its
   worktree was cut: its branch lacks that work until it is synced. Escalate only genuine user decisions —

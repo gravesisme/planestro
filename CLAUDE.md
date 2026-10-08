@@ -190,8 +190,10 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   `concurrency.stall_after_min` is carried on once (`driveStalls`), then blocked `stalled`.
 - A turn or orchestrator wake that failed before it did anything (`quietTransientFailure`: no message, tool call,
   file change or report; never auth, quota or a cap) is retried once after `concurrency.transient_retry_after_s` (#241):
-  the stop is recorded with `op_data.transient_retry.due_at` (no triage, not needs-you) and `driveTransientRetries`
+  the stop is recorded with `op_data.transient_retry.due_at` (no triage, not needs-you) and `driveTimedRetries`
   runs `retryOp` from the tick; a wake is queued again with `retry.not_before`. A second failure stops as before.
+  A `usage_exhausted` stop waits out its recorded reset the same way (#296: the orchestrator's `retry_at_reset`, the
+  card's **Wait for the reset**): `op_data.usage_retry.due_at` (reset + 60 s, not needs-you), retried once; a second stops as before.
 - `priority` (#194: `high | medium | low`, optional, authoritative) orders before `rank` wherever items are
   listed (`sortByRank` → `DataStore.listItems`): each column, admission, the orchestrator's lists. A rank orders
   an item within its band; a move beside another band snaps to its own band's edge. Unset sorts last, as before.
