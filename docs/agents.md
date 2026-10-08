@@ -44,6 +44,9 @@ models:
   tier (`default`, or `priority` for speed at a faster usage drain) of every turn on the row,
   so a low-effort orchestrator and a high-effort planner can share one Codex model. Unset
   leaves Codex's defaults. See [Configuration](configuration.md#models-and-defaults).
+- `skills` — Codex only: give the row's workers the project's `.claude/skills` (a Claude
+  session loads them itself). Read from the worktree and delivered through the turn, never
+  written to disk; see [Codex integration](codex-integration.md#project-skills).
 - `description` — one line on what the model is *for*. The epic planner routes children by
   it, so write it as an instruction: what to send here, and what never to.
 - `hold_for_review` — park this model's pull requests on `awaiting: review` after CI,

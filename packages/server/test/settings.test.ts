@@ -108,6 +108,11 @@ describe('Settings writes (#83)', () => {
     await refused('PUT', '/config/models/codex-fast', { label: 'Codex fast', runner: 'codex', codex_tier: 'flex' }, /codex_tier: .*default or priority/);
     await refused('PUT', '/config/models/codex-fast', { label: 'Codex fast', runner: 'codex', codex_effort: 'turbo' }, /codex_effort: .*low, medium, high or xhigh/);
     await refused('PUT', '/config/models/opus-5', { label: 'Opus 5', claude_model: 'claude-opus-5', codex_tier: 'priority' }, /only a Codex model/);
+    // Project skills (#238): a Codex row's switch; Claude sessions already load them.
+    r = await send('PUT', '/config/models/codex-fast', { label: 'Codex fast', runner: 'codex', codex_model: 'gpt-x', skills: true });
+    expect(r.status).toBe(200);
+    expect(yml().models.find((m: { id: string }) => m.id === 'codex-fast')).toMatchObject({ skills: true });
+    await refused('PUT', '/config/models/opus-5', { label: 'Opus 5', claude_model: 'claude-opus-5', skills: true }, /only a Codex model.*skills/);
     expect((await send('DELETE', '/config/models/codex-fast')).status).toBe(200);
     await refused('PUT', '/config/models/opus-5', { id: 'opus-6', label: 'x', claude_model: 'c' }, /id cannot change/);
     await refused('PUT', '/config/models/bad id', { label: 'x', claude_model: 'c' }, /letters, digits/);

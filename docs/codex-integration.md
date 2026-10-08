@@ -54,6 +54,29 @@ committed, no commits ahead of the base blocks as `no_commits`, a changed file o
 `review.max_file_bytes` blocks as `asset_too_large`; otherwise it pushes and opens the pull
 request.
 
+## Project skills
+
+A Claude session loads the project's `.claude/skills` itself. A Codex row gets them with
+`skills: true` (#238). Codex runs exec with `--ignore-user-config` and every app-server
+session from one shared isolated home with host skill discovery off, so there is no
+per-session skills folder to copy into: anything written to the shared home would reach
+every concurrent session, and a copy in the worktree could be committed. planestro reads
+`<worktree>/.claude/skills/*/SKILL.md` and delivers them through the turn instead:
+
+- **app-server**: the developer instructions carry an index (each skill's name and
+  description), and a scoped `read_skill` dynamic tool returns one skill's text when the
+  worker asks. Only the skills it uses cost tokens, and the tool reads the file at the call.
+  A thread keeps the instructions and tools it started with, so a row switched on applies
+  from the item's next fresh conversation.
+- **exec**: no tools, so every skill's text rides in the prompt of a fresh thread; a resumed
+  thread already holds it.
+
+What Codex reads keeps only the open format's frontmatter (`name`, `description`): Claude's
+fields (`allowed-tools`, `model`, `context`, `hooks`, …) are dropped, `${CLAUDE_SKILL_DIR}`
+names the skill's folder, and a skill Claude would fork or whose `` !`command` `` lines it
+would expand says so. A skill with `disable-model-invocation: true` (only a person starts it)
+or unreadable frontmatter is listed as one Codex cannot use, and its text is not delivered.
+
 ## Failure shapes
 
 | What happened | How it is recognised | Result |
