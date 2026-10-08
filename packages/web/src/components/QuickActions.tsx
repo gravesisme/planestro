@@ -49,7 +49,7 @@ export function confirmMove(item: ItemView, to: string, label: string): boolean 
 
 /** What a move button says while it goes (#304). */
 export function movingLabel(to: string): string {
-  return to === 'QUEUED' ? 'Queuing…' : to === 'ICEBOX' ? 'Moving to the icebox…' : to === 'NOT_YET_SUBMITTED' ? 'Moving to the backlog…' : 'Moving…';
+  return to === 'QUEUED' ? 'Queuing…' : to === 'ICEBOX' ? 'Moving to the icebox…' : to === 'NOT_YET_SUBMITTED' ? 'Moving to the backlog…' : to === 'PLAN_IN_PROGRESS' ? 'Starting the plan…' : to === 'IN_PROGRESS' ? 'Starting…' : 'Moving…';
 }
 
 /** Closing skips the PR, so it always asks first; the optional reason lands in the Activity log. */
