@@ -9,6 +9,7 @@ import { gitWritableRoots } from '../src/engine/sessions/gitWritableRoots.ts';
 import { CodexAppServerPort, ScopedTools, isolatedCodexHome } from '../src/engine/sessions/CodexAppServerPort.ts';
 import type { TurnOptions } from '../src/engine/ports.ts';
 import { quietTransientFailure } from '../src/engine/transient.ts';
+import { writeSkillsFixture } from './skillsFixture.ts';
 
 const roots: string[] = [];
 it('seeds private credentials once and preserves refresh rotation across later turns', () => {
@@ -62,7 +63,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   if(mode.endsWith('overloaded')) { if(mode==='command-overloaded') send({method:'item/started',params:{threadId:'thread',turnId:'turn',item:{type:'commandExecution',id:'cmd',command:'ls'}}}); send({method:'turn/completed',params:{threadId:'thread',turn:{id:'turn',error:{message:'serverOverloaded',codexErrorInfo:'serverOverloaded'}}}}); return; }
   if(mode==='cap') { send({method:'thread/tokenUsage/updated',params:{threadId:'thread',turnId:'turn',tokenUsage:{total:{inputTokens:200,cachedInputTokens:100,outputTokens:20},last:{totalTokens:120}}}}); return; }
   if(mode.startsWith('approval')) send({id:100,method:'item/commandExecution/requestApproval',params:{threadId:mode==='approval-foreign'?'other':'thread',turnId:'turn',command:'network command',cwd:${JSON.stringify(root)},environmentId:'local',...(mode==='approval-scope'?{additionalPermissions:{network:{enabled:true}}}:{})}});
-  else send({id:100,method:'item/tool/call',params:{threadId:'thread',turnId:'turn',callId:'call',tool:mode==='plan'?'submit_plan':'report_done',arguments:mode==='plan'?{plan:'A synthetic plan'}:{summary:'Done',attach:['capture.png'],review:'Loop review'}}});
+  else send({id:100,method:'item/tool/call',params:{threadId:'thread',turnId:'turn',callId:'call',tool:mode==='plan'?'submit_plan':mode==='skill'?'read_skill':'report_done',arguments:mode==='plan'?{plan:'A synthetic plan'}:mode==='skill'?{name:'release-notes'}:{summary:'Done',attach:['capture.png'],review:'Loop review'}}});
  }
  if(m.method==='turn/interrupt') { send({id:m.id,result:{}}); send({method:'turn/completed',params:{threadId:'thread',turn:{id:'turn'}}}); }
 });
@@ -216,4 +217,33 @@ it('an orchestrator wake hands the chat\'s images to Codex as local images (#288
   await port.runCustomTurn({ label: 'user_message', cwd: root, model: 'test-model', permissionMode: 'dontAsk', prompt: 'Test', systemAppend: 'Test', allowedTools: [], mcpTools: [], onOutput: () => {}, images: [join(root, 'shot.png')] });
   const records = readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
   expect(records.find((r) => r.method === 'turn/start').params.input).toContainEqual({ type: 'localImage', path: join(root, 'shot.png') });
+});
+it("a row with skills gets the worktree's skills by index and read_skill, writing nothing into the shared home or the worktree (#238)", async () => {
+  const { root, log, port } = fixture('skill');
+  const cwd = join(root, 'wt'); writeSkillsFixture(cwd);
+  const result = await port.runTurn(options(cwd, { skills: true }));
+  expect(result.isError).toBe(false);
+  const records = readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  const start = records.find((r) => r.method === 'thread/start').params;
+  expect(start.dynamicTools.map((t: any) => t.name)).toContain('read_skill');
+  expect(start.developerInstructions).toContain('## Project skills');
+  expect(start.developerInstructions).toContain('release-notes: Write the release notes section');
+  expect(start.developerInstructions).not.toContain('Steps for the notes');       // bodies come on request
+  expect(start.developerInstructions).toMatch(/deploy[^\n]*cannot use/);
+  const answer = records.find((r) => r.id === 100).result;
+  expect(answer.success).toBe(true);
+  const text = answer.contentItems[0].text as string;
+  expect(text).toContain('Steps for the notes');
+  expect(text).toContain(join(cwd, '.claude', 'skills', 'release-notes', 'template.md'));
+  expect(text).not.toMatch(/allowed-tools|^model:/m);
+  expect(execFileSync('git', ['status', '--porcelain'], { cwd, encoding: 'utf8' })).toBe('');
+  expect(readdirSync(join(root, 'home'))).toEqual([]);
+});
+it('a row without skills gets neither the index nor read_skill (#238)', async () => {
+  const { root, log, port } = fixture('worker');
+  const cwd = join(root, 'wt'); writeSkillsFixture(cwd);
+  await port.runTurn(options(cwd));
+  const start = readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).find((r) => r.method === 'thread/start').params;
+  expect(start.dynamicTools.map((t: any) => t.name)).not.toContain('read_skill');
+  expect(start.developerInstructions).not.toContain('Project skills');
 });

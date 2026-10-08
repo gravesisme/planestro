@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LiveCodexPort, FINAL_SCHEMA, parseFinal, describeEvent, classifyFailure, gitWritableRoots } from '../src/engine/sessions/LiveCodexPort.ts';
 import type { AgentTurnOptions, TurnTools } from '../src/engine/ports.ts';
+import { writeSkillsFixture } from './skillsFixture.ts';
 
 /**
  * A stand-in `codex` that replays what spikes/codex-spike.ts recorded from the real CLI: it WAITS ON
@@ -79,6 +80,22 @@ describe('LiveCodexPort (against a recorded fake codex)', () => {
     }
     await t.port.runTurn(t.opts('draw it'));
     expect(t.args().join(' ')).not.toMatch(/model_reasoning_effort|service_tier/);
+  });
+  it("a row with skills carries the worktree's skills in a fresh thread's prompt, without Claude-only fields, and writes nothing (#238)", async () => {
+    const t = setup(); const cwd = join(t.dir, 'wt'); writeSkillsFixture(cwd);
+    await t.port.runTurn(t.opts('draw it', { cwd, skills: true }));
+    const prompt = t.args().at(-1)!;
+    expect(prompt).toContain('## Project skills');
+    expect(prompt).toContain('Steps for the notes');
+    expect(prompt).toContain(join(cwd, '.claude', 'skills', 'release-notes', 'template.md'));
+    expect(prompt).not.toMatch(/allowed-tools|Run me by hand/);
+    expect(prompt).toMatch(/deploy[^\n]*cannot use/);
+    expect(prompt.indexOf('## Project skills')).toBeLessThan(prompt.indexOf('draw it'));
+    expect(execFileSync('git', ['status', '--porcelain'], { cwd, encoding: 'utf8' })).toBe('');
+    await t.port.runTurn(t.opts('draw it', { cwd, skills: true, resume: 'thread-1' }));   // the thread already holds them
+    expect(t.args().at(-1)).not.toContain('Project skills');
+    await t.port.runTurn(t.opts('draw it', { cwd }));
+    expect(t.args().at(-1)).not.toContain('Project skills');
   });
   it('runs a fresh turn sandboxed, never feeds stdin, streams readable output and reports done with tokens', async () => {
     const t = setup();
