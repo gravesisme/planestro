@@ -102,6 +102,9 @@ export class LiveGitPort implements GitPort {
   async readBlob(cwd: string, ref: string, path: string): Promise<Buffer | null> {
     try { return (await execFileP('git', ['-C', cwd, 'show', `${ref}:${path}`], { encoding: 'buffer', maxBuffer: 64 * 1024 * 1024 })).stdout as unknown as Buffer; } catch { return null; }
   }
+  async fileDiff(cwd: string, base: string, head: string, path: string): Promise<string> {
+    return (await git(cwd, ['diff', '--no-color', '--no-ext-diff', '--no-textconv', '--no-renames', `${base}...${head}`, '--', path])).stdout;
+  }
   async fetch(repo: string) { await refLocked(() => retrying(() => git(repo, ['fetch', '--prune', 'origin']), GIT_RETRY_MS)); }
   async revParse(cwd: string, ref: string) { return (await git(cwd, ['rev-parse', ref])).stdout.trim(); }
   async refExists(repo: string, ref: string) { return (await git(repo, ['rev-parse', '--verify', '--quiet', ref], true)).code === 0; }

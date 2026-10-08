@@ -18,7 +18,7 @@ import { NeedsYouWatch, type Wait } from './needsYou.ts';
 import { pngSize } from './placeholderPng.ts';
 import { findWorkflow, namedInLog, prSkippedByPaths } from './ciFilters.ts';
 import { quietTransientFailure } from './transient.ts';
-import type { ReviewImage } from './Engine.ts';
+import type { ReviewImage, ReviewDiff } from './Engine.ts';
 
 const IMAGE_FILE = /\.(png|jpe?g|webp|gif|svg)$/i;
 /** What a person reviews by eye or ear (f5): images, sounds a sound worker made, models a 3D worker made. */
@@ -4794,18 +4794,40 @@ export class LiveEngine implements Engine {
     return true;
   }
 
+  /**
+   * What the review panel reads (#233): the branch while it is the work; once merged, the merge commit against its
+   * first parent, from the main checkout (the branch and worktree go at cleanup, and a merged branch is behind its base).
+   */
+  private mergeCommits = new Map<string, Promise<string | undefined>>();
+  private async panelRefs(id: string): Promise<{ cwd: string; base: string; head: string } | undefined> {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    if (fm.status !== 'MERGED' && fm.status !== 'FINISHED') return this.reviewRefs(id);
+    const known = fm.op_data?.merge_commit;
+    if (typeof known === 'string' && known) return { cwd: this.repo, base: `${known}^1`, head: known };
+    if (!fm.pr || !this.store.config.code_repo.github) return undefined;
+    const key = `${id}#${fm.pr}`;
+    let mc = this.mergeCommits.get(key);
+    if (!mc) {
+      mc = this.ports.gh.prView(this.github, fm.pr).then((v) => v.state === 'MERGED' ? v.mergeCommit : undefined);
+      this.mergeCommits.set(key, mc); mc.catch(() => this.mergeCommits.delete(key));
+    }
+    const sha = await mc.catch(() => undefined);
+    return sha ? { cwd: this.repo, base: `${sha}^1`, head: sha } : undefined;
+  }
+
   /** By item, the list for one head and base: the page and every picture on it ask, and a branch with 23 files took seconds each time. */
   private reviewCache = new Map<string, { key: string; files: Promise<ReviewImage[]> }>();
   async reviewImages(id: string): Promise<ReviewImage[]> {
-    const refs = this.reviewRefs(id);
+    const refs = await this.panelRefs(id);
     if (!refs) return [];
     const [head, base] = await Promise.all([this.ports.git.revParse(refs.cwd, refs.head).catch(() => ''), this.ports.git.revParse(refs.cwd, refs.base).catch(() => '')]);
     const key = `${head}:${base}`;
     const hit = head && base ? this.reviewCache.get(id) : undefined;
     if (hit?.key === key) return hit.files;
     const files = (async () => {
-      const changed = (await this.ports.git.changedFiles(refs.cwd, refs.base, refs.head).catch(() => [])).filter((f) => reviewKind(f.path));
-      return Promise.all(changed.map(async (f) => ({ ...f, kind: reviewKind(f.path)!, ...(f.change !== 'deleted' && /\.png$/i.test(f.path) ? pngSize(await this.ports.git.readBlob(refs.cwd, refs.head, f.path)) : {}) })));
+      // Every other file is reviewed as text, by its diff (#233); git says when one is binary.
+      const changed = await this.ports.git.changedFiles(refs.cwd, refs.base, refs.head).catch(() => []);
+      return Promise.all(changed.map(async (f) => ({ ...f, kind: reviewKind(f.path) ?? 'text' as const, ...(f.change !== 'deleted' && /\.png$/i.test(f.path) ? pngSize(await this.ports.git.readBlob(refs.cwd, refs.head, f.path)) : {}) })));
     })();
     if (head && base) { this.reviewCache.set(id, { key, files }); files.catch(() => this.reviewCache.delete(id)); }
     return files;
@@ -4813,11 +4835,23 @@ export class LiveEngine implements Engine {
 
   /** Only files the branch actually changed can be read through here. */
   async reviewImage(id: string, path: string, side: 'before' | 'after'): Promise<Buffer | null> {
-    const refs = this.reviewRefs(id);
+    const refs = await this.panelRefs(id);
     if (!refs || !(await this.reviewImages(id)).some((f) => f.path === path)) return null;
     if (side === 'after') return this.ports.git.readBlob(refs.cwd, refs.head, path);
     const mb = await this.ports.git.mergeBase(refs.cwd, refs.base, refs.head);
     return mb ? this.ports.git.readBlob(refs.cwd, mb, path) : null;
+  }
+
+  /** A text file's diff, per file so the panel stays as quick as #159 made it; a huge one is cut, and says so. */
+  async reviewDiff(id: string, path: string): Promise<ReviewDiff | null> {
+    const refs = await this.panelRefs(id);
+    const file = refs && (await this.reviewImages(id)).find((f) => f.path === path);
+    if (!refs || !file) return null;
+    const full = await this.ports.git.fileDiff(refs.cwd, refs.base, refs.head, path);
+    const max = 1_000_000;
+    const truncated = full.length > max;
+    const patch = truncated ? full.slice(0, full.lastIndexOf('\n', max) + 1) : full;
+    return { path, change: file.change, patch, binary: /^Binary files .* differ$/m.test(patch) && !/^@@ /m.test(patch), truncated };
   }
 
   /** Send a reviewed item back to the session that made it. The hold stays: the revision comes back for review. */

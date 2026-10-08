@@ -194,6 +194,11 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
     const buf = engine.auditionFile ? await engine.auditionFile(c.req.param('id'), path).catch(() => null) : null;
     return reviewFile(c, path, buf);
   });
+  // One changed file's diff against the base (#233), read from git alone.
+  api.get('/items/:id/diff', async (c) => {
+    const d = await engine.reviewDiff(c.req.param('id'), c.req.query('path') ?? '').catch(() => null);
+    return d ? c.json(d, 200, { 'cache-control': 'no-store' }) : c.json({ error: 'not found' }, 404);
+  });
   api.post('/items/:id/review/changes', async (c) => { try { const { note } = z.object({ note: z.string().min(1) }).parse(await c.req.json()); await engine.requestReviewChanges(c.req.param('id'), note); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
   api.post('/items/:id/hold/release', async (c) => { try { const { note } = z.object({ note: z.string().optional() }).parse(await c.req.json().catch(() => ({}))); await engine.releaseHold(c.req.param('id'), note); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
   api.post('/items/:id/plan/reject', async (c) => { try { const { message } = z.object({ message: z.string().min(1) }).parse(await c.req.json()); await engine.rejectPlan(c.req.param('id'), message); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });

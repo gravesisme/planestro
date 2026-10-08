@@ -82,6 +82,14 @@ export class DryRunGitPort implements GitPort {
   async changedFiles(_cwd: string, _base: string, head: string) { return [...(this.w.files.get(head.replace(/^origin\//, '')) ?? new Map<string, Buffer>()).entries()].map(([path, buf]) => ({ path, change: 'added' as const, bytes: buf.length })); }
   async mergeBase() { return null; }
   async readBlob(_cwd: string, ref: string, path: string) { return this.w.files.get(ref.replace(/^origin\//, ''))?.get(path) ?? null; }
+  /** Every dry-run file is new: its diff adds each line. */
+  async fileDiff(_cwd: string, _base: string, head: string, path: string) {
+    const buf = this.w.files.get(head.replace(/^origin\//, ''))?.get(path);
+    if (!buf) return '';
+    if (buf.includes(0)) return `diff --git a/${path} b/${path}\nnew file mode 100644\nBinary files /dev/null and b/${path} differ\n`;
+    const lines = buf.toString('utf8').replace(/\n$/, '').split('\n');
+    return `diff --git a/${path} b/${path}\nnew file mode 100644\n--- /dev/null\n+++ b/${path}\n@@ -0,0 +1,${lines.length} @@\n${lines.map((l) => `+${l}\n`).join('')}`;
+  }
   private say(m: string) { this.w.log(`Would ${m}`); }
   async fetch(repo: string) { this.say(`git fetch origin (in ${repo})`); }
   async revParse(cwd: string, ref: string) {

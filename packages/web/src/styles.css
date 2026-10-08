@@ -120,6 +120,27 @@ button.checker { cursor: zoom-in; } .checker img { max-width: 100%; max-height: 
 .review-card { background: var(--panel2); border: 1px solid var(--line); border-radius: var(--radius); padding: 8px; min-width: 0; } .review-card code { overflow-wrap: anywhere; }
 .review-pair { display: flex; gap: 8px; margin-top: 6px; align-items: flex-start; } .review-side { margin: 0; min-width: 0; flex: 1; } .review-side figcaption { margin-bottom: 2px; }
 .review-none { border: 1px dashed var(--line); border-radius: 6px; padding: 18px 8px; text-align: center; }
+/* code review (#233): a text file opens to its diff against the base; long lines scroll inside the card, never the page */
+.diff-list { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; min-width: 0; }
+.diff-card { padding: 6px 8px; }
+.diff-toggle { all: unset; cursor: pointer; display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; width: 100%; min-width: 0; } .diff-toggle code { overflow-wrap: anywhere; }
+.diff-scroll { overflow-x: auto; margin-top: 6px; border: 1px solid var(--line); border-radius: 6px; max-width: 100%; }
+.diff { border-collapse: collapse; width: 100%; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; } .diff.split { table-layout: fixed; }
+.diff td { padding: 0 6px; vertical-align: top; }
+.diff .diff-num { width: 1%; min-width: 3ch; text-align: right; color: var(--muted); user-select: none; white-space: nowrap; } .diff.split .diff-numcol { width: 6ch; }
+.diff .diff-num.pickable { cursor: pointer; } .diff .diff-num.pickable:hover { color: var(--accent); }
+.diff .diff-code { white-space: pre; } .diff.split .diff-code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.diff .diff-code::before { content: attr(data-sign); color: var(--muted); padding-right: 6px; }
+.diff .diff-add { background: rgba(88, 196, 109, .13); } .diff .diff-del { background: rgba(255, 93, 93, .13); } .diff .diff-empty { background: var(--panel); }
+.diff .picked { box-shadow: inset 3px 0 0 var(--accent); background-color: rgba(124, 196, 255, .16); }
+.diff .diff-hunk td { color: var(--muted); background: var(--panel); padding: 2px 6px; white-space: pre; }
+.diff .hljs-keyword, .diff .hljs-built_in, .diff .hljs-selector-tag, .diff .hljs-meta .hljs-keyword { color: #c9a2ff; }
+.diff .hljs-string, .diff .hljs-regexp, .diff .hljs-addition, .diff .hljs-template-tag { color: #9ad18b; }
+.diff .hljs-number, .diff .hljs-literal, .diff .hljs-symbol, .diff .hljs-variable.language_ { color: #f0b64a; }
+.diff .hljs-comment, .diff .hljs-quote, .diff .hljs-doctag { color: var(--muted); font-style: italic; }
+.diff .hljs-title, .diff .hljs-title.function_, .diff .hljs-section, .diff .hljs-attr, .diff .hljs-attribute { color: #7cc4ff; }
+.diff .hljs-type, .diff .hljs-title.class_, .diff .hljs-tag, .diff .hljs-name, .diff .hljs-selector-class { color: #ffb38a; }
+.diff .hljs-meta, .diff .hljs-params, .diff .hljs-property { color: #d6dbe1; }
 .card-thumb { margin-top: 6px; } .card-thumb img { max-height: 84px; }
 .blocked-panel { border: 1px solid var(--hot); background: #2b1616; border-radius: var(--radius); padding: 12px; margin-bottom: 12px; } .blocked-panel h2 { margin: 0 0 8px; font-size: 16px; color: #ffb3b3; }
 .blocked-said { margin: 0 0 8px; overflow-wrap: anywhere; } .blocked-panel .md p { margin: 4px 0; } .blocked-panel .row { flex-wrap: wrap; margin-top: 8px; }
@@ -224,9 +245,9 @@ html { -webkit-text-size-adjust: 100%; }
   .events, .console { font-size: 11px; overflow-wrap: anywhere; } .md { overflow-wrap: anywhere; } .md table { display: block; overflow-x: auto; }
 
   /* data tables (not a plan's markdown tables) fold into one wrapped line per row */
-  table:not(.md table), table:not(.md table) tbody { display: block; } table:not(.md table) thead { display: none; }
-  table:not(.md table) tr { display: flex; flex-wrap: wrap; gap: 2px 10px; padding: 9px 0; border-bottom: 1px solid var(--line); } table:not(.md table) tr:last-child { border-bottom: 0; }
-  table:not(.md table) td { padding: 0; border: 0; min-width: 0; overflow-wrap: anywhere; } table:not(.md table) td:empty { display: none; }
+  table:not(.md table, .diff), table:not(.md table, .diff) tbody { display: block; } table:not(.md table, .diff) thead { display: none; }
+  table:not(.md table, .diff) tr { display: flex; flex-wrap: wrap; gap: 2px 10px; padding: 9px 0; border-bottom: 1px solid var(--line); } table:not(.md table, .diff) tr:last-child { border-bottom: 0; }
+  table:not(.md table, .diff) td { padding: 0; border: 0; min-width: 0; overflow-wrap: anywhere; } table:not(.md table, .diff) td:empty { display: none; }
 
   /* prompts: the list, then the prompt it opened */
   .prompts { grid-template-columns: minmax(0, 1fr); } .prompts.picked .prompt-list { display: none; }
