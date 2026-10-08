@@ -144,3 +144,15 @@ it('keeps the switch visible when a usage stop is shown as a decision card or tr
   expect(show(DecisionCard)).toContain('Switch to Codex');
   expect(show(BlockedPanel)).toBe('');
 });
+
+it('shows the actual turn and token extension separately from dollars', () => {
+  state('codex');
+  fixture.current.state.config.budget_turns_per_item = 20;
+  fixture.current.state.config.budget_tokens_per_item = 500000;
+  const stopped = item('TP-1', 'IN_PROGRESS', { blocked: true, blocked_reason: 'turn_budget', agent_turns: 22, tokens: 600000,
+    awaiting_data: { decision: { question: 'Continue?', why: 'Reached the cap', requested_at: '2026-01-01T00:00:00Z', options: [{ label: 'More allowance', raise_budget_turns: 10, raise_budget_tokens: 100000, fresh: true }] } } });
+  const markup = renderToStaticMarkup(createElement(MemoryRouter, {}, createElement(DecisionCard, { item: stopped })));
+  expect(markup).toContain('32');
+  expect(markup).toContain('700,000');
+  expect(markup).not.toContain('Dollars here');
+});

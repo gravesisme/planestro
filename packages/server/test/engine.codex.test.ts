@@ -560,3 +560,53 @@ describe('tools from outside: MCP servers per model (f5)', () => {
     expect(activityOf(store, item.id)).toContain('names the MCP server "nowhere", which planestro.local.yml on this machine does not define');
   });
 });
+
+it.each(['turn_budget', 'token_budget'] as const)('extends the exhausted %s and actually starts a fresh Codex session', async (reason) => {
+  const seen: AgentTurnOptions[] = [];
+  const { store, engine } = await setup({ claude: world => {
+    const inner = new DryRunClaudePort(world);
+    return { runTurn: o => inner.runTurn(o), async runCustomTurn(o) {
+      if (o.label === 'decision_answered') {
+        expect(o.prompt).toContain('Already applied:');
+        expect(o.prompt).toContain('fresh: true');
+        await o.mcpTools.find(t => t.name === 'unblock_item')!.handler({ id: 'TP-1', message: 'Finish the saved map work', fresh: true });
+      }
+      return { sessionId: 'orch', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '' };
+    } };
+  }, config: y => `${y}\nbudget_turns_per_item: 1\nbudget_tokens_per_item: 1000\n`, codex: world => ({
+    async runTurn(o) {
+      seen.push(o);
+      if (seen.length === 1) {
+        await o.tools.report_blocked('Need another pass');
+        return { sessionId: 'old-thread', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, tokens: 1000, text: '', blocked: 'Need another pass' };
+      }
+      return new DryRunCodexPort(world).runTurn(o);
+    },
+  }) });
+  const item = store.createItem({ title: 'Finish saved map work', description: 'Keep accepted art', implementer: 'codex-art' });
+  store.transition(item.id, 'QUEUED', 'user');
+  await engine.start();
+  await waitFor(() => fmOf(store, item.id).status === 'PLAN_READY');
+  await engine.approvePlan(item.id);
+  await waitFor(() => fmOf(store, item.id).agent_turns === 1 && fmOf(store, item.id).blocked === true);
+  // Isolate the cap under test; usage above the configured cap still gets the full extension.
+  store.mutateItem(item.id, [{ set: reason === 'turn_budget' ? { agent_turns: 2, budget_tokens: 10000 } : { tokens: 1500, budget_turns: 10 } }], 'engine');
+  await engine.unblock(item.id, 'Finish saved work', 'user', { fresh: true });
+  await waitFor(() => fmOf(store, item.id).blocked_reason === reason);
+  expect(seen).toHaveLength(1);
+  const card = (option: Record<string, unknown>) => ({ question: 'Finish the saved work?', why: 'The item reached its limit.', options: [{ label: 'Extend and finish fresh', description: 'Continue existing work', recommended: true, fresh: true, ...option }, { label: 'Stop', description: 'Leave stopped' }] });
+  expect((engine as any).askUserDecision(item.id, card({ raise_budget_usd: 5 }))).toContain(reason === 'turn_budget' ? 'raise_budget_turns' : 'raise_budget_tokens');
+  const option = reason === 'turn_budget' ? { raise_budget_turns: 10 } : { raise_budget_tokens: 5000 };
+  expect((engine as any).askUserDecision(item.id, card(option))).toContain('recorded');
+  const dollars = fmOf(store, item.id).budget_usd;
+  await engine.answerDecision(item.id, { choice: 'Extend and finish fresh' });
+  await waitFor(() => seen.length === 2);
+  expect(seen[1].resume).toBeUndefined();
+  expect(seen[1].prompt).toContain('Finish saved map work');
+  const fm = fmOf(store, item.id);
+  expect(fm.budget_usd).toBe(dollars);
+  expect(reason === 'turn_budget' ? fm.budget_turns : fm.budget_tokens).toBe(reason === 'turn_budget' ? 12 : 6500);
+  await waitFor(() => fmOf(store, item.id).awaiting === 'review');
+  const journal = store.journal.read({ type: 'orchestrator.decision_answered' })[0].data;
+  expect(reason === 'turn_budget' ? journal?.budget_turns_raised_to : journal?.budget_tokens_raised_to).toBe(reason === 'turn_budget' ? 12 : 6500);
+});

@@ -46,3 +46,12 @@ describe('decision cards', () => {
     expect(describeAction({ tool: 'submit_item', args: { id: 'TP-9' } })).toBe('queues TP-9 for planning');
   });
 });
+
+it('validates explicit turn/token extensions without silently dropping them', () => {
+  const v = validateDecision(card(no, yes({ raise_budget_turns: 10, raise_budget_tokens: 500000, fresh: true })));
+  expect(v.ok && v.value.options[0]).toMatchObject({ raise_budget_turns: 10, raise_budget_tokens: 500000, fresh: true });
+  for (const key of ['raise_budget_turns', 'raise_budget_tokens']) {
+    for (const n of [0, -1, 1.5, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1]) expect(errorOf(card(no, yes({ [key]: n })))).toContain(key);
+    expect(errorOf(card(no, yes({ [key]: 10, action: create })))).toContain(`has both ${key} and an action`);
+  }
+});
