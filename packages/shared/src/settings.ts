@@ -35,7 +35,7 @@ export type SettingsTabId = (typeof SETTINGS_TABS)[number]['id'];
  * can plan); `models`, `categories` and `sections` are whole editors of their own; `secret` shows
  * set / not set and takes a replacement, never the value.
  */
-export type SettingControl = 'number' | 'toggle' | 'text' | 'select' | 'model' | 'list' | 'record' | 'commands' | 'secret' | 'mcp' | 'categories' | 'models' | 'sections';
+export type SettingControl = 'number' | 'toggle' | 'text' | 'select' | 'model' | 'list' | 'record' | 'commands' | 'mcp' | 'categories' | 'models' | 'sections';
 export type SettingFile = 'config' | 'local';
 
 export interface SettingDef {
@@ -67,7 +67,7 @@ export interface SettingDef {
 }
 
 /** Controls whose value the generic write endpoints accept; the others have their own routes or none. */
-export const WRITABLE_CONTROLS: readonly SettingControl[] = ['number', 'toggle', 'text', 'select', 'model', 'list', 'record', 'commands', 'secret', 'sections'];
+export const WRITABLE_CONTROLS: readonly SettingControl[] = ['number', 'toggle', 'text', 'select', 'model', 'list', 'record', 'commands', 'sections'];
 
 const C = (d: Omit<SettingDef, 'file'>): SettingDef => ({ file: 'config', ...d });
 const L = (d: Omit<SettingDef, 'file' | 'tab'> & { tab?: SettingsTabId }): SettingDef => ({ file: 'local', tab: 'machine', ...d });
@@ -135,7 +135,7 @@ export const SETTINGS: readonly SettingDef[] = [
     detail: ['Off by default. Checked on each pass of the engine: only the last change, and only a raise, is rolled back, to the values before it, journaled as the engine with the reason. A step-down is never stepped down again.'] }),
   C({ key: 'concurrency.guard.step_down_load_per_cpu', tab: 'budgets', group: 'Concurrency guard', label: 'Step down at load per core', summary: 'The 15-minute load average per core that counts as a sustained spike for stepping down.', control: 'number', min: 0 }),
   C({ key: 'usage_guard.enabled', tab: 'budgets', group: 'Usage guard', label: 'Pause before the plan limit', summary: "Watch supported subscription usage windows and pause that provider before one runs out.", control: 'toggle',
-    detail: ['A Claude subscription meters usage in rolling windows (five hours, seven days, per-model weekly windows). Every Claude turn streams the account\'s current reading, and planestro stops itself before the limit rather than at it.', 'A provider guard stops new turns on that provider. Other providers and deterministic CI/merge operations continue unless globally paused. It trips once per window crossing. API-key billing has no windows, so the guard stays idle there.'] }),
+    detail: ['A Claude subscription meters usage in rolling windows (five hours, seven days, per-model weekly windows). Every Claude turn streams the account\'s current reading, and planestro stops itself before the limit rather than at it.', 'A provider guard stops new turns on that provider. Other providers and deterministic CI/merge operations continue unless globally paused. It trips once per window crossing.'] }),
   C({ key: 'usage_guard.threshold', tab: 'budgets', group: 'Usage guard', label: 'Pause at', summary: 'How full a window may get. Turns already running keep spending after the pause, so leave headroom.', control: 'number', unit: '%', per: 0.01, min: 1 }),
   C({ key: 'usage_guard.on_warning', tab: 'budgets', group: 'Usage guard', label: 'Also pause on a warning', summary: 'Pause when Claude reports a usage warning, whatever the percentage.', control: 'toggle' }),
   C({ key: 'usage_guard.auto_resume', tab: 'budgets', group: 'Usage guard', label: 'Resume by itself', summary: 'Resume a minute after the window resets. Off: a guard pause waits for you.', control: 'toggle',
@@ -246,8 +246,6 @@ export const SETTINGS: readonly SettingDef[] = [
   L({ key: 'claude_bin', group: 'Programs', label: 'Claude Code', summary: 'Which claude the sessions run. Empty: the newer of the one on PATH and the one the SDK bundles.', control: 'text', mono: true, placeholder: 'claude (on PATH)', restart: true,
     detail: ['A path uses that executable; bundled forces the SDK\'s own. A new model can need a newer CLI; startup logs which one is used.'] }),
   L({ key: 'codex_bin', group: 'Programs', label: 'Codex', summary: 'Only used by models with runner codex.', control: 'text', mono: true, placeholder: 'codex (on PATH)', restart: true }),
-  L({ key: 'anthropic_api_key', group: 'Access', label: 'Anthropic API key', summary: 'Bills sessions to your API account instead of your Claude plan. With a key, the dollar budgets are real money.', control: 'secret', placeholder: 'sk-ant-…', restart: true,
-    detail: ['Sessions then bill the API under Anthropic\'s Commercial Terms. ANTHROPIC_API_KEY in the environment planestro starts in does the same. Stored only in planestro.local.yml, which is gitignored; the page never shows it back. Restart planestro after changing it.'] }),
   L({ key: 'lan_access', group: 'Access', label: 'Local network access', summary: 'Anyone on the same network can use planestro while this is on. Fine at home, not on shared Wi-Fi.', control: 'toggle', restart: true,
     detail: ['The server listens on every interface (unless --host says otherwise) so a phone on the same Wi-Fi can open the links in alerts: http://<this machine>.local:<port>. There is no login, so only the local network is answered: a request from any other address (a port-forward, a public address) gets a 403.', 'Test the whole chain with the Test button under Notifications → When something needs you, then tap the alert on the phone.'] }),
   L({ key: 'allowed_hosts', group: 'Access', label: 'Reachable as', summary: 'Extra names for this machine, e.g. a Tailscale name for your phone.', control: 'list', mono: true, placeholder: 'macbook.tailnet.ts.net', restart: true,
@@ -318,7 +316,7 @@ export function getPath(obj: unknown, key: string): unknown {
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 /** Whether the current value differs from what planestro would use unset (never for required keys or the whole-list editors). */
 export function settingChanged(def: SettingDef, value: unknown): boolean {
-  if (def.control === 'models' || def.control === 'categories' || def.control === 'mcp' || def.control === 'secret') return false;
+  if (def.control === 'models' || def.control === 'categories' || def.control === 'mcp') return false;
   const d = settingDefault(def.file, def.key);
   if (!d) return false;
   if ('none' in d) return value !== undefined && value !== '' && !(Array.isArray(value) && !value.length);
@@ -367,8 +365,5 @@ export function suggestedAllowRules(markers: readonly string[], have: readonly s
   return [...commands].map((c) => `Bash(${c} *)`).filter((r) => !covered.has(r)).map((r) => `${r}${WORKTREE_SCOPE}`);
 }
 
-/** Who pays for the dollars planestro counts: a Claude plan's usage limits, or an API account. */
-export type BillingMode = 'subscription' | 'api_key';
-export function billingMode(localKey: string | undefined, envKey: string | undefined): BillingMode { return localKey?.trim() || envKey?.trim() ? 'api_key' : 'subscription'; }
-/** The short hint beside a dollar figure. */
-export function dollarHint(billing: BillingMode | undefined): string { return billing === 'api_key' ? 'billed to your API account' : 'API-price estimate, not a charge'; }
+/** The short hint beside a dollar figure: sessions run on the CLIs' own logins, so dollars are an API-price yardstick, not a charge. */
+export const DOLLAR_HINT = 'API-price estimate, not a charge';

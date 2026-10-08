@@ -297,14 +297,13 @@ project-scope install would put the skill in front of them too.
 
 ### Authentication and billing
 
-Worker sessions are Claude Code sessions launched through the official Agent
-SDK. By default they use whatever `claude` is logged in as. Anthropic's Agent
-SDK docs ask that SDK-built agents use **API-key authentication** rather than a
-claude.ai login, and the SDK is governed by the Commercial Terms — so set an
-Anthropic Console key (Settings → *This machine* → Anthropic API key, stored in
-the gitignored `planestro.local.yml`, or `ANTHROPIC_API_KEY` in the
-environment) to bill the API directly. Never offer a claude.ai login to other
-users of a tool built on this.
+planestro is a tool for your own workstation, and it runs on the logins you
+already have: Claude sessions use whatever `claude` is signed in as, Codex turns
+whatever `codex` is. It has no login of its own and never takes a model API key;
+`ANTHROPIC_API_KEY` and the Bedrock/Vertex switches in its environment are
+dropped from every session, so usage always comes out of your plans. The dollars it counts are API-price estimates,
+a yardstick for budgets, not charges. Access to the machine is the access
+control: see [SECURITY.md](SECURITY.md).
 
 ### What agents may do
 

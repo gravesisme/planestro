@@ -1,6 +1,6 @@
 /**
- * Accounts (#242): more than one login or key for the same runner (two Claude subscriptions, a subscription and an API
- * key). Each is named in planestro.local.yml (`accounts`) with where its credential is; the runner's own login is
+ * Accounts (#242): more than one login for the same runner (two Claude subscriptions, two Codex logins). Each is named in
+ * planestro.local.yml (`accounts`) with the config folder it is signed in from; the runner's own login is
  * `default`. A turn runs on the item's account for its runner (the user's "Continue on <account>"), else its model row's,
  * else the default. Usage guards and remembered outages are kept per account. Pure: no I/O, no clock.
  */
@@ -8,14 +8,14 @@ import type { LocalConfig, ModelUnavailable, Runner } from './schema.ts';
 
 export const DEFAULT_ACCOUNT = 'default';
 
-/** An account a turn can run on: `default`, or a named one with its credential source. */
-export interface Account { name: string; runner: Runner; label: string; home?: string; api_key_env?: string }
+/** An account a turn can run on: `default`, or a named one with its login's config folder. */
+export interface Account { name: string; runner: Runner; label: string; home?: string }
 
 type Accounts = Pick<LocalConfig, 'accounts'>;
 
 const named = (local: Accounts, name: string): Account | undefined => {
   const a = local.accounts?.[name];
-  return a ? { name, runner: a.runner, label: a.label ?? name, ...(a.home ? { home: a.home } : {}), ...(a.api_key_env ? { api_key_env: a.api_key_env } : {}) } : undefined;
+  return a ? { name, runner: a.runner, label: a.label ?? name, home: a.home } : undefined;
 };
 const byDefault = (runner: Runner): Account => ({ name: DEFAULT_ACCOUNT, runner, label: DEFAULT_ACCOUNT });
 
@@ -38,7 +38,7 @@ export function resolveAccount(local: Accounts, runner: Runner, refs: { item?: s
   }
   if (!refs.model || refs.model === DEFAULT_ACCOUNT) return { account: byDefault(runner) };
   const a = named(local, refs.model);
-  if (!a) return { missing: refs.model, why: `its model runs on account "${refs.model}", which planestro.local.yml on this machine does not define (accounts.${refs.model} with a home or api_key_env)` };
+  if (!a) return { missing: refs.model, why: `its model runs on account "${refs.model}", which planestro.local.yml on this machine does not define (accounts.${refs.model} with a home)` };
   if (a.runner !== runner) return { missing: refs.model, why: `its model runs on account "${refs.model}", which is a ${a.runner} account, not ${runner}` };
   return { account: a };
 }
@@ -64,12 +64,11 @@ export function unavailableView(map: Record<string, ModelUnavailable> | undefine
 
 /**
  * Where an account's conversations are kept: its home (a Claude transcript lives under its CLAUDE_CONFIG_DIR, sdk-notes g;
- * a Codex thread under its CODEX_HOME), '' for the runner's default login, which an account with only a key shares.
+ * a Codex thread under its CODEX_HOME), '' for the runner's default login.
  */
 function sessionStore(local: Accounts, account?: string): string | undefined {
   if (isDefault(account)) return '';
-  const a = local.accounts?.[account!];
-  return a ? a.home ?? '' : undefined;
+  return local.accounts?.[account!]?.home;
 }
 
 /** Whether a conversation one account started can be resumed on another: only from the same store, and never one this machine does not know. */

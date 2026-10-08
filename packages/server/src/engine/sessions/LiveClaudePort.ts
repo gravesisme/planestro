@@ -26,22 +26,25 @@ const USAGE_PREFIXES: readonly string[] = [...new Set([...(((sdk as Record<strin
  * AskUserQuestion and every other prompt to the engine's policy (see docs/notes/sdk-notes.md).
  */
 /**
- * The environment a Claude session starts with (#242). The default login is planestro's own environment, with the
- * machine's Console key (`anthropic_api_key`) if it has one. A named account replaces both: its `home` is the session's
- * CLAUDE_CONFIG_DIR (a second subscription's login, and where its transcripts live), its `apiKeyEnv` the variable whose
- * key bills it. ANTHROPIC_API_KEY is dropped for an account without one, since a key outranks the login it would shadow.
+ * What would bill a Claude session somewhere other than the `claude` login: an API key, which outranks the login, and the
+ * switches that send it to Bedrock or Vertex instead. One left in the shell planestro started from would do it silently.
  */
-export function claudeEnv(base: NodeJS.ProcessEnv, apiKey: string | undefined, account?: AccountCredentials, home = homedir()): NodeJS.ProcessEnv {
-  if (!account) return { ...base, ...(apiKey ? { ANTHROPIC_API_KEY: apiKey } : {}) };
+const NOT_THE_LOGIN = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX'] as const;
+
+/**
+ * The environment a Claude session starts with (#242): planestro's own, on the `claude` CLI's login, without
+ * `NOT_THE_LOGIN`. A named account's `home` is the session's CLAUDE_CONFIG_DIR (a second subscription's login, and where
+ * its transcripts live).
+ */
+export function claudeEnv(base: NodeJS.ProcessEnv, account?: AccountCredentials, home = homedir()): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...base };
-  delete env.ANTHROPIC_API_KEY;
-  if (account.home) env.CLAUDE_CONFIG_DIR = account.home === '~' ? home : account.home.startsWith('~/') ? join(home, account.home.slice(2)) : account.home;
-  if (account.apiKeyEnv && base[account.apiKeyEnv]) env.ANTHROPIC_API_KEY = base[account.apiKeyEnv];
+  for (const k of NOT_THE_LOGIN) delete env[k];
+  if (account?.home) env.CLAUDE_CONFIG_DIR = account.home === '~' ? home : account.home.startsWith('~/') ? join(home, account.home.slice(2)) : account.home;
   return env;
 }
 
 export class LiveClaudePort implements ClaudePort {
-  constructor(private readonly claudeBin?: string, private readonly apiKey?: string) {}
+  constructor(private readonly claudeBin?: string) {}
 
   async runCustomTurn(o: CustomTurnOptions): Promise<TurnResult> {
     const result: TurnResult = { subtype: 'success', isError: false, costUsd: 0, numTurns: 0, text: '' };
@@ -70,7 +73,7 @@ export class LiveClaudePort implements ClaudePort {
         allowedTools: customAllowedTools(o),
         maxTurns: o.maxTurns, abortController,
         ...(this.claudeBin ? { pathToClaudeCodeExecutable: this.claudeBin } : {}),
-        ...(this.apiKey || o.account ? { env: claudeEnv(process.env, this.apiKey, o.account) } : {}),
+        env: claudeEnv(process.env, o.account),
         canUseTool: async (toolName, input) => {
           if (toolName.startsWith('mcp__planestro__') || allow.whole.has(toolName)) return { behavior: 'allow', updatedInput: input };
           return { behavior: 'deny', message: `${toolName} is not available in this role; use the planestro tools.` };
@@ -130,7 +133,7 @@ export class LiveClaudePort implements ClaudePort {
         allowedTools: allow.rules,
         additionalDirectories: o.extraDirs, maxBudgetUsd: o.maxBudgetUsd, abortController,
         ...(this.claudeBin ? { pathToClaudeCodeExecutable: this.claudeBin } : {}),
-        env: { ...claudeEnv(process.env, this.apiKey, o.account), ...PINNED },
+        env: { ...claudeEnv(process.env, o.account), ...PINNED },
         canUseTool: async (toolName, input, { toolUseID }) => {
           const res = await decide(toolName, input);
           if (res.behavior !== 'allow') ran.refused(toolUseID);

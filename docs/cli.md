@@ -28,5 +28,5 @@ then the most recently used registered project.
 | `npm run spike`, `spike:codex`, `spike:codex-live` | the Agent SDK spike, the Codex spike, the live Codex acceptance runs (these spend real quota) |
 
 Environment: `PLANESTRO_HOME` (where the project registry lives), `PLANESTRO_DATA_DIR`,
-`ANTHROPIC_API_KEY`, `PLANESTRO_DRYRUN_CI=red-once|conflict-once` (make the dry-run world
+`PLANESTRO_DRYRUN_CI=red-once|conflict-once` (make the dry-run world
 fail CI once, or conflict once, to watch the recovery paths).

@@ -16,10 +16,10 @@ import { makeFixture, sleep } from './helpers.ts';
  * folder, or the name of an environment variable holding a key), its own usage guard and its own remembered outages.
  */
 let store: DataStore | undefined; let engine: LiveEngine | undefined;
-afterEach(async () => { await engine?.stop(); store?.close(); store = undefined; engine = undefined; delete process.env.PLANESTRO_TEST_KEY_2; });
+afterEach(async () => { await engine?.stop(); store?.close(); store = undefined; engine = undefined; });
 
 const RESET = '2099-01-01T09:00:00.000Z';
-interface Used { item?: string; account?: string; home?: string; apiKeyEnv?: string; resume?: string }
+interface Used { item?: string; account?: string; home?: string; resume?: string }
 
 /** A Claude port on which some accounts are out of usage: their turns fail the way the CLI does. Fakes only: no credentials are read. */
 function accountsClaude(exhausted: Set<string>, used: Used[], rateLimit?: { account: string }) {
@@ -28,7 +28,7 @@ function accountsClaude(exhausted: Set<string>, used: Used[], rateLimit?: { acco
     return {
       async runTurn(o: TurnOptions): Promise<TurnResult> {
         const account = o.account?.name ?? 'default';
-        used.push({ item: o.itemId, account, home: o.account?.home, apiKeyEnv: o.account?.apiKeyEnv, resume: o.resume });
+        used.push({ item: o.itemId, account, home: o.account?.home, resume: o.resume });
         if (exhausted.has(account)) return { sessionId: o.resume ?? `s-${o.itemId}-${account}`, subtype: 'usage_exhausted', isError: true, costUsd: 0, numTurns: 0, text: '', usageLimit: { message: "You've hit your limit", resetsAt: RESET }, error: "You've hit your limit" };
         const r = await inner.runTurn(o);
         return rateLimit?.account === account ? { ...r, rateLimit: { status: 'rejected', window: 'five_hour', resetsAt: RESET } } : r;
@@ -45,8 +45,7 @@ async function setup(claude: (w: FakeWorld) => Ports['agents']['claude'], edit: 
   writeFileSync(cfg, edit(readFileSync(cfg, 'utf8').replace(/^code_repo:\n/m, 'code_repo:\n  github: acme/repo\n')));
   delete process.env.PLANESTRO_DRYRUN_CI;
   store = await DataStore.open(dataDir);
-  store.updateLocal({ accounts: { work: { runner: 'claude', home: join(root, 'claude-work'), label: 'Work Max' }, api: { runner: 'claude', api_key_env: 'PLANESTRO_TEST_KEY_2' } } });
-  process.env.PLANESTRO_TEST_KEY_2 = 'fake-key-for-tests';
+  store.updateLocal({ accounts: { work: { runner: 'claude', home: join(root, 'claude-work'), label: 'Work Max' }, max2: { runner: 'claude', home: join(root, 'claude-max2') } } });
   const world = new FakeWorld(() => {}, { 'origin/trunk': 'f'.repeat(40) });
   const ports: Ports = { mode: 'dry-run', git: new DryRunGitPort(world), gh: new DryRunGhPort(world), proc: new DryRunProcPort(world), agents: { claude: claude(world) } };
   engine = new LiveEngine(store, ports, () => {}, { sleep: async () => {}, tickMs: 50 });
@@ -58,9 +57,9 @@ const fm = (s: DataStore, id: string) => s.getItem(id)!.file.frontmatter;
 const activity = (s: DataStore, id: string) => s.getItem(id)!.file.sections.find((x) => x.title === 'Activity')!.body;
 
 describe('a second account for the same provider (#242)', () => {
-  it('on exhaustion the card offers the other accounts; one on the same login folder resumes the conversation', async () => {
+  it('on exhaustion the card offers the other accounts, and the one picked takes the turn on its own login', async () => {
     const used: Used[] = [];
-    const { store, engine } = await setup(accountsClaude(new Set(['default']), used));
+    const { store, engine, root } = await setup(accountsClaude(new Set(['default']), used));
     const a = store.createItem({ title: 'Plan me', description: 'x' });
     store.transition(a.id, 'QUEUED', 'user');
     await engine.start();
@@ -69,18 +68,18 @@ describe('a second account for the same provider (#242)', () => {
     expect(f.blocked_reason).toBe('usage_exhausted');
     expect(f.triage).toBeUndefined(); // spending on another account is the user's call, said by code: no triage wake
     const card = decisionOf(f)!;
-    expect(card.options.map((o) => o.label)).toEqual(['Continue on Work Max', 'Continue on api', 'Wait for the reset']);
+    expect(card.options.map((o) => o.label)).toEqual(['Continue on Work Max', 'Continue on max2', 'Wait for the reset']);
     expect(card.options[0].action).toEqual({ tool: 'continue_on_account', args: { id: a.id, account: 'work' } });
     expect(store.local.model_unavailable?.['fable-5']?.until).toBe(RESET);
 
-    await engine.answerDecision(a.id, { choice: 'Continue on api' });
+    await engine.answerDecision(a.id, { choice: 'Continue on max2' });
     await waitFor(() => fm(store, a.id).status === 'PLAN_READY');
-    expect(fm(store, a.id).account).toBe('api');
+    expect(fm(store, a.id).account).toBe('max2');
     const turns = used.filter((u) => u.item === a.id);
-    expect(turns.map((u) => u.account)).toEqual(['default', 'api']);
-    expect(turns[1]).toMatchObject({ apiKeyEnv: 'PLANESTRO_TEST_KEY_2', resume: `s-${a.id}-default` });
-    await waitFor(() => fm(store, a.id).agent_sessions?.claude?.account === 'api'); // recorded as the turn ends, after its plan landed
-    expect(activity(store, a.id)).toContain('continues on api');
+    expect(turns.map((u) => u.account)).toEqual(['default', 'max2']);
+    expect(turns[1]).toMatchObject({ home: join(root, 'claude-max2'), resume: undefined }); // its own folder: a fresh brief
+    await waitFor(() => fm(store, a.id).agent_sessions?.claude?.account === 'max2'); // recorded as the turn ends, after its plan landed
+    expect(activity(store, a.id)).toContain('continues on max2');
   });
 
   it('an account with its own login folder cannot see the transcript, so it starts from a fresh brief', async () => {
@@ -99,14 +98,14 @@ describe('a second account for the same provider (#242)', () => {
 
   it('outages are remembered per account: the other account still blocks once it is out too, and the card leaves out spent accounts', async () => {
     const used: Used[] = [];
-    const { store, engine } = await setup(accountsClaude(new Set(['default', 'api']), used));
+    const { store, engine } = await setup(accountsClaude(new Set(['default', 'max2']), used));
     const a = store.createItem({ title: 'Plan me', description: 'x' });
     store.transition(a.id, 'QUEUED', 'user');
     await engine.start();
     await waitFor(() => decisionOf(fm(store, a.id)) !== undefined);
-    await engine.answerDecision(a.id, { choice: 'Continue on api' });
+    await engine.answerDecision(a.id, { choice: 'Continue on max2' });
     await waitFor(() => fm(store, a.id).blocked === true && decisionOf(fm(store, a.id))?.options[0].label === 'Continue on Work Max');
-    expect(store.local.model_unavailable?.['fable-5@api']?.until).toBe(RESET);
+    expect(store.local.model_unavailable?.['fable-5@max2']?.until).toBe(RESET);
     expect(decisionOf(fm(store, a.id))!.options.map((o) => o.label)).toEqual(['Continue on Work Max', 'Wait for the reset']); // the default login is out too
     await engine.answerDecision(a.id, { choice: 'Wait for the reset' });
     const after = fm(store, a.id);
@@ -157,15 +156,17 @@ describe('the orchestrator on an account (#242)', () => {
   });
 });
 
-describe('Claude credentials per account', () => {
-  it('a login folder replaces any API key; a key comes from the named variable', () => {
-    const base = { PATH: '/bin', ANTHROPIC_API_KEY: 'from-env', PLANESTRO_TEST_KEY_2: 'second' };
-    expect(claudeEnv(base, 'local-key')).toMatchObject({ ANTHROPIC_API_KEY: 'local-key' });
-    const work = claudeEnv(base, 'local-key', { name: 'work', home: '/h/claude-work' });
+describe('Claude logins per account', () => {
+  it('a session runs on a login, never a key or a cloud provider; an account sets its login folder', () => {
+    const base = { PATH: '/bin', ANTHROPIC_API_KEY: 'from-env', CLAUDE_CODE_USE_BEDROCK: '1', CLAUDE_CODE_USE_VERTEX: '1' };
+    const own = claudeEnv(base);
+    expect(own).toEqual({ PATH: '/bin' });
+    expect(own.CLAUDE_CONFIG_DIR).toBeUndefined();
+    expect(base.ANTHROPIC_API_KEY).toBe('from-env'); // planestro's own environment is left alone
+    const work = claudeEnv(base, { name: 'work', home: '/h/claude-work' });
     expect(work.CLAUDE_CONFIG_DIR).toBe('/h/claude-work');
     expect(work.ANTHROPIC_API_KEY).toBeUndefined();
-    expect(claudeEnv(base, 'local-key', { name: 'api', apiKeyEnv: 'PLANESTRO_TEST_KEY_2' })).toMatchObject({ ANTHROPIC_API_KEY: 'second' });
-    expect(claudeEnv(base, undefined, { name: 'w', home: '~/x' }, '/home/me').CLAUDE_CONFIG_DIR).toBe('/home/me/x');
+    expect(claudeEnv(base, { name: 'w', home: '~/x' }, '/home/me').CLAUDE_CONFIG_DIR).toBe('/home/me/x');
   });
   it("a Codex account runs exec with its own CODEX_HOME, and the accounts' folders are secrets to workers", () => {
     expect(codexHomeOf({ name: 'c2', home: '/h/codex-2' })).toBe('/h/codex-2');

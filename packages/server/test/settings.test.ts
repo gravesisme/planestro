@@ -3,11 +3,12 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import YAML from 'yaml';
 import { writeFileSync } from 'node:fs';
-import { SETTINGS, settingDefault, looksOneOff, suggestedAllowRules, billingMode, shownNumber, storedNumber, settingChanged, settingDef } from '@planestro/shared';
+import { SETTINGS, settingDefault, looksOneOff, suggestedAllowRules, shownNumber, storedNumber, settingChanged, settingDef } from '@planestro/shared';
 import { DataStore } from '../src/store/DataStore.ts';
 import { MockEngine } from '../src/engine/MockEngine.ts';
 import { apiRoutes } from '../src/routes/api.ts';
 import { stateView } from '../src/routes/views.ts';
+import { readLocalConfig } from '../src/config.ts';
 import { makeFixture, git } from './helpers.ts';
 
 let store: DataStore | undefined;
@@ -131,47 +132,46 @@ describe('Settings writes (#83)', () => {
   });
 });
 
-describe('the API key and billing mode', () => {
-  it('the key is written to planestro.local.yml but never sent back; the state reports billing from it', async () => {
-    const { store, send, dataDir } = await setup();
-    const secret = 'sk-ant-test-0123456789';
-    const state = () => stateView(store, new MockEngine(store, () => {}), {}, undefined);
-    expect(state().billing).toBe('subscription');
-    expect(state().api_key).toBe('none');
-    const r = await send('PUT', '/config/local', { anthropic_api_key: secret, allowed_hosts: ['mac.tailnet.ts.net'], engine: { mode: 'live' } });
-    expect(r.status).toBe(200);
-    expect(JSON.stringify(await r.json())).not.toContain(secret);
-    const local = YAML.parse(readFileSync(join(dataDir, 'planestro.local.yml'), 'utf8'));
-    expect(local.anthropic_api_key).toBe(secret);
-    expect(local.allowed_hosts).toEqual(['mac.tailnet.ts.net']);
-    expect(local.engine).toMatchObject({ paused: false, mode: 'live' });
-    expect(state().billing).toBe('api_key');
-    expect(state().api_key).toBe('local');
-    expect(JSON.stringify(state())).not.toContain(secret);
-    expect(JSON.stringify(await (await send('GET', '/config')).json())).not.toContain(secret);
-    // Clearing it (and the local engine override) removes the keys from the file.
-    expect((await send('PUT', '/config/local', { anthropic_api_key: '', engine: { mode: null } })).status).toBe(200);
-    const after = YAML.parse(readFileSync(join(dataDir, 'planestro.local.yml'), 'utf8'));
-    expect(after).not.toHaveProperty('anthropic_api_key');
-    expect(after.engine).not.toHaveProperty('mode');
-    expect(state().billing).toBe('subscription');
+describe('no model API key (sessions run on the CLIs\' logins)', () => {
+  it('Settings has no key to set, and the state says nothing about billing', async () => {
+    const { store, send } = await setup();
+    const r = await send('PUT', '/config/local', { anthropic_api_key: 'sk-ant-test-0123456789' });
+    expect(r.status).toBe(400);
+    expect(await r.text()).toMatch(/anthropic_api_key: not a setting/);
+    const v = stateView(store, new MockEngine(store, () => {}), {});
+    expect(v).not.toHaveProperty('billing');
+    expect(v).not.toHaveProperty('api_key');
   });
 
-  it('ANTHROPIC_API_KEY at startup is API billing too; MCP server keys are masked', async () => {
+  it('a planestro.local.yml from before loses its key and key-only accounts at load, and says so once', async () => {
+    const { dataDir } = makeFixture();
+    const secret = 'sk-ant-test-0123456789';
+    writeFileSync(join(dataDir, 'planestro.local.yml'), YAML.stringify({
+      anthropic_api_key: secret, allowed_hosts: ['mac.tailnet.ts.net'],
+      accounts: { api: { runner: 'claude', api_key_env: 'ANTHROPIC_KEY_2' }, work: { runner: 'claude', home: '~/.claude-work', api_key_env: 'K' } },
+    }));
+    const said: string[] = [];
+    const log = console.log; console.log = (m: string) => { said.push(m); };
+    try { readLocalConfig(dataDir); readLocalConfig(dataDir); } finally { console.log = log; }
+    const file = readFileSync(join(dataDir, 'planestro.local.yml'), 'utf8');
+    expect(file).not.toContain(secret);
+    expect(file).not.toContain('api_key_env');
+    const local = YAML.parse(file);
+    expect(local.allowed_hosts).toEqual(['mac.tailnet.ts.net']);
+    expect(local.accounts).toEqual({ work: { runner: 'claude', home: '~/.claude-work' } }); // an item on "api" now blocks account_missing
+    expect(said).toEqual([
+      expect.stringMatching(/removed anthropic_api_key/),
+      expect.stringMatching(/removed account api/),
+      expect.stringMatching(/removed accounts\.work\.api_key_env/),
+    ]); // the file is rewritten, so the second load is silent
+  });
+
+  it('MCP server keys are masked', async () => {
     const { store } = await setup();
     store.updateLocal({ mcp_servers: { eleven: { command: 'uvx', args: [], env: { ELEVENLABS_API_KEY: 'el-secret' }, headers: {} } } });
-    const v = stateView(store, new MockEngine(store, () => {}), {}, 'sk-env');
-    expect(v.billing).toBe('api_key');
-    expect(v.api_key).toBe('env');
+    const v = stateView(store, new MockEngine(store, () => {}), {});
     expect(v.local.mcp_servers.eleven.env).toEqual({ ELEVENLABS_API_KEY: '(set)' });
     expect(JSON.stringify(v)).not.toContain('el-secret');
-    expect(billingMode(' ', undefined)).toBe('subscription');
-  });
-
-  it('local writes are limited to the registry too', async () => {
-    const { send } = await setup();
-    for (const body of [{ model_unavailable: {} }, { engine: { paused: true } }, { mcp_servers: {} }]) expect((await send('PUT', '/config/local', body)).status).toBe(400);
-    expect((await send('PUT', '/config/local', { allowed_hosts: ['a', ''] })).status).toBe(400);
   });
 });
 
@@ -207,10 +207,10 @@ describe('the settings registry', () => {
 
     const { store, send } = await setup();
     const codeRepo = store.codeRepoPath();
-    expect(stateView(store, new MockEngine(store, () => {}), {}, undefined).toolchain).toEqual([]);
+    expect(stateView(store, new MockEngine(store, () => {}), {}).toolchain).toEqual([]);
     writeFileSync(join(codeRepo, 'package.json'), '{}');
     writeFileSync(join(codeRepo, 'Makefile'), 'all:\n');
-    expect(stateView(store, new MockEngine(store, () => {}), {}, undefined).toolchain).toEqual(['package.json', 'Makefile']);
+    expect(stateView(store, new MockEngine(store, () => {}), {}).toolchain).toEqual(['package.json', 'Makefile']);
     // A scoped rule is saved as written.
     const res = await send('PUT', '/config', { permissions: { allow: ['Bash(npm run *)@worktree'] } });
     expect(res.status).toBe(200);

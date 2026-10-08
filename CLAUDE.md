@@ -245,8 +245,9 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   issues**, #231): the ones picked, or every open one with `issues.import_label`. `source: {github_issue}` is the evidence
   an issue is in (never filed twice); nothing is submitted (#73); the PR says `Closes #N` only with `source.closes`.
 - Provider switches in either direction keep item state, worktrees, PRs and decisions, using the existing fresh-brief intent. `agent_sessions` (schema 4) stores a session id, role and tool contract per runner. Provider usage guards are machine-local and independent of the global user/disk pause. Orchestrator model changes apply next wake without a restart; its queue remains in memory, including when a wake hits its token cap.
-  A second login or key for the same runner is a named account (#242: `accounts` in planestro.local.yml, a `home` config
-  dir or an `api_key_env` name, never the key): a model row or the item (`account`) picks it, a missing one blocks
+  Sessions run on the CLIs' own logins, never a model API key (`claudeEnv` drops `ANTHROPIC_API_KEY` and the Bedrock /
+  Vertex switches; a local file's old key is dropped at load). A second login for the same runner is a named account (#242: `accounts` in planestro.local.yml,
+  a `home` config dir, never a credential): a model row or the item (`account`) picks it, a missing one blocks
   `account_missing` rather than bill the default login, and guards / `model_unavailable` are keyed per account. Out of usage
   with another account free, the engine files the card itself (`continue_on_account`, `wait_for_reset`; no triage); a
   conversation resumes only from the same store (`sameSessionStore`), else a fresh brief.

@@ -29,7 +29,7 @@ describe('normalizeSegment', () => {
 describe('allowedByRules with prefixes (the HH-121 parks)', () => {
   it('allows the forms workers actually run', () => {
     for (const c of [
-      'CHECK_JOBS=4 ./tools/run_checks.sh crystal_cavern_art 2>&1 | tail -30',
+      'CHECK_JOBS=4 ./tools/run_checks.sh level_art 2>&1 | tail -30',
       'CHECK_JOBS=2 GODOT_LOG_DIR=tmp/x ./tools/run_checks.sh icon hud',
       'timeout 120 godot --headless --path . --script tools/x_check.gd 2>&1 | head -40',
       'git add -A && CHECK_JOBS=4 ./tools/run_checks.sh xp',

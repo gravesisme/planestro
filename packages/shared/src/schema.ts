@@ -608,20 +608,15 @@ export type UsageGuardState = z.infer<typeof UsageGuardState>;
 /** Machine-local overrides (gitignored planestro.local.yml). */
 
 /**
- * A second login or key for a runner (#242), by name in planestro.local.yml (machine-local, gitignored). It says where the
- * credential is, never what it is: `home` is the account's own config folder (CLAUDE_CONFIG_DIR for Claude, signed in with
- * `CLAUDE_CONFIG_DIR=<home> claude` → /login; CODEX_HOME for Codex, signed in with `CODEX_HOME=<home> codex login`, a
- * subscription or --with-api-key), and `api_key_env` (Claude) names a variable in planestro's environment holding a Console key.
+ * A second login for a runner (#242), by name in planestro.local.yml (machine-local, gitignored). It says where the login
+ * is, never what it is: `home` is the account's own config folder (CLAUDE_CONFIG_DIR for Claude, signed in with
+ * `CLAUDE_CONFIG_DIR=<home> claude` → /login; CODEX_HOME for Codex, signed in with `CODEX_HOME=<home> codex login`).
+ * planestro runs on the CLIs' own logins, never a model API key: `api_key_env` is gone (`readLocalConfig` drops it).
  */
 export const AccountDef = z.object({
   runner: z.enum(RUNNERS),
   label: z.string().min(1).optional(),
-  home: z.string().min(1).optional(),
-  api_key_env: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'api_key_env is the name of an environment variable that holds the key, not the key').optional(),
-}).superRefine((a, ctx) => {
-  if (!a.home && !a.api_key_env) ctx.addIssue({ code: 'custom', message: 'an account needs a home or api_key_env: where its credential is' });
-  if (a.runner === 'codex' && a.api_key_env) ctx.addIssue({ code: 'custom', message: 'a Codex account signs in from its home (CODEX_HOME=<home> codex login --with-api-key), not api_key_env' });
-  if (a.runner === 'codex' && !a.home) ctx.addIssue({ code: 'custom', message: 'a Codex account needs a home: its own CODEX_HOME' });
+  home: z.string().min(1, 'an account needs a home: the config folder its CLI is signed in from'),
 });
 export type AccountDef = z.infer<typeof AccountDef>;
 
@@ -636,8 +631,6 @@ export const LocalConfig = z.object({
   allowed_hosts: z.array(z.string().min(1)).optional(),
   /** Listen on every interface unless `--host` says otherwise, and answer only the local network (#255). There is no login: anyone on this network can use planestro. */
   lan_access: z.boolean().optional(),
-  /** Optional Console API key: sessions then bill the API under the Commercial Terms instead of a claude.ai login. Local file only (gitignored). */
-  anthropic_api_key: z.string().optional(),
   /** MCP servers a model row may name in `mcp`, with their keys: this file is machine-local and gitignored. A stdio server (`command`, `args`, `env`) or an HTTP one (`url`, `headers`). */
   mcp_servers: z.record(z.string(), z.object({
     command: z.string().optional(), args: z.array(z.string()).default([]), env: z.record(z.string(), z.string()).default({}),
@@ -649,7 +642,7 @@ export const LocalConfig = z.object({
   })).default({}),
   /** Imported MCP servers removed here, as `<source>:<name>`, so an import does not bring them back (#237). */
   mcp_import_skip: z.array(z.string()).optional(),
-  /** Other logins or keys per runner (#242), by name ("default" is the runner's own login). Hand-edited here; never committed. */
+  /** Other logins per runner (#242), by name ("default" is the runner's own login). Hand-edited here; never committed. */
   accounts: z.record(z.string().regex(/^(?!default$)[a-z0-9][a-z0-9_-]{0,39}$/, 'an account name is lowercase letters, digits, - and _ (and not "default")'), AccountDef).optional(),
   /** Models this machine's account cannot use right now, by model id (`<id>@<account>` for a named account): detected usage limits and ones marked in Settings. */
   model_unavailable: z.record(z.string(), ModelUnavailable).optional(),

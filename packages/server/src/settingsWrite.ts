@@ -34,7 +34,7 @@ export function settingWrites(file: SettingFile, body: unknown): Write[] {
 function clean(def: SettingDef, v: unknown): unknown {
   if (v === null || v === undefined || (typeof v === 'string' && !v.trim())) return undefined;
   switch (def.control) {
-    case 'text': case 'secret': case 'select': case 'model':
+    case 'text': case 'select': case 'model':
       if (typeof v !== 'string') throw new Error(`${def.key}: expected text`);
       return v.trim();
     case 'list': {

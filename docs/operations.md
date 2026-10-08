@@ -111,8 +111,6 @@ end. `git log -- items/MP-12.md` is an item's full history.
   resumed session reports its running total; planestro takes what it rose by). A resume that
   costs more than the item has left is not started, and above `budget_usd_fresh_above` a fix
   goes to a fresh session with a brief rather than reloading a long one. Sessions use your
-  `claude` login by default; set an Anthropic API key (Settings → This machine) to bill the
-  API under the Commercial Terms, which is what the Agent SDK's documentation asks of
-  SDK-built agents.
+  `claude` login, never an API key: the dollars are an API-price yardstick against your plan.
 - Codex: `budget_turns_per_item` and `budget_tokens_per_item`; it bills your Codex login.
 - `concurrency.max_sessions` and `concurrency.runner_limits` bound how much runs at once.

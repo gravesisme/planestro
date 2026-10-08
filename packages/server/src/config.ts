@@ -21,11 +21,33 @@ export function readLocalConfig(dataDir: string): LocalConfig {
   const path = join(dataDir, LOCAL_CONFIG_FILE);
   if (!existsSync(path)) return LocalConfig.parse({});
   const raw = YAML.parse(readFileSync(path, 'utf8')) ?? {};
-  const changed = normalizeLocalUsage(raw);
+  const dropped = dropModelKeys(raw);
+  const changed = normalizeLocalUsage(raw) || dropped.length > 0;
   const parsed = LocalConfig.safeParse(raw);
   if (!parsed.success) throw new Error(`invalid ${LOCAL_CONFIG_FILE}: ${parsed.error.issues.map((i) => i.message).join('; ')}`);
   if (changed) writeLocalConfig(dataDir, parsed.data);
+  for (const d of dropped) console.log(`[warn] ${LOCAL_CONFIG_FILE}: removed ${d}: planestro runs on the claude and codex logins, never a model API key`);
   return parsed.data;
+}
+
+/**
+ * Model API keys are gone (sessions run on the CLIs' own logins): a planestro.local.yml from before keeps neither the
+ * Console key in plain text nor an account that names one. Says what it dropped, so the caller can tell the user once
+ * (the file is rewritten without them). An account left with no `home` goes with its key: an item on it then blocks
+ * `account_missing`, never quietly the default login.
+ */
+export function dropModelKeys(raw: any): string[] {
+  const dropped: string[] = [];
+  if (!raw || typeof raw !== 'object') return dropped;
+  if ('anthropic_api_key' in raw) { delete raw.anthropic_api_key; dropped.push('anthropic_api_key'); }
+  const accounts = raw.accounts && typeof raw.accounts === 'object' ? raw.accounts : {};
+  for (const [name, a] of Object.entries<any>(accounts)) {
+    if (!a || typeof a !== 'object' || !('api_key_env' in a)) continue;
+    delete a.api_key_env;
+    if (a.home) dropped.push(`accounts.${name}.api_key_env`);
+    else { delete accounts[name]; dropped.push(`account ${name} (it had only api_key_env)`); }
+  }
+  return dropped;
 }
 
 /** Update planestro.yml in place, preserving comments and key order of untouched keys. */
