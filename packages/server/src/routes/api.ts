@@ -1,5 +1,7 @@
 import { parkSummary } from '../engine/parks.ts';
 import { suggestForStore } from '../engine/allowSuggest.ts';
+import { notesWithLinks, fileNote, markNotes } from '../engine/feedback.ts';
+import type { GhPort } from '../engine/ports.ts';
 import { previewSwitch, applySwitch, itemModelSwitchOps } from '../providerSwitch.ts';
 import { orchestratorSpend } from '../engine/orchestratorSpend.ts';
 import { Hono, type Context } from 'hono';
@@ -448,7 +450,26 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   api.get('/parks', (c) => c.json(parkSummary(store.journal.read().filter((e) => e.type.startsWith('permission.') || e.type === 'op.begin' || e.type === 'op.end'))));
   api.get('/engine', (c) => c.json({ mode: engine.mode, paused: engine.paused, ...guardView(store, engine.paused), sessions: engine.sessions(), ...(engine.ciQueue ? { ci_queue: engine.ciQueue } : {}), ...(engine.restartReadiness ? { restart: engine.restartReadiness() } : {}), log: engine.log.slice(-200) }));
   // The orchestrator's suggestions about planestro itself (dogfood f8): a list of their own, not buried in Activity.
-  api.get('/orchestrator/notes', (c) => c.json(store.journal.read({ type: 'orchestrator.planestro_note', limit: 100 })));
+  // Each with what became of it (#231): the issues it was filed as, or handled by hand.
+  api.get('/orchestrator/notes', (c) => c.json(notesWithLinks(store, 100)));
+  // File as issue in feedback.issue_repo (#231): a marked issue is linked, a likely match is offered first unless `force`.
+  api.post('/orchestrator/notes/file', async (c) => {
+    try {
+      const { note, force } = z.object({ note: z.string().min(1), force: z.boolean().optional() }).parse(await c.req.json());
+      const gh = (engine as Engine & { orchestrator?: { gh?: GhPort } }).orchestrator?.gh;
+      if (!gh) throw Object.assign(new Error('this engine cannot file issues'), { status: 400 });
+      return c.json(await fileNote(store, gh, note, { force }));
+    } catch (e) { return fail(c, e, (e as { status?: number }).status ?? 400); }
+  });
+  // Mark as handled (#231): issues filed by hand, or handled with none, for one note or many (a backfill). Files nothing.
+  api.post('/orchestrator/notes/mark', async (c) => {
+    try {
+      const link = z.object({ note: z.string().min(1), issues: z.array(z.number().int().positive()).optional(), handled: z.boolean().optional(), comment: z.string().optional() });
+      const { links } = z.object({ links: z.array(link).min(1) }).parse(await c.req.json());
+      markNotes(store, links);
+      return c.json({ ok: true });
+    } catch (e) { return fail(c, e); }
+  });
   api.post('/engine/pause', (c) => { engine.pause(); return c.json({ paused: true }); });
   // Restart preparation (f3): POST drain, then poll GET /engine until restart.idle is true; DELETE cancels it.
   // `{ by: 'update' }` is serve --watch restarting onto new planestro code (#90): the page says so and offers no cancel.

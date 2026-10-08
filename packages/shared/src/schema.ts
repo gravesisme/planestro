@@ -451,6 +451,8 @@ export const Config = z.object({
     /** A wait is announced only once every planestro tab has been idle this long; one answered meanwhile is not. */
     idle_after_min: z.number().min(0).default(2),
   }).default({ idle_after_min: 2 }),
+  /** Where the orchestrator's notes about planestro are filed as issues (#231), `owner/repo`; unset, **File as issue** is not offered. Not the project's own repo, unless planestro is the project. */
+  feedback: z.object({ issue_repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, 'owner/repo').optional() }).default({}),
   git: z.object({
     auto_commit: z.boolean().default(true),
     auto_push: z.boolean().default(true),

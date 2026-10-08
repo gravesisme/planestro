@@ -1,6 +1,6 @@
 import { placeholderPng } from './placeholderPng.ts';
 import { matchesPathPattern } from './ports.ts';
-import type { GitPort, GhPort, ProcPort, ClaudePort, AgentPort, AgentTurnOptions, WorktreeEntry, RebaseResult, CiStatus, PrInfo, TurnOptions, TurnResult, CustomTurnOptions } from './ports.ts';
+import type { GitPort, GhPort, ProcPort, ClaudePort, AgentPort, AgentTurnOptions, WorktreeEntry, RebaseResult, CiStatus, PrInfo, IssueInfo, TurnOptions, TurnResult, CustomTurnOptions } from './ports.ts';
 
 /**
  * An in-memory world so a dry run advances end to end: worktrees, branches, PRs whose CI
@@ -39,6 +39,9 @@ export class FakeWorld {
   ignored = new Map<string, string[]>();
   /** Files present in a main checkout, by its path: what copy_to_checkout copied there (#72), or a test put there. */
   checkout = new Map<string, Set<string>>();
+  /** Issues of the feedback repo (#231): what issueList reports and issueCreate adds to. */
+  issues: IssueInfo[] = [];
+  nextIssue = 1;
   nextPr = 100;
   seq = 0;
   ciMode: 'green' | 'red-once' | 'conflict-once' = (process.env.PLANESTRO_DRYRUN_CI as any) ?? 'green';
@@ -236,6 +239,14 @@ export class DryRunGhPort implements GhPort {
   }
   async rerunAll(_repo: string, runId: number) { this.say(`gh run rerun ${runId}`); for (const p of this.w.prs.values()) if (p.cancelled) { p.cancelled = false; p.attempt = (p.attempt ?? 1) + 1; p.polls = 0; } }
   async previewUrl(_repo: string, sha: string): Promise<string | null> { return this.w.previews.get(sha) ?? null; }
+  async issueList(_repo: string, opts: { limit: number }): Promise<IssueInfo[]> { return [...this.w.issues].sort((a, b) => b.number - a.number).slice(0, opts.limit); }
+  async issueCreate(repo: string, a: { title: string; body: string }) {
+    const number = Math.max(this.w.nextIssue++, ...this.w.issues.map((i) => i.number + 1));
+    this.say(`gh issue create --repo ${repo} --title "${a.title}"`);
+    const url = `https://github.com/${repo}/issues/${number}`;
+    this.w.issues.push({ number, title: a.title, body: a.body, url, state: 'OPEN' });
+    return { number, url };
+  }
   async closePr(_repo: string, number: number, comment: string) { this.say(`gh pr close ${number} --comment "${comment}"`); const p = this.w.prs.get(number); if (p) p.state = 'CLOSED'; }
   async mergePr(_repo: string, number: number, opts: { headSha: string }): Promise<'merged' | 'head_moved'> {
     const p = this.w.prs.get(number)!;

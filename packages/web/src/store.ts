@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { JournalEntry } from '@planestro/shared';
-import { api, type State, type ItemView, type QuestionView } from './api.ts';
+import { api, type State, type ItemView, type QuestionView, type NoteView } from './api.ts';
 import { showIfNotification } from './desktopNotify.ts';
 import { watchInput } from './heartbeat.ts';
 
@@ -21,7 +21,7 @@ interface Store {
   chat: { open: boolean; entries?: JournalEntry[]; enabled?: boolean; item?: string; draft?: string };
   openChat(opts?: { item?: string; draft?: string }): void; closeChat(): void; loadChat(): Promise<void>;
   /** The orchestrator's suggestions about planestro (f8), newest last, and the timestamp this viewer last marked read. */
-  notes: JournalEntry[]; notesSeen: string;
+  notes: NoteView[]; notesSeen: string;
   loadNotes(): Promise<void>; markNotesRead(): void;
   /** The orchestrator's questions (#75), newest first, kept live by `question.updated`; `questionRev` bumps per id so an open question page refetches. */
   questions?: QuestionView[]; questionRev: Record<string, number>;
@@ -89,6 +89,7 @@ export const useStore = create<Store>((set, get) => ({
       if (e.type === 'journal.appended') {
         showIfNotification(e.entry);
         if (e.entry?.type === 'orchestrator.planestro_note') set({ notes: [...get().notes.slice(-199), e.entry] });
+        if (e.entry?.type === 'orchestrator.planestro_note_link') void get().loadNotes();
         const c = get().chat; if (c.entries && isChatEntry(e.entry) && !c.entries.some((x) => x.ts === e.entry.ts && x.type === e.entry.type)) set({ chat: { ...c, entries: [...c.entries.slice(-199), e.entry] } });
         return;
       }

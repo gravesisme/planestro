@@ -83,6 +83,8 @@ export interface CiStatus { state: CiState; runId?: number; url?: string; sha?: 
 export interface CiQueue { queued: number; running: number }
 export interface PrInfo { number: number; url: string; state: 'OPEN' | 'MERGED' | 'CLOSED'; mergedAt?: string; headRefOid: string; headRefName: string; baseRefName: string; mergeCommit?: string; title?: string; isDraft?: boolean; author?: string; updatedAt?: string }
 
+export interface IssueInfo { number: number; title: string; body: string; url: string; state: string }
+
 export interface GhPort {
   createPr(repo: string, args: { base: string; head: string; title: string; body: string; draft?: boolean }): Promise<{ number: number; url: string }>;
   /** Mark a PR as a draft (true) or ready for review (false); ready_for_review is what starts CI on a draft. */
@@ -107,6 +109,10 @@ export interface GhPort {
   previewUrl(repo: string, sha: string): Promise<string | null>;
   /** How deep the workflow's queue is, repository-wide (#170). Optional: a port without it reports no queue. */
   ciQueue?(repo: string, workflow: string): Promise<CiQueue>;
+  /** Issues of a repository, open and closed, newest first, with their bodies (#231: a note's marker is searched for in them). Optional. */
+  issueList?(repo: string, opts: { limit: number }): Promise<IssueInfo[]>;
+  /** Open an issue (#231: an orchestrator note filed as one). Optional: a port without it cannot file. */
+  issueCreate?(repo: string, args: { title: string; body: string }): Promise<{ number: number; url: string }>;
   /** Latest run of the workflow on a branch (base health). */
   branchCi(repo: string, branch: string, workflow: string): Promise<CiStatus>;
 }
