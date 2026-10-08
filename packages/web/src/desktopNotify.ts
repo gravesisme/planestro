@@ -1,4 +1,5 @@
 import type { JournalEntry } from '@planestro/shared';
+import { notificationPath } from './deepLink.ts';
 
 /**
  * Desktop notifications from this browser (#70): the server journals a `notification` for a merge, a usage
@@ -20,12 +21,22 @@ export async function enableDesktop(): Promise<NotificationPermission | 'unsuppo
   return p;
 }
 
+/** How a clicked notification opens its link in this tab: the router's navigate, once the app has mounted (#226). */
+let go: (path: string) => void = (path) => { location.assign(path); };
+export function setNotificationNavigate(fn: (path: string) => void): void { go = fn; }
+
 /**
  * Show a journaled notification, once: the tag is its timestamp, so several open tabs replace each other's
- * instead of stacking. Anything else, or a device that did not opt in, shows nothing.
+ * instead of stacking. Anything else, or a device that did not opt in, shows nothing. Clicked, it brings this tab
+ * forward on what it is about: the wait's own panel (`/items/:id#plan`, `/questions/:id`, #226), else the item.
  */
 export function showIfNotification(e: JournalEntry | undefined, open: (title: string, opts: NotificationOptions) => unknown = (t, o) => new Notification(t, o)): boolean {
   if (e?.type !== 'notification' || !desktopWanted() || !desktopSupported() || Notification.permission !== 'granted') return false;
   const title = String(e.data?.title ?? 'planestro'); const body = String(e.data?.message ?? '');
-  try { open(title, { body, icon: '/icon-192.png', badge: '/icon-192.png', tag: `planestro-${e.ts}`, data: { item: e.item } }); return true; } catch { return false; }
+  const path = notificationPath(e);
+  try {
+    const n = open(title, { body, icon: '/icon-192.png', badge: '/icon-192.png', tag: `planestro-${e.ts}`, data: { item: e.item, path } }) as Notification | undefined;
+    if (n && path) n.onclick = () => { window.focus(); go(path); n.close(); };
+    return true;
+  } catch { return false; }
 }

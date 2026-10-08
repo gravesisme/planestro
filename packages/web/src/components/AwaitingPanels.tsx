@@ -17,7 +17,7 @@ export function AwaitingPanels({ item }: { item: ItemView }) {
   // The orchestrator's plain-words card replaces whatever it was made from (a block, the worker's questions).
   if (decisionOf(fm)) return null; // shown by DecisionCard, at the top of the page and the preview
   if (fm.awaiting === 'question' && data?.questions) return (
-    <div className="approval">
+    <div className="approval" id="question" data-wait>
       {fm.triage && <TriageNote item={item} />}
       <h2 style={{ margin: '0 0 8px' }}>The agent asked</h2>
       <QuestionForm questions={data.questions} onSubmit={(answers) => act(() => api.respond(item.id, { kind: 'question', answers }))} />
@@ -29,7 +29,7 @@ export function AwaitingPanels({ item }: { item: ItemView }) {
     const command = (data.tool === 'Bash' || nativeCodex) && typeof data.input?.command === 'string' ? data.input.command : undefined;
     const why = typeof data.input?.description === 'string' ? data.input.description : nativeCodex && typeof data.input?.reason === 'string' ? data.input.reason : undefined;
     return (
-      <div className="approval">
+      <div className="approval" id="permission" data-wait={orchestrating ? undefined : true}>
         <h2 style={{ margin: '0 0 8px' }}>{orchestrating ? `The orchestrator is deciding a permission: ${data.tool}` : `Permission requested: ${data.tool}`}</h2>
         {orchestrating && <p className="small" style={{ marginTop: 0 }}>You asked it to decide these. It allows ordinary work in the worktree, denies what is wrong for the item, and leaves the rest to you. You can still decide yourself below.</p>}
         {!orchestrating && data.escalated === 'orchestrator_denials' && <p className="small" style={{ marginTop: 0 }}>This comes to you because the orchestrator denied this item's last three requests. Allowing it hands the item's next requests back to the orchestrator.</p>}

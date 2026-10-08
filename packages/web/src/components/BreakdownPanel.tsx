@@ -23,7 +23,7 @@ export function BreakdownPanel({ item }: { item: ItemView }) {
   const runnerOf = (id: string) => models.find((m) => m.id === id)?.runner ?? 'claude';
   const planners = models.filter((m) => canPlan(m));
   return (
-    <div className="approval">
+    <div className="approval" id="breakdown" data-wait={item.frontmatter.awaiting === 'orchestrator' ? undefined : true}>
       <h2 style={{ margin: '0 0 8px' }}><span>Proposed breakdown · {children.length} {children.length === 1 ? 'child' : 'children'}</span></h2>
       <p className="small" style={{ marginTop: 0 }}>Nothing exists yet. Edit the list; approving creates exactly these items under this epic. A child starts only after everything it waits on has merged into the epic branch. Children {item.frontmatter.allow_model_fallback ? <b>allow</b> : <b>do not allow</b>} their model's fallback, as this epic does.</p>
       {item.activity.filter((a) => a.actor === 'orchestrator').slice(-2).map((a, i) => <p key={i} className="small"><b>orchestrator:</b> {a.text}</p>)}

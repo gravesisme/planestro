@@ -20,6 +20,7 @@ import { PartsStrip } from '../components/PartsStrip.tsx';
 import { DecisionCard } from '../components/DecisionCard.tsx';
 import { prepareUpload } from '../uploadImage.ts';
 import { setTitle as setTabTitle } from '../tabBadge.ts';
+import { useLandOnWait } from '../deepLink.ts';
 
 function useAutosave(id: string, section: 'Description' | 'Notes' | 'Plan', initial: string) {
   const [text, setText] = useState(initial);
@@ -51,6 +52,8 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
   const [title, setTitle] = useState(fm.title);
   // The tab (and an installed web app, which has no address bar) says which item this is.
   useEffect(() => { setTabTitle(`${item.id} · ${fm.title}`); return () => setTabTitle('planestro'); }, [item.id, fm.title]);
+  // A link to what it waits for (`#plan`, `#decision`, …, #226) opens on that panel.
+  useLandOnWait();
   // The title wraps instead of running off a narrow screen, so its box grows to fit what it holds.
   const titleBox = useRef<HTMLTextAreaElement>(null);
   useLayoutEffect(() => {
@@ -162,7 +165,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
         <WaitingPanel item={item} />
         {fm.status === 'PLAN_READY' && fm.kind === 'epic' && <BreakdownPanel item={item} />}
         {fm.status === 'PLAN_READY' && fm.kind !== 'epic' && (
-          <div className="approval">
+          <div className="approval" id="plan" data-wait={fm.awaiting === 'orchestrator' ? undefined : true}>
             <h2 style={{ margin: '0 0 8px' }}>{fm.awaiting === 'orchestrator' ? 'The orchestrator is reviewing this plan' : 'Plan needs your approval'}</h2>
             {fm.awaiting === 'orchestrator' && <p className="small" style={{ marginTop: 0 }}>You asked it to decide: it approves, sends the plan back with fixes ({fm.plan_revisions ?? 0} of {orch.max_plan_revisions} rounds used), or leaves it to you. You can still decide yourself below.</p>}
             {fm.op_data?.plan_amended ? <p className="small"><span className="tag ok">amended by the orchestrator</span> it sent the plan back to fold this in, so what you approve is complete: <i>{String(fm.op_data.plan_amended)}</i></p> : null}
@@ -211,7 +214,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           </div>
         )}
         {fm.status === 'IN_REVIEW' && fm.skip_merge && (
-          <div className="approval">
+          <div className="approval" id="hold" data-wait={d.needs_you || undefined}>
             <h2 style={{ margin: '0 0 8px' }}>Held out of the merge queue</h2>
             {heldFor && <p className="small" style={{ marginTop: 0 }}><b>Held:</b> {heldFor}</p>}
             {preview && <p className="small" style={{ marginTop: 0 }}><b>Preview:</b> <a href={preview.url} target="_blank" rel="noreferrer">{preview.url}</a> <span className="muted">({preview.sha.slice(0, 7)})</span></p>}
