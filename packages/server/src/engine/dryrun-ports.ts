@@ -1,6 +1,6 @@
 import { placeholderPng } from './placeholderPng.ts';
 import { matchesPathPattern } from './ports.ts';
-import type { GitPort, GhPort, ProcPort, ClaudePort, AgentPort, AgentTurnOptions, WorktreeEntry, RebaseResult, CiStatus, PrInfo, IssueInfo, TurnOptions, TurnResult, CustomTurnOptions } from './ports.ts';
+import type { GitPort, GhPort, ProcPort, ClaudePort, AgentPort, AgentTurnOptions, WorktreeEntry, RebaseResult, CiStatus, PrInfo, IssueInfo, RunnerReport, TurnOptions, TurnResult, CustomTurnOptions } from './ports.ts';
 
 /**
  * An in-memory world so a dry run advances end to end: worktrees, branches, PRs whose CI
@@ -71,6 +71,8 @@ export class FakeWorld {
   draftGuard = false;
   /** With draftGuard: which heads have a real run (the rest have only skipped runs). */
   realRuns = new Set<string>();
+  /** The self-hosted runners and the CI workflow's open jobs (#216): what `runners` reports. None, as a GitHub-hosted project has. */
+  runnerReport: RunnerReport = { runners: [], jobs: [] };
   /** ready_for_review events sent (`gh pr ready`). */
   readyEvents = 0;
   constructor(readonly log: (msg: string) => void, readonly baseBranches: Record<string, string> = {}) {}
@@ -267,6 +269,7 @@ export class DryRunGhPort implements GhPort {
     return 'merged';
   }
   async branchCi(): Promise<CiStatus> { return { state: 'success' }; }
+  async runners(): Promise<RunnerReport> { return structuredClone(this.w.runnerReport); }
 }
 
 export class DryRunProcPort implements ProcPort {

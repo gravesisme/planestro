@@ -91,7 +91,13 @@ export function publicLocal(local: LocalConfig): LocalConfig {
   return { ...rest, mcp_servers: Object.fromEntries(Object.entries(local.mcp_servers ?? {}).map(([name, s]) => [name, { ...s, env: hide(s.env ?? {}), headers: hide(s.headers ?? {}) }])) };
 }
 
-export function stateView(store: DataStore, engine: { mode: string; paused: boolean; ciQueue?: { queued: number; running: number }; sessions(): unknown[]; restartReadiness?(): { draining: boolean; by?: 'user' | 'update'; idle: boolean; running: string[] } }, git: unknown, envApiKey = STARTUP_API_KEY) {
+/** One banner per runner label that looks stalled or offline (#216), with the items waiting on it. */
+export function runnerStallsView(engine: { runnerStalls?(): { label: string; items: string[]; since: string }[] }) {
+  const stalls = engine.runnerStalls?.().map(({ label, items, since }) => ({ label, items, since })) ?? [];
+  return stalls.length ? { runner_stalls: stalls } : {};
+}
+
+export function stateView(store: DataStore, engine: { mode: string; paused: boolean; ciQueue?: { queued: number; running: number }; runnerStalls?(): { label: string; items: string[]; since: string }[]; sessions(): unknown[]; restartReadiness?(): { draining: boolean; by?: 'user' | 'update'; idle: boolean; running: string[] } }, git: unknown, envApiKey = STARTUP_API_KEY) {
   const localKey = store.local.anthropic_api_key?.trim();
   return {
     schema: store.schema,
@@ -111,7 +117,7 @@ export function stateView(store: DataStore, engine: { mode: string; paused: bool
     invalid: store.invalid,
     /** What serve --watch last found when it looked for a newer planestro (#103); absent when it never has. */
     update: readUpdateStatus(store.dataDir) ?? null,
-    engine: { mode: engine.mode, paused: engine.paused, ...guardView(store, engine.paused), sessions: engine.sessions(), ...(engine.ciQueue ? { ci_queue: engine.ciQueue } : {}), ...(engine.restartReadiness ? { restart: engine.restartReadiness() } : {}) },
+    engine: { mode: engine.mode, paused: engine.paused, ...guardView(store, engine.paused), sessions: engine.sessions(), ...(engine.ciQueue ? { ci_queue: engine.ciQueue } : {}), ...runnerStallsView(engine), ...(engine.restartReadiness ? { restart: engine.restartReadiness() } : {}) },
     git,
     statuses: ['NOT_YET_SUBMITTED', 'QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW', 'MERGED', 'FINISHED', 'ICEBOX'] satisfies Status[],
   };

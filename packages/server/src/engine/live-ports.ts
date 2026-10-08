@@ -4,7 +4,7 @@ import { statfs } from 'node:fs/promises';
 import { existsSync, mkdirSync, renameSync, copyFileSync, unlinkSync, lstatSync, readdirSync, readFileSync, statSync, constants as fsConstants } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { matchesPathPattern } from './ports.ts';
-import type { GitPort, GhPort, ProcPort, WorktreeEntry, RebaseResult, CiStatus, CiQueue, PrInfo, ChangedFile, IssueInfo } from './ports.ts';
+import type { GitPort, GhPort, ProcPort, WorktreeEntry, RebaseResult, CiStatus, CiQueue, PrInfo, ChangedFile, IssueInfo, RunnerReport, RunnerInfo, OpenJob } from './ports.ts';
 
 const execFileP = promisify(execFile);
 
@@ -334,6 +334,21 @@ export class LiveGhPort implements GhPort {
     const count = async (status: string) => (JSON.parse(await ghRead(['run', 'list', '--repo', repo, '--workflow', workflow, '--status', status, '--limit', '100', '--json', 'databaseId'])) as any[]).length;
     const [queued, running] = await Promise.all([count('queued'), count('in_progress')]);
     return { queued, running };
+  }
+  async runners(repo: string, workflow: string): Promise<RunnerReport> {
+    // Repository runners, else the organization's (runners shared across its repositories); neither readable is an error, not "none".
+    const list = async (path: string) => (JSON.parse(await ghRead(['api', `${path}?per_page=100`])).runners ?? []) as any[];
+    let raw: any[] | undefined = await list(`repos/${repo}/actions/runners`).catch(() => undefined);
+    if (!raw?.length) raw = await list(`orgs/${repo.split('/')[0]}/actions/runners`).catch(() => raw);
+    if (!raw) throw new Error(`cannot read the runners of ${repo} (gh needs admin access to the repository)`);
+    const runners: RunnerInfo[] = raw.map((r) => ({ name: String(r.name), online: r.status === 'online', busy: Boolean(r.busy), labels: ((r.labels ?? []) as any[]).map((l) => String(l.name)) }));
+    const open = await Promise.all(['queued', 'in_progress'].map((st) => ghRead(['run', 'list', '--repo', repo, '--workflow', workflow, '--status', st, '--limit', '20', '--json', 'databaseId']).then((v) => JSON.parse(v) as any[])));
+    const jobs: OpenJob[] = [];
+    for (const run of open.flat().slice(0, 20)) {
+      const js = (JSON.parse(await ghRead(['api', `repos/${repo}/actions/runs/${run.databaseId}/jobs?filter=latest&per_page=100`])).jobs ?? []) as any[];
+      for (const j of js) if (j.status !== 'completed') jobs.push({ runId: run.databaseId, status: j.status === 'in_progress' ? 'in_progress' : 'queued', labels: ((j.labels ?? []) as any[]).map(String), ...(j.runner_name ? { runner: String(j.runner_name) } : {}) });
+    }
+    return { runners, jobs };
   }
   async runFailedLog(repo: string, runId: number, maxLines: number) {
     const log = await ghRead(['run', 'view', String(runId), '--repo', repo, '--log-failed']).catch((e) => `(could not fetch log: ${e.message})`);

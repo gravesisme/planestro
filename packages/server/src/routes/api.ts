@@ -14,7 +14,7 @@ import { allowedTransitions, parsePromptFile, RenderError, STATUSES, PRIORITIES,
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Engine } from '../engine/Engine.ts';
 import type { ConsoleBuffer } from '../store/ConsoleBuffer.ts';
-import { itemView, promptView, releaseView, questionView, stateView, guardView, publicLocal } from './views.ts';
+import { itemView, promptView, releaseView, questionView, stateView, guardView, runnerStallsView, publicLocal } from './views.ts';
 import { applyConfigSettings, applyLocalSettings, putModel, removeModel } from '../settingsWrite.ts';
 import { importCandidates, importMcpServers, putMcpServer, removeMcpServer, testMcpServer } from '../mcpServers.ts';
 
@@ -464,7 +464,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
     return c.json(suggestForStore(store, { minApprovals: num('min'), minItems: num('min_items') }));
   });
   api.get('/parks', (c) => c.json(parkSummary(store.journal.read().filter((e) => e.type.startsWith('permission.') || e.type === 'op.begin' || e.type === 'op.end'))));
-  api.get('/engine', (c) => c.json({ mode: engine.mode, paused: engine.paused, ...guardView(store, engine.paused), sessions: engine.sessions(), ...(engine.ciQueue ? { ci_queue: engine.ciQueue } : {}), ...(engine.restartReadiness ? { restart: engine.restartReadiness() } : {}), log: engine.log.slice(-200) }));
+  api.get('/engine', (c) => c.json({ mode: engine.mode, paused: engine.paused, ...guardView(store, engine.paused), sessions: engine.sessions(), ...(engine.ciQueue ? { ci_queue: engine.ciQueue } : {}), ...runnerStallsView(engine), ...(engine.restartReadiness ? { restart: engine.restartReadiness() } : {}), log: engine.log.slice(-200) }));
   // The orchestrator's suggestions about planestro itself (dogfood f8): a list of their own, not buried in Activity.
   // Each with what became of it (#231): the issues it was filed as, or handled by hand.
   api.get('/orchestrator/notes', (c) => c.json(notesWithLinks(store, 100)));

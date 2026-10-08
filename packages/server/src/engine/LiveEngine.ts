@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { Audition, auditionProblem, takePathProblem, auditionPicksProblem, auditionPickLines, auditionNote, type AuditionPick, runnerTurnSettings, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
-import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote, type CiQueue, type UndeliveredReport, type ConnectionDrop } from './ports.ts';
+import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote, type CiQueue, type RunnerReport, type UndeliveredReport, type ConnectionDrop } from './ports.ts';
 import { operatorMcpUrl } from '../routes/mcp.ts';
 import { listInstances } from '../instances.ts';
 import { makePolicy, ruleFor, allowedByRules, sdkRules, BASE_ALLOWED } from './policy.ts';
@@ -18,6 +18,7 @@ import { NeedsYouWatch, type Wait } from './needsYou.ts';
 import { pngSize } from './placeholderPng.ts';
 import { findWorkflow, namedInLog, prSkippedByPaths } from './ciFilters.ts';
 import { quietTransientFailure } from './transient.ts';
+import { runnerStatusText, stallOf, recovered, type RunnerStall } from './runners.ts';
 import type { ReviewImage, ReviewDiff } from './Engine.ts';
 
 const IMAGE_FILE = /\.(png|jpe?g|webp|gif|svg)$/i;
@@ -54,6 +55,8 @@ const BUDGET_WARN_AT = 0.8;
 const GIT_REFUSAL = /index\.lock|\.git\/worktrees|EPERM|Operation not permitted|Permission denied/i;
 /** A block that is about committing ("planestro needs to commit this", "complete but uncommitted", "nothing added to commit"). */
 const ASKS_COMMIT = /commit|\bstag(e|ing)\b/i;
+/** How old a runner reading planestro's own stall checks accept (#216): each read costs a GitHub call per open run. */
+const RUNNER_CHECK_MS = 2 * 60_000;
 /** How many stops of one item, in one status, the orchestrator triages before the rest go straight to the user (a fix that keeps failing is a conversation for a person). */
 const MAX_TRIAGE_ROUNDS = 4;
 /**
@@ -211,6 +214,7 @@ export class LiveEngine implements Engine {
       resumeAfter: (id, items, message, prs) => this.resumeAfter(id, items, message, 'orchestrator', prs ?? []),
       finishFromWorktree: (id) => this.finishFromWorktree(id, 'orchestrator'),
       ciWorkflow: this.ciWorkflow,
+      runnerStatus: () => this.runnerStatus(),
       askUserDecision: (id, input) => this.askUserDecision(id, input),
       withdrawDecision: (id, reason) => this.withdrawDecision(id, reason),
       triageEnded: (id) => this.endTriage(id, 'the orchestrator looked at it without resolving it'),
@@ -502,6 +506,7 @@ export class LiveEngine implements Engine {
       this.driveHeld();
       this.driveBaseWaits();
       await this.driveStalls();
+      void this.driveRunnerStalls().catch((e) => this.note('error', `runner stalls: ${(e as Error).message}`));
       this.driveReviewStalls();
       this.driveResumeAfter();
     } catch (e) { this.note('error', `tick: ${(e as Error).message}`); }
@@ -2248,8 +2253,11 @@ export class LiveEngine implements Engine {
       this.block(id, 'ci_cancelled', `CI run ${run?.runId ?? '?'} for ${headSha.slice(0, 7)} was cancelled again after planestro re-ran it once${run?.url ? ` (${run.url})` : ''}; no other run is coming for this head. Re-run CI once what cancelled it is fixed (a job time limit, a concurrency group), or push a new head`);
       return;
     }
-    if (verdict === 'timeout') { this.store.journal.end(opId, id, 'aborted', { reason: 'ci_timeout' }); this.block(id, 'ci_timeout', `CI for ${headSha.slice(0, 7)} ran longer than ${cfg.timeout_min} min after a runner started it${this.ciQueueNote()}`); return; }
-    if (verdict === 'queue_timeout') { this.store.journal.end(opId, id, 'aborted', { reason: 'ci_queue_timeout' }); this.block(id, 'ci_timeout', `CI for ${headSha.slice(0, 7)} waited ${cfg.queue_timeout_min} min for a runner and never started${this.ciQueueNote()}. A queue, not a failure: check the runners' capacity, not the change`); return; }
+    // A timeout on a runner that looks stalled or offline is the runner's, said once for every item on it (#216), not triaged item by item.
+    const stall = verdict === 'timeout' || verdict === 'queue_timeout' ? await this.runnerStallFor(id) : undefined;
+    const onRunner = stall ? `; runner ${stall.label} looks stalled or offline` : '';
+    if (verdict === 'timeout') { this.store.journal.end(opId, id, 'aborted', { reason: 'ci_timeout' }); this.block(id, 'ci_timeout', `CI for ${headSha.slice(0, 7)} ran longer than ${cfg.timeout_min} min after a runner started it${this.ciQueueNote()}${onRunner}`, 'user', stall); return; }
+    if (verdict === 'queue_timeout') { this.store.journal.end(opId, id, 'aborted', { reason: 'ci_queue_timeout' }); this.block(id, 'ci_timeout', `CI for ${headSha.slice(0, 7)} waited ${cfg.queue_timeout_min} min for a runner and never started${this.ciQueueNote()}${onRunner}. A queue, not a failure: check the runners' capacity, not the change`, 'user', stall); return; }
     if (verdict === 'blocked') {
       if (cfg.mode === 'github-or-local' && cfg.local_check_command) {
         this.store.mutateItem(id, [{ set: { op: 'running_local_checks', op_started_at: this.now() } }, { activity: { actor: 'app', text: `GitHub Actions is blocked; running local gate: ${cfg.local_check_command}` } }], 'engine');
@@ -2647,6 +2655,99 @@ export class LiveEngine implements Engine {
     try { this.ciQueue = await this.ports.gh.ciQueue(this.github, this.ciWorkflow); this.ciQueueUnreadable = false; } catch { this.ciQueueUnreadable = !this.ciQueue; }
     return this.ciQueue;
   }
+  /** The runners' state (#216), read at most every 30 s so a fleet of workers asking never hammers the API; undefined when the port cannot tell. */
+  private runnerReport?: { report: RunnerReport; at: string };
+  private runnersAt = 0;
+  /** `maxAgeMs`: what planestro's own background checks accept is older (a read is a call per open run), so a deep queue stays well inside GitHub's rate limit. */
+  private async readRunners(maxAgeMs = 30_000): Promise<{ report: RunnerReport; at: string } | undefined> {
+    if (!this.ports.gh.runners || !this.store.config.code_repo.github) return undefined;
+    if (this.runnerReport && Date.now() - this.runnersAt < maxAgeMs) return this.runnerReport;
+    this.runnersAt = Date.now();
+    try { this.runnerReport = { report: await this.ports.gh.runners(this.github, this.ciWorkflow), at: this.now() }; } catch (e) { if (!this.runnerReport) throw e; }
+    return this.runnerReport;
+  }
+  /** What the orchestrator's runner_status and a worker's runners_busy answer: read by planestro's own gh, so no session needs a Bash rule for it. */
+  async runnerStatus(): Promise<string> {
+    if (!this.store.config.code_repo.github) return 'not available: code_repo.github is not configured, so there are no GitHub runners to read';
+    try {
+      const r = await this.readRunners();
+      return r ? runnerStatusText(r.report, this.github, r.at) : 'not available: this planestro cannot read runners';
+    } catch (e) { return `not available: ${(e as Error).message.replace(/\s+/g, ' ').slice(0, 300)}`; }
+  }
+  /** Mark (or unmark) a waiting item's run as queued on a stalled runner; a marker that still holds is kept, with its time and wake. */
+  private async markRunnerStall(id: string): Promise<void> {
+    const stall = await this.runnerStallFor(id);
+    const fm = this.store.requireItem(id).file.frontmatter;
+    const had = fm.op_data?.runner_stall as RunnerStall | undefined;
+    if (stall ? had?.label === stall.label && had.run_id === stall.run_id : !had) return;
+    const { runner_stall: _was, ...rest } = fm.op_data ?? {};
+    this.store.mutateItem(id, [{ set: { op_data: stall ? { ...rest, runner_stall: this.stallMark(stall) } : rest } }], 'engine');
+  }
+  /** A gathering window: items that stall on one label within it are said in one wake. */
+  runnerStallGatherMs = 2 * 60_000;
+  /** Is this item's CI run waiting on a runner that is not coming? Read from the cached runner report; never throws. */
+  private async runnerStallFor(id: string): Promise<RunnerStall | undefined> {
+    const run = (this.store.getItem(id)?.file.frontmatter.op_data?.ci as { runId?: number } | undefined)?.runId;
+    if (!run) return undefined;
+    const r = await this.readRunners(RUNNER_CHECK_MS).catch(() => undefined);
+    return r ? stallOf(r.report, run) : undefined;
+  }
+  /** The marker an item carries while it waits on a stalled label; one already woken for that label joins it without a wake of its own. */
+  private stallMark(stall: RunnerStall): RunnerStall & { at: string; woken?: boolean } {
+    const woken = this.runnerStalls().some((g) => g.label === stall.label && g.woken);
+    return { ...stall, at: this.now(), ...(woken ? { woken: true } : {}) };
+  }
+  /**
+   * Items whose CI waits on a runner label that looks stalled or offline (#216): blocked ci_timeout on it, or still
+   * polling with their run queued on it. One banner and one wake per label, never a triage per item.
+   */
+  runnerStalls(): { label: string; items: string[]; since: string; woken: boolean; stalls: RunnerStall[] }[] {
+    const groups = new Map<string, { label: string; items: string[]; since: string; woken: boolean; stalls: RunnerStall[] }>();
+    for (const i of this.store.listItems()) {
+      const fm = i.file.frontmatter;
+      const m = fm.op_data?.runner_stall as (RunnerStall & { at: string; woken?: boolean }) | undefined;
+      if (!m || fm.taken_over || !((fm.blocked && fm.blocked_reason === 'ci_timeout') || (!fm.blocked && this.ciWaits.has(i.id)))) continue;
+      const g = groups.get(m.label) ?? { label: m.label, items: [], since: m.at, woken: false, stalls: [] };
+      g.items.push(i.id); g.stalls.push(m); g.woken ||= Boolean(m.woken); if (m.at < g.since) g.since = m.at;
+      groups.set(m.label, g);
+    }
+    return [...groups.values()];
+  }
+  private drivingRunnerStalls = false;
+  /**
+   * Once a label's gathering window has passed, one wake says every item waiting on it; once a runner takes a job
+   * again, the stall is over: the items it blocked wait for CI again by themselves, and the banner goes (#216).
+   */
+  private async driveRunnerStalls(): Promise<void> {
+    if (this.drivingRunnerStalls) return;
+    const groups = this.runnerStalls();
+    if (!groups.length) return;
+    this.drivingRunnerStalls = true;
+    try {
+      const r = await this.readRunners(RUNNER_CHECK_MS).catch(() => undefined);
+      for (const g of groups) {
+        if (r && recovered(r.report, g.stalls)) {
+          this.note('info', `runner ${g.label} is taking jobs again: ${g.items.join(', ')} wait for CI again`);
+          for (const id of g.items) {
+            const fm = this.store.requireItem(id).file.frontmatter;
+            const { runner_stall: _over, ...rest } = fm.op_data ?? {};
+            this.store.mutateItem(id, [{ set: { op_data: rest } }], 'engine');
+            if (fm.blocked) await this.retryOp(id, 'engine', `a runner for ${g.label} is taking jobs again`);
+          }
+          continue;
+        }
+        const blocked = g.items.filter((id) => this.store.requireItem(id).file.frontmatter.blocked).length;
+        if (g.woken || (g.items.length < 2 && !blocked) || Date.now() - Date.parse(g.since) < this.runnerStallGatherMs) continue;
+        for (const id of g.items) { const fm = this.store.requireItem(id).file.frontmatter; this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), runner_stall: { ...(fm.op_data?.runner_stall as object), woken: true } } } }], 'engine'); }
+        this.note('warn', `runner ${g.label} looks stalled or offline: ${g.items.join(', ')} are waiting on it`);
+        this.wakeOrchestrator('runner_stalled', undefined, {
+          runner: `${g.label} looks stalled or offline: ${g.items.join(', ')} ${g.items.length === 1 ? 'is' : 'are'} waiting on it (${blocked} blocked ci_timeout, ${g.items.length - blocked} still waiting for a runner)`,
+          runners: r ? runnerStatusText(r.report, this.github, r.at) : '(could not read the runners)',
+          policy: 'One signal for every item waiting on this runner label, instead of a triage each. Do not re-run or retry them one by one: once a runner for it takes a job again, planestro sends the blocked ones back to waiting for CI by itself. Judge what the runner needs (a machine asleep or offline, a billing block, a full queue) from runner_status; if it needs a person, ask the user once (ask_user) for all of them.',
+        });
+      }
+    } finally { this.drivingRunnerStalls = false; }
+  }
   private ciQueueNote(): string { return this.ciQueue ? ` (CI queue: ${this.ciQueue.queued} queued, ${this.ciQueue.running} running)` : ''; }
 
   /**
@@ -2732,12 +2833,16 @@ export class LiveEngine implements Engine {
       // stop, not ci_blocked: Actions did run, and the local gate is no answer to a job condition that skips everything.
       if (ci.state === 'skipped' && !sawRun && elapsedMin > cfg.start_timeout_min && (view.isDraft || this.store.requireItem(id).file.frontmatter.op_data?.ci_refired === sha)) return 'skipped';
       if (ci.state === 'none' && !sawRun && elapsedMin > cfg.start_timeout_min) return 'blocked';
+      // A runner took it (or it ended): it no longer waits on a stalled runner (#216).
+      if (!(ci.state === 'pending' && ci.queued) && this.store.requireItem(id).file.frontmatter.op_data?.runner_stall) { const { runner_stall: _over, ...rest } = this.store.requireItem(id).file.frontmatter.op_data ?? {}; this.store.mutateItem(id, [{ set: { op_data: rest } }], 'engine'); }
       // A run (or a re-run's new attempt) waiting for a runner has not started its clock; once a job runs, it has.
       if (ci.state === 'pending' && ci.queued) runningSince = null;
       else if (ci.state === 'pending' && runningSince === null) runningSince = this.ciNow();
       if (runningSince !== null) { if ((this.ciNow() - runningSince) / 60_000 > cfg.timeout_min) return 'timeout'; }
       else if (ci.state === 'pending' && ci.queued) {
         if (elapsedMin > cfg.queue_timeout_min) return 'queue_timeout';
+        // Queued past ci.start_timeout_min on a runner that looks stalled or offline: one signal per label, with the others on it (#216).
+        if (elapsedMin > cfg.start_timeout_min) await this.markRunnerStall(id);
         // Say so once an hour, with the queue it is in, so a long wait reads as a queue and not a stall.
         if (elapsedMin >= 30 && elapsedMin - queueNoted >= 60) {
           queueNoted = elapsedMin;
@@ -3349,6 +3454,7 @@ export class LiveEngine implements Engine {
       hand_off: async (to, paths, note) => this.handOff(id, to, paths, note, 'worker'),
       request_audition: async (audition) => this.requestAudition(id, audition),
       get_item: async () => serializeItemFile(s.requireItem(id).file),
+      runners_busy: async () => this.runnerStatus(),
     };
   }
 
@@ -3555,7 +3661,8 @@ export class LiveEngine implements Engine {
     return until.toISOString();
   }
 
-  private block(id: string, reason: string, detail: string, awaiting: 'user' | undefined = 'user'): void {
+  /** `stall`: the runner the stop waits on (#216): it joins that runner's one signal instead of a triage of its own. */
+  private block(id: string, reason: string, detail: string, awaiting: 'user' | undefined = 'user', stall?: RunnerStall): void {
     // No space left (#161): whatever stopped on it, the cause is the disk, which no instruction fixes. Said as such, never
     // triaged, and the guard reads the disk at once (it pauses everything else rather than let each item fail in turn).
     // Only a generic stop is renamed: one with its own reason (cleanup_dirty keeps its invariant-7 story) keeps it, and the disk is still read.
@@ -3566,7 +3673,7 @@ export class LiveEngine implements Engine {
       // running under a take-over blocked HH-136, by then in review with its PR, as agent_blocked).
       if (cur.taken_over) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `not blocked (${reason}), since you have this item: ${detail.replace(/\s+/g, ' ').slice(0, 300)}` } }], 'engine'); return; }
       // A stop for a person goes to the orchestrator first (triage); it resolves it or asks one plain question.
-      const triage = this.triageOps(cur, reason);
+      const triage = stall ? { on: false, ops: [{ set: { op_data: { ...(cur.op_data ?? {}), runner_stall: this.stallMark(stall) } } }, { activity: { actor: 'app', text: `not triaged: runner ${stall.label} looks stalled or offline, and every item waiting on it is said in one signal; it waits for CI again by itself once a runner takes a job` } }] as ItemOp[] } : this.triageOps(cur, reason);
       // A card that was waiting for an answer is about a stop that no longer exists: this block replaces it (HH-162, dogfood p42).
       const { decision: staleCard, ...restData } = cur.awaiting_data ?? {};
       this.store.mutateItem(id, [
@@ -3578,7 +3685,7 @@ export class LiveEngine implements Engine {
       ], 'engine', { commit: `${id}: blocked (${reason})` });
       this.note('warn', `${id} blocked: ${reason} — ${detail.slice(0, 200)}${triage.on ? ' (the orchestrator is triaging it)' : ''}`);
       if (triage.on) this.wakeWhenIdle(id, `blocked_${reason}`, { detail: detail.slice(0, 2000) });
-      else if ((JUDGMENT_BLOCKS as readonly string[]).includes(reason)) this.wakeOrchestrator(`blocked_${reason}`, id, { detail: detail.slice(0, 2000) });
+      else if (!stall && (JUDGMENT_BLOCKS as readonly string[]).includes(reason)) this.wakeOrchestrator(`blocked_${reason}`, id, { detail: detail.slice(0, 2000) });
     } catch (e) { this.note('error', `could not record block on ${id}: ${(e as Error).message}`); }
   }
 
