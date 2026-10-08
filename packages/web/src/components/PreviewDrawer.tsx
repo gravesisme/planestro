@@ -13,6 +13,7 @@ import { TakenOverPanel } from './TakeOver.tsx';
 import { AwaitingPanels } from './AwaitingPanels.tsx';
 import { DecisionCard } from './DecisionCard.tsx';
 import { PartsStrip } from './PartsStrip.tsx';
+import { ChildrenTable, epicChildren } from './EpicChildren.tsx';
 import { decisionOf } from '@planestro/shared';
 
 const LIVE_STATUSES = ['PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW', 'MERGED'];
@@ -30,6 +31,8 @@ export function PreviewDrawer({ id, onClose }: { id: string; onClose: () => void
   const fm = item.frontmatter;
   const d = item.derived;
   const session = state?.engine.sessions.find((s) => s.item === id);
+  // An epic says so, and shows its children as its page does (#290).
+  const epic = fm.kind === 'epic' && state ? epicChildren(item, state.items) : undefined;
   const showConsole = session || fm.session_id || LIVE_STATUSES.includes(fm.status);
   // At a decision, a review or a block, what you need is the latest activity and the card, not the
   // brief you wrote weeks ago (dogfood f9): the description folds to one line and activity comes first.
@@ -51,6 +54,7 @@ export function PreviewDrawer({ id, onClose }: { id: string; onClose: () => void
         <button className="small" onClick={onClose} title="Close (Esc)">✕</button>
       </div>
       <div className="controls" style={{ margin: '8px 0' }}>
+        {epic && <span className="pill epic">EPIC {epic.merged}/{epic.children.length}</span>}
         <span className="pill">{statusLabel(fm.status)}</span>
         {fm.blocked && <span className="pill blocked">BLOCKED · {fm.blocked_reason}</span>}
         {fm.awaiting && <span className={`pill ${d.needs_you ? 'await' : ''}`}>{decisionOf(fm) ? 'your decision' : `awaiting ${fm.awaiting.replace(/_/g, ' ')}`}</span>}
@@ -82,6 +86,7 @@ export function PreviewDrawer({ id, onClose }: { id: string; onClose: () => void
       <AwaitingPanels item={item} />
       {fm.awaiting === 'review' ? <ReviewPanel item={item} compact /> : <QuickActions item={item} />}
       {deciding && activity}
+      {epic && state && (<><h3 className="drawer-h">Children · {epic.merged}/{epic.children.length} merged</h3>{epic.children.length ? <div className="drawer-children"><ChildrenTable epic={item} items={state.items} /></div> : <p className="small muted">No children yet.</p>}</>)}
       {description}
       {fm.status === 'PLAN_READY' && item.sections.Plan && (<><h3 className="drawer-h">Plan awaiting your approval</h3><div className="drawer-desc"><Markdown text={item.sections.Plan} /></div></>)}
       {showConsole && (<><h3 className="drawer-h">Console</h3><ItemConsole id={id} tail={14} className="drawer-console" /></>)}
