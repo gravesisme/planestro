@@ -82,7 +82,8 @@ describe('a PR closed outside planestro (#205)', () => {
     expect(wakes).not.toHaveBeenCalled();
     await engine.start();
     await until(() => ['MERGED', 'FINISHED'].includes(fm(h.id).status));
-    expect(wakes.mock.calls.filter((c) => c[1] === h.id)).toEqual([]);
+    // Its merge is told to the orchestrator as any merge is; nothing before it.
+    expect(wakes.mock.calls.filter((c) => c[1] === h.id).map((c) => c[0])).toEqual(['pr_merged']);
   });
 
   it('refuses an item whose PR is not closed, and the API says why in an error', async () => {

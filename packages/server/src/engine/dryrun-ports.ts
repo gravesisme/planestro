@@ -1,6 +1,6 @@
 import { placeholderPng } from './placeholderPng.ts';
 import { matchesPathPattern } from './ports.ts';
-import type { GitPort, GhPort, ProcPort, ClaudePort, AgentPort, AgentTurnOptions, WorktreeEntry, RebaseResult, CiStatus, PrInfo, IssueInfo, RunnerReport, TurnOptions, TurnResult, CustomTurnOptions } from './ports.ts';
+import type { GitPort, GhPort, ProcPort, ClaudePort, AgentPort, AgentTurnOptions, WorktreeEntry, RebaseResult, CiStatus, PrInfo, PrClosure, IssueInfo, RunnerReport, TurnOptions, TurnResult, CustomTurnOptions } from './ports.ts';
 
 /**
  * An in-memory world so a dry run advances end to end: worktrees, branches, PRs whose CI
@@ -22,6 +22,8 @@ export class FakeWorld {
   prs = new Map<number, PrInfo & { polls: number; failOnce: boolean; attempt?: number; staleFailures?: number; cancelled?: boolean }>();
   /** Polls after a re-run request that still report the old, failed attempt (GitHub's lag). */
   rerunLagPolls = 0;
+  /** What each PR's close event says (#205): a person, or a commit and the PR it merged in. */
+  prClosures = new Map<number, PrClosure>();
   /** A re-run of failed jobs fails again (a real failure, not a flake). */
   rerunFailsAgain = false;
   /** What `gh run view --log-failed` shows for a red run (#204: the files a failing check names); unset, the simulated line. */
@@ -258,6 +260,8 @@ export class DryRunGhPort implements GhPort {
     return { number, url };
   }
   async closePr(_repo: string, number: number, comment: string) { this.say(`gh pr close ${number} --comment "${comment}"`); const p = this.w.prs.get(number); if (p) p.state = 'CLOSED'; }
+  async reopenPr(_repo: string, number: number) { this.say(`gh pr reopen ${number}`); const p = this.w.prs.get(number); if (p) p.state = 'OPEN'; this.w.prClosures.delete(number); }
+  async prClosedBy(_repo: string, number: number): Promise<PrClosure | null> { return this.w.prClosures.get(number) ?? null; }
   async mergePr(_repo: string, number: number, opts: { headSha: string }): Promise<'merged' | 'head_moved'> {
     const p = this.w.prs.get(number)!;
     const head = this.w.remoteBranches.get(p.headRefName) ?? p.headRefOid;

@@ -122,6 +122,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
     const bare = it.file.frontmatter.kind === 'epic' && it.file.frontmatter.status === 'NOT_YET_SUBMITTED' && !store.derived(it).children.length;   // approving a breakdown is also → IN_PROGRESS, with no children yet
     return c.json(allowedTransitions(it.file.frontmatter.status, 'user', store.flavorOf(it.file.frontmatter)).filter((t) => !(bare && t.to === 'IN_PROGRESS')).map((t) => ({ to: t.to, label: t.label })));
   });
+  api.post('/items/:id/reopen-pr', async (c) => { try { const said = await engine.reopenPr(c.req.param('id')); if (/^not (possible|now)/.test(said)) throw new Error(said); return c.json({ said, item: itemView(store, store.requireItem(c.req.param('id'))) }); } catch (e) { return fail(c, e); } });
   api.post('/items/:id/rerun-ci', async (c) => { try { const said = await engine.rerunCi(c.req.param('id'), 'user'); if (/^not (possible|now)/.test(said)) throw new Error(said); return c.json({ said, item: itemView(store, store.requireItem(c.req.param('id'))) }); } catch (e) { return fail(c, e); } });
   api.get('/items/:id/discard', async (c) => { try { return c.json(await engine.discardPreview(c.req.param('id'))); } catch (e) { return fail(c, e); } });
   api.post('/items/:id/discard', async (c) => {

@@ -87,6 +87,7 @@ export const api = {
   transitions: (id: string) => req<{ to: Status; label: string }[]>('GET', `/api/items/${id}/transitions`),
   transition: (id: string, to: Status, reason?: string) => req<ItemView>('POST', `/api/items/${id}/transition`, { to, reason }),
   rerunCi: (id: string) => req<{ said: string }>('POST', `/api/items/${id}/rerun-ci`),
+  reopenPr: (id: string) => req<{ said: string }>('POST', `/api/items/${id}/reopen-pr`),
   discardPreview: (id: string) => req<{ refusal: string | null; branch?: string; remote_sha: string | null; pr?: number }>('GET', `/api/items/${id}/discard`),
   discard: (id: string, reason: string, deleteBranch: boolean, expectSha?: string) => req<{ said: string; item: ItemView }>('POST', `/api/items/${id}/discard`, { reason, delete_branch: deleteBranch, ...(expectSha ? { expect_sha: expectSha } : {}) }),
   reviewImages: (id: string) => req<ReviewImage[]>('GET', `/api/items/${id}/images`),

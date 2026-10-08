@@ -22,12 +22,13 @@ export interface CreateItemArgs { title: string; description: string; kind?: 'it
  * What an option can carry: only what the user could do on the page themselves. `submit_item` on an
  * epic plans its breakdown (an epic is never queued), so planning one needs no tool of its own.
  */
-export type DecisionAction = { tool: 'create_item'; args: CreateItemArgs } | { tool: 'submit_item'; args: { id: string } } | { tool: 'discard_item'; args: DiscardItemArgs } | { tool: 'close_as_done'; args: { id: string; reason: string } } | { tool: 'rerun_ci'; args: { id: string } };
+export type DecisionAction = { tool: 'create_item'; args: CreateItemArgs } | { tool: 'submit_item'; args: { id: string } } | { tool: 'discard_item'; args: DiscardItemArgs } | { tool: 'close_as_done'; args: { id: string; reason: string } } | { tool: 'rerun_ci'; args: { id: string } } | { tool: 'reopen_pr'; args: { id: string } };
 /** Discard (#135): close the PR, take the item off its epic, put it in the icebox; with delete_branch, its branch on GitHub goes too. */
 export interface DiscardItemArgs { id: string; reason: string; delete_branch?: boolean }
 /** close_as_done (#126): the work landed some other way, or was never needed (a verify-only item that changed nothing). */
 /** rerun_ci (#162): a re-run past the orchestrator's one per head, on the user's tap, when something changed (a full disk freed). */
-export const DECISION_ACTION_TOOLS = ['create_item', 'submit_item', 'discard_item', 'close_as_done', 'rerun_ci'] as const;
+/** reopen_pr (#205): reopen a pull request closed outside planestro (a closing keyword in another merge) and wait for its CI again. */
+export const DECISION_ACTION_TOOLS = ['create_item', 'submit_item', 'discard_item', 'close_as_done', 'rerun_ci', 'reopen_pr'] as const;
 export interface Decision {
   question: string;
   why: string;
@@ -51,6 +52,7 @@ function parseAction(raw: unknown): { value: DecisionAction } | { error: string 
   const str = (k: string) => (typeof args[k] === 'string' ? (args[k] as string).trim() : '');
   if (a.tool === 'submit_item') return str('id') ? { value: { tool: 'submit_item', args: { id: str('id') } } } : { error: 'action submit_item needs args.id, the item to submit' };
   if (a.tool === 'rerun_ci') return str('id') ? { value: { tool: 'rerun_ci', args: { id: str('id') } } } : { error: 'action rerun_ci needs args.id, the item whose red CI run to re-run' };
+  if (a.tool === 'reopen_pr') return str('id') ? { value: { tool: 'reopen_pr', args: { id: str('id') } } } : { error: 'action reopen_pr needs args.id, the item whose closed pull request to reopen' };
   if (a.tool === 'close_as_done') {
     if (!str('id')) return { error: 'action close_as_done needs args.id, the item to close' };
     if (!str('reason')) return { error: 'action close_as_done needs args.reason: why nothing is left to merge, in a sentence (it goes in the Activity log)' };
@@ -93,6 +95,10 @@ export function describeAction(action: DecisionAction, lookup?: (id: string) => 
   if (action.tool === 'rerun_ci') {
     const it = lookup?.(action.args.id);
     return `re-runs the failed jobs of ${action.args.id}${it ? ` "${it.title}"` : ''}'s red CI run (its new attempt decides)`;
+  }
+  if (action.tool === 'reopen_pr') {
+    const it = lookup?.(action.args.id);
+    return `reopens ${action.args.id}${it ? ` "${it.title}"` : ''}'s closed pull request and waits for its CI again`;
   }
   if (action.tool === 'close_as_done') {
     const it = lookup?.(action.args.id);

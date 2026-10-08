@@ -63,7 +63,7 @@ and brings you only a plain decision card. See [Needs-you triage](concepts.md#ne
 | `base_red` | The base branch's own tip is red and `ci.require_green_base` is on. | Fix the base, or turn the gate off. |
 | `merge_head_moved` | The pull request changed after its commit passed checks. The merge was refused. | Inspect the new commits and sync the branch before unblocking; approval and CI must cover the new head. |
 | `merge_unverified` | `gh` reported a merge but the pull request is not MERGED. | Look at the pull request; reconcile. |
-| `pr_closed_externally` | The pull request was closed without merging. | Reopen it, or close the item. |
+| `pr_closed_externally` | The pull request was closed without merging. When a commit closed it (a closing keyword such as "fixes #N" in another merge), the item names the commit and its PR. | Reopen and resume (reopens it and waits for its CI again), or discard the item. |
 | `cleanup_unverifiable` | Cleanup could not prove a resource safe, or a branch moved after verification. Remaining resources were kept. | Check the merge and remaining branch tips, then retry cleanup. Preserve any unmerged commits. |
 | `cleanup_dirty` | The worktree has uncommitted changes after the merge. | Discard or rescue them, then remove the worktree by hand. |
 | `engine_error` | An unexpected error inside a lifecycle step; the message is the exception. Transient git and GitHub failures (a ref lock held by another git process, a network or GitHub timeout, a 5xx) are retried with backoff before a step fails, so one that still arrives here persisted for about a minute. | If a retry makes sense, unblock; if it repeats, it is a bug — the Activity log and journal have what is needed to report it. |

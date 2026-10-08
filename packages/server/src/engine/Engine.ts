@@ -47,6 +47,8 @@ export interface Engine {
   reviewPlanAgain(id: string): string;
   /** Re-run the failed jobs of the head's red CI run (#139); returns what happened or why not. */
   rerunCi(id: string, by?: 'user' | 'orchestrator'): Promise<string>;
+  /** Reopen a PR closed outside planestro and resume its CI wait (#205): the user's, never the orchestrator's. */
+  reopenPr(id: string): Promise<string>;
   /** What the Discard dialog shows: the branch, its tip on the remote (null when it is not there) and the PR; `refusal` when it cannot be discarded. */
   discardPreview(id: string): Promise<{ refusal: string | null; branch?: string; remote_sha: string | null; pr?: number }>;
   /** Drop work in progress (#135): close its PR, take it off its epic, icebox it; its remote branch goes only with deleteBranch, leased to expectSha. User-only. Returns what happened. */
