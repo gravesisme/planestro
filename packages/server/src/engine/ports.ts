@@ -85,6 +85,11 @@ export interface GitPort {
   checkpoint(cwd: string, ref: string): Promise<Checkpoint>;
   /** Every checkpoint under the ref prefix. */
   checkpoints(repo: string, prefix: string): Promise<Checkpoint[]>;
+  /**
+   * The lines holding `needle` that the worktree adds since it left `base` (against their merge base): its commits and its
+   * uncommitted and untracked (not ignored) files, read through a temporary index so the real one is never touched (#240).
+   */
+  addedLinesWith(cwd: string, base: string, needle: string): Promise<{ path: string; line: number; text: string }[]>;
   /** What changed from one tree to another: the files, and the patch (cut at `maxBytes`). */
   treeDiff(cwd: string, from: string, to: string, maxBytes?: number): Promise<{ files: ChangedFile[]; patch: string; truncated?: boolean }>;
   /** Put a worktree that is exactly `from` back to `to`: branch tip, index and files. Ignored files are never touched. */
@@ -294,6 +299,8 @@ export interface TurnResult {
   done?: string;
   blocked?: string;
   parked?: 'question' | 'permission' | 'audition';
+  /** Set by the engine, not a port (#240): the lost report it replayed was refused in words, and the refusal is queued as the session's next turn. */
+  requeued?: string;
   /** planestro tool calls that came back as errors without reaching their handler (a transport failure). */
   toolFailures?: { tool: string; error: string }[];
   /** The last report the session made that never reached planestro, unless a later one did (#167): the engine applies it. */

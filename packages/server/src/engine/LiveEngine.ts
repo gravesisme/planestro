@@ -4,7 +4,7 @@ import { join, relative, isAbsolute, extname, basename, matchesGlob } from 'node
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { Audition, AuditionPicks, auditionProblem, takePathProblem, auditionPicksProblem, auditionPickLines, auditionNote, auditionComplete, auditionTakes, runnerTurnSettings, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem, usageTurnData, USAGE_TURN, type UsageRole, type ModelDef } from '@planestro/shared';
+import { DEBUG_MARKER, debugMarkerRefusal, Audition, AuditionPicks, auditionProblem, takePathProblem, auditionPicksProblem, auditionPickLines, auditionNote, auditionComplete, auditionTakes, runnerTurnSettings, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem, usageTurnData, USAGE_TURN, type UsageRole, type ModelDef } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import { matchesPathPattern, type Checkpoint, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote, type CiQueue, type RunnerReport, type UndeliveredReport, type ConnectionDrop } from './ports.ts';
@@ -1761,7 +1761,7 @@ export class LiveEngine implements Engine {
       }
       return false;
     }
-    if (phase === 'plan' || result.done || result.planSubmitted || result.blocked || result.parked || fm.taken_over || fm.blocked) return false;
+    if (phase === 'plan' || result.done || result.planSubmitted || result.blocked || result.parked || result.requeued || fm.taken_over || fm.blocked) return false;
     const d = result.connectionDrop;
     const last = (result.lastMessage ?? '').trim().slice(-4000);
     this.store.mutateItem(id, [
@@ -1801,6 +1801,20 @@ export class LiveEngine implements Engine {
     const text = ['submit_plan', 'submit_breakdown'].includes(box.tool) ? str(a.plan) : box.tool === 'report_done' ? str(a.summary) : str(a.reason);
     const fits = ['submit_plan', 'submit_breakdown'].includes(box.tool) ? fm.status === 'PLAN_IN_PROGRESS' || fm.status === 'PLAN_READY' : fm.status === 'IN_PROGRESS' || fm.status === 'IN_REVIEW' || (box.tool === 'report_blocked' && fm.status === 'PLAN_IN_PROGRESS');
     if (!text || !fits) { reject(!text ? 'it carried nothing to record' : `the item is ${fm.status} now`); return; }
+    // A done refused for its debug markers (#240) is a refusal in words, not a lost connection: kept as rejected (so it is not
+    // replayed again), and the session is resumed with the refusal to remove them and call report_done again.
+    const marked = box.tool === 'report_done' ? await this.debugMarkersLeft(id) : undefined;
+    const phase = this.phaseFor(fm.status);
+    if (marked && phase) {
+      const { outbox: _box, ...data } = fm.op_data ?? {};
+      this.store.mutateItem(id, [
+        { set: { op_data: { ...data, rejected_report: { report: box, reason: marked, at: this.now() } } } },
+        { activity: { actor: 'app', text: `the session's report_done never reached planestro (${box.error}); applied from the turn's record it is refused: the branch still adds debug markers. Resuming the session to remove them` } },
+      ], 'engine');
+      result.requeued = marked;
+      this.queueTurn(id, phase, `Your report_done never reached planestro (${box.error}). Applied from your turn's record, it was refused:\n\n${marked}`, [], [], { fresh: 'auto' });
+      return;
+    }
     this.store.mutateItem(id, [{ activity: { actor: 'app', text: `the session's ${box.tool} never reached planestro (${box.error}); applying it from the turn's record` } }], 'engine');
     const tools = this.makeTools(id);
     try {
@@ -1852,7 +1866,7 @@ export class LiveEngine implements Engine {
     if (fm.awaiting || fm.blocked) return;                       // parked or agent-blocked: nothing to drive
     // This turn parked and was answered before it had finished ending (the orchestrator can be
     // that quick): the answer's turn is queued behind this one, and it, not this, decides what is done.
-    if (result.parked && !result.done && !result.planSubmitted) return;
+    if ((result.parked || result.requeued) && !result.done && !result.planSubmitted) return;
     const pending = (fm.op_data?.pending_messages as string[] | undefined) ?? [];
     if (pending.length) {
       this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), pending_messages: [] } } }], 'engine');
@@ -3601,6 +3615,9 @@ export class LiveEngine implements Engine {
         // A loop item is done when it is green, and hands off with its review (#171); before anything is recorded.
         const loopRefusal = this.loopDoneRefusal(id, review);
         if (loopRefusal) return loopRefusal;
+        // Debug instrumentation is fenced in markers and gone before the hand-in (#240): refused in words, nothing recorded.
+        const marked = await this.debugMarkersLeft(id);
+        if (marked) return marked;
         const before = s.requireItem(id).file.frontmatter;
         // A retry of a report that did land (#167): nothing is recorded twice, the loop's review included.
         const repeat = before.op_data?.done_summary === summary && (!hold || before.skip_merge);
@@ -3747,6 +3764,18 @@ export class LiveEngine implements Engine {
     if (!loopGreen(st)) return `Rejected: this is a loop-until-green item and its last iteration ${st ? `was ${st.passing}/${st.total} passing` : 'was never reported'}. Report each iteration with report_iteration, and call report_done once every check passes (or report_blocked if they cannot). Nothing was recorded.`;
     if (cur.status === 'IN_PROGRESS' && !review?.trim()) return 'Rejected: a loop-until-green item hands off with its review. Call report_done again with the markdown of your REVIEW.md as `review` (each finding, its check, before and after, the checks satisfied) and the captures as `attach`. Nothing was recorded.';
     return undefined;
+  }
+
+  /**
+   * Why report_done is not taken while the branch still adds a debug marker (#240), naming each file and line; undefined when
+   * none remains. Reads the worktree (commits, uncommitted and untracked files) against its merge base with the base, added
+   * lines only, and records nothing, so asking again gets the same answer. A check that cannot run refuses nothing.
+   */
+  private async debugMarkersLeft(id: string): Promise<string | undefined> {
+    const item = this.store.requireItem(id); const fm = item.file.frontmatter; const base = this.store.derived(item).base_branch;
+    if (!fm.worktree || !base) return undefined;
+    try { return debugMarkerRefusal(await this.ports.git.addedLinesWith(this.absWorktree(fm.worktree), `origin/${base}`, DEBUG_MARKER), base); }
+    catch { return undefined; }
   }
 
   /** A loop's REVIEW.md, filed on the item: in its Notes, where the page shows it, and as a managed attachment. */
