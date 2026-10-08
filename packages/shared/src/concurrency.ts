@@ -80,7 +80,8 @@ export function stepDownDue(input: { last_change?: ConcurrencyChange; ci: CiResu
   const c = input.last_change;
   if (!guard.auto_step_down || !c || c.auto || !raised(c)) return undefined;
   const since = Date.parse(c.at);
-  const kill = input.ci.find((r) => r.timeout_killed && Date.parse(r.at) > since);
+  // Journal times are to the second: a kill in the raise's own second counts as after it.
+  const kill = input.ci.find((r) => r.timeout_killed && Date.parse(r.at) >= since);
   if (kill) return `a CI check was killed at a timeout after the raise${kill.item ? ` (${kill.item}${kill.run_id ? `, run ${kill.run_id}` : ''})` : ''}`;
   if (input.host && input.host.cpus > 0) {
     const lpc = perCpu(input.host.load[2], input.host.cpus);

@@ -15,7 +15,7 @@ export function ConcurrencyControl({ slots, open }: { slots?: SlotsView; open: b
   const [sessions, setSessions] = useState<number>();
   const [runners, setRunners] = useState<Record<string, number>>({});
   const [reason, setReason] = useState('');
-  const maxNow = useStore((s) => s.state?.config.concurrency.max_sessions);
+  const maxNow = useStore((s) => s.state?.config.concurrency?.max_sessions);
   const load = useCallback(() => { api.concurrency().then((v) => { setView(v); setSessions(v.limits.max_sessions); setRunners(v.limits.runner_limits); }).catch(() => undefined); }, []);
   // Read when the popover opens, and again when the limits change (here, in Settings or by the engine).
   useEffect(() => { if (open) load(); }, [open, load, maxNow]);

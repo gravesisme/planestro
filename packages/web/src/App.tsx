@@ -55,7 +55,7 @@ export function App() {
   const running = runningNow.length;
   // "2 of 3": the agents running against max_sessions, and what waits for a slot (#330).
   const slots = state?.engine.slots;
-  const max = slots?.max ?? state?.config.concurrency.max_sessions;
+  const max = slots?.max ?? state?.config.concurrency?.max_sessions;
   const [statusOpen, setStatusOpen] = useState(false);
   const restart = state?.engine.restart;
   const engineLabel = !connected ? 'Reconnecting' : paused ? 'Paused' : restart?.draining ? restart.by === 'update' ? 'Updating' : 'Draining' : state?.engine.mode === 'live' ? 'Live' : 'Dry-run';
