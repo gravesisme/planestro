@@ -72,7 +72,7 @@ const MAX_TRIAGE_ROUNDS = 4;
  * the task it was given. `final`: the prompt is already what the agent is to read (a re-run).
  * `syncFirst`: the branch is synced with its base before the turn starts (#217), and the turn told how.
  */
-interface TurnOpts { opener?: boolean; fresh?: true | 'auto'; note?: string; carryOn?: boolean; final?: boolean; estimate?: ResumeEstimate; commandGrant?: CommandGrant; syncFirst?: boolean }
+interface TurnOpts { opener?: boolean; fresh?: true | 'auto'; note?: string; carryOn?: boolean; final?: boolean; estimate?: ResumeEstimate; commandGrant?: CommandGrant; syncFirst?: boolean; ruling?: true }
 interface PendingTurn { key: string; phase: TurnPhase; prompt: string; extraAllowed: string[]; oneShotCommands: string[]; opts: TurnOpts }
 
 /** The CLI's quote as the engine's estimate: the write when the cache has expired, a read of the same window when it has not. */
@@ -1027,7 +1027,9 @@ export class LiveEngine implements Engine {
     const data = this.store.requireItem(id).file.frontmatter.op_data ?? {};
     const messages = (data.pending_messages as string[] | undefined) ?? [];
     if (messages.length) {
-      turn = { ...current, prompt: `${current.prompt}\n\nAlso, from the user while admission was paused:\n\n${messages.map((m) => `- ${m}`).join('\n')}` };
+      // With the user's messages it is a turn of work, not only a ruling's resume: it is charged (#295).
+      const { ruling: _ruling, ...opts } = current.opts;
+      turn = { ...current, opts, prompt: `${current.prompt}\n\nAlso, from the user while admission was paused:\n\n${messages.map((m) => `- ${m}`).join('\n')}` };
       this.store.mutateItem(id, [{ set: { op_data: { ...data, pending_turn: turn, pending_messages: [] } } }], 'engine');
     }
     return this.runTurnFor(id, turn.phase, turn.prompt, turn.extraAllowed, turn.oneShotCommands, turn.opts, turn);
@@ -1280,7 +1282,7 @@ export class LiveEngine implements Engine {
       // turn as a one-shot exact-command pass (consumed on first use).
       const oneShot = decision !== 'deny' && req.tool === 'Bash' ? [String(req.input.command ?? '')] : [];
       // queued, not dropped: the orchestrator can answer while the turn that asked is still ending
-      this.queueTurn(id, phase, msg, decision === 'deny' || native ? [] : [rule], oneShot, native ? { commandGrant: native } : {});
+      this.queueTurn(id, phase, msg, decision === 'deny' || native ? [] : [rule], oneShot, { ruling: true, ...(native ? { commandGrant: native } : {}) });
       return;
     }
     throw new Error(`unknown response kind ${String(payload.kind)}`);
@@ -1405,7 +1407,8 @@ export class LiveEngine implements Engine {
     const metered = modelCapabilities(def).accounting === 'dollars';
     if (this.guarded(runner, account.name)) return defer();
     const budget = this.budgetOf(fm);
-    if (!metered && (fm.agent_turns ?? 0) >= budget.turns) { this.block(id, 'turn_budget', `${def.label} has used ${fm.agent_turns} of ${budget.turns} turns on this item (${budget.turnsKey}); raise it on the item and unblock, or take the item over by hand`); return undefined; }
+    // A turn that only carries a permission ruling continues the turn that parked, which was charged (#295, HH-439).
+    if (!metered && !opts.ruling && (fm.agent_turns ?? 0) >= budget.turns) { this.block(id, 'turn_budget', `${def.label} has used ${fm.agent_turns} of ${budget.turns} turns on this item (${budget.turnsKey}); raise it on the item and unblock, or take the item over by hand`); return undefined; }
     if (!metered && (fm.tokens ?? 0) >= budget.tokens) { this.block(id, 'token_budget', `${def.label} has used ${(fm.tokens ?? 0).toLocaleString()} of ${budget.tokens.toLocaleString()} tokens on this item (${budget.tokensKey}); raise it on the item and unblock, or take the item over by hand`); return undefined; }
     // A turn with less than MIN_TURN_USD left ends at error_max_budget_usd before it can finish
     // anything (HH-125's $0.50 conflict fix, HH-122's CI fix): say what the item needs instead.
@@ -1624,7 +1627,7 @@ export class LiveEngine implements Engine {
         ...(context ? { session_context: context } : {}),
         ...(started && (after.op_data?.fresh_brief || freshPlan) ? { op_data: opDataAfter } : {}),
         cost_usd: Math.round(((after.cost_usd ?? 0) + result.costUsd) * 10000) / 10000, turns: (after.turns ?? 0) + result.numTurns,
-        ...(metered || result.numTurns === 0 ? {} : { agent_turns: (after.agent_turns ?? 0) + 1 }),
+        ...(metered || result.numTurns === 0 || opts.ruling ? {} : { agent_turns: (after.agent_turns ?? 0) + 1 }),
         ...(result.tokens ? { tokens: (after.tokens ?? 0) + result.tokens } : {}),
       } },
       ...(started ? [{ activity: { actor: 'app', text: `this item's conversation is now ${result.sessionId!.slice(0, 8)}; the one before it (${replaced}) was not resumed and is kept on disk` } } as ItemOp] : []),
