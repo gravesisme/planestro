@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseItemFile, type JournalEntry } from '@planestro/shared';
-import { classOf, knownBlocker, mergeRulings, restoreHeredocs, rulingsFromActivity, rulingsFromJournal, suggestAllowRules, worktreeFinder, type Ruling } from '../src/engine/allowSuggest.ts';
+import { classOf, formatSuggestReport, knownBlocker, mergeRulings, precedents, restoreHeredocs, rulingsFromActivity, rulingsFromJournal, runsFromJournal, suggestAllowRules, worktreeFinder, type Ruling, type Run } from '../src/engine/allowSuggest.ts';
 
 const WT = '/repo/.claude/worktrees/hh-1-x';
 let n = 0;
@@ -135,5 +135,73 @@ describe('allow rules suggested from the ruling history (#169)', () => {
     expect(find('HH-1', 'git -C /repo/.claude/worktrees/hh-1-slug status')).toBe('/repo/.claude/worktrees/hh-1-slug');
     expect(find('HH-2', 'ls')).toBe('/repo/.claude/worktrees/hh-2-own');
     expect(find('HH-3', 'ls')).toBe('/repo/.claude/worktrees/hh-3');
+  });
+});
+
+describe('redirects, drift and precedent (#203)', () => {
+  const day = (d: number) => `2026-09-${String(d).padStart(2, '0')}T10:00:00-04:00`;
+  const NOW = Date.parse(day(30));
+  const at = (command: string, decision: Ruling['decision'], item: string, d: number, extra: Partial<Ruling> = {}) => r(command, decision, item, { at: day(d), ...extra });
+  const run = (command: string, d: number, item = 'HH-1'): Run => ({ item, at: day(d), tool: 'Bash', command, n: 1, worktree: WT });
+
+  it('offers a redirect for a kind of command that is denied every time, with the reason it was given', () => {
+    const rep = suggestAllowRules([
+      at('git stash', 'deny', 'HH-1', 10, { reason: 'commit your work instead of stashing it' }),
+      at('git stash push -m wip', 'deny', 'HH-2', 11, { reason: 'commit your work instead of stashing it' }),
+      at('git stash && npm test', 'deny', 'HH-3', 12, { reason: 'no stash: commit instead' }),
+    ], [], { scope });
+    expect(rep.redirects).toEqual([expect.objectContaining({ rule: 'Bash(git stash)', shape: 'git stash', denials: 3, items: 3, message: 'commit your work instead of stashing it' })]);
+    expect(formatSuggestReport(rep)).toContain('Bash(git stash)');
+  });
+
+  it('never offers one that would have denied a past approval, a safe kind of command, or one planestro already refuses', () => {
+    const python = [0, 1, 2].map((i) => at("python3 - <<'EOF'\nopen('a','w').write('x')\nEOF", 'deny', `HH-${i + 1}`, 10 + i, { reason: 'use the Edit tool' }));
+    expect(suggestAllowRules([...python, at('python3 tools/check.py', 'allow', 'HH-4', 14)], [], { scope }).redirects).toEqual([]);
+    expect(suggestAllowRules(python, [], { scope }).redirects.map((x) => x.rule)).toEqual(['Bash(python3)']);
+    const ls = [0, 1, 2].map((i) => at('ls ../other', 'deny', `HH-${i + 1}`, 10 + i, { reason: 'stay in your worktree' }));
+    expect(suggestAllowRules(ls, [], { scope }).redirects).toEqual([]);
+    const sed = [0, 1, 2].map((i) => at("sed -i '' s/a/b/ x", 'deny', `HH-${i + 1}`, 10 + i, { reason: 'use Edit' }));
+    expect(suggestAllowRules(sed, [], { scope, policyDenies: (x) => (x.command ?? '').startsWith('sed -i') }).redirects).toEqual([]);
+    expect(suggestAllowRules(sed.slice(0, 2), [], { scope }).redirects).toEqual([]);
+  });
+
+  it('reports the project rules nothing recorded has matched in the window, and only once something is recorded', () => {
+    const rules = ['Bash(npm run *)', 'Bash(make *)', 'Bash(cat *)@worktree', 'WebFetch'];
+    const rep = suggestAllowRules([], rules, { scope, now: NOW, windowDays: 14, runs: [run('npm run test 2>&1 | tail -5', 25), run('make lint', 2), run('cat .env', 26)] });
+    expect(rep.drift.recorded_since).toBe(day(2));
+    expect(rep.drift.idle_rules).toEqual([
+      { rule: 'Bash(make *)', last_matched: day(2) },
+      { rule: 'Bash(cat *)@worktree' },
+      { rule: 'WebFetch' },
+    ]);
+    expect(suggestAllowRules([], rules, { scope, now: NOW }).drift).toMatchObject({ idle_rules: [], runs: 0 });
+    expect(suggestAllowRules([], ['WebFetch'], { scope, now: NOW, runs: [{ item: 'HH-1', at: day(29), tool: 'WebFetch', n: 2, worktree: WT }] }).drift.idle_rules).toEqual([]);
+  });
+
+  it('reports the kinds of command approvals rose for in the window, with the rule offered for one', () => {
+    const recent = [at('godot --path . -s a.gd', 'allow', 'HH-1', 20), at('godot --path . -s b.gd', 'allow', 'HH-2', 21), at('godot --path . -s c.gd', 'allow', 'HH-1', 22)];
+    const rep = suggestAllowRules([...recent, at('xcrun simctl list', 'allow', 'HH-1', 21), at('cat ~/.ssh/id_ed25519', 'allow', 'HH-1', 22), at('cat ~/.ssh/id_ed25519', 'allow', 'HH-2', 23), at('cat ~/.ssh/id_ed25519', 'allow', 'HH-3', 24)], [], { scope, now: NOW });
+    expect(rep.drift.rising).toEqual([{ shape: 'godot', class: 'check-run', recent: 3, before: 0, items: 2, rule: 'Bash(godot *)@worktree' }]);
+    const steady = suggestAllowRules([...recent, ...[1, 2, 3].map((d) => at('godot --path . -s z.gd', 'allow', `HH-${d}`, d))], [], { scope, now: Date.parse('2026-10-01T10:00:00-04:00'), windowDays: 15 });
+    expect(steady.drift.rising).toEqual([]);
+  });
+
+  it('reads what ran without a park from the journal', () => {
+    const find = worktreeFinder('/repo/.claude/worktrees', '/repo', () => undefined);
+    const runs = runsFromJournal([
+      { ts: day(20), type: 'tools.ran', item: 'HH-5', actor: 'engine', data: { phase: 'implement', ran: [{ tool: 'Bash', command: 'npm test', n: 3 }, { tool: 'Read', n: 9 }, { tool: 7 }] } },
+      { ts: day(21), type: 'permission.parked', item: 'HH-5', actor: 'engine', data: {} },
+    ], find);
+    expect(runs).toEqual([
+      { item: 'HH-5', at: day(20), tool: 'Bash', command: 'npm test', n: 3, worktree: '/repo/.claude/worktrees/hh-5' },
+      { item: 'HH-5', at: day(20), tool: 'Read', n: 9, worktree: '/repo/.claude/worktrees/hh-5' },
+    ]);
+  });
+
+  it('finds the earlier rulings on the same kind of command, newest first', () => {
+    const past = [at('git stash', 'deny', 'HH-1', 10, { reason: 'commit instead' }), at('ls', 'allow', 'HH-2', 11), at('cd x && git stash pop', 'deny', 'HH-3', 12, { reason: 'no stash' }), at('git status', 'allow', 'HH-3', 13)];
+    expect(precedents(past, 'git stash list', WT).map((x) => x.reason)).toEqual(['no stash', 'commit instead']);
+    expect(precedents(past, 'git stash list', WT, 1)).toHaveLength(1);
+    expect(precedents(past, 'make', WT)).toEqual([]);
   });
 });

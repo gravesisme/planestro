@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { customAllowedTools, splitAllowed } from '../src/engine/sessions/LiveClaudePort.ts';
+import { customAllowedTools, RanWatch, splitAllowed } from '../src/engine/sessions/LiveClaudePort.ts';
 
 describe('allowedTools the SDK sees (#58)', () => {
   it('keeps only rules with a pattern; bare names are approved by canUseTool instead, so the SDK never warns they shadow it', () => {
@@ -15,5 +15,22 @@ describe('allowedTools the SDK sees (#58)', () => {
     for (const t of ['Read', 'Grep', 'Glob', 'Bash(git log*)', 'mcp__planestro__read_item', 'mcp__planestro__approve_plan', 'mcp__planestro__done_with_wake']) expect(orch, t).toContain(t);
     // a mode that does consult the callback keeps #58's split
     expect(customAllowedTools({ permissionMode: 'default', allowedTools: ['Read', 'Bash(git log*)'], mcpTools })).toEqual(['Bash(git log*)']);
+  });
+});
+
+describe('what ran without a park (#203)', () => {
+  const sig = { signal: new AbortController().signal };
+  it('counts each tool call that ran, by command for Bash, and leaves out what was refused, parked or interrupted', async () => {
+    const w = new RanWatch();
+    const post = (id: string, tool_name: string, tool_input: unknown, event = 'PostToolUse', extra = {}) => w.hook()({ hook_event_name: event, tool_name, tool_input, tool_use_id: id, ...extra } as any, id, sig);
+    expect(await post('1', 'Bash', { command: 'npm test ' })).toEqual({ continue: true });
+    await post('2', 'Bash', { command: 'npm test' });
+    await post('3', 'Bash', { command: 'npm run lint' }, 'PostToolUseFailure', { error: 'exit 1' });
+    await post('4', 'Read', { file_path: 'a.ts' });
+    await post('5', 'mcp__planestro__add_note', {});
+    w.refused('6'); await post('6', 'Bash', { command: 'node -e 1' }, 'PostToolUseFailure', { error: 'denied' });
+    await post('7', 'Bash', { command: 'sleep 99' }, 'PostToolUseFailure', { error: 'x', is_interrupt: true });
+    await post('8', 'Bash', {}, 'PreToolUse');
+    expect(w.list()).toEqual([{ tool: 'Bash', command: 'npm test', n: 2 }, { tool: 'Bash', command: 'npm run lint', n: 1 }, { tool: 'Read', n: 1 }]);
   });
 });
