@@ -3,8 +3,9 @@
  * packages/server/src/migrations. Everything here is project-neutral.
  */
 import { z } from 'zod';
+import { parseCron, validTimeZone } from './cron.ts';
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 export const STATUSES = [
   'NOT_YET_SUBMITTED', 'QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY',
@@ -59,7 +60,7 @@ export const OPERATIONAL_KEYS = [
   'branch', 'worktree', 'pr', 'session_id', 'agent_sessions', 'session_context', 'awaiting', 'awaiting_data', 'triage', 'resume_after', 'taken_over',
   'op', 'op_started_at', 'op_data', 'plan_revisions', 'ci_head_sha', 'ci_result', 'ci_failed_count',
   'merge_order', 'skip_merge', 'hold_reason', 'hold_waits_on', 'review_hold', 'loop_state', 'delivered', 'parts', 'blocked', 'blocked_reason', 'cost_usd', 'turns', 'agent_turns', 'tokens',
-  'imported_from', 'dates_estimated',
+  'imported_from', 'dates_estimated', 'scheduled_from',
 ] as const;
 export const DERIVED_KEYS = ['base_branch', 'lane', 'external', 'children', 'deps_satisfied', 'needs_you'] as const;
 /** Canonical frontmatter key order; unknown keys follow, alphabetically. */
@@ -182,6 +183,8 @@ export const ItemFrontmatter = z.object({
   tokens: z.number().int().nonnegative().optional(),
   imported_from: z.string().optional(),
   dates_estimated: z.boolean().optional(),
+  /** `<schedule>:<slot>`: the schedule and slot that filed it (#247), the evidence that the slot is done. */
+  scheduled_from: z.string().optional(),
 }).passthrough();
 export type ItemFrontmatter = z.infer<typeof ItemFrontmatter>;
 
@@ -261,6 +264,47 @@ export const QuestionFrontmatter = z.object({
 }).passthrough();
 export type QuestionFrontmatter = z.infer<typeof QuestionFrontmatter>;
 export const QUESTION_KEY_ORDER: readonly string[] = ['schema', 'id', 'status', 'item', 'asked_at', 'updated_at', 'resolved_at', 'resolution', 'headline'];
+
+/**
+ * A schedule (#247): one file per recurring piece of work under `schedules/`, filing an item from its
+ * template at each cron slot. The user's fields come first; `armed_at`, `last_slot` and `history` are
+ * planestro's: no slot at or before either is filed, so a sleep, a wake or a restart never files twice.
+ */
+export const SCHEDULE_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
+export const SCHEDULE_HISTORY_MAX = 20;
+export const ScheduleHistoryEntry = z.object({
+  slot: ts,
+  at: ts,
+  /** The item filed for it. */
+  item: id.optional(),
+  /** Why nothing was filed: the previous item is still open, or the template would not render. */
+  skipped: z.string().min(1).optional(),
+}).passthrough();
+export type ScheduleHistoryEntry = z.infer<typeof ScheduleHistoryEntry>;
+export const ScheduleFrontmatter = z.object({
+  schema: z.number().int().positive(),
+  name: z.string().regex(SCHEDULE_NAME_RE, 'name: lowercase letters, digits and dashes'),
+  /** The filed item's title; `{{date}}`, `{{slot}}` and `{{schedule}}` are filled in, as in its # Description. */
+  title: z.string().min(1),
+  cron: z.string().min(1).superRefine((v, ctx) => { try { parseCron(v); } catch (e) { ctx.addIssue({ code: 'custom', message: (e as Error).message }); } }),
+  tz: z.string().min(1).refine(validTimeZone, 'not a time zone (an IANA name such as Europe/London)'),
+  enabled: z.boolean().default(true),
+  /** Skip a slot while the item the schedule filed last is not finished (nor iceboxed). */
+  skip_if_open: z.boolean().default(false),
+  /** Submit what it files. Honoured only when `created_by: user`: the user's word (#73). */
+  submit: z.boolean().default(false),
+  created_by: z.string().min(1).optional(),
+  kind: z.enum(KINDS).default('item'),
+  category: z.string().min(1).optional(),
+  priority: z.enum(PRIORITIES).optional(),
+  created_at: ts,
+  updated_at: ts,
+  armed_at: ts,
+  last_slot: ts.optional(),
+  history: z.array(ScheduleHistoryEntry).default([]),
+}).passthrough();
+export type ScheduleFrontmatter = z.infer<typeof ScheduleFrontmatter>;
+export const SCHEDULE_KEY_ORDER: readonly string[] = ['schema', 'name', 'title', 'cron', 'tz', 'enabled', 'skip_if_open', 'submit', 'created_by', 'kind', 'category', 'priority', 'created_at', 'updated_at', 'armed_at', 'last_slot', 'history'];
 
 export const ReleaseSectionDef = z.object({
   title: z.string().min(1).regex(/^[^\n#]+$/, 'a section title is one line without #'),

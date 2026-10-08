@@ -1,4 +1,4 @@
-import type { ItemFrontmatter, PromptFrontmatter, ReleaseFrontmatter, ReleaseStatus, Config, LocalConfig, BillingMode, ModelDef, Status, JournalEntry, UsageGuardState, QuestionFrontmatter, ThreadEntry } from '@planestro/shared';
+import type { ItemFrontmatter, PromptFrontmatter, ReleaseFrontmatter, ReleaseStatus, Config, LocalConfig, BillingMode, ModelDef, Status, JournalEntry, UsageGuardState, QuestionFrontmatter, ThreadEntry, ScheduleFrontmatter } from '@planestro/shared';
 import type { BreakdownChild, Priority } from '@planestro/shared';
 
 export interface OrchestratorSpend {
@@ -46,6 +46,9 @@ export interface QuestionView {
   id: string; path: string; frontmatter: QuestionFrontmatter; pending: boolean; item_title?: string; item_status?: Status;
   summary: string; recommendation: string; messages: number; last_at: string; closed_by?: 'you' | 'orchestrator' | 'planestro'; details?: string; thread?: ThreadEntry[];
 }
+/** A schedule (#247): its template, and when it next files an item (null while it is off). */
+export interface ScheduleView { name: string; path: string; frontmatter: ScheduleFrontmatter; description: string; next_run: string | null }
+export interface ScheduleFields { title?: string; description?: string; cron?: string; tz?: string; enabled?: boolean; skip_if_open?: boolean; submit?: boolean; kind?: 'item' | 'epic'; category?: string | null; priority?: Priority | null }
 export interface ReleaseFields { version?: string; title?: string | null; status?: ReleaseStatus; date?: string | null; tag?: string | null; items?: string[] }
 export interface SessionView { item: string; session_id?: string; model?: string; op?: string; started_at?: string; busy: boolean; last_output?: string }
 export interface State {
@@ -56,7 +59,7 @@ export interface State {
   local: LocalConfig;
   /** Whether budget dollars are an API-price yardstick on a Claude plan or real charges to an API account (#83). */
   billing?: BillingMode; api_key?: 'local' | 'env' | 'none';
-  items: ItemView[]; prompts: PromptView[]; releases?: ReleaseView[]; invalid: { path: string; error: string }[];
+  items: ItemView[]; prompts: PromptView[]; releases?: ReleaseView[]; schedules?: ScheduleView[]; invalid: { path: string; error: string }[];
   update: { channel: string; running: string; checked_at: string; state: string; detail: string; target?: string } | null;
   engine: { mode: string; paused: boolean; paused_by?: 'user' | 'disk'; provider_guards?: Record<string, UsageGuardState>; disk_guard?: { free_gib: number; path: string; tripped_at: string }; ci_queue?: { queued: number; running: number }; runner_stalls?: { label: string; items: string[]; since: string }[]; sessions: SessionView[]; restart?: { draining: boolean; by?: 'user' | 'update'; idle: boolean; running: string[] } };
   git: { dirty: string[]; branch: string; head?: string; ahead?: number };
@@ -116,6 +119,9 @@ export const api = {
   createRelease: (body: { version: string; title?: string; date?: string }) => req<ReleaseView>('POST', '/api/releases', body),
   patchRelease: (version: string, body: { fields?: ReleaseFields; sections?: Record<string, string> }) => req<ReleaseView>('PATCH', `/api/releases/${encodeURIComponent(version)}`, body),
   deleteRelease: (version: string) => req<{ ok: true }>('DELETE', `/api/releases/${encodeURIComponent(version)}`),
+  createSchedule: (body: ScheduleFields & { name: string; title: string; cron: string; tz: string }) => req<ScheduleView>('POST', '/api/schedules', body),
+  patchSchedule: (name: string, fields: ScheduleFields) => req<ScheduleView>('PATCH', `/api/schedules/${encodeURIComponent(name)}`, fields),
+  deleteSchedule: (name: string) => req<{ ok: true }>('DELETE', `/api/schedules/${encodeURIComponent(name)}`),
   putConfig: (body: Record<string, unknown>) => req<{ config: Config }>('PUT', '/api/config', body),
   putLocal: (body: Record<string, unknown>) => req<{ local: LocalConfig }>('PUT', '/api/config/local', body),
   putModel: (id: string, model: Partial<ModelDef>) => req<{ config: Config }>('PUT', `/api/config/models/${encodeURIComponent(id)}`, model),

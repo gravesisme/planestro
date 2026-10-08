@@ -1,9 +1,9 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { getSection, parseActivity, serializePromptFile, releaseCandidates, getQuestionSection, parseThread, billingMode, TOOLCHAINS, type Status, type LocalConfig } from '@planestro/shared';
+import { getSection, parseActivity, serializePromptFile, releaseCandidates, getQuestionSection, parseThread, billingMode, TOOLCHAINS, nextRun, scheduleDescription, type Status, type LocalConfig } from '@planestro/shared';
 import { readUpdateStatus } from '../autoUpdate.ts';
 import { parkHint, permissionGrantRefusal } from '../engine/parks.ts';
-import type { DataStore, StoredItem, StoredPrompt, StoredRelease, StoredQuestion } from '../store/DataStore.ts';
+import type { DataStore, StoredItem, StoredPrompt, StoredRelease, StoredQuestion, StoredSchedule } from '../store/DataStore.ts';
 
 /** JSON shape of an item as the UI sees it: frontmatter + sections + derived values. */
 export function itemView(store: DataStore, item: StoredItem) {
@@ -29,6 +29,13 @@ function parkHintOf(store: DataStore, item: StoredItem) {
   return parkHint(store.journal.read({ item: fm.id, type: 'permission.parked' }), command, store.config.permissions.allow) ?? null;
 }
 export type ItemView = ReturnType<typeof itemView>;
+
+/** A schedule as the Schedules page shows it: its template, when it runs next, and what each recent slot did. */
+export function scheduleView(s: StoredSchedule, now = new Date()) {
+  let next: string | null = null; try { next = nextRun(s.file.frontmatter, now) ?? null; } catch { /* a hand edit the store refused already shows as invalid */ }
+  return { name: s.name, path: s.path, frontmatter: s.file.frontmatter, description: scheduleDescription(s.file), next_run: next };
+}
+export type ScheduleView = ReturnType<typeof scheduleView>;
 
 export function promptView(p: StoredPrompt) {
   return { name: p.name, path: p.path, frontmatter: p.file.frontmatter, body: p.file.body, text: serializePromptFile(p.file) };
@@ -114,6 +121,7 @@ export function stateView(store: DataStore, engine: { mode: string; paused: bool
     items: store.listItems().map((i) => itemView(store, i)),
     prompts: store.listPrompts().map(promptView),
     releases: store.listReleases().map((r) => releaseView(store, r)),
+    schedules: store.listSchedules().map((x) => scheduleView(x)),
     invalid: store.invalid,
     /** What serve --watch last found when it looked for a newer planestro (#103); absent when it never has. */
     update: readUpdateStatus(store.dataDir) ?? null,

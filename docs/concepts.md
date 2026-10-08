@@ -11,6 +11,7 @@ items/MP-12.md         one item: YAML frontmatter + # Description, # Notes, # Pl
 prompts/*.md           the prompt library
 releases/1.5.0.md      one release: notes, store copy, the items it shipped
 questions/Q-7.md       one orchestrator question: # Summary, # Details, # Recommendation, # Thread
+schedules/audit.md     one recurring piece of work: cron, time zone, the item it files (# Description)
 attachments/MP-12/     small files attached to an item
 journal/2026-09.ndjson every operation, begin and end
 ```
@@ -359,6 +360,28 @@ Nothing is stranded: a wake that ends without resolving or asking, a triage olde
 item back on you exactly as it stopped, and after four triaged stops in one status an item's
 next stops come straight to you. You can unblock or answer yourself at any time; that ends
 the triage.
+
+## Schedules
+
+Recurring work (a weekly audit, a dependency bump, a release cut) is a **schedule**:
+`schedules/<name>.md`, made on the **Schedules** page. It has a five-field cron
+(`0 9 * * MON`, or `@daily`), an IANA time zone it runs on, an item title and a
+`# Description` to file, and the item's category, priority and kind. `{{date}}`, `{{slot}}`
+and `{{schedule}}` in the title and description are filled in for each run.
+
+At each slot of its cron the engine files one item from the template, with
+`scheduled_from: <schedule>:<slot>` in its frontmatter, and records the slot in the schedule's
+history. That key and the schedule's `last_slot` are its memory: a sleep, a wake or a restart
+never files a slot twice, and a sleep across several slots files the latest one once.
+Changing the cron or time zone, or turning a schedule back on, starts it from then.
+
+- **Skip a run while the last one is open** (`skip_if_open`): a slot is skipped, and the
+  history says why, while the item the schedule filed last is neither finished nor iceboxed.
+- **Submit what it files** (`submit`): each item is submitted as you would (an epic has its
+  breakdown planned). It is honoured only on a schedule you made (`created_by: user`): starting
+  work is your word.
+- **AUTOMATION PAUSED** stops the filing; on resume the latest missed slot is filed once. A
+  provider usage guard holds only the turns, never the filing.
 
 ## Handing files to another item
 

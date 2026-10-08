@@ -13,6 +13,7 @@ const TABS: { to: string; label: string; icon: string }[] = [
   { to: '/', label: 'Board', icon: 'M4 4h4v12H4zM10 4h4v8h-4zM16 4h4v16h-4z' },
   { to: '/sessions', label: 'Sessions', icon: 'M3 12h4l2.5-7 4 14 2.5-7h5' },
   { to: '/releases', label: 'Releases', icon: 'M4 12l8-8h8v8l-8 8zM15.5 8.5h.01' },
+  { to: '/schedules', label: 'Schedules', icon: 'M12 3.5a8.5 8.5 0 1 0 8.5 8.5M12 7v5l3 2M17 3.5h4v4' },
   { to: '/prompts', label: 'Prompts', icon: 'M7 3.5h7l4 4v13H7zM14 3.5v4h4M10 12h5M10 16h5' },
   { to: '/console', label: 'Console', icon: 'M5 7l5 5-5 5M13 17h6' },
   { to: '/settings', label: 'Settings', icon: 'M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4' },
@@ -64,6 +65,7 @@ export function App() {
           <NavLink to="/done">Done</NavLink>
           <NavLink to="/sessions">Sessions</NavLink>
           <NavLink to="/releases">Releases</NavLink>
+          <NavLink to="/schedules">Schedules</NavLink>
           <NavLink to="/prompts">Prompts</NavLink>
           <NavLink to="/console" className={({ isActive }) => (isActive || pathname.startsWith('/questions/') ? 'active' : '')}>Console{unreadNotes > 0 && <span className="badge-n" title="Suggestions about planestro from the orchestrator">{unreadNotes}</span>}</NavLink>
           <NavLink to="/settings">Settings</NavLink>

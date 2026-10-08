@@ -5,11 +5,12 @@ import { planReviewByDefault,
   parseItemFile, serializeItemFile, setSection, appendActivity, getSection, idNumber, slugify,
   parsePromptFile, serializePromptFile, renderPrompt,
   parseReleaseFile, serializeReleaseFile, setReleaseSection, sortReleases, compareVersions, getReleaseSection, VERSION_RE, DATE_RE,
+  parseScheduleFile, serializeScheduleFile, setScheduleDescription, scheduleDescription, scheduleContext, withHistory, parseCron, validTimeZone, RenderError, SCHEDULE_NAME_RE, PRIORITIES, KINDS,
   parseQuestionFile, serializeQuestionFile, setQuestionSection, appendThread, questionNumber, QUESTION_SECTIONS,
   applyTransition, flavorOf, laneOf, needsYou, baseBranchOf, depsSatisfied,
   rankForTop, rankForBottom, rankBefore, rankAfter, renormalize, sortByRank, priorityBand,
   isoLocal, SCHEMA_VERSION,
-  type ItemFile, type ItemFrontmatter, type PromptFile, type ReleaseFile, type ReleaseStatus, type QuestionFile, type QuestionStatus, type ThreadActor, type Status, type Actor, type Flavor, type Lane, type Priority,
+  type ItemFile, type ItemFrontmatter, type PromptFile, type ReleaseFile, type ReleaseStatus, type QuestionFile, type QuestionStatus, type ScheduleFile, type ThreadActor, type Status, type Actor, type Flavor, type Lane, type Priority,
   type Config, type LocalConfig, type ServerEvent, type ActivityActor,
 } from '@planestro/shared';
 import { atomicWrite, cleanStaleTemps } from './atomicWrite.ts';
@@ -39,6 +40,7 @@ export interface StoredItem { id: string; path: string; file: ItemFile }
 export interface StoredPrompt { name: string; path: string; file: PromptFile }
 export interface StoredRelease { version: string; path: string; file: ReleaseFile }
 export interface StoredQuestion { id: string; path: string; file: QuestionFile }
+export interface StoredSchedule { name: string; path: string; file: ScheduleFile }
 export interface InvalidFile { path: string; error: string }
 
 export interface Derived { lane: Lane; needs_you: boolean; external: boolean; flavor: Flavor; base_branch?: string; base_branch_error?: string; deps_satisfied: boolean; children: string[] }
@@ -68,6 +70,8 @@ export interface QuestionEdit { headline?: string; summary?: string; details?: s
 /** A finished or iceboxed item's open questions are moot: the state machine knows, so nobody is asked (invariant 4). */
 const SETTLES_QUESTIONS: Partial<Record<Status, string>> = { FINISHED: 'finished', ICEBOX: 'moved to the icebox' };
 
+/** What the user sets on a schedule (#247); `null` clears an optional field. */
+export interface ScheduleFields { title?: string; description?: string; cron?: string; tz?: string; enabled?: boolean; skip_if_open?: boolean; submit?: boolean; kind?: 'item' | 'epic'; category?: string | null; priority?: Priority | null }
 export interface ReleaseFields { version?: string; title?: string | null; status?: ReleaseStatus; date?: string | null; tag?: string | null; items?: string[] }
 
 export interface DataStoreOptions { emit?: (e: ServerEvent) => void; log?: (level: 'info' | 'warn' | 'error', message: string) => void; lock?: boolean }
@@ -87,6 +91,7 @@ export class DataStore {
   readonly prompts = new Map<string, StoredPrompt>();
   readonly releases = new Map<string, StoredRelease>();
   readonly questions = new Map<string, StoredQuestion>();
+  readonly schedules = new Map<string, StoredSchedule>();
   readonly invalid: InvalidFile[] = [];
   readonly journal: Journal;
   readonly git: GitCommitter;
@@ -108,7 +113,7 @@ export class DataStore {
     assertSafePlanningGit(dataDir);
     const store = new DataStore(dataDir, opts);
     if (opts.lock !== false) store.acquireLock();
-    for (const d of ['items', 'prompts', 'releases', 'questions']) for (const f of cleanStaleTemps(join(dataDir, d))) opts.log?.('warn', `removed stale temp file ${d}/${f}`);
+    for (const d of ['items', 'prompts', 'releases', 'questions', 'schedules']) for (const f of cleanStaleTemps(join(dataDir, d))) opts.log?.('warn', `removed stale temp file ${d}/${f}`);
     store.load();
     await store.commitHandEdits();
     if (!store.readOnly) store.settleQuestions();
@@ -120,6 +125,7 @@ export class DataStore {
   get promptsDir(): string { return join(this.dataDir, 'prompts'); }
   get releasesDir(): string { return join(this.dataDir, 'releases'); }
   get questionsDir(): string { return join(this.dataDir, 'questions'); }
+  get schedulesDir(): string { return join(this.dataDir, 'schedules'); }
   get attachmentsDir(): string { return join(this.dataDir, 'attachments'); }
   codeRepoPath(): string { return resolveCodeRepo(this.dataDir, this.config, this.local); }
   worktreesRoot(): string { return resolveWorktreesRoot(this.dataDir, this.config, this.local); }
@@ -152,7 +158,7 @@ export class DataStore {
 
   // ---- loading ----
   load(): void {
-    this.items.clear(); this.prompts.clear(); this.releases.clear(); this.questions.clear(); this.invalid.length = 0;
+    this.items.clear(); this.prompts.clear(); this.releases.clear(); this.questions.clear(); this.schedules.clear(); this.invalid.length = 0;
     mkdirSync(this.itemsDir, { recursive: true }); mkdirSync(this.promptsDir, { recursive: true });
     for (const name of readdirSync(this.itemsDir).filter((f) => f.endsWith('.md')).sort()) {
       const path = join(this.itemsDir, name);
@@ -189,6 +195,14 @@ export class DataStore {
         this.questions.set(file.frontmatter.id, { id: file.frontmatter.id, path, file });
       } catch (e) { this.invalid.push({ path, error: String((e as Error).message ?? e) }); this.emit({ type: 'invalid_file', path, error: String((e as Error).message ?? e) }); }
     }
+    if (existsSync(this.schedulesDir)) for (const name of readdirSync(this.schedulesDir).filter((f) => f.endsWith('.md')).sort()) {
+      const path = join(this.schedulesDir, name);
+      try {
+        const file = parseScheduleFile(readFileSync(path, 'utf8'));
+        if (`${file.frontmatter.name}.md` !== name) throw new Error(`schedule name ${file.frontmatter.name} does not match file name`);
+        this.schedules.set(file.frontmatter.name, { name: file.frontmatter.name, path, file });
+      } catch (e) { this.invalid.push({ path, error: String((e as Error).message ?? e) }); this.emit({ type: 'invalid_file', path, error: String((e as Error).message ?? e) }); }
+    }
   }
 
   /** Re-read everything from disk, config included (hand edits, external tools). */
@@ -202,7 +216,7 @@ export class DataStore {
   /** Files edited while planestro was not running are versioned as-is (only when every dirty file parses). */
   private async commitHandEdits(): Promise<void> {
     const { dirty } = await this.git.status();
-    const edits = dirty.filter((p) => p.startsWith('items/') || p.startsWith('prompts/') || p.startsWith('releases/') || p.startsWith('questions/') || p === 'planestro.yml' || p.startsWith('attachments/'));
+    const edits = dirty.filter((p) => p.startsWith('items/') || p.startsWith('prompts/') || p.startsWith('releases/') || p.startsWith('questions/') || p.startsWith('schedules/') || p === 'planestro.yml' || p.startsWith('attachments/'));
     if (!edits.length) return;
     if (this.invalid.length) { this.log('warn', `${edits.length} file(s) changed outside planestro but ${this.invalid.length} file(s) are invalid; leaving the tree uncommitted`); return; }
     this.git.commit(`manual: ${edits.length} file(s) edited outside planestro`, edits.join('\n'));
@@ -774,6 +788,104 @@ export class DataStore {
       if (fm.pr) base.pr = { number: fm.pr, url: this.config.code_repo.github ? `https://github.com/${this.config.code_repo.github}/pull/${fm.pr}` : String(fm.pr) };
     }
     return { ...base, ...extra };
+  }
+
+  // ---- schedules ----
+  getSchedule(name: string): StoredSchedule | undefined { return this.schedules.get(name); }
+  requireSchedule(name: string): StoredSchedule { const s = this.schedules.get(name); if (!s) throw new Error(`unknown schedule ${name}`); return s; }
+  listSchedules(): StoredSchedule[] { return [...this.schedules.values()].sort((a, b) => a.name.localeCompare(b.name)); }
+
+  private writeSchedule(file: ScheduleFile): StoredSchedule {
+    const path = join(this.schedulesDir, `${file.frontmatter.name}.md`);
+    atomicWrite(path, serializeScheduleFile(file));
+    const stored = { name: file.frontmatter.name, path, file: parseScheduleFile(readFileSync(path, 'utf8')) };
+    this.schedules.set(stored.name, stored);
+    return stored;
+  }
+
+  /** Everything a schedule's fields must be before it is written, so the engine never meets a template it cannot fill. */
+  private checkSchedule(file: ScheduleFile, actor: Actor): void {
+    const fm = file.frontmatter;
+    if (!SCHEDULE_NAME_RE.test(fm.name)) throw new Error('a schedule name is lowercase letters, digits and dashes');
+    parseCron(fm.cron);
+    if (!validTimeZone(fm.tz)) throw new Error(`"${fm.tz}" is not a time zone (an IANA name such as Europe/London)`);
+    if (fm.category && !this.config.categories.includes(fm.category)) throw new Error(`unknown category ${fm.category}`);
+    if (!KINDS.includes(fm.kind) || (fm.priority && !PRIORITIES.includes(fm.priority))) throw new Error('kind is item or epic; priority is high, medium or low');
+    // #73: work is submitted on the user's word only, so only the user can make a schedule submit.
+    if (fm.submit && (actor !== 'user' || fm.created_by !== 'user')) throw new Error('only a schedule the user made can submit what it files');
+    const ctx = scheduleContext(fm, isoLocal());
+    try { renderPrompt(fm.title, ctx); renderPrompt(scheduleDescription(file), ctx); } catch (e) {
+      if (e instanceof RenderError) throw new Error(`unknown placeholder ${e.missing.join(', ')}: a schedule fills in {{date}}, {{slot}} and {{schedule}}`);
+      throw e;
+    }
+  }
+
+  createSchedule(input: ScheduleFields & { name: string; title: string; cron: string; tz: string }, actor: Actor = 'user'): StoredSchedule {
+    this.assertWritable();
+    const name = input.name.trim();
+    if (this.schedules.has(name) || existsSync(join(this.schedulesDir, `${name}.md`))) throw new Error(`schedule ${name} already exists`);
+    const now = isoLocal();
+    const file: ScheduleFile = { frontmatter: {
+      schema: 1, name, title: input.title.trim(), cron: input.cron.trim(), tz: input.tz.trim(), enabled: input.enabled ?? true, skip_if_open: input.skip_if_open ?? false, submit: input.submit ?? false,
+      created_by: actor, kind: input.kind ?? 'item', ...(input.category ? { category: input.category } : {}), ...(input.priority ? { priority: input.priority } : {}),
+      created_at: now, updated_at: now, armed_at: now, history: [],
+    }, sections: [] };
+    setScheduleDescription(file, input.description ?? '');
+    this.checkSchedule(file, actor);
+    const stored = this.writeSchedule(file);
+    this.journal.append({ type: 'schedule.created', actor, data: { name, cron: file.frontmatter.cron, tz: file.frontmatter.tz, submit: file.frontmatter.submit } });
+    this.emit({ type: 'schedule.updated', name });
+    this.git.commit(`schedules: add ${name}`, `${file.frontmatter.cron} (${file.frontmatter.tz})`, [this.rel(stored.path)]);
+    return stored;
+  }
+
+  /** A change to when it runs (cron, zone, turning it on) re-arms it from now: a slot it was not running for is never filed late. */
+  editSchedule(name: string, fields: ScheduleFields, actor: Actor = 'user'): StoredSchedule {
+    this.assertWritable();
+    const current = this.requireSchedule(name);
+    const file = parseScheduleFile(readFileSync(current.path, 'utf8'));
+    const fm = file.frontmatter as ScheduleFile['frontmatter'] & Record<string, unknown>;
+    const now = isoLocal();
+    const rearm = (fields.cron !== undefined && fields.cron.trim() !== fm.cron) || (fields.tz !== undefined && fields.tz.trim() !== fm.tz) || (fields.enabled === true && !fm.enabled);
+    for (const k of ['title', 'cron', 'tz'] as const) if (fields[k] !== undefined) fm[k] = fields[k]!.trim();
+    for (const k of ['enabled', 'skip_if_open', 'submit', 'kind'] as const) if (fields[k] !== undefined) fm[k] = fields[k] as never;
+    for (const k of ['category', 'priority'] as const) if (fields[k] !== undefined) { if (fields[k] === null || fields[k] === '') delete fm[k]; else fm[k] = fields[k] as never; }
+    if (fields.description !== undefined) setScheduleDescription(file, fields.description);
+    // Turning submit on is the user's word; one already on is kept by anyone's other edits.
+    this.checkSchedule(file, fields.submit && !current.file.frontmatter.submit ? actor : 'user');
+    if (rearm) fm.armed_at = now;
+    fm.updated_at = now;
+    const stored = this.writeSchedule(file);
+    this.journal.append({ type: 'schedule.updated', actor, data: { name, fields: Object.keys(fields) } });
+    this.emit({ type: 'schedule.updated', name });
+    this.git.commit(`schedules: edit ${name}`, Object.keys(fields).join(', '), [this.rel(stored.path)]);
+    return stored;
+  }
+
+  deleteSchedule(name: string, actor: Actor = 'user'): void {
+    this.assertWritable();
+    const s = this.requireSchedule(name);
+    unlinkSync(s.path);
+    this.schedules.delete(name);
+    this.journal.append({ type: 'schedule.deleted', actor, data: { name } });
+    this.emit({ type: 'schedule.updated', name });
+    this.git.commit(`schedules: delete ${name}`, undefined, [this.rel(s.path)]);
+  }
+
+  /** The engine handled a slot: it filed an item for it, or skipped it and says why. No slot at or before it is filed again. */
+  recordScheduleSlot(name: string, entry: { slot: string; item?: string; skipped?: string }): StoredSchedule {
+    this.assertWritable();
+    const current = this.requireSchedule(name);
+    const file = parseScheduleFile(readFileSync(current.path, 'utf8'));
+    const now = isoLocal();
+    file.frontmatter.last_slot = entry.slot;
+    file.frontmatter.history = withHistory(file.frontmatter.history, { ...entry, at: now });
+    file.frontmatter.updated_at = now;
+    const stored = this.writeSchedule(file);
+    this.journal.append({ type: 'schedule.slot', item: entry.item, actor: 'engine', data: { name, ...entry } });
+    this.emit({ type: 'schedule.updated', name });
+    this.git.commit(`schedules: ${name} ${entry.item ? `filed ${entry.item}` : 'skipped'} for ${entry.slot}`, entry.skipped, [this.rel(stored.path)]);
+    return stored;
   }
 
   // ---- config ----

@@ -192,7 +192,7 @@ html { -webkit-text-size-adjust: 100%; }
   .app > main { min-height: 0; overflow: auto; overscroll-behavior-y: contain; padding: 10px max(var(--gutter), env(safe-area-inset-right)) 84px max(var(--gutter), env(safe-area-inset-left)); }
   .banner.error { position: fixed; left: 10px; right: 10px; bottom: calc(var(--tabbar-h) + var(--safe-b) + 10px); z-index: 40; border: 1px solid var(--hot); border-radius: 10px; padding: 12px 14px; box-shadow: 0 8px 28px #000b; }
 
-  .tabbar { display: grid; grid-template-columns: repeat(6, 1fr); position: relative; flex: none; z-index: 12; padding: 0 env(safe-area-inset-right) var(--safe-b) env(safe-area-inset-left); background: var(--panel); border-top: 1px solid var(--line); }
+  .tabbar { display: grid; grid-template-columns: repeat(7, 1fr); position: relative; flex: none; z-index: 12; padding: 0 env(safe-area-inset-right) var(--safe-b) env(safe-area-inset-left); background: var(--panel); border-top: 1px solid var(--line); }
   .tabbar a { display: grid; justify-items: center; align-content: center; gap: 3px; height: var(--tabbar-h); color: var(--muted); font-size: 10.5px; font-weight: 500; border-top: 2px solid transparent; margin-top: -1px; }
   .tabbar a.active { color: var(--accent); border-top-color: var(--accent); } .tabbar svg { width: 22px; height: 22px; }
   /* a keyboard is up: the bar and the + button would only sit on top of what is being typed */

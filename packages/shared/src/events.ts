@@ -6,6 +6,7 @@ export type ServerEvent =
   | { type: 'prompt.updated'; name: string }
   | { type: 'release.updated'; version: string }
   | { type: 'question.updated'; id: string }
+  | { type: 'schedule.updated'; name: string }
   | { type: 'config.updated' }
   | { type: 'journal.appended'; entry: JournalEntry }
   | { type: 'git.committed'; message: string }
