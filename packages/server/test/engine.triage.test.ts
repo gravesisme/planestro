@@ -382,6 +382,21 @@ describe('needs-you triage', () => {
     expect((fmOf(s, id).awaiting_data as any)?.decision).toBeUndefined();
   });
 
+  it('a stop that wants takes heard, in triage or in the chat, is the worker\'s to put up with request_audition (#294)', async () => {
+    const prompts: Record<string, string> = {};
+    const wantsSheet = async (o: TurnOptions): Promise<TurnResult> => { await o.tools.report_blocked('the designer is on a phone and wants an audition sheet of the three takes'); return { ...ok, blocked: 'audition sheet' }; };
+    const a = agents({ firstTurn: wantsSheet, orchestrate: async (w) => { prompts[w.label.startsWith('blocked_') ? 'triage' : w.label] = w.prompt; } });
+    const { engine: e, id } = await setup(a.claude);
+    await e.start();
+    await waitFor(() => Boolean(prompts.triage));
+    e.orchestrator.wake({ type: 'user_message', item: id, data: { message: 'send me the takes, I am on my phone' } });
+    await waitFor(() => Boolean(prompts.user_message));
+    for (const p of [prompts.triage, prompts.user_message]) {
+      expect(p).toContain('request_audition');
+      expect(p).toMatch(/from a phone/);
+    }
+  });
+
   it('a triage that outlives orchestrator.triage_timeout_min comes to you as it is', async () => {
     let release!: () => void;
     const hung = new Promise<void>((r) => { release = r; });

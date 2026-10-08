@@ -20,6 +20,12 @@ import type { DecisionInput, DecisionAction, RateLimitSnapshot, Priority, ChatAt
 const EPIC_SUBMIT_POLICY = 'submit_item on an epic does not queue it: it has the epic\'s breakdown planned, as the user\'s own action, and the user approves the children. Do that only when they ask you to start the epic. Say what a tool returned, never what you expected it to: a result that starts "not permitted", "refused" or "failed" means it did not happen.';
 
 /**
+ * Takes to hear or see and pick from (#294): the worker's request_audition (#207) serves them on the item page, a phone
+ * included, so a request for an "audition sheet" is an instruction to the worker, never a missing tool or a card.
+ */
+const AUDITION_POLICY = 'When the user wants takes heard or seen and picked (sounds, model or image variants, an "audition sheet"): the worker puts them up with request_audition. planestro plays every take on the item page, from a phone too, and resumes the worker with one pick per role (or a regenerate note). Tell it so with unblock_item, or message_session while it runs; never a card that describes the takes, and never a note that no tool can do it.';
+
+/**
  * What a user_message wake is for, said in the packet rather than the prompt library: a data dir's
  * copy of orchestrator-system predates the chat.
  */
@@ -28,6 +34,7 @@ const CHAT_POLICY = [
   'In this wake you may act on what they ask: create_item for new backlog work (submit it only if they say to; kind epic for several separately shippable pieces), convert_item to make an item an epic or back before it runs, submit_item, unblock_item or retry_op to get a stopped item moving (unblock_item with fresh: true starts a new conversation with a brief instead of reloading a long one), commit_paths to commit finished work in a worktree without a session turn, sync_with_base to bring a branch up to date with its base, message_session, annotate_item, and the ordering tools.',
   'For a blocked item, read_item first: the Activity log says why it stopped. Explain the cause in plain words; resolve it when the fix is an instruction you can give, and say plainly when the decision is theirs.',
   'Ask one short question with reply_to_user when the request is ambiguous rather than guessing; their answer arrives as the next wake.',
+  AUDITION_POLICY,
   EPIC_SUBMIT_POLICY,
 ].join('\n');
 
@@ -48,6 +55,7 @@ const EPIC_MESSAGE_POLICY = [
 const QUESTION_CHAT_POLICY = [
   'The user is discussing one of your questions on its own page. They read only that page\'s thread: answer with reply_on_question (not reply_to_user) before done_with_wake.',
   'You have the same authority as in the chat: act on what they ask with your tools (create_item for new backlog work, submit_item, unblock_item, retry_op, commit_paths, sync_with_base, message_session, annotate_item, the ordering tools), and say in the thread what you did.',
+  AUDITION_POLICY,
   EPIC_SUBMIT_POLICY,
   'When their answer settles the question, carry it out, then resolve_question with status resolved and the answer in a sentence. When it changes what you would recommend or what the question is, update_question so the page says it. Ask one short follow-up with reply_on_question when their answer is ambiguous; it arrives as the next wake.',
 ].join('\n');
@@ -657,6 +665,7 @@ export class Orchestrator {
       '- commit_paths — the work is in the worktree but not committed (a dirty tree at a budget stop, a commit the session was approved to make and never made): name the files that belong to the change and give the commit message; planestro commits them with no session turn and no cost. Generated files and byproducts do not belong. Then finish_from_worktree (retry_op in review).',
       '- sync_with_base, or unblock_item with sync_first: true — something the item needs has merged since its worktree was cut (a dependency, a fix on its base): planestro rebases its branch before the session resumes, since the session cannot use what its branch does not have. A conflict goes to the session.',
       '- answer_question — the worker asked something the brief, plan, notes or project rules already answer.',
+      `- unblock_item to audition — ${AUDITION_POLICY}`,
       '- finish_from_worktree — the work is committed on a clean worktree ahead of its base but the item stopped before its pull request (over budget after committing, a size gate, a commit made for a runner that could not): open the pull request from there.',
       '- retry_op — a transient failure: a GitHub 5xx, an SSH or network hiccup, a timeout. Not for anything that failed the same way twice.',
       '- No change was needed (no_commits on a verify-only item, or the fix landed elsewhere, and the plan and report agree): closing it as done is the user\'s call. Leave ask_user_decision with a **Close as done** option carrying action { tool: "close_as_done", args: { id, reason } } (recommended) and "Send back to the worker" as the other.',
