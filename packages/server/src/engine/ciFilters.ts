@@ -53,3 +53,15 @@ export function prSkippedByPaths(doc: any, files: string[]): string | null {
   if (ignore.length) return files.every((f) => matchesFilters(f, ignore)) ? `every changed file matches its paths-ignore (${ignore.join(', ')})` : null;
   return null;
 }
+
+/**
+ * Whether a failed run's log names a file (#204): its path, its file name, or, for a name long enough not to be a common
+ * word, its stem alone (HH-375's job `mine_cart_check` for `mine_cart_check.gd`). Only a hint of what the red run is
+ * about, read on both sides of a red epic: what the base changed and what the epic changed.
+ */
+export function namedInLog(log: string, path: string): boolean {
+  const name = path.split('/').pop() ?? path;
+  const stem = name.replace(/\.[^.]+$/, '');
+  const word = (w: string) => new RegExp(`(^|[^\\w./-])${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`).test(log);
+  return log.includes(path) || word(name) || (stem.length >= 8 && word(stem));
+}

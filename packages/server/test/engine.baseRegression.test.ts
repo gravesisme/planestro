@@ -3,8 +3,8 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DataStore } from '../src/store/DataStore.ts';
 import { LiveEngine } from '../src/engine/LiveEngine.ts';
-import { FakeWorld, DryRunGitPort, DryRunGhPort, DryRunProcPort } from '../src/engine/dryrun-ports.ts';
-import type { Ports, TurnResult } from '../src/engine/ports.ts';
+import { FakeWorld, DryRunGitPort, DryRunGhPort, DryRunProcPort, DryRunClaudePort } from '../src/engine/dryrun-ports.ts';
+import type { Ports, TurnOptions } from '../src/engine/ports.ts';
 import { makeFixture, sleep } from './helpers.ts';
 
 /**
@@ -27,7 +27,9 @@ async function setup() {
   const world = new FakeWorld(() => {}, { 'origin/trunk': 'f'.repeat(40) });
   world.remoteBranches.set('trunk', world.sha());
   const turns: string[] = [];
-  const claude = { async runTurn(o: { prompt: string }): Promise<TurnResult> { turns.push(o.prompt); return { sessionId: 's', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '' }; } };
+  // Worker turns are recorded (there must be none); the orchestrator's wakes run as the dry-run port runs them.
+  const inner = new DryRunClaudePort(world);
+  const claude = { runTurn: (o: TurnOptions) => { turns.push(o.prompt); return inner.runTurn(o); }, runCustomTurn: inner.runCustomTurn.bind(inner) };
   const ports: Ports = { mode: 'dry-run', git: new DryRunGitPort(world), gh: new DryRunGhPort(world), proc: new DryRunProcPort(world), agents: { claude: claude as any } };
   engine = new LiveEngine(store, ports, () => {}, { sleep: async () => {}, tickMs: 50 });
   // An epic in review whose PR's first run is red, as HH-375's was.
@@ -87,7 +89,7 @@ describe('a red epic on a check the base broke (#204)', () => {
     const fm = ctx.store.getItem(ctx.id)!.file.frontmatter;
     expect(fm.op_data?.base_wait).toBeUndefined();
     expect(activityOf(ctx.store, ctx.id)).toContain('still red after merging the moved base in');
-    expect(wakes(ctx.store, ctx.id)).toContain('blocked_ci_red');
+    await waitFor(() => wakes(ctx.store, ctx.id).includes('blocked_ci_red'));
   });
 
   it('a base that does not move within ci.stall_wake_min hands it to ci_red, with the suspicion said', async () => {
