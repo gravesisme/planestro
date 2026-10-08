@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -17,7 +17,9 @@ const args = process.argv.slice(2);
 const prompt = args[args.length - 1];
 const out = args[args.indexOf('-o') + 1];
 const say = (e) => process.stdout.write(JSON.stringify(e) + '\\n');
-fs.writeFileSync(process.env.FAKE_CODEX_ARGS, JSON.stringify(args));
+fs.writeFileSync(require('path').join(__dirname, 'args.json'), JSON.stringify(args));
+// What a worker's command would see (#228): a shell it starts, as the real CLI's commands are.
+fs.writeFileSync(require('path').join(__dirname, 'env.txt'), require('child_process').execSync('echo "secret=\${PLANTED_SECRET:-unset} gh=\${GH_TOKEN:-unset} allowed=\${PROJECT_NEEDS:-unset} home=\${HOME:-unset}"', { encoding: 'utf8' }));
 let stdin = ''; process.stdin.on('data', (d) => stdin += d); process.stdin.on('end', run);
 function run() {
   const resumeAt = args.indexOf('resume');
@@ -43,15 +45,23 @@ function run() {
 function setup() {
   const dir = mkdtempSync(join(tmpdir(), 'planestro-fakecodex-'));
   const bin = join(dir, 'codex'); writeFileSync(bin, FAKE); chmodSync(bin, 0o755);
-  process.env.FAKE_CODEX_ARGS = join(dir, 'args.json');
   const calls: string[] = []; const output: string[] = []; const questions: unknown[][] = [];
   const tools = { report_done: async (s: string, _parts?: unknown, hold?: string) => { calls.push(`done:${s}${hold ? ` (hold: ${hold})` : ''}`); return 'ok'; }, report_blocked: async (s: string) => { calls.push(`blocked:${s}`); return 'ok'; }, hand_off: async (to: string, paths: string[], note: string) => { calls.push(`hand_off:${to}:${paths.join(',')}:${note}`); return 'Delivered'; } } as unknown as TurnTools;
   const opts = (prompt: string, extra: Partial<AgentTurnOptions> = {}): AgentTurnOptions => ({ itemId: 'TP-1', phase: 'implement', cwd: dir, prompt, systemAppend: 'RULES', extraDirs: ['/data'], tools, onQuestion: async (q) => { questions.push(q); }, onOutput: (t) => output.push(t), ...extra });
-  const args = () => JSON.parse(readFileSync(process.env.FAKE_CODEX_ARGS!, 'utf8')) as string[];
-  return { port: new LiveCodexPort(bin), opts, calls, output, questions, args, dir };
+  const args = () => JSON.parse(readFileSync(join(dir, 'args.json'), 'utf8')) as string[];
+  return { port: new LiveCodexPort(bin), bin, opts, calls, output, questions, args, dir };
 }
 
 describe('LiveCodexPort (against a recorded fake codex)', () => {
+  afterEach(() => { vi.unstubAllEnvs(); });
+  it("a worker's commands cannot read planestro's credentials; a project's codex_env_passthrough names get through (#228)", async () => {
+    vi.stubEnv('PLANTED_SECRET', 'hunter2'); vi.stubEnv('GH_TOKEN', 'ghp_planted'); vi.stubEnv('PROJECT_NEEDS', 'yes');
+    const t = setup();
+    expect(await t.port.runTurn(t.opts('draw it'))).toMatchObject({ subtype: 'success' });
+    expect(readFileSync(join(t.dir, 'env.txt'), 'utf8').trim()).toBe(`secret=unset gh=unset allowed=unset home=${process.env.HOME}`);
+    expect(await new LiveCodexPort(t.bin, [], () => ['PROJECT_NEEDS']).runTurn(t.opts('draw it', { resume: 'thread-1' }))).toMatchObject({ subtype: 'success' });
+    expect(readFileSync(join(t.dir, 'env.txt'), 'utf8').trim()).toBe(`secret=unset gh=unset allowed=yes home=${process.env.HOME}`);
+  });
   it('keeps the finished report when exec reports usage above its cap', async () => {
     const t = setup();
     const r = await t.port.runTurn(t.opts('draw it', { maxTokens: 100 }));
