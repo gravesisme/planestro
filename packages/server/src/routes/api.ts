@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { managedAttachmentPath } from '../store/managedAttachments.ts';
 import { existsSync, readFileSync } from 'node:fs';
 import YAML from 'yaml';
-import { allowedTransitions, parsePromptFile, RenderError, STATUSES, PRIORITIES, type Priority, PROMPT_KINDS, RELEASE_STATUSES, KINDS, markUnavailable, CHAT_ATTACHMENTS_DIR, type Status, type Actor } from '@planestro/shared';
+import { allowedTransitions, parsePromptFile, RenderError, STATUSES, PRIORITIES, type Priority, PROMPT_KINDS, RELEASE_STATUSES, KINDS, markUnavailable, CHAT_ATTACHMENTS_DIR, type Status, type Actor, usageReport, dayBefore, USAGE_REPORT_TYPES, isoLocal } from '@planestro/shared';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Engine } from '../engine/Engine.ts';
 import type { ConsoleBuffer } from '../store/ConsoleBuffer.ts';
@@ -511,6 +511,13 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   // What waiting on a person cost, per item (#108): parks, time waited, what their resumes cost, the commands that park most.
   // The orchestrator's cost per wake, today and in its current conversation (#49).
   api.get('/orchestrator/spend', (c) => c.json(orchestratorSpend(store.journal.read({ type: 'orchestrator.done' }))));
+  // Usage per day by provider, model and role, with the guards' crossings and pauses (#236): read from the usage.turn entries turns journal as they end.
+  api.get('/usage', (c) => {
+    const days = Math.min(366, Math.max(1, Math.floor(Number(c.req.query('days') ?? 30)) || 30));
+    const today = isoLocal().slice(0, 10);
+    const types = new Set(USAGE_REPORT_TYPES);
+    return c.json(usageReport(store.journal.read({ since: dayBefore(today, days - 1) }).filter((e) => types.has(e.type)), { days, today }));
+  });
   // Allow rules suggested from the ruling history, replayed so none would have let a past denial through (#169). Read-only.
   api.get('/permissions/suggest', (c) => {
     const num = (k: string) => { const v = Number(c.req.query(k)); return Number.isFinite(v) && v > 0 ? v : undefined; };
