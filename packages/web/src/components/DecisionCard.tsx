@@ -16,6 +16,8 @@ export function DecisionCard({ item }: { item: ItemView }) {
   const fm = item.frontmatter;
   const decision = decisionOf(fm);
   const projectBudget = useStore((s) => s.state?.config.budget_usd_per_item);
+  const projectTurns = useStore((s) => s.state?.config.budget_turns_per_item);
+  const projectTokens = useStore((s) => s.state?.config.budget_tokens_per_item);
   const billing = useStore((s) => s.state?.billing);
   const items = useStore((s) => s.state?.items);
   const [text, setText] = useState('');
@@ -44,6 +46,8 @@ export function DecisionCard({ item }: { item: ItemView }) {
             <span className="decision-label">{o.label}{o.recommended && <span className="decision-badge">Recommended</span>}</span>
             {o.description && <span className="decision-desc">{o.description}</span>}
             {o.raise_budget_usd !== undefined && <span className="decision-desc">Tapping this sets the item's budget to ${(Math.max(fm.budget_usd ?? projectBudget ?? 0, fm.cost_usd ?? 0) + o.raise_budget_usd).toFixed(0)} (+${o.raise_budget_usd}) and {o.fresh ? 'finishes it in a fresh session' : 'resumes it'}. <span className="muted">Dollars here: {dollarHint(billing)}.</span></span>}
+            {o.raise_budget_turns !== undefined && <span className="decision-desc">Adds {o.raise_budget_turns} turns, setting this item's limit to {Math.max(fm.budget_turns ?? projectTurns ?? 0, fm.agent_turns ?? 0) + o.raise_budget_turns} turns.</span>}
+            {o.raise_budget_tokens !== undefined && <span className="decision-desc">Adds {o.raise_budget_tokens.toLocaleString()} tokens, setting this item's limit to {(Math.max(fm.budget_tokens ?? projectTokens ?? 0, fm.tokens ?? 0) + o.raise_budget_tokens).toLocaleString()} tokens.</span>}
             {o.fresh ? <span className="decision-desc">A fresh session gets a brief instead of the old conversation, so nothing is spent reloading it.</span>
               : o.raise_budget_usd !== undefined && estimate && <span className="decision-desc">Resuming costs {reloadText(estimate)}, before any work; this raise covers it.</span>}
             {o.action && <span className="decision-desc decision-does">Tapping this {describeAction(o.action, lookup)}. planestro does it as you, at once.</span>}

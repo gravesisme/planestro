@@ -3942,6 +3942,14 @@ export class LiveEngine implements Engine {
 
   /** The first raise option that would not pay for what it promises, as a sentence for the orchestrator; undefined when they all do. */
   private raiseTooSmall(fm: ItemFrontmatter, options: DecisionOption[]): string | undefined {
+    // A fresh conversation changes context, not the item's cumulative budget counters.
+    const needed = fm.blocked_reason === 'turn_budget' ? 'raise_budget_turns' : fm.blocked_reason === 'token_budget' ? 'raise_budget_tokens' : undefined;
+    for (const o of options) {
+      if (needed && (o.raise_budget_usd !== undefined || o.raise_budget_turns !== undefined || o.raise_budget_tokens !== undefined || o.fresh) && o[needed] === undefined) return `option "${o.label}" cannot clear ${fm.blocked_reason}: include ${needed}; dollars and fresh sessions do not extend this limit.`;
+      for (const [key, cap, used] of [['raise_budget_turns', this.budgetOf(fm).turns, fm.agent_turns ?? 0], ['raise_budget_tokens', this.budgetOf(fm).tokens, fm.tokens ?? 0]] as const) {
+        if (o[key] !== undefined && !Number.isSafeInteger(Math.max(cap, used) + o[key]!)) return `option "${o.label}": ${key} would exceed the safe integer limit.`;
+      }
+    }
     const phase = this.phaseFor(fm.status);
     const left = this.budgetOf(fm).usd - (fm.cost_usd ?? 0);
     const def = this.store.config.models.find((m) => m.id === (phase === 'plan' ? fm.planner : fm.implementer));
@@ -4077,6 +4085,8 @@ export class LiveEngine implements Engine {
     const carry = this.triageAvailable();
     // The option carries the change it names (p43): answering IS raising the budget, not a promise to go raise it elsewhere.
     const chosen = decision.options.find((o) => o.label === choice);
+    const invalidRaise = chosen ? this.raiseTooSmall(fm, [chosen]) : undefined;
+    if (invalidRaise) throw new Error(invalidRaise);
     const raise = chosen?.raise_budget_usd;
     const fresh = Boolean(chosen?.fresh) && !this.freshRefusal(fm, said);
     // Or it carries an action (#73): the answer is the authorization, so planestro does it as the user, here. Checked
@@ -4097,17 +4107,22 @@ export class LiveEngine implements Engine {
       this.store.journal.append({ type: 'orchestrator.decision_answered', item: id, actor: 'user', data: { question: decision.question, choice: choice ?? null, text: text ?? null, action: act!.tool, action_result: done } });
       return;
     }
+    const raisedTurns = chosen?.raise_budget_turns !== undefined ? Math.max(this.budgetOf(fm).turns, fm.agent_turns ?? 0) + chosen.raise_budget_turns : undefined;
+    const raisedTokens = chosen?.raise_budget_tokens !== undefined ? Math.max(this.budgetOf(fm).tokens, fm.tokens ?? 0) + chosen.raise_budget_tokens : undefined;
+    const raisedUnits = [raisedTurns !== undefined ? `turn budget raised to ${raisedTurns}` : '', raisedTokens !== undefined ? `token budget raised to ${raisedTokens}` : ''].filter(Boolean).join('; ');
     const raisedTo = raise ? Math.round((Math.max(this.budgetOf(fm).usd, fm.cost_usd ?? 0) + raise) * 100) / 100 : undefined;
     this.store.mutateItem(id, [
       Object.keys(rest).length ? { set: { awaiting_data: rest } } : { unset: ['awaiting_data'] },
       ...(carry ? [{ set: { triage: { reason: 'decision', started_at: this.now() } } } as ItemOp] : []),
       ...(raisedTo !== undefined ? [{ set: { budget_usd: raisedTo } } as ItemOp] : []),
-      { activity: { actor: 'user', text: `decided: ${decision.question} → ${said}${raisedTo !== undefined ? ` (budget raised to $${raisedTo})` : ''}${done ? ` (done for you: ${done})` : ''}` } },
+      ...(raisedTurns !== undefined ? [{ set: { budget_turns: raisedTurns } } as ItemOp] : []),
+      ...(raisedTokens !== undefined ? [{ set: { budget_tokens: raisedTokens } } as ItemOp] : []),
+      { activity: { actor: 'user', text: `decided: ${decision.question} → ${said}${raisedTo !== undefined ? ` (budget raised to $${raisedTo})` : ''}${raisedUnits ? ` (${raisedUnits})` : ''}${done ? ` (done for you: ${done})` : ''}` } },
     ], 'user', { commit: `${id}: decision answered` });
-    this.store.journal.append({ type: 'orchestrator.decision_answered', item: id, actor: 'user', data: { question: decision.question, choice: choice ?? null, text: text ?? null, ...(raisedTo !== undefined ? { budget_raised_to: raisedTo } : {}), ...(done ? { action: chosen!.action!.tool, action_result: done } : {}) } });
+    this.store.journal.append({ type: 'orchestrator.decision_answered', item: id, actor: 'user', data: { question: decision.question, choice: choice ?? null, text: text ?? null, ...(raisedTo !== undefined ? { budget_raised_to: raisedTo } : {}), ...(raisedTurns !== undefined ? { budget_turns_raised_to: raisedTurns } : {}), ...(raisedTokens !== undefined ? { budget_tokens_raised_to: raisedTokens } : {}), ...(done ? { action: chosen!.action!.tool, action_result: done } : {}) } });
     const doneNote = done ? `Already done by planestro, as the user: ${done}. Do not do it again. ` : '';
-    const raisedNote = raisedTo !== undefined ? `The item's budget is already raised to $${raisedTo} (budget_usd); nothing else needs changing. ` : '';
-    if (carry) { this.wakeOrchestrator('decision_answered', id, { question: decision.question, answer: said, options: decision.options.map((o) => `${o.label}: ${o.description}`).join(' | '), ...(raisedTo !== undefined ? { budget: `${raisedNote}Resume it with unblock_item${fresh ? ' and fresh: true, as the option promised' : ''}.` } : fresh ? { budget: 'The option promised a fresh session: unblock_item with fresh: true and the instruction as its message.' } : {}), ...(done ? { action: `${doneNote}What is left is this item's own stop.` } : {}) }); return; }
+    const raisedNote = (raisedTo !== undefined ? `The item's budget is already raised to $${raisedTo} (budget_usd); nothing else needs changing. ` : '') + (raisedUnits ? `Already applied: ${raisedUnits}. ` : '');
+    if (carry) { this.wakeOrchestrator('decision_answered', id, { question: decision.question, answer: said, options: decision.options.map((o) => `${o.label}: ${o.description}`).join(' | '), ...(raisedNote ? { budget: `${raisedNote}Resume it with unblock_item${fresh ? ' and fresh: true, as the option promised' : ''}.` } : fresh ? { budget: 'The option promised a fresh session: unblock_item with fresh: true and the instruction as its message.' } : {}), ...(done ? { action: `${doneNote}What is left is this item's own stop.` } : {}) }); return; }
     // No orchestrator to carry it out: a blocked session hears the answer itself; a worker's question stays for you to answer.
     const cur = this.store.requireItem(id).file.frontmatter;
     if (cur.blocked || cur.awaiting === 'user') await this.unblock(id, `The user was asked: ${decision.question}\nTheir answer: ${said}${raisedNote ? `\n${raisedNote}` : ''}${doneNote ? `\n${doneNote}` : ''}`, 'user', { fresh });
