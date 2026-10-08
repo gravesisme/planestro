@@ -3,7 +3,7 @@ import { DataStore } from '../src/store/DataStore.ts';
 import { LiveEngine } from '../src/engine/LiveEngine.ts';
 import { apiRoutes } from '../src/routes/api.ts';
 import { FakeWorld, DryRunGitPort, DryRunGhPort, DryRunProcPort, DryRunClaudePort } from '../src/engine/dryrun-ports.ts';
-import { likelyMatches, noteMarker, NOTE_LINK_TYPE } from '../src/engine/feedback.ts';
+import { likelyMatches, noteMarker, notesSeen, NOTE_LINK_TYPE, NOTES_SEEN_TYPE } from '../src/engine/feedback.ts';
 import type { Ports } from '../src/engine/ports.ts';
 import { makeFixture } from './helpers.ts';
 
@@ -17,7 +17,8 @@ afterEach(async () => { await engine?.stop(); store?.close(); store = undefined;
 
 async function setup(repo?: string) {
   const { dataDir } = makeFixture();
-  store = await DataStore.open(dataDir, { emit: () => {} });
+  const events: any[] = [];
+  store = await DataStore.open(dataDir, { emit: (e) => { events.push(e); } });
   if (repo) store.updateConfig((doc) => { doc.setIn(['feedback', 'issue_repo'], repo); }, 'config: feedback repo');
   const world = new FakeWorld(() => {}, { 'origin/trunk': 'f'.repeat(40) });
   const ports: Ports = { mode: 'dry-run', git: new DryRunGitPort(world), gh: new DryRunGhPort(world), proc: new DryRunProcPort(world), agents: { claude: new DryRunClaudePort(world) } };
@@ -28,7 +29,7 @@ async function setup(repo?: string) {
     return { status: res.status, body: await res.json() as any };
   };
   const note = (text: string, item?: string, ts?: string) => store!.journal.append({ type: 'orchestrator.planestro_note', item, actor: 'orchestrator', data: { text }, ...(ts ? { ts } : {}) });
-  return { store, world, call, note };
+  return { store, world, call, note, events };
 }
 
 describe('filing orchestrator notes as issues (#231)', () => {
@@ -115,6 +116,38 @@ describe('the notes list (#220)', () => {
     const list = (await call('GET', '/orchestrator/notes')).body;
     expect(list).toHaveLength(250);
     expect(list[0].data.text).toBe('Note 0.');
+  });
+});
+
+describe('the read marker (#305)', () => {
+  it('is kept by the server, reaches every client, and only moves forward', async () => {
+    const { call, note, events, store } = await setup();
+    const a = note('First.', undefined, '2026-09-01T10:00:00.000Z');
+    const b = note('Second.', undefined, '2026-09-02T10:00:00.000Z');
+    expect((await call('GET', '/orchestrator/notes/seen')).body).toEqual({ seen: '' });
+    events.length = 0;
+    const r = await call('POST', '/orchestrator/notes/seen', { up_to: b.ts });
+    expect(r.body).toEqual({ seen: b.ts });
+    // Every open page hears it over the WebSocket at once, and a second client reads the same value.
+    const heard = events.filter((e) => e.type === 'journal.appended' && e.entry.type === NOTES_SEEN_TYPE);
+    expect(heard).toHaveLength(1);
+    expect(heard[0].entry.data.up_to).toBe(b.ts);
+    expect((await call('GET', '/orchestrator/notes/seen')).body).toEqual({ seen: b.ts });
+    // A stale client sending an older marker never makes read notes unread again, and writes nothing.
+    events.length = 0;
+    expect((await call('POST', '/orchestrator/notes/seen', { up_to: a.ts })).body).toEqual({ seen: b.ts });
+    expect(events).toHaveLength(0);
+    expect((await call('GET', '/orchestrator/notes/seen')).body).toEqual({ seen: b.ts });
+    // It survives a restart: the marker lives in the data dir, not in a browser.
+    const dir = store.dataDir; store.close();
+    const reopened = await DataStore.open(dir, { emit: () => {} });
+    try { expect(notesSeen(reopened)).toBe(b.ts); } finally { reopened.close(); }
+  });
+
+  it('never covers a note that does not exist yet', async () => {
+    const { call, note } = await setup();
+    const a = note('Only one.', undefined, '2026-09-01T10:00:00.000Z');
+    expect((await call('POST', '/orchestrator/notes/seen', { up_to: '2099-01-01T00:00:00.000Z' })).body).toEqual({ seen: a.ts });
   });
 });
 

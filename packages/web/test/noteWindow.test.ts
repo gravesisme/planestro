@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { NOTE_PAGE, noteWindow } from '../src/noteWindow.ts';
+import { NOTE_PAGE, noteWindow, isUnread } from '../src/noteWindow.ts';
 
 /** The Console's planestro feedback list (#220): every unread note is shown, older read ones a page at a time. */
 const at = (i: number) => `2026-09-${String(1 + Math.floor(i / 24)).padStart(2, '0')}T${String(i % 24).padStart(2, '0')}:00:00.000Z`;
@@ -32,5 +32,15 @@ describe('the planestro feedback list (#220)', () => {
     expect(w.unread).toBe(0);
     expect(w.shown).toHaveLength(NOTE_PAGE);
     expect(w.older).toBe(100 - NOTE_PAGE);
+  });
+
+  it('counts a note filed as an issue, or marked handled, as read whatever the marker says (#305)', () => {
+    const none = { issues: [], handled: false, comments: [] };
+    const all = [{ ts: at(0), links: none }, { ts: at(1), links: { ...none, issues: [{ number: 7 }] } }, { ts: at(2), links: { ...none, handled: true } }, { ts: at(3), links: none }];
+    const seen = at(0);
+    expect(all.map((n) => isUnread(n, seen))).toEqual([false, false, false, true]);
+    const w = noteWindow(all, seen, 1);
+    expect(w.unread).toBe(1);
+    expect(w.shown).toHaveLength(4);
   });
 });
