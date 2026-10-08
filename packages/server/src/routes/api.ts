@@ -143,6 +143,15 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
       return c.json({ said, item: itemView(store, store.requireItem(c.req.param('id'))) });
     } catch (e) { return fail(c, e); }
   });
+  // Undo last turn (#234): the user's only, never an orchestrator tool. The preview is what it discards; the undo is confirmed against it.
+  api.get('/items/:id/undo-turn', async (c) => { try { return c.json(await engine.undoTurnPreview(c.req.param('id'))); } catch (e) { return fail(c, e); } });
+  api.post('/items/:id/undo-turn', async (c) => {
+    try {
+      const { expect } = z.object({ expect: z.string().min(1) }).parse(await c.req.json());
+      const said = await engine.undoTurn(c.req.param('id'), expect);
+      return c.json({ said, item: itemView(store, store.requireItem(c.req.param('id'))) });
+    } catch (e) { return fail(c, e); }
+  });
   api.post('/items/:id/transition', async (c) => {
     try {
       const id = c.req.param('id');

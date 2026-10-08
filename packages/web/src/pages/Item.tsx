@@ -16,6 +16,7 @@ import { BlockedPanel } from '../components/BlockedPanel.tsx';
 import { WaitingPanel } from '../components/ResumeAfter.tsx';
 import { TakeOverButton, TakenOverPanel } from '../components/TakeOver.tsx';
 import { DiscardButton, DiscardPanel } from '../components/Discard.tsx';
+import { UndoTurnButton, UndoTurnPanel } from '../components/UndoTurn.tsx';
 import { AwaitingPanels } from '../components/AwaitingPanels.tsx';
 import { PartsStrip } from '../components/PartsStrip.tsx';
 import { DecisionCard } from '../components/DecisionCard.tsx';
@@ -70,6 +71,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
   const [reject, setReject] = useState('');
   const [msg, setMsg] = useState('');
   const [discarding, setDiscarding] = useState(false);
+  const [undoing, setUndoing] = useState(false);
   const [listOpen, setListOpen] = useState(false);
   useEffect(() => { setListOpen(false); }, [item.id]);
   const [refPath, setRefPath] = useState('');
@@ -131,6 +133,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           {fm.taken_over && <span className="pill yours">yours · by hand</span>}
           {fm.op && <span className="pill">{fm.op.replace(/_/g, ' ')}</span>}
           <TakeOverButton item={item} />
+          <UndoTurnButton item={item} open={undoing} onOpen={() => setUndoing(true)} />
           <DiscardButton item={item} open={discarding} onOpen={() => setDiscarding(true)} />
           {transitions.filter((t) => t.label !== DISCARD && !(t.to === 'IN_PROGRESS' && fm.status === 'PLAN_READY') && !(t.to === 'PLAN_IN_PROGRESS' && fm.status === 'PLAN_READY')).map((t) => (
             t.to === 'FINISHED'
@@ -140,6 +143,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           {canSyncWithBase(item, !!session) && <ActionButton title={SYNC_HINT} working="Syncing…" onAct={() => promptSyncWithBase(item)}>Sync with {d.base_branch ?? 'base'}…</ActionButton>}
           {convertible && !epicShaped && <ActionButton title={KIND_HINT[other]} working="Converting…" onAct={() => convert(other)}>Convert to {other}…</ActionButton>}
         </ActionGroup></div>
+        {undoing && <UndoTurnPanel item={item} onClose={() => setUndoing(false)} />}
         {discarding && <DiscardPanel item={item} onClose={() => setDiscarding(false)} />}
         <div className="controls">
           <label>category <select value={fm.category} onChange={(e) => field({ category: e.target.value })}>{state.config.categories.map((c) => <option key={c}>{c}</option>)}</select></label>

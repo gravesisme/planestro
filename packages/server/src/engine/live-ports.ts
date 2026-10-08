@@ -1,10 +1,11 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { statfs } from 'node:fs/promises';
-import { existsSync, mkdirSync, renameSync, copyFileSync, unlinkSync, lstatSync, readdirSync, readFileSync, statSync, constants as fsConstants } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, renameSync, copyFileSync, unlinkSync, lstatSync, readdirSync, readFileSync, statSync, constants as fsConstants } from 'node:fs';
+import { join, dirname, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { matchesPathPattern } from './ports.ts';
-import type { GitPort, GhPort, ProcPort, WorktreeEntry, RebaseResult, CiStatus, CiQueue, PrInfo, ChangedFile, IssueInfo, PrClosure, RunnerReport, RunnerInfo, OpenJob } from './ports.ts';
+import type { GitPort, GhPort, ProcPort, WorktreeEntry, RebaseResult, CiStatus, CiQueue, PrInfo, ChangedFile, IssueInfo, PrClosure, RunnerReport, RunnerInfo, OpenJob, WorktreeSnapshot, Checkpoint } from './ports.ts';
 
 const execFileP = promisify(execFile);
 
@@ -37,9 +38,9 @@ async function takeSide(cwd: string, conflicts: string[], patterns: string[], si
   return (await git(cwd, ['add', '--', ...conflicts], true)).code === 0;
 }
 
-async function git(cwd: string, args: string[], allowFail = false): Promise<{ stdout: string; stderr: string; code: number }> {
+async function git(cwd: string, args: string[], allowFail = false, env?: Record<string, string>): Promise<{ stdout: string; stderr: string; code: number }> {
   try {
-    const r = await execFileP('git', ['-C', cwd, ...args], { maxBuffer: 16 * 1024 * 1024 });
+    const r = await execFileP('git', ['-C', cwd, ...args], { maxBuffer: 16 * 1024 * 1024, ...(env ? { env: { ...process.env, ...env } } : {}) });
     return { ...r, code: 0 };
   } catch (e: any) {
     if (allowFail) return { stdout: e.stdout ?? '', stderr: e.stderr ?? '', code: e.code ?? 1 };
@@ -69,6 +70,9 @@ export async function retrying<T>(fn: () => Promise<T>, delaysMs: number[], slee
 const GIT_RETRY_MS = [2_000, 5_000];
 /** A read from GitHub: three tries over about a minute before the caller sees the error. */
 const GH_RETRY_MS = [5_000, 15_000, 40_000];
+
+/** Who checkpoint commits are by: they are planestro's, and a machine with no git identity (CI) can still make them. */
+const CHECKPOINT_IDENTITY = { GIT_AUTHOR_NAME: 'planestro', GIT_AUTHOR_EMAIL: 'planestro@localhost', GIT_COMMITTER_NAME: 'planestro', GIT_COMMITTER_EMAIL: 'planestro@localhost' };
 
 let refQueue: Promise<unknown> = Promise.resolve();
 /**
@@ -105,6 +109,59 @@ export class LiveGitPort implements GitPort {
   async fileDiff(cwd: string, base: string, head: string, path: string): Promise<string> {
     return (await git(cwd, ['diff', '--no-color', '--no-ext-diff', '--no-textconv', '--no-renames', `${base}...${head}`, '--', path])).stdout;
   }
+  /** A copy of the real index takes `add -A`, so the worktree's own index and files are never touched (#234). */
+  async snapshot(cwd: string): Promise<WorktreeSnapshot> {
+    const head = (await git(cwd, ['rev-parse', '--verify', '--quiet', 'HEAD'], true)).stdout.trim() || null;
+    const real = resolve(cwd, (await git(cwd, ['rev-parse', '--git-path', 'index'])).stdout.trim());
+    const dir = mkdtempSync(join(tmpdir(), 'planestro-snapshot-'));
+    try {
+      const env = { GIT_INDEX_FILE: join(dir, 'index') };
+      if (existsSync(real)) copyFileSync(real, env.GIT_INDEX_FILE);
+      const index = (await git(cwd, ['write-tree'], false, env)).stdout.trim();
+      await git(cwd, ['add', '-A'], false, env);
+      return { head, index, tree: (await git(cwd, ['write-tree'], false, env)).stdout.trim() };
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+  /** The files' tree, with HEAD and a commit of the index as its parents so nothing it names is ever garbage. Created, never moved. */
+  async checkpoint(cwd: string, ref: string): Promise<Checkpoint> {
+    const s = await this.snapshot(cwd);
+    const commit = async (tree: string, parents: string[], message: string) => (await git(cwd, ['commit-tree', '--no-gpg-sign', tree, ...parents.flatMap((p) => ['-p', p]), '-m', message], false, CHECKPOINT_IDENTITY)).stdout.trim();
+    const indexCommit = await commit(s.index, [], `planestro: index at ${ref}`);
+    const sha = await commit(s.tree, [...(s.head ? [s.head] : []), indexCommit], `planestro: checkpoint ${ref}\n\nhead: ${s.head ?? '(none)'}\nindex: ${s.index}`);
+    await refLocked(() => git(cwd, ['update-ref', ref, sha, '']));
+    return { ...s, ref, sha };
+  }
+  async checkpoints(repo: string, prefix: string): Promise<Checkpoint[]> {
+    const rows = (await git(repo, ['for-each-ref', '--format=%(refname)%09%(objectname)%09%(tree)%09%(parent)%09%(creatordate:iso-strict)', prefix])).stdout.split('\n').filter(Boolean).map((l) => l.split('\t'));
+    if (!rows.length) return [];
+    // The index commit is the last parent; HEAD the first, when there was one.
+    const indexTrees = (await git(repo, ['rev-parse', ...rows.map((r) => `${r[3].split(' ').pop()}^{tree}`)])).stdout.trim().split('\n');
+    return rows.map(([ref, sha, tree, parents, at], i) => { const p = parents.split(' '); return { ref, sha, tree, head: p.length > 1 ? p[0] : null, index: indexTrees[i], at }; });
+  }
+  async treeDiff(cwd: string, from: string, to: string, maxBytes = 200_000) {
+    const out = (await git(cwd, ['diff', '--name-status', '--no-renames', '-z', from, to])).stdout.split('\0');
+    const files: ChangedFile[] = [];
+    for (let i = 0; i + 1 < out.length; i += 2) files.push({ path: out[i + 1], change: out[i][0] === 'A' ? 'added' : out[i][0] === 'D' ? 'deleted' : 'modified' });
+    const patch = (await git(cwd, ['diff', '--no-color', '--no-ext-diff', '--no-textconv', '--no-renames', from, to])).stdout;
+    return { files, patch: patch.slice(0, maxBytes), ...(patch.length > maxBytes ? { truncated: true } : {}) };
+  }
+  /**
+   * The files first (a two-tree read-tree from `from`, which git refuses before it writes anything, e.g. over an ignored file in
+   * the way: the index is put back and nothing has moved), then the index, then the branch tip.
+   */
+  async restoreSnapshot(cwd: string, from: WorktreeSnapshot, to: WorktreeSnapshot) {
+    if (!to.head) throw new Error('the checkpoint has no HEAD to go back to');
+    await refLocked(async () => {
+      await git(cwd, ['read-tree', from.tree]);
+      await git(cwd, ['update-index', '-q', '--refresh'], true);
+      const r = await git(cwd, ['read-tree', '-m', '-u', from.tree, to.tree], true);
+      if (r.code !== 0) { await git(cwd, ['read-tree', from.index]); await git(cwd, ['update-index', '-q', '--refresh'], true); throw new Error(`git would not restore the files: ${r.stderr.trim().split('\n').slice(-3).join(' | ')}`); }
+      await git(cwd, ['read-tree', to.index]);
+      if (to.head !== from.head) await git(cwd, ['reset', '-q', '--soft', to.head!]);
+      await git(cwd, ['update-index', '-q', '--refresh'], true);
+    });
+  }
+  async deleteRef(repo: string, ref: string, expected: string) { return (await refLocked(() => git(repo, ['update-ref', '-d', ref, expected], true))).code === 0; }
   async fetch(repo: string) { await refLocked(() => retrying(() => git(repo, ['fetch', '--prune', 'origin']), GIT_RETRY_MS)); }
   async revParse(cwd: string, ref: string) { return (await git(cwd, ['rev-parse', ref])).stdout.trim(); }
   async refExists(repo: string, ref: string) { return (await git(repo, ['rev-parse', '--verify', '--quiet', ref], true)).code === 0; }

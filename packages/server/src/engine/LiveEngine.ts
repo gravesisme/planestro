@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { Audition, AuditionPicks, auditionProblem, takePathProblem, auditionPicksProblem, auditionPickLines, auditionNote, auditionComplete, auditionTakes, runnerTurnSettings, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
-import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote, type CiQueue, type RunnerReport, type UndeliveredReport, type ConnectionDrop } from './ports.ts';
+import { matchesPathPattern, type Checkpoint, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote, type CiQueue, type RunnerReport, type UndeliveredReport, type ConnectionDrop } from './ports.ts';
 import { operatorMcpUrl } from '../routes/mcp.ts';
 import { listInstances } from '../instances.ts';
 import { makePolicy, ruleFor, allowedByRules, sdkRules, BASE_ALLOWED } from './policy.ts';
@@ -23,7 +23,7 @@ import { quietTransientFailure } from './transient.ts';
 import { driveSchedules } from './schedules.ts';
 import { runnerStatusText, stallOf, recovered, type RunnerStall } from './runners.ts';
 import { HeavyLock, ciOnSharedHost, heavyRedirects, heavyAllowRules, took } from './heavyRuns.ts';
-import type { ReviewImage, ReviewDiff } from './Engine.ts';
+import type { ReviewImage, ReviewDiff, UndoTurnPreview } from './Engine.ts';
 
 const IMAGE_FILE = /\.(png|jpe?g|webp|gif|svg)$/i;
 /** What a person reviews by eye or ear (f5): images, sounds a sound worker made, models a 3D worker made. */
@@ -1474,9 +1474,18 @@ export class LiveEngine implements Engine {
     const known = metered && resumeId && fm.session_context?.session === resumeId ? fm.session_context : undefined;
     let declined: ResumeEstimate | undefined;
     let result: TurnResult;
+    // A worker's implement and fix turns are bracketed by checkpoints of its worktree (#234), numbered once it is admitted.
+    const checkpoints = phase !== 'plan' && d.flavor === 'worker';
+    let checkpointN: number | undefined;
+    const beforeRun = async () => {
+      if (!checkpoints) return;
+      checkpointN = await this.checkpointTurn(id, cwd, undefined, 'before');
+      const note = this.undoneNote(id);
+      if (note) prompt = `${note}\n\n${prompt}`;
+    };
     try {
       result = await this.withRunnerSlot(runner, () => this.withSessionSlot(id, () => { if (abort.signal.aborted && !this.stopping) return Promise.resolve<TurnResult>({ subtype: 'killed', isError: false, costUsd: 0, numTurns: 0, text: '' });
-        if (this.stopping || this._paused || this.draining || this.store.local.engine.provider_guards?.[runner]) return Promise.resolve<TurnResult>({ subtype: 'deferred', isError: false, costUsd: 0, numTurns: 0, text: '' }); admitted(); return agent.runTurn({
+        if (this.stopping || this._paused || this.draining || this.store.local.engine.provider_guards?.[runner]) return Promise.resolve<TurnResult>({ subtype: 'deferred', isError: false, costUsd: 0, numTurns: 0, text: '' }); admitted(); return beforeRun().then(() => agent.runTurn({
         itemId: id, phase, cwd, model: model as string,
         transport: modelCapabilities(def).transport, ...runnerTurnSettings(def),
         maxTokens: metered ? undefined : Math.min(budget.tokens - (fm.tokens ?? 0), phase === 'plan' ? fm.op_data?.plan_retry_turns ? 10_000 : this.store.config.budget_tokens_per_plan_turn : Infinity),
@@ -1558,8 +1567,9 @@ export class LiveEngine implements Engine {
         },
         onOutput: (text) => { const t = this.turns.get(id); if (t) t.lastOutput = text.slice(-400); this.emit({ type: 'session.output', id, text }); },
         signal: abort.signal,
-      }); }));
+      })); }));
     } finally {
+      if (checkpointN !== undefined) await this.checkpointTurn(id, cwd, checkpointN, 'after');
       this.turns.delete(id);
     }
     // What ran without a park, once per turn: the drift report's record of what the allow rules still match (#203).
@@ -3066,10 +3076,11 @@ export class LiveEngine implements Engine {
       await this.ports.git.worktreePrune(this.repo);
       await this.ports.git.deleteLocalBranch(this.repo, fm.branch!, localTip);
       if (d.flavor !== 'external') await this.ports.git.deleteRemoteBranch(this.repo, fm.branch!, remoteTip);
+      const dropped = await this.dropCheckpoints(id);
       this.store.mutateItem(id, [
         { transition: { to: 'FINISHED', actor: 'engine' } },
         { unset: ['op', 'op_started_at'] },
-        { activity: { actor: 'app', text: `removed worktree and branch ${fm.branch} (local + remote)` } },
+        { activity: { actor: 'app', text: `removed worktree and branch ${fm.branch} (local + remote)${dropped ? `; ${dropped}` : ''}` } },
       ], 'engine', { commit: `${id}: finish` });
       this.store.journal.end(opId, id, 'ok');
       this.note('info', `${id}: finished`);
@@ -5605,6 +5616,142 @@ export class LiveEngine implements Engine {
       ...(deferred !== undefined || _active !== undefined || pending.length ? [{ set: { op_data: { ...keptData, pending_messages: [] } } } as ItemOp] : []),
       ...(unset.length ? [{ unset } as ItemOp] : []),
     ] };
+  }
+
+  // ---- per-turn checkpoints and Undo last turn (#234) ----
+
+  private checkpointPrefix(id: string): string { return `refs/planestro/checkpoints/${id}/`; }
+  private checkpointTurnOf(id: string, ref: string): number { return Number(ref.slice(this.checkpointPrefix(id).length).split('/')[0]) || 0; }
+
+  /**
+   * The worker's worktree before its turn (`before`, numbered after every checkpoint the item has) and as the turn left it
+   * (`after`, under the same number). Refs are only added. A failure is a line in Activity, never a failed turn: that turn
+   * just cannot be undone.
+   */
+  private async checkpointTurn(id: string, cwd: string, n: number | undefined, kind: 'before' | 'after'): Promise<number | undefined> {
+    try {
+      const turn = n ?? 1 + Math.max(0, ...(await this.ports.git.checkpoints(this.repo, this.checkpointPrefix(id))).map((c) => this.checkpointTurnOf(id, c.ref)));
+      await this.ports.git.checkpoint(cwd, `${this.checkpointPrefix(id)}${turn}/${kind}`);
+      return turn;
+    } catch (e) {
+      if (this.store.getItem(id)) this.store.mutateItem(id, [{ activity: { actor: 'app', text: `no checkpoint ${kind === 'before' ? 'before' : 'after'} this turn, so it cannot be undone: ${(e as Error).message.replace(/\s+/g, ' ').slice(0, 300)}` } }], 'engine');
+      return undefined;
+    }
+  }
+
+  /** The line a worker's next turn opens with after the user undid its last one; said once. */
+  private undoneNote(id: string): string | undefined {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    const u = fm.op_data?.turn_undone as { turn: number; head?: string } | undefined;
+    if (!u) return undefined;
+    const { turn_undone: _said, ...rest } = fm.op_data ?? {};
+    this.store.mutateItem(id, [{ set: { op_data: rest } }], 'engine');
+    return `[planestro] The user undid your last turn (turn ${u.turn}): the branch, its index and the worktree's files are back as they were before it${u.head ? ` (HEAD ${u.head.slice(0, 7)})` : ''}. What you did in that turn is no longer in the worktree. Look at the worktree as it is now before you go on.`;
+  }
+
+  private undoRefusal(id: string, own = false): string | null {
+    const item = this.store.getItem(id);
+    if (!item) return `${id} does not exist`;
+    const fm = item.file.frontmatter;
+    if (this.store.derived(item).flavor !== 'worker' || !fm.worktree || !fm.branch) return `${id} has no worktree and branch of its own: there is no turn to undo`;
+    if (!['IN_PROGRESS', 'IN_REVIEW'].includes(fm.status)) return `${id} is ${fm.status}; a turn is undone only while its work is in progress or in review`;
+    if (this.turns.has(id)) return `${id} has a turn running; undo the last turn once it has ended`;
+    if ((!own && this.jobs.has(id)) || fm.op) return `${id} has a step running (${fm.op?.replace(/_/g, ' ') ?? 'an engine step'}); undo the last turn when that ends`;
+    if (fm.triage) return `the orchestrator is triaging ${id}; undo the last turn once it has finished`;
+    return null;
+  }
+
+  /**
+   * Whether the last turn can be undone, on positive evidence only (invariant 7): nothing live on the item, the turn's two
+   * checkpoints, the worktree exactly as the turn left it (HEAD on the branch, index and every file git does not ignore),
+   * no rebase or merge stopped half-way, and nothing of the turn's on the remote (read fresh: the remote branch is absent,
+   * or at an ancestor of where the turn began). Anything else is a refusal that says why; nothing is discarded on doubt.
+   */
+  private async undoState(id: string, own = false): Promise<{ refusal: string } | { refusal: null; n: number; cwd: string; branch: string; before: Checkpoint; after: Checkpoint }> {
+    const no = (refusal: string) => ({ refusal });
+    const sync = this.undoRefusal(id, own);
+    if (sync) return no(sync);
+    const fm = this.store.requireItem(id).file.frontmatter;
+    const cwd = this.absWorktree(fm.worktree!); const branch = fm.branch!;
+    try {
+      const cps = await this.ports.git.checkpoints(this.repo, this.checkpointPrefix(id));
+      if (!cps.length) return no(`${id} has no turn checkpoints: nothing to undo`);
+      const n = Math.max(...cps.map((c) => this.checkpointTurnOf(id, c.ref)));
+      const of = (kind: string) => cps.find((c) => c.ref === `${this.checkpointPrefix(id)}${n}/${kind}`);
+      const undone = of('undone');
+      if (undone) return no(`turn ${n} was already undone; what it left is kept at ${undone.ref} (${undone.sha.slice(0, 7)})`);
+      const before = of('before'); const after = of('after');
+      if (!before || !after) return no(`turn ${n} has no checkpoint from its ${before ? 'end' : 'start'} (planestro stopped during it, or recording failed): nothing is undone`);
+      if (!before.head) return no(`turn ${n} began with no HEAD to go back to`);
+      const stopped = await this.ports.git.inProgressOp(cwd);
+      if (stopped) return no(`a ${stopped} is unfinished in the worktree: finish or abort it first; nothing is undone`);
+      const now = await this.ports.git.snapshot(cwd);
+      if (now.head !== after.head) return no(`HEAD moved since turn ${n} ended (${after.head?.slice(0, 7)} → ${now.head?.slice(0, 7)}): undoing would discard more than the turn; nothing is undone`);
+      if (now.tree !== after.tree || now.index !== after.index) return no(`the worktree changed since turn ${n} ended (a file was edited, staged, added or removed after it): undoing would discard more than the turn; nothing is undone`);
+      const tip = await this.ports.git.revParse(this.repo, `refs/heads/${branch}`).catch(() => undefined);
+      if (tip !== after.head) return no(`the worktree is not on its branch ${branch} at ${after.head?.slice(0, 7)}: nothing is undone`);
+      await this.ports.git.fetch(this.repo);
+      const remote = await this.ports.git.remoteBranchSha(this.repo, branch);
+      if (remote && !await this.ports.git.isAncestor(this.repo, remote, before.head)) return no(`origin/${branch} is at ${remote.slice(0, 7)}, which holds work from turn ${n} or after it: work on the remote is not undone`);
+      return { refusal: null, n, cwd, branch, before, after };
+    } catch (e) {
+      return no(`could not check the worktree and its remote (${(e as Error).message.replace(/\s+/g, ' ').slice(0, 300)}): nothing is undone`);
+    }
+  }
+
+  /** What the Undo dialog shows: the last turn, the files and patch it would discard, its commits, and the token the undo is confirmed with. */
+  async undoTurnPreview(id: string): Promise<UndoTurnPreview> {
+    const s = await this.undoState(id);
+    if (s.refusal !== null) return { refusal: s.refusal };
+    const diff = await this.ports.git.treeDiff(s.cwd, s.before.tree, s.after.tree);
+    const commits = s.before.head !== s.after.head ? await this.ports.git.log(s.cwd, `${s.before.head}..${s.after.head}`, 30).catch(() => '') : '';
+    return { refusal: null, turn: s.n, ...(s.after.at ? { at: s.after.at } : {}), head: s.before.head!, files: diff.files, patch: diff.patch, ...(diff.truncated ? { truncated: true } : {}), commits, expect: s.after.sha };
+  }
+
+  /**
+   * Undo last turn (#234): the user, having seen what it discards (`expect` is the turn's end checkpoint they were shown),
+   * puts the worktree back as it was before the item's last turn: branch tip, index and files. Everything is checked again
+   * here, with the item held so nothing starts on it meanwhile. What the turn left is recorded first under `<n>/undone` (so
+   * even the undo can be undone) and named in Activity. The worker's next turn is told. User-only. Returns what happened.
+   */
+  async undoTurn(id: string, expect: string): Promise<string> {
+    const early = this.undoRefusal(id);
+    if (early) throw new Error(early);
+    let release!: () => void;
+    this.jobs.set(id, new Promise<void>((r) => { release = r; }));
+    try {
+      const s = await this.undoState(id, true);
+      if (s.refusal !== null) throw new Error(s.refusal);
+      if (s.after.sha !== expect) throw new Error(`the last turn changed since you looked (turn ${s.n} now ends at ${s.after.sha.slice(0, 7)}): look again`);
+      const kept = await this.ports.git.checkpoint(s.cwd, `${this.checkpointPrefix(id)}${s.n}/undone`);
+      this.store.mutateItem(id, [{ activity: { actor: 'user', text: `undoing turn ${s.n}: what it left is kept at ${kept.ref} (${kept.sha}); HEAD ${s.after.head?.slice(0, 7)} → ${s.before.head!.slice(0, 7)}` } }], 'user');
+      await this.ports.git.restoreSnapshot(s.cwd, s.after, s.before);
+      const now = await this.ports.git.snapshot(s.cwd).catch(() => undefined);
+      const exact = now && now.head === s.before.head && now.tree === s.before.tree && now.index === s.before.index;
+      const said = `undid turn ${s.n}: the worktree is back as it was before it (HEAD ${s.before.head!.slice(0, 7)}); what the turn left is kept at ${kept.ref}${exact ? '' : '. The worktree does not match the checkpoint exactly: look at it before the work goes on'}`;
+      const fm = this.store.requireItem(id).file.frontmatter;
+      this.store.mutateItem(id, [
+        { set: { op_data: { ...(fm.op_data ?? {}), turn_undone: { turn: s.n, head: s.before.head, ref: kept.ref, at: this.now() } } } },
+        { activity: { actor: 'user', text: said } },
+      ], 'user', { commit: `${id}: undo turn ${s.n}` });
+      this.note('info', `${id}: ${said}`);
+      return said;
+    } finally {
+      this.jobs.delete(id);
+      release();
+      this.deliverQueued(id, 'the undo ended');
+    }
+  }
+
+  /** At FINISHED, after the cleanup's proof: the item's checkpoint refs go, each leased to its tip, every tip written to Activity first. */
+  private async dropCheckpoints(id: string): Promise<string | undefined> {
+    const prefix = this.checkpointPrefix(id);
+    const cps = await this.ports.git.checkpoints(this.repo, prefix).catch(() => []);
+    if (!cps.length) return undefined;
+    this.store.mutateItem(id, [{ activity: { actor: 'app', text: `dropping ${cps.length} checkpoint refs under ${prefix}: ${cps.map((c) => `${c.ref.slice(prefix.length)} ${c.sha}`).join(', ')}` } }], 'engine');
+    let kept = 0;
+    for (const c of cps) if (!await this.ports.git.deleteRef(this.repo, c.ref, c.sha).catch(() => false)) kept++;
+    return kept ? `dropped ${cps.length - kept} checkpoint refs; ${kept} moved or could not be deleted and were kept` : `dropped ${cps.length} checkpoint refs`;
   }
 
   /**
