@@ -12,10 +12,15 @@ import { PromptsPage } from './pages/Prompts.tsx';
 import { ReleasesPage } from './pages/Releases.tsx';
 import { SchedulesPage } from './pages/Schedules.tsx';
 import { QuestionPage } from './pages/Question.tsx';
+import { CrashBoundary } from './components/CrashScreen.tsx';
+import { guardResume } from './resume.ts';
 import './styles.css';
+
+guardResume({ win: window, doc: document, storage: { getItem: (k) => sessionStorage.getItem(k), setItem: (k, v) => sessionStorage.setItem(k, v) }, reload: () => location.reload(), now: () => Date.now(), later: (f, ms) => { setTimeout(f, ms); } });
 
 createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
+    <CrashBoundary>
     <BrowserRouter>
       <Routes>
         <Route element={<App />}>
@@ -37,5 +42,6 @@ createRoot(document.getElementById('root')!).render(
         </Route>
       </Routes>
     </BrowserRouter>
+    </CrashBoundary>
   </React.StrictMode>,
 );

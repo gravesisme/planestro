@@ -474,3 +474,6 @@ input.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 /* A deep link's target (#226): clear of the sticky top bar, and marked while it holds the focus. */
 .item-page [id] { scroll-margin-top: 72px; }
 .item-page [id][tabindex="-1"]:focus { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+/* A render error (#280): what failed and a way back, never a blank page. */
+.crash { max-width: 640px; margin: 15vh auto 0; padding: 16px; } .crash pre { white-space: pre-wrap; overflow-wrap: anywhere; }
