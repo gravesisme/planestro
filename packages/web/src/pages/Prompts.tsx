@@ -3,6 +3,9 @@ import { Link, NavLink, useNavigate, useParams } from 'react-router';
 import { api, type PromptView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { NewItemDialog, itemPrompts } from '../components/NewItemDialog.tsx';
+import { ActionButton } from '../components/ActionButton.tsx';
+import { Sending } from '../components/Sending.tsx';
+import { useAction } from '../sending.ts';
 
 /** How each kind of prompt gets used, since the file alone does not say. */
 function usage(p: { kind: string; role?: string }, startable: boolean): string {
@@ -16,7 +19,8 @@ const isFavorite = (p: PromptView) => p.frontmatter.favorite === true;
 
 function Star({ prompt, className = '' }: { prompt: PromptView; className?: string }) {
   const on = isFavorite(prompt);
-  return <button type="button" className={`star ${on ? 'on' : ''} ${className}`} title={on ? 'Remove from favorites' : 'Add to favorites'} aria-pressed={on} onClick={(e) => { e.preventDefault(); e.stopPropagation(); void act(() => api.favoritePrompt(prompt.name, !on)); }}>{on ? '★' : '☆'}</button>;
+  const { busy, run } = useAction();
+  return <button type="button" className={`star ${on ? 'on' : ''} ${className}`} title={on ? 'Remove from favorites' : 'Add to favorites'} aria-pressed={on} disabled={busy !== undefined} aria-busy={busy !== undefined || undefined} onClick={(e) => { e.preventDefault(); e.stopPropagation(); void run('star', () => act(() => api.favoritePrompt(prompt.name, !on))); }}>{busy ? <Sending label="" /> : on ? '★' : '☆'}</button>;
 }
 
 function NewPromptDialog({ taken, onClose }: { taken: Set<string>; onClose: () => void }) {
@@ -30,7 +34,7 @@ function NewPromptDialog({ taken, onClose }: { taken: Set<string>; onClose: () =
   const clash = taken.has(file);
   return (
     <div className="dialog" onClick={onClose}>
-      <form onClick={(e) => e.stopPropagation()} onSubmit={async (e) => { e.preventDefault(); const r = await act(() => api.createPrompt({ name: file, title: title.trim(), kind, description: description.trim() || undefined, body })); if (r) { onClose(); nav(`/prompts/${r.name}`); } }}>
+      <form onClick={(e) => e.stopPropagation()} onSubmit={(e) => e.preventDefault()}>
         <h2 style={{ margin: 0 }}>New prompt</h2>
         <input autoFocus placeholder="Title" value={title} onChange={(e) => setTitle(e.target.value)} required />
         <div className="row">
@@ -40,7 +44,7 @@ function NewPromptDialog({ taken, onClose }: { taken: Set<string>; onClose: () =
         {clash && <p className="small" style={{ margin: 0, color: 'var(--hot)' }}>A prompt named {file} already exists.</p>}
         <input placeholder="Description (one line, optional)" value={description} onChange={(e) => setDescription(e.target.value)} />
         <textarea placeholder={'The prompt (markdown). {{placeholders}} are asked for when an item is created from it.'} value={body} onChange={(e) => setBody(e.target.value)} required />
-        <div className="row"><span className="grow" /><button type="button" onClick={onClose}>Cancel</button><button className="primary" type="submit" disabled={clash || !file}>Create</button></div>
+        <div className="row"><span className="grow" /><button type="button" onClick={onClose}>Cancel</button><ActionButton className="primary" type="submit" disabled={clash || !file} working="Creating…" onAct={async () => { const r = await act(() => api.createPrompt({ name: file, title: title.trim(), kind, description: description.trim() || undefined, body })); if (r) { onClose(); nav(`/prompts/${r.name}`); } }}>Create</ActionButton></div>
       </form>
     </div>
   );
@@ -92,10 +96,10 @@ export function PromptsPage() {
             <p className="muted small">{prompt.frontmatter.description}</p>
             <p className="small">{usage(prompt.frontmatter, startable)}</p>
             <textarea value={text} data-dirty={text !== source} onChange={(e) => setText(e.target.value)} style={{ minHeight: 360 }} />
-            <div className="row">{startable && <button className="primary" onClick={() => setCreating(true)}>+ New item from this prompt</button>}<button className={startable ? '' : 'primary'} disabled={text === source} onClick={() => act(() => api.putPrompt(prompt.name, text))}>Save</button>
+            <div className="row">{startable && <button className="primary" onClick={() => setCreating(true)}>+ New item from this prompt</button>}<ActionButton className={startable ? '' : 'primary'} disabled={text === source} working="Saving…" onAct={() => act(() => api.putPrompt(prompt.name, text))}>Save</ActionButton>
               <select className="grow" style={{ minWidth: 0 }} value={itemId} onChange={(e) => setItemId(e.target.value)}><option value="">preview with item…</option>{state.items.map((i) => <option key={i.id} value={i.id}>{i.id} {i.frontmatter.title}</option>)}</select>
-              <button onClick={async () => { try { setPreview((await api.renderPrompt(prompt.name, itemId || undefined)).text); } catch (e) { setPreview(`⚠ ${(e as Error).message}`); } }}>Render</button>
-              <button className="danger" onClick={() => { if (confirm(`Delete prompt ${prompt.name}?`)) void act(() => api.deletePrompt(prompt.name)).then(() => nav('/prompts')); }}>Delete</button></div>
+              <ActionButton working="Rendering…" onAct={async () => { try { setPreview((await api.renderPrompt(prompt.name, itemId || undefined)).text); } catch (e) { setPreview(`⚠ ${(e as Error).message}`); } }}>Render</ActionButton>
+              <ActionButton className="danger" working="Deleting…" onAct={() => { if (confirm(`Delete prompt ${prompt.name}?`)) return act(() => api.deletePrompt(prompt.name)).then(() => nav('/prompts')); }}>Delete</ActionButton></div>
           </div>
           {preview && <div className="section"><h2>Rendered</h2><pre className="events">{preview}</pre></div>}
         </div>

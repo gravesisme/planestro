@@ -4,13 +4,14 @@ import { DISCARD, epicFlagOf, holdShapeOf, type Status } from '@planestro/shared
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { canTakeOver, TakeOverButton } from './TakeOver.tsx';
+import { ActionButton, ActionGroup } from './ActionButton.tsx';
 
 export const CLOSE_HINT = 'The work already landed some other way: finish this item without a pull request';
 export const FINISH_HINT = 'The work is committed on the branch but never reached a pull request (over budget, a size gate, a commit made by hand): open the pull request from the worktree, as planestro would have';
 
 /** Finish from here (f2): it refuses a dirty tree or a branch with nothing ahead of its base, and says which. */
-export function promptFinishFromWorktree(id: string): void {
-  if (confirm(`Open a pull request for ${id} from its worktree?\n\nIts committed work goes through the same sync and CI as any item; any block is cleared. The tree must be clean and ahead of its base.`)) void act(() => api.finishFromWorktree(id));
+export function promptFinishFromWorktree(id: string): Promise<unknown> | undefined {
+  if (confirm(`Open a pull request for ${id} from its worktree?\n\nIts committed work goes through the same sync and CI as any item; any block is cleared. The tree must be clean and ahead of its base.`)) return act(() => api.finishFromWorktree(id));
 }
 
 export const SYNC_HINT = 'Bring the branch up to date with its base between turns (rebased; pushed with a lease only if already pushed), e.g. after something it needs has merged. A conflict goes to the session.';
@@ -24,8 +25,8 @@ export function canSyncWithBase(item: ItemView, live: boolean): boolean {
   return fm.kind !== 'epic' && !item.derived.external && ['PLAN_IN_PROGRESS', 'IN_PROGRESS'].includes(fm.status) && !!fm.worktree && !fm.op && !live && (!fm.awaiting || fm.awaiting === 'user');
 }
 
-export function promptSyncWithBase(item: ItemView): void {
-  if (confirm(`Sync ${item.id} with ${item.derived.base_branch ?? 'its base'}?\n\nIts branch is rebased onto origin/${item.derived.base_branch ?? '<base>'} (nothing happens if it is already there). A conflict is aborted and goes to its session. The tree must be clean.`)) void act(() => api.syncWithBase(item.id));
+export function promptSyncWithBase(item: ItemView): Promise<unknown> | undefined {
+  if (confirm(`Sync ${item.id} with ${item.derived.base_branch ?? 'its base'}?\n\nIts branch is rebased onto origin/${item.derived.base_branch ?? '<base>'} (nothing happens if it is already there). A conflict is aborted and goes to its session. The tree must be clean.`)) return act(() => api.syncWithBase(item.id));
 }
 
 const IN_FLIGHT = ['PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS'];
@@ -46,10 +47,15 @@ export function confirmMove(item: ItemView, to: string, label: string): boolean 
     : `Move ${item.id} "${item.frontmatter.title}" to ${where}?`);
 }
 
+/** What a move button says while it goes (#304). */
+export function movingLabel(to: string): string {
+  return to === 'QUEUED' ? 'Queuing…' : to === 'ICEBOX' ? 'Moving to the icebox…' : to === 'NOT_YET_SUBMITTED' ? 'Moving to the backlog…' : 'Moving…';
+}
+
 /** Closing skips the PR, so it always asks first; the optional reason lands in the Activity log. */
-export function promptCloseAsDone(id: string): void {
+export function promptCloseAsDone(id: string): Promise<unknown> | undefined {
   const r = prompt(`Close ${id} as done without a pull request?\n\nIts worktree and branch are removed only if they hold no changes. Optional reason for the log:`);
-  if (r !== null) void act(() => api.transition(id, 'FINISHED', r.trim() || undefined));
+  if (r !== null) return act(() => api.transition(id, 'FINISHED', r.trim() || undefined));
 }
 
 /**
@@ -60,7 +66,7 @@ export function QuickActions({ item, onActed }: { item: ItemView; onActed?: () =
   const fm = item.frontmatter; const d = item.derived;
   const [transitions, setTransitions] = useState<{ to: Status; label: string }[]>([]);
   useEffect(() => { let live = true; api.transitions(item.id).then((t) => { if (live) setTransitions(t); }).catch(() => {}); return () => { live = false; }; }, [item.id, fm.status]);
-  const run = (fn: () => Promise<unknown>) => { void act(fn).then(() => onActed?.()); };
+  const run = (fn: () => Promise<unknown>) => act(fn).then(() => onActed?.());
   const live = useStore((s) => !!s.state?.engine.sessions.some((x) => x.item === item.id));
   const sync = canSyncWithBase(item, live);
   const planReady = fm.status === 'PLAN_READY' && fm.kind !== 'epic'; // an epic's breakdown is edited on its page, not approved blind
@@ -70,19 +76,19 @@ export function QuickActions({ item, onActed }: { item: ItemView; onActed?: () =
   const plain = transitions.filter((t) => t.label !== DISCARD && !(fm.status === 'PLAN_READY' && (t.to === 'IN_PROGRESS' || t.to === 'PLAN_IN_PROGRESS')));
   if (!plain.length && !planReady && !fm.blocked && !sync && fm.status !== 'IN_PROGRESS' && !canTakeOver(item) && !(fm.status === 'IN_REVIEW' && (fm.awaiting === 'review' || fm.skip_merge))) return null;
   return (
-    <div className="row quick-actions">
-      {planReady && !epicFlagOf(fm) && !statedHold && <button className="primary" onClick={() => run(() => api.approvePlan(item.id))}>Approve &amp; implement</button>}
+    <div className="row quick-actions"><ActionGroup>
+      {planReady && !epicFlagOf(fm) && !statedHold && <ActionButton className="primary" working="Approving…" onAct={() => run(() => api.approvePlan(item.id))}>Approve &amp; implement</ActionButton>}
       {planReady && !epicFlagOf(fm) && statedHold && <Link className="button primary" to={`/items/${item.id}`} title={`Its plan says: "${statedHold.quote}"`}>States a merge hold: decide…</Link>}
       {planReady && epicFlagOf(fm) && <Link className="button primary" to={`/items/${item.id}`} title={epicFlagOf(fm)!.reason}>An epic: convert it…</Link>}
-      {fm.status === 'IN_REVIEW' && (fm.awaiting === 'review' || fm.skip_merge) && <button className="primary" onClick={() => { const n = prompt(`Let ${item.id} merge? Optional note for the log:`); if (n !== null) run(() => api.releaseHold(item.id, n || undefined)); }}>{fm.awaiting === 'review' ? 'Approve & merge' : 'Release hold'}</button>}
-      {planReady && <button onClick={() => { const m = prompt(`What should change in the plan for ${item.id}?`); if (m?.trim()) run(() => api.rejectPlan(item.id, m.trim())); }}>Request changes…</button>}
+      {fm.status === 'IN_REVIEW' && (fm.awaiting === 'review' || fm.skip_merge) && <ActionButton className="primary" working="Releasing…" onAct={() => { const n = prompt(`Let ${item.id} merge? Optional note for the log:`); if (n !== null) return run(() => api.releaseHold(item.id, n || undefined)); }}>{fm.awaiting === 'review' ? 'Approve & merge' : 'Release hold'}</ActionButton>}
+      {planReady && <ActionButton working="Sending…" onAct={() => { const m = prompt(`What should change in the plan for ${item.id}?`); if (m?.trim()) return run(() => api.rejectPlan(item.id, m.trim())); }}>Request changes…</ActionButton>}
       {plain.map((t) => t.to === 'FINISHED'
-        ? <button key={t.to} title={CLOSE_HINT} onClick={() => promptCloseAsDone(item.id)}>{t.label}…</button>
-        : <button key={t.to} className={t.to === 'QUEUED' ? 'primary' : ''} disabled={t.to === 'QUEUED' && (!d.deps_satisfied || !!d.base_branch_error)} title={d.base_branch_error ?? (t.to === 'QUEUED' && !d.deps_satisfied ? 'dependencies not merged' : '')} onClick={() => { if (confirmMove(item, t.to, t.label)) run(() => api.transition(item.id, t.to)); }}>{t.label}</button>)}
-      {fm.blocked && <button className="danger" onClick={() => { const m = prompt(`Unblock ${item.id} (${fm.blocked_reason}). Optional message for the session:`); if (m !== null) run(() => api.unblock(item.id, m || undefined)); }}>unblock…</button>}
-      {fm.status === 'IN_PROGRESS' && !d.external && fm.kind !== 'epic' && fm.worktree && !fm.taken_over && <button title={FINISH_HINT} onClick={() => { promptFinishFromWorktree(item.id); onActed?.(); }}>finish from here…</button>}
+        ? <ActionButton key={t.to} title={CLOSE_HINT} working="Closing…" onAct={() => promptCloseAsDone(item.id)}>{t.label}…</ActionButton>
+        : <ActionButton key={t.to} className={t.to === 'QUEUED' ? 'primary' : ''} disabled={t.to === 'QUEUED' && (!d.deps_satisfied || !!d.base_branch_error)} title={d.base_branch_error ?? (t.to === 'QUEUED' && !d.deps_satisfied ? 'dependencies not merged' : '')} working={movingLabel(t.to)} onAct={() => { if (confirmMove(item, t.to, t.label)) return run(() => api.transition(item.id, t.to)); }}>{t.label}</ActionButton>)}
+      {fm.blocked && <ActionButton className="danger" working="Unblocking…" onAct={() => { const m = prompt(`Unblock ${item.id} (${fm.blocked_reason}). Optional message for the session:`); if (m !== null) return run(() => api.unblock(item.id, m || undefined)); }}>unblock…</ActionButton>}
+      {fm.status === 'IN_PROGRESS' && !d.external && fm.kind !== 'epic' && fm.worktree && !fm.taken_over && <ActionButton title={FINISH_HINT} working="Opening the PR…" onAct={() => promptFinishFromWorktree(item.id)?.then(() => onActed?.())}>finish from here…</ActionButton>}
       <TakeOverButton item={item} onActed={onActed} />
-      {sync && <button title={SYNC_HINT} onClick={() => { promptSyncWithBase(item); onActed?.(); }}>sync with base…</button>}
-    </div>
+      {sync && <ActionButton title={SYNC_HINT} working="Syncing…" onAct={() => promptSyncWithBase(item)?.then(() => onActed?.())}>sync with base…</ActionButton>}
+    </ActionGroup></div>
   );
 }

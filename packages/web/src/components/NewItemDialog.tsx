@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router';
 import { planReviewByDefault, placeholdersIn, renderPrompt, fallbackChain, findModel, canPlan, PRIORITIES, type Config, type ModelDef, type Priority } from '@planestro/shared';
 import { api, type PromptView, type State } from '../api.ts';
 import { act, useStore } from '../store.ts';
+import { ActionButton } from './ActionButton.tsx';
 
 /** Prompts a person starts work from: the library's templates and actions that no engine step owns. */
 export function itemPrompts(prompts: PromptView[]): PromptView[] {
@@ -84,15 +85,16 @@ export function NewItemDialog({ onClose, icebox, from }: { onClose: () => void; 
     if (!description.trim() || library.some((x) => x.body === description) || confirm('Replace the description with this prompt?')) setDescription(p.body);
   };
 
+  const create = async () => {
+    let text: string;
+    try { text = render(); } catch (err) { useStore.setState({ error: (err as Error).message }); return; }
+    const r = await act(() => api.createItem({ title, category, ...(priority ? { priority } : {}), description: text, kind, planner: kind === 'epic' && planner ? planner : undefined, parent: parent || undefined, implementer: kind === 'item' ? implementer || undefined : undefined, auto_approve_plan: kind === 'item' && orch?.may_approve_plans ? delegate : undefined, allow_model_fallback: allowFallback, status: icebox ? 'ICEBOX' : undefined }));
+    if (r) { onClose(); nav(`/items/${r.id}`); }
+  };
+
   return (
     <div className="dialog" onClick={onClose}>
-      <form onClick={(e) => e.stopPropagation()} onSubmit={async (e) => {
-        e.preventDefault();
-        let text: string;
-        try { text = render(); } catch (err) { useStore.setState({ error: (err as Error).message }); return; }
-        const r = await act(() => api.createItem({ title, category, ...(priority ? { priority } : {}), description: text, kind, planner: kind === 'epic' && planner ? planner : undefined, parent: parent || undefined, implementer: kind === 'item' ? implementer || undefined : undefined, auto_approve_plan: kind === 'item' && orch?.may_approve_plans ? delegate : undefined, allow_model_fallback: allowFallback, status: icebox ? 'ICEBOX' : undefined }));
-        if (r) { onClose(); nav(`/items/${r.id}`); }
-      }}>
+      <form onClick={(e) => e.stopPropagation()} onSubmit={(e) => e.preventDefault()}>
         <h2 style={{ margin: 0 }}>New {icebox ? 'icebox ' : ''}{kind === 'epic' ? 'epic' : 'item'}</h2>
         {library.length > 0 && <select value={template} onChange={(e) => pick(e.target.value)} title="Start from a prompt in the library"><option value="">blank — or start from a prompt…</option>{library.map((p) => <option key={p.name} value={p.name}>{p.frontmatter.favorite === true ? '★ ' : ''}{p.frontmatter.title} ({p.name})</option>)}</select>}
         <input autoFocus placeholder="Title" value={title} onChange={(e) => setTitle(e.target.value)} required />
@@ -108,7 +110,7 @@ export function NewItemDialog({ onClose, icebox, from }: { onClose: () => void; 
         {state && <label className="row small" title="While the planner's or implementer's model is out of usage, turns run on its fallback (models: fallback in planestro.yml) instead of blocking"><input type="checkbox" checked={allowFallback} onChange={(e) => setAllowFallback(e.target.checked)} /> allow fallback model{fallbackHint(state.config, [state.config.defaults.planner, kind === 'item' ? implementer : undefined])}{kind === 'epic' ? ' — its children inherit this' : ''}</label>}
         <textarea placeholder="Description / prompt (markdown)" value={description} onChange={(e) => setDescription(e.target.value)} />
         {asks.map((p) => <label key={p} className="row small"><code>{`{{${p}}}`}</code><input className="grow" required placeholder={`value for ${p}`} value={values[p] ?? ''} onChange={(e) => setValues((v) => ({ ...v, [p]: e.target.value }))} /></label>)}
-        <div className="row"><span className="grow" /><button type="button" onClick={onClose}>Cancel</button><button className="primary" type="submit">Create</button></div>
+        <div className="row"><span className="grow" /><button type="button" onClick={onClose}>Cancel</button><ActionButton className="primary" type="submit" working="Creating…" onAct={create}>Create</ActionButton></div>
       </form>
     </div>
   );

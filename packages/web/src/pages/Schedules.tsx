@@ -5,6 +5,7 @@ import { api, type ScheduleFields, type ScheduleView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { statusLabel } from '../components/ItemCard.tsx';
 import { setTitle as setTabTitle } from '../tabBadge.ts';
+import { ActionButton } from '../components/ActionButton.tsx';
 
 const HERE = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } })();
 const when = (iso: string) => new Date(iso).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
@@ -52,7 +53,7 @@ function NewScheduleDialog({ taken, onClose }: { taken: Set<string>; onClose: ()
   const clash = taken.has(name.trim());
   return (
     <div className="dialog" onClick={onClose}>
-      <form onClick={(e) => e.stopPropagation()} onSubmit={async (e) => { e.preventDefault(); const s = await act(() => api.createSchedule({ name: name.trim(), title: title.trim(), description, cron: cron.trim(), tz: tz.trim(), ...opts })); if (s) { onClose(); nav(`/schedules/${s.name}`); } }}>
+      <form onClick={(e) => e.stopPropagation()} onSubmit={(e) => e.preventDefault()}>
         <h2 style={{ margin: 0 }}>New schedule</h2>
         <input autoFocus placeholder="Name (weekly-audit)" value={name} onChange={(e) => setName(e.target.value.toLowerCase().replace(/[^a-z0-9-]+/g, '-'))} required pattern="[a-z0-9][a-z0-9\-]*" title="lowercase letters, digits and dashes" />
         {clash && <p className="small" style={{ margin: 0, color: 'var(--hot)' }}>{name} already exists.</p>}
@@ -60,7 +61,7 @@ function NewScheduleDialog({ taken, onClose }: { taken: Set<string>; onClose: ()
         <input placeholder="Item title (Weekly audit {{date}})" value={title} onChange={(e) => setTitle(e.target.value)} required />
         <textarea placeholder="Item description: what to do each time. {{date}}, {{slot}} and {{schedule}} are filled in." value={description} onChange={(e) => setDescription(e.target.value)} rows={5} />
         <Options value={opts} set={(f) => setOpts({ ...opts, ...f })} />
-        <div className="row"><span className="grow" /><button type="button" onClick={onClose}>Cancel</button><button className="primary" type="submit" disabled={!name.trim() || !title.trim() || clash}>Create</button></div>
+        <div className="row"><span className="grow" /><button type="button" onClick={onClose}>Cancel</button><ActionButton className="primary" type="submit" disabled={!name.trim() || !title.trim() || clash} working="Creating…" onAct={async () => { const s = await act(() => api.createSchedule({ name: name.trim(), title: title.trim(), description, cron: cron.trim(), tz: tz.trim(), ...opts })); if (s) { onClose(); nav(`/schedules/${s.name}`); } }}>Create</ActionButton></div>
       </form>
     </div>
   );
@@ -85,10 +86,10 @@ function ScheduleBody({ schedule }: { schedule: ScheduleView }) {
           {fm.submit && fm.created_by !== 'user' && <span className="muted small"> · says submit, but only a schedule you made submits</span>}</p>
         <CronFields cron={cron} tz={tz} setCron={setCron} setTz={setTz} />
         <div className="controls">
-          {timing && <><button className="primary" onClick={() => void patch({ cron: cron.trim(), tz: tz.trim() })}>Save timing</button><button onClick={() => { setCron(fm.cron); setTz(fm.tz); }}>Revert</button></>}
+          {timing && <><ActionButton className="primary" working="Saving…" onAct={() => patch({ cron: cron.trim(), tz: tz.trim() })}>Save timing</ActionButton><button onClick={() => { setCron(fm.cron); setTz(fm.tz); }}>Revert</button></>}
           <label><input type="checkbox" checked={fm.enabled} onChange={(e) => void patch({ enabled: e.target.checked })} /> on</label>
           <span className="grow" />
-          <button type="button" className="danger" onClick={() => { if (confirm(`Delete schedule ${schedule.name}? Items it filed stay; git history keeps the file.`)) void act(() => api.deleteSchedule(schedule.name)).then(() => nav('/schedules')); }}>Delete</button>
+          <ActionButton type="button" className="danger" working="Deleting…" onAct={() => { if (confirm(`Delete schedule ${schedule.name}? Items it filed stay; git history keeps the file.`)) return act(() => api.deleteSchedule(schedule.name)).then(() => nav('/schedules')); }}>Delete</ActionButton>
         </div>
       </div>
       <div className="section"><h2>What it files</h2>

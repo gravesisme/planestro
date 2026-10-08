@@ -7,7 +7,8 @@ import { reloadText, useResumeEstimate } from '../resumeCost.ts';
 import { Markdown } from '../components/Markdown.tsx';
 import { statusLabel } from '../components/ItemCard.tsx';
 import { ItemConsole } from '../components/ItemConsole.tsx';
-import { CLOSE_HINT, SYNC_HINT, canSyncWithBase, confirmMove, promptCloseAsDone, promptSyncWithBase } from '../components/QuickActions.tsx';
+import { CLOSE_HINT, SYNC_HINT, canSyncWithBase, confirmMove, movingLabel, promptCloseAsDone, promptSyncWithBase } from '../components/QuickActions.tsx';
+import { ActionButton, ActionGroup } from '../components/ActionButton.tsx';
 import { ReviewPanel } from '../components/ReviewPanel.tsx';
 import { fallbackHint, KIND_HINT } from '../components/NewItemDialog.tsx';
 import { BreakdownPanel } from '../components/BreakdownPanel.tsx';
@@ -27,7 +28,7 @@ function useAutosave(id: string, section: 'Description' | 'Notes' | 'Plan', init
   const [text, setText] = useState(initial);
   const saved = useRef(initial);
   useEffect(() => { if (initial !== saved.current) { setText(initial); saved.current = initial; } }, [initial]);
-  const save = () => { if (text === saved.current) return; saved.current = text; void act(() => api.patchItem(id, { sections: { [section]: text } })); };
+  const save = () => { if (text === saved.current) return; saved.current = text; return act(() => api.patchItem(id, { sections: { [section]: text } })); };
   return { text, setText, save, dirty: text !== saved.current };
 }
 
@@ -110,7 +111,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
   const convert = (to: 'item' | 'epic') => {
     const carries = item.sections.Plan.trim() ? ` Its ${fm.kind === 'epic' ? 'breakdown' : 'plan'} moves into Notes for the new planner.` : '';
     const next = ['QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY'].includes(fm.status) ? (to === 'epic' ? ' Its breakdown is planned at once.' : ' It is queued to be planned as one item.') : '';
-    if (confirm(`Convert ${item.id} to ${to === 'epic' ? 'an epic' : 'an item'}?\n\n${KIND_HINT[to]}\n\nThe description stays.${carries}${next}`)) void act(() => api.convertKind(item.id, to));
+    if (confirm(`Convert ${item.id} to ${to === 'epic' ? 'an epic' : 'an item'}?\n\n${KIND_HINT[to]}\n\nThe description stays.${carries}${next}`)) return act(() => api.convertKind(item.id, to));
   };
 
   return (
@@ -119,7 +120,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
         <Link className="back phone-only" to={d.lane === 'icebox' ? '/icebox' : d.lane === 'done' ? '/done' : '/'}>‹ {d.lane === 'icebox' ? 'Icebox' : d.lane === 'done' ? 'Done' : 'Board'}</Link>
         <h1><span className="title-id">{item.id}</span><textarea ref={titleBox} rows={1} aria-label="Title" value={title} onChange={(e) => setTitle(e.target.value.replace(/\n/g, ' '))} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } }} onBlur={() => title.trim() && title !== fm.title && field({ title: title.trim() })} /></h1>
         <DecisionCard item={item} />
-        <div className="controls">
+        <div className="controls"><ActionGroup>
           <span className="pill">{statusLabel(fm.status)}</span>
           {fm.blocked && <span className="pill blocked">BLOCKED{fm.blocked_reason ? ` · ${fm.blocked_reason}` : ''}</span>}
           {fm.awaiting && <span className={`pill ${d.needs_you ? 'await' : ''}`}>{decisionOf(fm) ? 'your decision' : `awaiting ${fm.awaiting.replace(/_/g, ' ')}`}</span>}
@@ -130,12 +131,12 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           <DiscardButton item={item} open={discarding} onOpen={() => setDiscarding(true)} />
           {transitions.filter((t) => t.label !== DISCARD && !(t.to === 'IN_PROGRESS' && fm.status === 'PLAN_READY') && !(t.to === 'PLAN_IN_PROGRESS' && fm.status === 'PLAN_READY')).map((t) => (
             t.to === 'FINISHED'
-              ? <button key={t.to} title={CLOSE_HINT} onClick={closeAsDone}>{t.label}…</button>
-              : <button key={t.to} disabled={t.to === 'QUEUED' && (!d.deps_satisfied || !!d.base_branch_error)} title={d.base_branch_error ?? (!d.deps_satisfied ? 'dependencies not merged' : '')} onClick={() => { if (confirmMove(item, t.to, t.label)) void act(() => api.transition(item.id, t.to)); }}>{t.label}</button>
+              ? <ActionButton key={t.to} title={CLOSE_HINT} working="Closing…" onAct={closeAsDone}>{t.label}…</ActionButton>
+              : <ActionButton key={t.to} disabled={t.to === 'QUEUED' && (!d.deps_satisfied || !!d.base_branch_error)} title={d.base_branch_error ?? (!d.deps_satisfied ? 'dependencies not merged' : '')} working={movingLabel(t.to)} onAct={() => { if (confirmMove(item, t.to, t.label)) return act(() => api.transition(item.id, t.to)); }}>{t.label}</ActionButton>
           ))}
-          {canSyncWithBase(item, !!session) && <button title={SYNC_HINT} onClick={() => promptSyncWithBase(item)}>Sync with {d.base_branch ?? 'base'}…</button>}
-          {convertible && !epicShaped && <button title={KIND_HINT[other]} onClick={() => convert(other)}>Convert to {other}…</button>}
-        </div>
+          {canSyncWithBase(item, !!session) && <ActionButton title={SYNC_HINT} working="Syncing…" onAct={() => promptSyncWithBase(item)}>Sync with {d.base_branch ?? 'base'}…</ActionButton>}
+          {convertible && !epicShaped && <ActionButton title={KIND_HINT[other]} working="Converting…" onAct={() => convert(other)}>Convert to {other}…</ActionButton>}
+        </ActionGroup></div>
         {discarding && <DiscardPanel item={item} onClose={() => setDiscarding(false)} />}
         <div className="controls">
           <label>category <select value={fm.category} onChange={(e) => field({ category: e.target.value })}>{state.config.categories.map((c) => <option key={c}>{c}</option>)}</select></label>
@@ -150,7 +151,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           <span className="deps">depends on
             {fm.depends_on.length === 0 && <span className="muted"> nothing</span>}
             {fm.depends_on.map((dep) => { const o = state.items.find((x) => x.id === dep); const done = o && ['MERGED', 'FINISHED'].includes(o.frontmatter.status); return (
-              <span key={dep} className={`tag ${done ? 'ok' : ''}`} title={o ? `${o.frontmatter.title} — ${statusLabel(o.frontmatter.status)}` : 'unknown item'}><Link to={`/items/${dep}`}>{dep}</Link> <button className="chip-x" title={`Stop waiting on ${dep}`} onClick={() => field({ depends_on: fm.depends_on.filter((x) => x !== dep) })}>×</button></span>); })}
+              <span key={dep} className={`tag ${done ? 'ok' : ''}`} title={o ? `${o.frontmatter.title} — ${statusLabel(o.frontmatter.status)}` : 'unknown item'}><Link to={`/items/${dep}`}>{dep}</Link> <ActionButton className="chip-x" title={`Stop waiting on ${dep}`} working="" onAct={() => field({ depends_on: fm.depends_on.filter((x) => x !== dep) })}>×</ActionButton></span>); })}
             <select value="" onChange={(e) => e.target.value && field({ depends_on: [...fm.depends_on, e.target.value] })}><option value="">add…</option>{others.filter((o) => !fm.depends_on.includes(o.id)).map((o) => <option key={o.id} value={o.id}>{o.id} {o.frontmatter.title.slice(0, 70)}</option>)}</select>
           </span>
         </div>
@@ -176,10 +177,10 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
                 <b>This plan is an epic, not one item.</b>
                 <p className="small">{epicShaped.reason[0].toUpperCase() + epicShaped.reason.slice(1)}. Approved as an item, all of it would go to one implementer in one pull request, so approval is refused. Convert it: the plan becomes the request its epic planner breaks into child items, each with its own worker and pull request.</p>
                 {epicShaped.children?.length ? <p className="small muted">Proposed: {epicShaped.children.map((c) => c.title).join(' · ')}</p> : null}
-                <div className="row">
-                  {convertible && <button className="primary" onClick={() => convert('epic')}>Convert to epic…</button>}
-                  <button className="small" title="Only if it truly is one piece of work and the plan's layout misled the check" onClick={() => { if (confirm(`Approve ${item.id} as ONE item anyway?\n\nOne implementer does all of it in one pull request.`)) void act(() => api.approvePlan(item.id, approval || undefined, true)); }}>It is one item: approve anyway…</button>
-                </div>
+                <div className="row"><ActionGroup>
+                  {convertible && <ActionButton className="primary" working="Converting…" onAct={() => convert('epic')}>Convert to epic…</ActionButton>}
+                  <ActionButton className="small" title="Only if it truly is one piece of work and the plan's layout misled the check" working="Approving…" onAct={() => { if (confirm(`Approve ${item.id} as ONE item anyway?\n\nOne implementer does all of it in one pull request.`)) return act(() => api.approvePlan(item.id, approval || undefined, true)); }}>It is one item: approve anyway…</ActionButton>
+                </ActionGroup></div>
               </div>
             )}
             {statedHold && (
@@ -192,7 +193,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
             {lacks.length > 0 && <div className="hold-warning" role="note"><b>This plan uses tools its implementer does not have.</b>{lacks.map((l) => <p key={l.server} className="small">MCP server <b>{l.server}</b> ({l.tools.join(', ')}): {implementerDef?.label ?? fm.implementer} has no access to it. {l.models.length ? `Switch the implementer to ${l.models.map((m) => state.config.models.find((x) => x.id === m)?.label ?? m).join(' or ')} before approving.` : 'No model in this project has it: add the server in Settings → MCP servers and tick it on a model, or ask for a plan without it.'}</p>)}</div>}
             {paid && <label className="row small">MCP budget: <input style={{ width: 90 }} inputMode="numeric" aria-label="MCP calls this item may make" placeholder="calls" value={budgetShown} onChange={(e) => setBudgetText(e.target.value)} /> calls to {implementerDef!.mcp.join(', ')}{implementerDef!.user_approves_plans ? ' (required: each call costs money)' : ''}</label>}
             <textarea placeholder="Optional notes to pass to the implementer" value={approval} onChange={(e) => setApproval(e.target.value)} style={{ minHeight: 60 }} />
-            <div className="row">{statedHold && <button className="primary" disabled={!holdText.trim() || needsBudget} onClick={() => act(() => api.approvePlan(item.id, approval || undefined, false, holdText, paid ? mcpCalls : undefined))}>Approve and hold the PR</button>}{!epicShaped && <button className={statedHold ? '' : 'primary'} disabled={needsBudget} title={needsBudget ? 'Set its MCP budget first' : statedHold ? 'Without the hold: its pull request merges as soon as CI is green' : undefined} onClick={() => act(() => api.approvePlan(item.id, approval || undefined, false, undefined, paid ? mcpCalls : undefined))}>Approve &amp; implement</button>}{canClose && <button title={CLOSE_HINT} onClick={closeAsDone}>Already done — close…</button>}{fm.awaiting === 'plan_approval' && state.config.orchestrator.may_approve_plans && !implementerDef?.user_approves_plans && <button title="Hand it to the orchestrator to review and approve, as a delegated plan: for one that came back to you without a decision" onClick={() => void act(() => api.reviewPlanAgain(item.id))}>Ask the orchestrator to review</button>}<span className="grow" /><input className="grow" placeholder="What should change?" value={reject} onChange={(e) => setReject(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && reject.trim()) { e.preventDefault(); void act(() => api.rejectPlan(item.id, reject)); } }} /><button className="danger" disabled={!reject.trim()} onClick={() => act(() => api.rejectPlan(item.id, reject))}>Request changes</button></div>
+            <div className="row"><ActionGroup>{statedHold && <ActionButton className="primary" disabled={!holdText.trim() || needsBudget} working="Approving…" onAct={() => act(() => api.approvePlan(item.id, approval || undefined, false, holdText, paid ? mcpCalls : undefined))}>Approve and hold the PR</ActionButton>}{!epicShaped && <ActionButton className={statedHold ? '' : 'primary'} disabled={needsBudget} title={needsBudget ? 'Set its MCP budget first' : statedHold ? 'Without the hold: its pull request merges as soon as CI is green' : undefined} working="Approving…" onAct={() => act(() => api.approvePlan(item.id, approval || undefined, false, undefined, paid ? mcpCalls : undefined))}>Approve &amp; implement</ActionButton>}{canClose && <ActionButton title={CLOSE_HINT} working="Closing…" onAct={closeAsDone}>Already done — close…</ActionButton>}{fm.awaiting === 'plan_approval' && state.config.orchestrator.may_approve_plans && !implementerDef?.user_approves_plans && <ActionButton title="Hand it to the orchestrator to review and approve, as a delegated plan: for one that came back to you without a decision" working="Handing over…" onAct={() => act(() => api.reviewPlanAgain(item.id))}>Ask the orchestrator to review</ActionButton>}<span className="grow" /><input className="grow" placeholder="What should change?" value={reject} onChange={(e) => setReject(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && reject.trim()) { e.preventDefault(); (e.currentTarget.nextElementSibling as HTMLButtonElement | null)?.click(); } }} /* Enter presses the button beside it, through its guard */ /><ActionButton className="danger" disabled={!reject.trim()} working="Sending…" onAct={() => act(() => api.rejectPlan(item.id, reject))}>Request changes</ActionButton></ActionGroup></div>
           </div>
         )}
         {fm.parts?.length ? <PartsStrip parts={fm.parts} /> : null}
@@ -211,7 +212,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           <div className="approval">
             <h2 style={{ margin: '0 0 8px' }}>Its pull request will be held</h2>
             <p className="small">{heldFor ? <><b>Held:</b> {heldFor}. </> : null}The work goes on as usual. Its pull request is opened and its CI is read, but it does not merge until you release the hold.</p>
-            <div className="row"><button onClick={() => { const n = prompt(`Drop the hold on ${item.id}, so its pull request merges as usual? Optional note for the log:`); if (n !== null) void act(() => api.releaseHold(item.id, n || undefined)); }}>Drop the hold</button></div>
+            <div className="row"><ActionButton working="Dropping the hold…" onAct={() => { const n = prompt(`Drop the hold on ${item.id}, so its pull request merges as usual? Optional note for the log:`); if (n !== null) return act(() => api.releaseHold(item.id, n || undefined)); }}>Drop the hold</ActionButton></div>
           </div>
         )}
         {fm.status === 'IN_REVIEW' && fm.skip_merge && (
@@ -220,20 +221,20 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
             {heldFor && <p className="small" style={{ marginTop: 0 }}><b>Held:</b> {heldFor}</p>}
             {preview && <p className="small" style={{ marginTop: 0 }}><b>Preview:</b> <a href={preview.url} target="_blank" rel="noreferrer">{preview.url}</a> <span className="muted">({preview.sha.slice(0, 7)})</span></p>}
             {fm.op_data?.pr_draft ? <p className="small">The pull request is a <b>draft</b> while it is held: its session's commits are pushed, but CI waits. Releasing the hold syncs the branch, marks the PR ready, and CI runs once, on the head that merges.</p> : <p className="small">CI for the pushed head: <b>{fm.ci_result ?? 'pending'}</b>{fm.ci_head_sha ? ` (${fm.ci_head_sha.slice(0, 7)})` : ''}. While it is held, its session's commits are still pushed and a red run still goes to the session to fix; it just does not merge. Releasing it sends it back through sync and CI before it merges.</p>}
-            <div className="row"><button className="primary" onClick={() => { const n = prompt(`Let ${item.id} merge? Optional note for the log:`); if (n !== null) void act(() => api.releaseHold(item.id, n || undefined)); }}>Release hold</button></div>
+            <div className="row"><ActionButton className="primary" working="Releasing…" onAct={() => { const n = prompt(`Let ${item.id} merge? Optional note for the log:`); if (n !== null) return act(() => api.releaseHold(item.id, n || undefined)); }}>Release hold</ActionButton></div>
           </div>
         )}
 
         <div className="section"><h2>Description</h2><textarea value={desc.text} onChange={(e) => desc.setText(e.target.value)} onBlur={desc.save} /><div className="small muted">{desc.dirty ? 'unsaved — saves on blur' : ' '}</div></div>
         <div className="section"><h2>Notes</h2><textarea value={notes.text} onChange={(e) => notes.setText(e.target.value)} onBlur={notes.save} style={{ minHeight: 80 }} /></div>
-        <div className="section"><h2>Plan <button className="small" onClick={() => { if (editPlan) plan.save(); setEditPlan(!editPlan); }}>{editPlan ? 'done' : 'edit'}</button></h2>{editPlan ? <textarea value={plan.text} onChange={(e) => plan.setText(e.target.value)} onBlur={plan.save} style={{ minHeight: 200 }} /> : <Markdown text={item.sections.Plan} />}</div>
+        <div className="section"><h2>Plan <ActionButton className="small" working="Saving…" onAct={async () => { if (editPlan) await plan.save(); setEditPlan(!editPlan); }}>{editPlan ? 'done' : 'edit'}</ActionButton></h2>{editPlan ? <textarea value={plan.text} onChange={(e) => plan.setText(e.target.value)} onBlur={plan.save} style={{ minHeight: 200 }} /> : <Markdown text={item.sections.Plan} />}</div>
         {fm.kind === 'epic' && (
           <div className="section"><h2>Children · {children.filter((c) => ['MERGED', 'FINISHED'].includes(c.frontmatter.status)).length}/{children.length} merged
-            <span>
-              {/* a childless epic's branch would sit idle (dogfood p56, LM-2) */}{fm.status === 'NOT_YET_SUBMITTED' && children.length > 0 && <button className="small" onClick={() => act(() => api.epicAction(item.id, 'open'))}>Open epic branch</button>}{' '}
-              {fm.status === 'IN_PROGRESS' && <button className="small" onClick={() => act(() => api.epicAction(item.id, 'sync'))}>Sync with {d.base_branch}</button>}{' '}
-              {fm.status === 'IN_PROGRESS' && children.length > 0 && children.every((c) => ['MERGED', 'FINISHED'].includes(c.frontmatter.status)) && <button className="small primary" onClick={() => act(() => api.epicAction(item.id, 'submit'))}>Submit epic PR</button>}
-            </span></h2>
+            <span><ActionGroup>
+              {/* a childless epic's branch would sit idle (dogfood p56, LM-2) */}{fm.status === 'NOT_YET_SUBMITTED' && children.length > 0 && <ActionButton className="small" working="Opening…" onAct={() => act(() => api.epicAction(item.id, 'open'))}>Open epic branch</ActionButton>}{' '}
+              {fm.status === 'IN_PROGRESS' && <ActionButton className="small" working="Syncing…" onAct={() => act(() => api.epicAction(item.id, 'sync'))}>Sync with {d.base_branch}</ActionButton>}{' '}
+              {fm.status === 'IN_PROGRESS' && children.length > 0 && children.every((c) => ['MERGED', 'FINISHED'].includes(c.frontmatter.status)) && <ActionButton className="small primary" working="Submitting…" onAct={() => act(() => api.epicAction(item.id, 'submit'))}>Submit epic PR</ActionButton>}
+            </ActionGroup></span></h2>
             <ChildrenTable epic={item} items={state.items} />
             {!children.length && <p className="muted small">No children yet — plan the breakdown, or create items with this epic as their parent.</p>}
           </div>
@@ -241,18 +242,18 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
         <div className="section"><h2>Session</h2>
           {session ? <p>{session.busy ? 'running' : 'idle'} · {session.model} · {session.op ?? ''}<br /><span className="small muted">{session.last_output}</span></p> : <p className="muted small">No live session. {fm.session_id ? `Parked session ${fm.session_id.slice(0, 8)}… resumes when needed.` : 'Nothing has run for this item yet.'}</p>}
           {fm.session_id && !session && <p className="small muted">Open in a terminal (pauses planestro's use of it while attached): <code>claude --resume {fm.session_id}</code> <button className="small" onClick={() => void navigator.clipboard.writeText(`claude --resume ${fm.session_id}`)}>copy</button></p>}
-          <form className="row" onSubmit={(e) => { e.preventDefault(); if (!msg.trim()) return; void act(() => api.message(item.id, msg)); setMsg(''); }}><input className="grow" placeholder={fm.taken_over ? 'You have this item: hand it back to talk to its session' : 'Message to the session (queued for its next turn)'} disabled={!!fm.taken_over} value={msg} onChange={(e) => setMsg(e.target.value)} /><button type="submit" disabled={!msg.trim() || !!fm.taken_over}>Send</button></form>
+          <form className="row" onSubmit={(e) => e.preventDefault()}><input className="grow" placeholder={fm.taken_over ? 'You have this item: hand it back to talk to its session' : 'Message to the session (queued for its next turn)'} disabled={!!fm.taken_over} value={msg} onChange={(e) => setMsg(e.target.value)} /><ActionButton type="submit" disabled={!msg.trim() || !!fm.taken_over} working="Sending…" onAct={() => act(() => api.message(item.id, msg)).then((r) => { if (r) setMsg(''); })}>Send</ActionButton></form>
           <h2 style={{ marginTop: 12 }}>Console</h2>
           <ItemConsole id={item.id} />
         </div>
         <div className="section"><h2>Attachments</h2>
-          <ul className="attachments">{fm.attachments.map((a) => <li key={a.path}>{a.kind === 'managed' && /\.(png|jpe?g|gif|webp)$/i.test(a.path) && <img src={`/${a.path}`} alt="" />}<code>{a.path}</code><span className="tag">{a.kind}</span>{a.kind === 'managed' && <a href={`/${a.path}`} target="_blank" rel="noreferrer">open</a>}<button className="small" onClick={() => act(() => api.removeAttachment(item.id, a.path))}>remove</button></li>)}</ul>
+          <ul className="attachments">{fm.attachments.map((a) => <li key={a.path}>{a.kind === 'managed' && /\.(png|jpe?g|gif|webp)$/i.test(a.path) && <img src={`/${a.path}`} alt="" />}<code>{a.path}</code><span className="tag">{a.kind}</span>{a.kind === 'managed' && <a href={`/${a.path}`} target="_blank" rel="noreferrer">open</a>}<ActionButton className="small" working="Removing…" onAct={() => act(() => api.removeAttachment(item.id, a.path))}>remove</ActionButton></li>)}</ul>
           <div className="row">
             <button className="small" onClick={() => picker.current?.click()}>Attach photo or file…</button>
             <input ref={picker} type="file" accept="image/*,.heic,.heif,.pdf,.txt,.md,.json" multiple hidden onChange={(e) => { const fs = [...(e.target.files ?? [])]; e.target.value = ''; upload(fs); }} />
             <span className="small muted">or paste an image anywhere on this page (≤ {Math.round(maxBytes / 1e6)} MB, committed; photos are converted to JPEG and shrunk to fit).</span>
           </div>
-          <form className="row" onSubmit={(e) => { e.preventDefault(); if (!refPath.trim()) return; void act(() => api.referenceAttachment(item.id, refPath.trim())); setRefPath(''); }}><input className="grow" placeholder="Reference a path (absolute, or relative to the code repo) — never copied" value={refPath} onChange={(e) => setRefPath(e.target.value)} /><button type="submit" disabled={!refPath.trim()}>Add reference</button></form>
+          <form className="row" onSubmit={(e) => e.preventDefault()}><input className="grow" placeholder="Reference a path (absolute, or relative to the code repo) — never copied" value={refPath} onChange={(e) => setRefPath(e.target.value)} /><ActionButton type="submit" disabled={!refPath.trim()} working="Adding…" onAct={() => act(() => api.referenceAttachment(item.id, refPath.trim())).then((r) => { if (r) setRefPath(''); })}>Add reference</ActionButton></form>
         </div>
         <div className="section"><h2>Activity</h2><ul className="activity">{item.activity.map((a, i) => <li key={i}><span className="at">{a.at.slice(0, 19).replace('T', ' ')}</span><span className="muted">{a.actor}</span><span>{a.text}</span></li>)}</ul></div>
       </div>
@@ -281,7 +282,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           <dt>rank</dt><dd>{fm.rank ?? '—'}</dd>
           {(['created_at', 'updated_at', 'queued_at', 'started_at', 'plan_ready_at', 'plan_approved_at', 'pr_created_at', 'merged_at', 'finished_at', 'iceboxed_at'] as const).map((k) => fm[k] ? <Fragment key={k}><dt>{k.replace('_at', '')}</dt><dd>{fm[k]!.slice(0, 19).replace('T', ' ')}</dd></Fragment> : null)}
         </dl>
-        <div className="row" style={{ marginTop: 12 }}><button className="danger small" onClick={() => { if (confirm(`Delete ${item.id}?`)) void act(() => api.deleteItem(item.id)).then(onDeleted); }}>Delete item</button></div>
+        <div className="row" style={{ marginTop: 12 }}><ActionButton className="danger small" working="Deleting…" onAct={() => { if (confirm(`Delete ${item.id}?`)) return act(() => api.deleteItem(item.id)).then(onDeleted); }}>Delete item</ActionButton></div>
       </aside>
     </div>
   );

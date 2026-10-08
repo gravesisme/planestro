@@ -5,6 +5,7 @@ import { api, type ReleaseFields, type ReleaseView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { statusLabel } from '../components/ItemCard.tsx';
 import { setTitle as setTabTitle } from '../tabBadge.ts';
+import { ActionButton } from '../components/ActionButton.tsx';
 
 const STATUS_HINT: Record<ReleaseStatus, string> = {
   planned: 'being put together', submitted: 'with a store or a reviewer', released: 'out', cancelled: 'never shipped; places no items',
@@ -21,7 +22,7 @@ function NewReleaseDialog({ latest, taken, onClose }: { latest?: string; taken: 
   const carried = useStore((s) => s.state?.config.releases.sections.filter((d) => d.carry).map((d) => d.title) ?? []);
   return (
     <div className="dialog" onClick={onClose}>
-      <form onClick={(e) => e.stopPropagation()} onSubmit={async (e) => { e.preventDefault(); const r = await act(() => api.createRelease({ version: version.trim(), title: title.trim() || undefined, date: date || undefined })); if (r) { onClose(); nav(`/releases/${encodeURIComponent(r.version)}`); } }}>
+      <form onClick={(e) => e.stopPropagation()} onSubmit={(e) => e.preventDefault()}>
         <h2 style={{ margin: 0 }}>New release</h2>
         <div className="row">
           <input autoFocus className="grow" placeholder="Version (1.6.0)" value={version} onChange={(e) => setVersion(e.target.value)} required pattern="[0-9A-Za-z][0-9A-Za-z._+\-]*" title="letters, digits, dots and dashes" />
@@ -31,7 +32,7 @@ function NewReleaseDialog({ latest, taken, onClose }: { latest?: string; taken: 
         <input placeholder="Title (optional: “Map update”)" value={title} onChange={(e) => setTitle(e.target.value)} />
         <label className="small muted">Aiming for <input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></label>
         {carried.length > 0 && latest && <p className="small muted" style={{ margin: 0 }}>{carried.join(', ')} start as {latest}'s text.</p>}
-        <div className="row"><span className="grow" /><button type="button" onClick={onClose}>Cancel</button><button className="primary" type="submit" disabled={!version.trim() || taken.has(version.trim())}>Create</button></div>
+        <div className="row"><span className="grow" /><button type="button" onClick={onClose}>Cancel</button><ActionButton className="primary" type="submit" disabled={!version.trim() || taken.has(version.trim())} working="Creating…" onAct={async () => { const r = await act(() => api.createRelease({ version: version.trim(), title: title.trim() || undefined, date: date || undefined })); if (r) { onClose(); nav(`/releases/${encodeURIComponent(r.version)}`); } }}>Create</ActionButton></div>
       </form>
     </div>
   );
@@ -83,7 +84,7 @@ function ReleaseBody({ release }: { release: ReleaseView }) {
           <label>tag <input key={`g${fm.tag}`} defaultValue={fm.tag ?? ''} placeholder={`v${release.version}`} onBlur={(e) => e.target.value.trim() !== (fm.tag ?? '') && patch({ tag: e.target.value.trim() || null })} style={{ width: 110 }} /></label>
           <span className="grow" />
           <button type="button" onClick={() => copy(releaseMarkdown({ frontmatter: fm, sections: release.sections }))} title="Every section with text, as one markdown document">Copy all</button>
-          <button type="button" className="danger" onClick={() => { if (confirm(`Delete release ${release.version}? The file is removed; git history keeps it.`)) void act(() => api.deleteRelease(release.version)).then(() => nav('/releases')); }}>Delete</button>
+          <ActionButton type="button" className="danger" working="Deleting…" onAct={() => { if (confirm(`Delete release ${release.version}? The file is removed; git history keeps it.`)) return act(() => api.deleteRelease(release.version)).then(() => nav('/releases')); }}>Delete</ActionButton>
         </div>
       </div>
 
@@ -92,14 +93,14 @@ function ReleaseBody({ release }: { release: ReleaseView }) {
       <div className="section"><h2>Backlog items in this release · {fm.items.length}</h2>
         {fm.items.length > 0 ? <table><tbody>{fm.items.map((id) => { const it = itemOf(id); return (
           <tr key={id}><td><Link to={`/items/${id}`}>{id}</Link></td><td>{it?.frontmatter.title ?? <span className="muted">unknown item</span>}</td><td className="muted small">{it ? statusLabel(it.frontmatter.status) : ''}</td>
-            <td><button className="chip-x" title={`Take ${id} out of ${release.version}`} onClick={() => patch({ items: fm.items.filter((x) => x !== id) })}>×</button></td></tr>); })}</tbody></table>
+            <td><ActionButton className="chip-x" title={`Take ${id} out of ${release.version}`} working="" onAct={() => patch({ items: fm.items.filter((x) => x !== id) })}>×</ActionButton></td></tr>); })}</tbody></table>
           : <p className="muted small" style={{ margin: 0 }}>None yet.</p>}
         {release.candidates.length > 0 && <>
           <h3 className="drawer-h" style={{ marginTop: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>Landed {fm.status === 'released' ? 'in this window' : 'since the last release'}, not in any release · {release.candidates.length}
-            <button className="small" onClick={() => patch({ items: [...fm.items, ...release.candidates] })}>add all</button></h3>
+            <ActionButton className="small" working="Adding…" onAct={() => patch({ items: [...fm.items, ...release.candidates] })}>add all</ActionButton></h3>
           <table><tbody>{release.candidates.map((id) => { const it = itemOf(id)!; return (
             <tr key={id}><td><Link to={`/items/${id}`}>{id}</Link></td><td>{it.frontmatter.title}</td><td className="muted small">{(it.frontmatter.merged_at ?? it.frontmatter.finished_at ?? '').slice(0, 10)}</td>
-              <td><button className="small" onClick={() => patch({ items: [...fm.items, id] })}>add</button></td></tr>); })}</tbody></table>
+              <td><ActionButton className="small" working="Adding…" onAct={() => patch({ items: [...fm.items, id] })}>add</ActionButton></td></tr>); })}</tbody></table>
         </>}
       </div>
     </div>

@@ -45,10 +45,16 @@ describe('no action button bypasses the guard (#304)', () => {
   // Answers keep their card locked until it goes away (#282): those buttons use useSending directly.
   const answers = new Set(['DecisionCard.tsx', 'AwaitingPanels.tsx']);
   const reachesApi = /\bact\(|\bapi\.|\bfetch\(/;
+  const guarded = /\brun\(/;
   /** The expression in `{…}` that starts at `i` (the opening brace), braces balanced. */
   const braced = (src: string, i: number) => { let depth = 0; for (let j = i; j < src.length; j++) { if (src[j] === '{') depth++; else if (src[j] === '}' && --depth === 0) return src.slice(i + 1, j); } return src.slice(i + 1); };
-  /** The first line of a same-file definition of `name`, if there is one. */
-  const definition = (src: string, name: string) => src.match(new RegExp(`(?:const|let|function)\\s+${name}\\b[^\\n]*`))?.[0];
+  /** The nearest same-file definition of `name` before `at` (its block, when its body is one), if there is one. */
+  const definition = (src: string, name: string, at: number) => {
+    const m = [...src.slice(0, at).matchAll(new RegExp(`(?:const|let|function)\\s+${name}\\b[^\\n]*`, 'g'))].pop();
+    if (!m) return undefined;
+    const open = /(?:=>|\))\s*\{\s*$/.exec(m[0]);
+    return open ? m[0] + braced(src, m.index! + m[0].lastIndexOf('{')) : m[0];
+  };
 
   it('finds no onClick/onSubmit handler that reaches the API directly or through a function in its file', () => {
     const offenders: string[] = [];
@@ -58,10 +64,12 @@ describe('no action button bypasses the guard (#304)', () => {
       const src = readFileSync(file, 'utf8');
       for (const m of src.matchAll(/\bon(?:Click|Submit)=\{/g)) {
         const handler = braced(src, m.index! + m[0].length - 1);
-        const called = [...handler.matchAll(/\b([A-Za-z_]\w*)\s*\(/g)].map((c) => c[1]);
         const bare = /^\s*([A-Za-z_]\w*)\s*$/.exec(handler)?.[1];
-        const via = [...called, ...(bare ? [bare] : [])].filter((n) => reachesApi.test(definition(src, n) ?? ''));
-        if (reachesApi.test(handler) || via.length) offenders.push(`${name}:${src.slice(0, m.index).split('\n').length} ${handler.trim().slice(0, 90)}`);
+        const defs = [...new Set([...[...handler.matchAll(/\b([A-Za-z_]\w*)\s*\(/g)].map((c) => c[1]), ...(bare ? [bare] : [])])].map((n) => definition(src, n, m.index!) ?? '');
+        // A function that goes through a `useAction` guard (`run(key, …)`) is guarded: it marks its own button.
+        const viaGuard = guarded.test(handler) || defs.some((d) => guarded.test(d));
+        const unguarded = defs.some((d) => reachesApi.test(d) && !guarded.test(d)) || (reachesApi.test(handler) && !viaGuard);
+        if (unguarded) offenders.push(`${name}:${src.slice(0, m.index).split('\n').length} ${handler.trim().slice(0, 90)}`);
       }
     }
     expect(offenders).toEqual([]);

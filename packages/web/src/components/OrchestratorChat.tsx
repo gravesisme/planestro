@@ -5,6 +5,8 @@ import { api, type QuestionView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { enterSends, growTo, isTouch, pickable } from '../chatInput.ts';
 import { isImage, prepareUpload } from '../uploadImage.ts';
+import { useAction } from '../sending.ts';
+import { Sending } from './Sending.tsx';
 
 const SEEN_KEY = 'planestro.chat.seen';
 const readSeen = () => { try { return localStorage.getItem(SEEN_KEY) ?? ''; } catch { return ''; } };
@@ -66,7 +68,9 @@ export function OrchestratorChat() {
   const here = /^\/items\/([^/]+)/.exec(pathname)?.[1];
   const [msg, setMsg] = useState('');
   const [files, setFiles] = useState<Pending[]>([]);
-  const [sending, setSending] = useState(false);
+  // One message at a time, shown at once (#304): the guard is synchronous, so a double tap sends once.
+  const { busy, run } = useAction();
+  const sending = busy !== undefined;
   const picker = useRef<HTMLInputElement>(null);
   const maxBytes = useStore((s) => s.state?.config.attachments.managed_max_bytes) ?? 2_000_000;
   const touch = isTouch();
@@ -120,11 +124,10 @@ export function OrchestratorChat() {
   };
   const unattach = (p: Pending) => { if (p.url) URL.revokeObjectURL(p.url); setFiles((f) => f.filter((x) => x !== p)); };
 
-  const send = async (t = msg, withFiles = files) => {
+  const send = (t = msg, withFiles = files) => {
     const body = t.trim();
-    if ((!body && !withFiles.length) || sending) return;
-    setSending(true);
-    try {
+    if (!body && !withFiles.length) return;
+    void run('send', async () => {
       // Photos are converted and shrunk as on an item (HEIC → JPEG, within the size limit) before anything is cleared.
       let ready: File[];
       try { ready = await Promise.all(withFiles.map((p) => (isImage(p.file) ? prepareUpload(p.file, maxBytes) : p.file))); }
@@ -138,7 +141,7 @@ export function OrchestratorChat() {
       // Not sent: what was in the box comes back, unless something new was typed or attached meanwhile.
       if (typed) setMsg((m) => m || t);
       if (pending) setFiles((f) => (f.length ? f : withFiles));
-    } finally { setSending(false); }
+    });
   };
 
   if (!chat.open) return (
@@ -191,11 +194,11 @@ export function OrchestratorChat() {
       </div>
       <div className="chat-suggest">
         <button className="chip" onClick={() => { setMsg('Add a backlog item: '); box.current?.focus(); }}>+ backlog item</button>
-        {blocked.length > 0 && <button className="chip" onClick={() => void send(`Help me resolve the blocked item${blocked.length === 1 ? '' : 's'}: ${blocked.map((i) => `${i.id} (${i.frontmatter.blocked_reason ?? 'blocked'})`).join(', ')}. Tell me why each stopped, and unblock the ones you can fix with an instruction.`, [])}>help with {blocked.length} blocked</button>}
+        {blocked.length > 0 && <button className="chip" onClick={() => send(`Help me resolve the blocked item${blocked.length === 1 ? '' : 's'}: ${blocked.map((i) => `${i.id} (${i.frontmatter.blocked_reason ?? 'blocked'})`).join(', ')}. Tell me why each stopped, and unblock the ones you can fix with an instruction.`, [])}>help with {blocked.length} blocked</button>}
         {about && <button className="chip on" title="Your message is sent about this item; click to send it without one" onClick={() => setAbout(undefined)}>about {about} ×</button>}
         {!about && here && <button className="chip" onClick={() => setAbout(here)}>about {here}</button>}
       </div>
-      <form className="chat-input" onSubmit={(e) => { e.preventDefault(); void send(); }}>
+      <form className="chat-input" onSubmit={(e) => { e.preventDefault(); send(); }}>
         {files.length > 0 && <div className="chat-files">{files.map((p, i) => (
           <span key={`${p.file.name}-${i}`} className={`chat-file ${p.url ? 'thumb' : 'doc'}`} title={p.file.name}>
             {p.url ? <img src={p.url} alt={p.file.name} /> : <><span className="name">{p.file.name}</span><span className="muted">{kb(p.file.size)}</span></>}
@@ -204,10 +207,10 @@ export function OrchestratorChat() {
         <div className="chat-compose">
           <button type="button" className="chat-attach" onClick={() => picker.current?.click()} disabled={chat.enabled === false || files.length >= CHAT_MAX_FILES} aria-label="Attach images or files" title="Attach images or files (or paste an image)"><Clip /></button>
           <textarea ref={box} rows={1} value={msg} enterKeyHint={touch ? 'enter' : 'send'} placeholder="Message the orchestrator…" title={touch ? undefined : 'Enter to send, Shift+Enter for a new line; paste an image to attach it'} onChange={(e) => setMsg(e.target.value)}
-            onKeyDown={(e) => { if (enterSends({ key: e.key, shiftKey: e.shiftKey, isComposing: e.nativeEvent.isComposing }, touch)) { e.preventDefault(); void send(); } }}
+            onKeyDown={(e) => { if (enterSends({ key: e.key, shiftKey: e.shiftKey, isComposing: e.nativeEvent.isComposing }, touch)) { e.preventDefault(); send(); } }}
             onPaste={(e) => { const pasted = [...e.clipboardData.files]; if (!pasted.length) return; if (!e.clipboardData.getData('text/plain')) e.preventDefault(); attach(pasted); }}
             disabled={chat.enabled === false} />
-          <button className="primary" type="submit" disabled={(!msg.trim() && !files.length) || sending || chat.enabled === false}>{sending ? '…' : 'Send'}</button>
+          <button className="primary" type="submit" disabled={(!msg.trim() && !files.length) || sending || chat.enabled === false} aria-busy={sending || undefined}>{sending ? <Sending /> : 'Send'}</button>
         </div>
         <input ref={picker} type="file" multiple accept={CHAT_ACCEPT} hidden onChange={(e) => { attach([...(e.target.files ?? [])]); e.target.value = ''; }} />
       </form>

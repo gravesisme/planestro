@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
+import { ActionButton } from './ActionButton.tsx';
 
 /**
  * "Resume when HH-129 merges, and tell it this" (p14): a stopped item that is only waiting for another
@@ -26,7 +27,7 @@ function ResumeAfterDialog({ item, onClose }: { item: ItemView; onClose: () => v
   const toggle = (id: string) => setPicked((p) => p.includes(id) ? p.filter((x) => x !== id) : [...p, id]);
   return (
     <div className="dialog" onClick={onClose}>
-      <form onClick={(e) => e.stopPropagation()} onSubmit={async (e) => { e.preventDefault(); if (await act(() => api.resumeAfter(item.id, picked, message, prs))) onClose(); }}>
+      <form onClick={(e) => e.stopPropagation()} onSubmit={(e) => e.preventDefault()}>
         <h2 style={{ margin: 0 }}>Resume {item.id} when…</h2>
         <p className="small muted" style={{ margin: 0 }}>It stops needing you. Once every item you tick and every pull request you name has merged, planestro rebases its branch onto the base and resumes its session with your message.</p>
         <div className="resume-pick">
@@ -35,7 +36,7 @@ function ResumeAfterDialog({ item, onClose }: { item: ItemView; onClose: () => v
         </div>
         <label className="small">Pull requests no item stands for <input placeholder="e.g. 468, 470" value={prText} onChange={(e) => setPrText(e.target.value)} /></label>
         <textarea placeholder="What should the session do once they have merged?" value={message} onChange={(e) => setMessage(e.target.value)} rows={4} />
-        <div className="row"><span className="grow" /><button type="button" onClick={onClose}>Cancel</button><button className="primary" type="submit" disabled={(!picked.length && !prs.length) || !message.trim()}>Park it</button></div>
+        <div className="row"><span className="grow" /><button type="button" onClick={onClose}>Cancel</button><ActionButton className="primary" type="submit" working="Parking…" disabled={(!picked.length && !prs.length) || !message.trim()} onAct={async () => { if (await act(() => api.resumeAfter(item.id, picked, message, prs))) onClose(); }}>Park it</ActionButton></div>
       </form>
     </div>
   );
@@ -51,7 +52,7 @@ export function WaitingPanel({ item }: { item: ItemView }) {
       <h2 style={{ margin: '0 0 8px' }}>Waiting to resume</h2>
       <p className="small" style={{ marginTop: 0 }}>Resumes when {wait.items.map((id, n) => { const s = items.find((i) => i.id === id)?.frontmatter.status; return <span key={id}>{n ? ', ' : ''}<Link to={`/items/${id}`}>{id}</Link>{s ? ` (${s.replace(/_/g, ' ')})` : ''}</span>; })} {(wait.prs ?? []).map((n, k) => <span key={n}>{wait.items.length || k ? ', ' : ''}PR #{n}</span>)} {wait.items.length + (wait.prs?.length ?? 0) === 1 ? 'has' : 'have'} merged, with:</p>
       <p className="blocked-said">{wait.message}</p>
-      <div className="row"><button onClick={() => { if (confirm(`Stop waiting? ${item.id} becomes blocked for you again.`)) void act(() => api.cancelResumeAfter(item.id)); }}>Stop waiting</button><span className="small muted">since {wait.since.slice(0, 16).replace('T', ' ')}</span></div>
+      <div className="row"><ActionButton working="Stopping…" onAct={() => { if (confirm(`Stop waiting? ${item.id} becomes blocked for you again.`)) return act(() => api.cancelResumeAfter(item.id)); }}>Stop waiting</ActionButton><span className="small muted">since {wait.since.slice(0, 16).replace('T', ' ')}</span></div>
     </div>
   );
 }

@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { api, type ItemView } from '../api.ts';
 import { act } from '../store.ts';
+import { useAction } from '../sending.ts';
+import { Sending } from './Sending.tsx';
 
 const DISCARDABLE = ['QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW'];
 export const DISCARD_HINT = 'You no longer want this work: its session stops, its pull request is closed, it leaves its epic and goes to the icebox';
@@ -25,15 +27,12 @@ export function DiscardPanel({ item, onClose }: { item: ItemView; onClose: () =>
   const [preview, setPreview] = useState<Awaited<ReturnType<typeof api.discardPreview>> | null>(null);
   const [reason, setReason] = useState('');
   const [deleteBranch, setDeleteBranch] = useState(true);
-  const [busy, setBusy] = useState(false);
   useEffect(() => { let live = true; api.discardPreview(item.id).then((p) => { if (live) setPreview(p); }).catch((e) => { if (live) setPreview({ refusal: (e as Error).message, remote_sha: null }); }); return () => { live = false; }; }, [item.id]);
   const remote = preview?.remote_sha;
-  const go = async () => {
-    setBusy(true);
-    const r = await act(() => api.discard(item.id, reason.trim(), remote ? deleteBranch : false, remote ?? undefined));
-    setBusy(false);
-    if (r) onClose();
-  };
+  // Enter and the button share one guard (#304): marked at once, a second press sends nothing.
+  const { busy: going, run } = useAction();
+  const busy = going !== undefined;
+  const go = () => run('discard', async () => { const r = await act(() => api.discard(item.id, reason.trim(), remote ? deleteBranch : false, remote ?? undefined)); if (r) onClose(); return r; });
   return (
     <div className="discard-panel">
       <b>Discard {item.id}?</b>
@@ -46,7 +45,7 @@ export function DiscardPanel({ item, onClose }: { item: ItemView; onClose: () =>
         {!remote && preview.branch && <p className="muted small">Its branch is not on GitHub, so its worktree and branch here are kept: they are the only copy.</p>}
       </>}
       <div className="row">
-        <button className="danger" disabled={!preview || !!preview.refusal || !reason.trim() || busy} onClick={() => void go()}>{busy ? 'Discarding…' : remote && deleteBranch ? 'Discard and delete the branch' : 'Discard'}</button>
+        <button className="danger" disabled={!preview || !!preview.refusal || !reason.trim() || busy} aria-busy={busy || undefined} onClick={() => void go()}>{busy ? <Sending label="Discarding…" /> : remote && deleteBranch ? 'Discard and delete the branch' : 'Discard'}</button>
         <button onClick={onClose}>Cancel</button>
       </div>
     </div>

@@ -131,5 +131,10 @@ export const useStore = create<Store>((set, get) => ({
 /** Run a mutation, surfacing errors in the header, then refresh. */
 export async function act<T>(fn: () => Promise<T>): Promise<T | undefined> {
   try { const r = await fn(); await useStore.getState().refresh(); return r; }
-  catch (e) { useStore.setState({ error: (e as Error).message }); setTimeout(() => useStore.setState({ error: undefined }), 6000); return undefined; }
+  catch (e) { showError(e); return undefined; }
+}
+
+/** An error in the header, for six seconds. */
+export function showError(e: unknown) {
+  useStore.setState({ error: (e as Error).message }); setTimeout(() => useStore.setState({ error: undefined }), 6000);
 }

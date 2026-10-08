@@ -4,6 +4,8 @@ import { api, type QuestionView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { Markdown } from '../components/Markdown.tsx';
 import { setTitle } from '../tabBadge.ts';
+import { useAction } from '../sending.ts';
+import { Sending } from '../components/Sending.tsx';
 import { ago } from './Console.tsx';
 
 const WHO = { user: 'You', orchestrator: 'Orchestrator', app: 'planestro' } as const;
@@ -22,7 +24,9 @@ export function QuestionPage() {
   // Re-read after our own change rather than trusting its response: `act` resolves only after the state refresh, by which time the wake it started may already have answered, and an older view would hide that.
   const [mine, setMine] = useState(0);
   const [msg, setMsg] = useState('');
-  const [sending, setSending] = useState(false);
+  // One action at a time, shown at once (#304): a post, a review, a close or a reopen.
+  const { busy, run } = useAction();
+  const sending = busy !== undefined;
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => { let live = true; api.question(id).then((v) => live && setQ(v)).catch(() => live && setQ(null)); return () => { live = false; }; }, [id, rev, mine]);
   useEffect(() => { if (q) setTitle(`${q.id} · ${q.frontmatter.headline}`); return () => setTitle('planestro'); }, [q?.id, q?.frontmatter.headline]);
@@ -32,15 +36,9 @@ export function QuestionPage() {
 
   const fm = q.frontmatter;
   const open = fm.status === 'open';
-  const send = async (text: string) => {
-    const body = text.trim();
-    if (!body || sending) return;
-    setSending(true);
-    const r = await act(() => api.postToQuestion(q.id, body));
-    setSending(false);
-    if (r) { setMine((n) => n + 1); setMsg(''); }
-  };
-  const update = async (fn: () => Promise<QuestionView>) => { if (await act(fn)) setMine((n) => n + 1); };
+  const send = (key: string, text: string) => { const body = text.trim(); if (body) void run(key, async () => { const r = await act(() => api.postToQuestion(q.id, body)); if (r) { setMine((n) => n + 1); setMsg(''); } return r; }); };
+  const update = (key: string, fn: () => Promise<QuestionView>) => void run(key, async () => { const r = await act(fn); if (r) setMine((n) => n + 1); return r; });
+  const label = (key: string, idle: string, working: string) => busy === key ? <Sending label={working} /> : idle;
 
   return (
     <div className="question-page">
@@ -59,13 +57,13 @@ export function QuestionPage() {
         {q.recommendation.trim() && <div className="q-recommendation">
           <div className="decision-kicker">Recommendation</div>
           <Markdown text={q.recommendation} />
-          {open && orchestrated && <button className="primary" disabled={sending || q.pending} title="Tells the orchestrator in the thread below that you accept it; it carries it out and closes the question"
-            onClick={() => void send(`I accept your recommendation:\n\n${q.recommendation.trim()}`)}>Accept recommendation</button>}
+          {open && orchestrated && <button className="primary" disabled={sending || q.pending} aria-busy={busy === 'accept' || undefined} title="Tells the orchestrator in the thread below that you accept it; it carries it out and closes the question"
+            onClick={() => send('accept', `I accept your recommendation:\n\n${q.recommendation.trim()}`)}>{label('accept', 'Accept recommendation', 'Sending…')}</button>}
         </div>}
         <div className="row q-controls">
-          {open && orchestrated && <button disabled={q.pending} title="Have the orchestrator check it against the current state: it withdraws a moot question or refreshes one that moved on" onClick={() => void update(() => api.reviewQuestion(q.id))}>Still relevant?</button>}
-          {open ? <button title="Close it yourself: it leaves your list, and its discussion stays here" onClick={() => { const why = prompt('How was it answered? (optional)'); if (why !== null) void update(() => api.resolveQuestion(q.id, 'resolved', why)); }}>Mark answered</button>
-            : <button onClick={() => void update(() => api.reopenQuestion(q.id))}>Reopen</button>}
+          {open && orchestrated && <button disabled={q.pending || sending} aria-busy={busy === 'review' || undefined} title="Have the orchestrator check it against the current state: it withdraws a moot question or refreshes one that moved on" onClick={() => update('review', () => api.reviewQuestion(q.id))}>{label('review', 'Still relevant?', 'Asking…')}</button>}
+          {open ? <button disabled={sending} aria-busy={busy === 'resolve' || undefined} title="Close it yourself: it leaves your list, and its discussion stays here" onClick={() => { const why = prompt('How was it answered? (optional)'); if (why !== null) update('resolve', () => api.resolveQuestion(q.id, 'resolved', why)); }}>{label('resolve', 'Mark answered', 'Closing…')}</button>
+            : <button disabled={sending} aria-busy={busy === 'reopen' || undefined} onClick={() => update('reopen', () => api.reopenQuestion(q.id))}>{label('reopen', 'Reopen', 'Reopening…')}</button>}
         </div>
       </div>
 
@@ -84,10 +82,10 @@ export function QuestionPage() {
           <div ref={end} />
         </div>
         {orchestrated
-          ? <form className="q-input" onSubmit={(e) => { e.preventDefault(); void send(msg); }}>
+          ? <form className="q-input" onSubmit={(e) => { e.preventDefault(); send('post', msg); }}>
               <textarea rows={3} value={msg} data-dirty={msg.trim() ? 'true' : undefined} placeholder={open ? 'Your answer or question… (Enter to send, Shift+Enter for a new line)' : 'Write here to take it up again (it stays closed unless you reopen it)'}
-                onChange={(e) => setMsg(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void send(msg); } }} />
-              <button className="primary" type="submit" disabled={!msg.trim() || sending}>Send</button>
+                onChange={(e) => setMsg(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send('post', msg); } }} />
+              <button className="primary" type="submit" disabled={!msg.trim() || sending} aria-busy={busy === 'post' || undefined}>{label('post', 'Send', 'Sending…')}</button>
             </form>
           : <p className="muted small">The orchestrator is not available with this engine, so nobody would answer here.</p>}
       </div>
