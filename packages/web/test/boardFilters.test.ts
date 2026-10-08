@@ -11,6 +11,12 @@ describe('the board names the filters that hide items (#286)', () => {
       .toEqual([['needs', 'needs you'], ['category', 'Game'], ['priority', 'high priority'], ['q', '“lamp”']]);
   });
 
+  it('names the running filter after needs you (#299)', () => {
+    expect(activeFilters({ ...none, runningOnly: true, category: 'Game' }).map((f) => [f.key, f.label])).toEqual([['running', 'running'], ['category', 'Game']]);
+    expect(emptyText(activeFilters({ ...none, runningOnly: true }))).toBe('No agent is running right now.');
+    expect(emptyText(activeFilters({ ...none, runningOnly: true, category: 'Game' }))).toBe('No agent is running in Game.');
+  });
+
   it('an empty board says what hides it', () => {
     expect(emptyText([])).toBe('Nothing here yet. Add an item with + New item.');
     expect(emptyText(activeFilters({ ...none, needsOnly: true }))).toBe('Nothing needs you right now.');

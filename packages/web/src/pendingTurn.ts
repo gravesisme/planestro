@@ -1,6 +1,9 @@
 import { findModel, resolveTurnModel, unavailableEntry, type ItemFrontmatter } from '@planestro/shared';
 import type { State } from './api.ts';
 
+/** The reason a saved instruction gives when all it lacks is a session slot: the board calls this "waiting for a slot" (#299). */
+export const SLOT_WAIT = 'The instruction is saved and will run when this item and a session slot are available.';
+
 /** Explain a saved instruction without exposing its prompt or permission rules on the board. */
 export function pendingTurnWait(fm: ItemFrontmatter, state?: State | null, now = new Date()): string | undefined {
   const turn = fm.op_data?.pending_turn as { phase?: string } | undefined;
@@ -23,5 +26,5 @@ export function pendingTurnWait(fm: ItemFrontmatter, state?: State | null, now =
     if (state.engine.paused) return 'Waiting for automation to resume.';
     if (state.engine.restart?.draining) return 'Waiting for the restart to finish.';
   }
-  return 'The instruction is saved and will run when this item and a session slot are available.';
+  return SLOT_WAIT;
 }

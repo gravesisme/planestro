@@ -39,12 +39,13 @@ const render = () => renderToStaticMarkup(createElement(MemoryRouter, null, crea
 
 it('shows a saved instruction on its card until it is admitted, without displaying its prompt or rules', () => {
   const markup = render();
-  expect(markup).toContain('waiting: saved instruction');
+  expect(markup).toContain('waiting for a slot');
+  expect(markup).not.toContain('waiting: saved instruction');
   expect(markup).toContain('session slot');
   expect(markup).not.toContain('Private instruction content');
   expect(markup).not.toContain('private permission');
   delete item.frontmatter.op_data!.pending_turn;
-  expect(render()).not.toContain('waiting: saved instruction');
+  expect(render()).not.toContain('waiting for a slot');
 });
 
 it.each(['phase', 'model', 'usage'] as const)('explains a saved instruction waiting on its %s', (reason) => {
@@ -65,6 +66,15 @@ it('recognizes an available fallback while keeping the provider pause authoritat
   state.engine.provider_guards = {};
   state.local.model_unavailable.backup = outage;
   expect(pendingTurnWait(item.frontmatter, state)).toContain('Waiting for model usage');
+});
+
+it('marks a card whose session is busy as running, its last output a tap away (#299)', () => {
+  state.engine.sessions = [{ item: 'TP-1', op: 'implement', busy: true, last_output: 'Editing board.ts' }];
+  const markup = render();
+  expect(markup).toContain('implementing…');
+  expect(markup).toContain('Editing board.ts');
+  expect(markup).toMatch(/class="card [^"]*running/);
+  expect(markup).not.toContain('waiting for a slot');
 });
 
 it('explains global pause and restart waits without discarding the instruction', () => {

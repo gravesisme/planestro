@@ -7,6 +7,7 @@ import { OrchestratorChat } from './components/OrchestratorChat.tsx';
 import { setTitle, setNeeds } from './tabBadge.ts';
 import { setNotificationNavigate } from './desktopNotify.ts';
 import { TO_WAIT } from './deepLink.ts';
+import { runningItems, runningLabel } from './agentState.ts';
 
 /** The phone's tab bar. Board, Icebox and Done are one tab: the board page switches between them itself. */
 const TABS: { to: string; label: string; icon: string }[] = [
@@ -47,7 +48,8 @@ export function App() {
   const providerLabel = provider === 'codex' ? 'Codex' : provider === 'claude' ? 'Claude' : 'Not set';
   const switchProviderPath = provider ? `/switch-provider?provider=${provider === 'codex' ? 'claude' : 'codex'}` : '/switch-provider';
   // A turn queued for its runner's slot is not an agent running yet.
-  const running = state?.engine.sessions.filter((s) => s.busy).length ?? 0;
+  const runningNow = state ? runningItems(state) : [];
+  const running = runningNow.length;
   const restart = state?.engine.restart;
   const engineLabel = !connected ? 'Reconnecting' : paused ? 'Paused' : restart?.draining ? restart.by === 'update' ? 'Updating' : 'Draining' : state?.engine.mode === 'live' ? 'Live' : 'Dry-run';
   const runnerStalls = state?.engine.runner_stalls ?? [];
@@ -75,6 +77,8 @@ export function App() {
           <button className={`status-trigger ${statusWarning ? 'warn' : ''}`} popoverTarget="engine-status" aria-label={`Automation status: ${engineLabel}. View details`} title="Activity, connection and usage details"><span className={`dot ${!connected ? 'off' : statusWarning ? 'warn' : state?.engine.mode === 'live' ? 'on' : ''}`} /><span className="status-label">{engineLabel}</span><span className="status-count">· {running} agent{running === 1 ? '' : 's'}</span></button>
           <div id="engine-status" popover="auto" className="status-popover" onClick={(e) => { if ((e.target as HTMLElement).closest('a')) e.currentTarget.hidePopover(); }}>
             <div className="status-popover-heading"><strong>Automation · {engineLabel}</strong><button popoverTarget="engine-status" popoverTargetAction="hide" aria-label="Close automation status">×</button></div>
+            {running > 0 && <div className="status-running"><div className="status-running-head"><span>Running now</span><Link to="/?running=1">Show on the board</Link></div>
+              <ul>{runningNow.map(({ session, item }) => <li key={session.item}><Link to={`/items/${session.item}`}><span className="id">{session.item}</span> {item?.frontmatter.title ?? ''}</Link><span className="small muted"> · {runningLabel(session.op)}</span>{session.last_output && <div className="small muted run-line" title={session.last_output}>{session.last_output}</div>}</li>)}</ul></div>}
             <dl><dt>Agents running</dt><dd>{running}</dd><dt>Active items</dt><dd>{active.length}</dd><dt>PRs in review</dt><dd>{inReview.length}</dd><dt>Connection</dt><dd>{connected ? 'Connected' : 'Reconnecting'}</dd></dl>
             {restart?.draining && <p>{restart.by === 'update' ? `Updating planestro: ${restart.idle ? 'restarting now' : `waiting for ${restart.running.join(', ')} to finish`}. Automation resumes after the restart.` : restart.idle ? 'Safe to restart: nothing is running.' : `Draining: waiting for ${restart.running.join(', ')} to finish. Nothing new starts meanwhile.`}</p>}
             {paused && state?.engine.paused_by === 'disk' && state.engine.disk_guard && <p className="status-notice">Disk nearly full · {state.engine.disk_guard.free_gib} GiB free on {state.engine.disk_guard.path}. Automation resumes once there is {state.config.disk_guard.resume_free_gib} GiB free.</p>}
