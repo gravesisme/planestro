@@ -24,9 +24,10 @@ do those things.
 have on this machine. It has no login of its own and does not ask for a model API key.
 Usage is billed to whichever account those CLIs are signed in to. A second login for the
 same provider (`accounts` in `planestro.local.yml`) is a separate CLI config directory
-on the same machine, never a stored credential. `ANTHROPIC_API_KEY` in the environment
-planestro starts in is dropped from every Claude session, so a stray key can't bill the
-API instead of your login. An older `planestro.local.yml` that still holds a key loses it
+on the same machine, never a stored credential. `ANTHROPIC_API_KEY`,
+`CLAUDE_CODE_USE_BEDROCK` and `CLAUDE_CODE_USE_VERTEX` in the environment planestro starts
+in are dropped from every Claude session, so a stray key or cloud switch can't bill
+anything but your login. An older `planestro.local.yml` that still holds a key loses it
 at startup.
 
 **The port.** The web UI and its API listen on `127.0.0.1` by default, so other machines

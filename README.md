@@ -300,8 +300,8 @@ project-scope install would put the skill in front of them too.
 planestro is a tool for your own workstation, and it runs on the logins you
 already have: Claude sessions use whatever `claude` is signed in as, Codex turns
 whatever `codex` is. It has no login of its own and never takes a model API key;
-`ANTHROPIC_API_KEY` in its environment is dropped from every session, so usage
-always comes out of your plans. The dollars it counts are API-price estimates,
+`ANTHROPIC_API_KEY` and the Bedrock/Vertex switches in its environment are
+dropped from every session, so usage always comes out of your plans. The dollars it counts are API-price estimates,
 a yardstick for budgets, not charges. Access to the machine is the access
 control: see [SECURITY.md](SECURITY.md).
 

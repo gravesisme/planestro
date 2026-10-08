@@ -49,9 +49,10 @@ gitignored, so nothing is committed.
 **Budget dollars.** Sessions run on your `claude` and `codex` logins, never a model API key, so
 the dollars planestro counts (budgets, an item's cost, a decision card's "+$15 and resume") are
 what the same work would cost at API prices, the SDK's `total_cost_usd`: a yardstick, not a
-charge; your plan's usage limits are what is spent. `ANTHROPIC_API_KEY` in the environment
-planestro started in is dropped from every Claude session, so it cannot bill the API instead of
-your login. A `planestro.local.yml` that still has `anthropic_api_key`, or an account's
+charge; your plan's usage limits are what is spent. `ANTHROPIC_API_KEY`,
+`CLAUDE_CODE_USE_BEDROCK` and `CLAUDE_CODE_USE_VERTEX` in the environment planestro started in
+are dropped from every Claude session, so none of them can bill the API or a cloud account
+instead of your login. A `planestro.local.yml` that still has `anthropic_api_key`, or an account's
 `api_key_env`, loses them at startup, with one `[warn]` line each (an account with nothing but
 `api_key_env` goes too, and an item on it blocks `account_missing`).
 

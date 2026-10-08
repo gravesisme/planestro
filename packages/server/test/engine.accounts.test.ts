@@ -157,11 +157,10 @@ describe('the orchestrator on an account (#242)', () => {
 });
 
 describe('Claude logins per account', () => {
-  it('a session runs on a login, never a key: ANTHROPIC_API_KEY is dropped, and an account sets its login folder', () => {
-    const base = { PATH: '/bin', ANTHROPIC_API_KEY: 'from-env' };
+  it('a session runs on a login, never a key or a cloud provider; an account sets its login folder', () => {
+    const base = { PATH: '/bin', ANTHROPIC_API_KEY: 'from-env', CLAUDE_CODE_USE_BEDROCK: '1', CLAUDE_CODE_USE_VERTEX: '1' };
     const own = claudeEnv(base);
-    expect(own).toMatchObject({ PATH: '/bin' });
-    expect(own.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(own).toEqual({ PATH: '/bin' });
     expect(own.CLAUDE_CONFIG_DIR).toBeUndefined();
     expect(base.ANTHROPIC_API_KEY).toBe('from-env'); // planestro's own environment is left alone
     const work = claudeEnv(base, { name: 'work', home: '/h/claude-work' });

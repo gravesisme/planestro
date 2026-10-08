@@ -26,14 +26,19 @@ const USAGE_PREFIXES: readonly string[] = [...new Set([...(((sdk as Record<strin
  * AskUserQuestion and every other prompt to the engine's policy (see docs/notes/sdk-notes.md).
  */
 /**
- * The environment a Claude session starts with (#242): planestro's own, on the `claude` CLI's login. A session runs on a
- * login, never a model API key, so ANTHROPIC_API_KEY is dropped: a key left in the shell planestro started from would
- * otherwise outrank the login and bill the API. A named account's `home` is the session's CLAUDE_CONFIG_DIR (a second
- * subscription's login, and where its transcripts live).
+ * What would bill a Claude session somewhere other than the `claude` login: an API key, which outranks the login, and the
+ * switches that send it to Bedrock or Vertex instead. One left in the shell planestro started from would do it silently.
+ */
+const NOT_THE_LOGIN = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX'] as const;
+
+/**
+ * The environment a Claude session starts with (#242): planestro's own, on the `claude` CLI's login, without
+ * `NOT_THE_LOGIN`. A named account's `home` is the session's CLAUDE_CONFIG_DIR (a second subscription's login, and where
+ * its transcripts live).
  */
 export function claudeEnv(base: NodeJS.ProcessEnv, account?: AccountCredentials, home = homedir()): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...base };
-  delete env.ANTHROPIC_API_KEY;
+  for (const k of NOT_THE_LOGIN) delete env[k];
   if (account?.home) env.CLAUDE_CONFIG_DIR = account.home === '~' ? home : account.home.startsWith('~/') ? join(home, account.home.slice(2)) : account.home;
   return env;
 }
