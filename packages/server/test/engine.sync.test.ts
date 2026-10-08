@@ -531,7 +531,6 @@ describe('sync with base (p29)', () => {
       store = off.store; engine = off.engine;
       await off.engine.approvePlan(off.id, undefined, 'user', { syncFirst: false });
       await waitFor(() => off.prompts.length >= 1);
-      expect(off.log.some((l) => l.includes('git rebase'))).toBe(false);
       expect(off.prompts[0].behind).toBe(1);
     });
 
@@ -542,7 +541,8 @@ describe('sync with base (p29)', () => {
       await waitFor(() => ctx.prompts.length >= 1);
       expect(ctx.prompts[0].phase).toBe('implement');
       expect(ctx.prompts[0].prompt.indexOf('src/conflicted.ts')).toBeGreaterThanOrEqual(0);
-      expect(ctx.prompts[0].prompt.indexOf('src/conflicted.ts')).toBeLessThan(ctx.prompts[0].prompt.indexOf('implement'));
+      expect(ctx.prompts[0].prompt.indexOf('src/conflicted.ts')).toBeLessThan(ctx.prompts[0].prompt.indexOf('Once the rebase is done, start on this'));
+      expect(ctx.prompts[0].behind).toBe(1);
       expect(ctx.store.getItem(ctx.id)!.file.frontmatter.blocked).toBeUndefined();
     });
 
@@ -564,7 +564,7 @@ describe('sync with base (p29)', () => {
       const res = await app.request(`/items/${other.id}/plan/approve`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sync_first: false }) });
       expect(res.status).toBe(200);
       await waitFor(() => ctx.prompts.filter((p) => p.phase === 'implement').length === 2);
-      expect(ctx.log.some((l) => l.includes(`git rebase origin/trunk in ${other.cwd}`))).toBe(false);
+      expect(ctx.prompts.filter((p) => p.phase === 'implement')[1].behind).toBe(1);
     });
 
     it('the plan says what has merged into its base since it was planned', async () => {

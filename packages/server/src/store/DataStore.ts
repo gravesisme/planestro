@@ -275,6 +275,21 @@ export class DataStore {
     };
   }
 
+  /**
+   * Items planestro merged into this item's base after its worktree was cut (#217), by merged_at: what a plan
+   * awaiting approval was not made against. A worker item planning or with its plan ready only; what merged
+   * outside planestro is not seen here (approval's sync takes it in all the same).
+   */
+  mergedSinceCut(item: StoredItem): string[] {
+    const fm = item.file.frontmatter;
+    if (!fm.worktree || !fm.started_at || fm.kind === 'epic' || !['PLAN_IN_PROGRESS', 'PLAN_READY'].includes(fm.status)) return [];
+    const cut = Date.parse(fm.started_at);
+    const moved = [...this.items.values()].filter((i) => i.id !== item.id && i.file.frontmatter.merged_at && Date.parse(i.file.frontmatter.merged_at) > cut);
+    if (!moved.length) return [];
+    const base = this.derived(item).base_branch;
+    return moved.filter((i) => this.derived(i).base_branch === base).map((i) => i.id).sort((a, b) => idNumber(a) - idNumber(b));
+  }
+
   // ---- writes ----
   private assertWritable(): void { if (this.readOnly) throw new Error(`data dir schema is ${this.config.schema_version}; this planestro speaks ${SCHEMA_VERSION} (${this.schema}) — read-only`); }
 

@@ -65,8 +65,9 @@ reports the old head for a few seconds; `waitForCi` reads that as propagation la
 never as a moved head (the `head_moved` storm re-ran every open PR per merge).
 Between turns the same sync runs on demand (`Engine.syncWithBase`: the item's
 "Sync with base", the orchestrator's `sync_with_base` / `unblock_item` with
-`sync_first`, and `resume_after`): never while a turn or op is live, pushed only
-if the branch is already on the remote, and a conflict goes to the session.
+`sync_first`, `resume_after`, and plan approval before the implement turn
+starts unless `sync_first: false`, #217): never while a turn or op is live, pushed
+only if the branch is already on the remote, and a conflict goes to the session.
 The serial merge chain only syncs and merges; no CI wait ever runs inside it. A head
 that is not green yet leaves the chain (`op: awaiting_ci`), is polled beside it
 (`watchCi`) and comes back once green, so one item's CI never delays another's merge.

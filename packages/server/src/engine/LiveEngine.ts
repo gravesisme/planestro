@@ -67,8 +67,9 @@ const MAX_TRIAGE_ROUNDS = 4;
  * own (a CI failure, a conflict, a reminder, an instruction) and never for an answer to something the
  * session itself asked. `carryOn`: the prompt only says "continue", so an interrupted fresh turn keeps
  * the task it was given. `final`: the prompt is already what the agent is to read (a re-run).
+ * `syncFirst`: the branch is synced with its base before the turn starts (#217), and the turn told how.
  */
-interface TurnOpts { opener?: boolean; fresh?: true | 'auto'; note?: string; carryOn?: boolean; final?: boolean; estimate?: ResumeEstimate; commandGrant?: CommandGrant }
+interface TurnOpts { opener?: boolean; fresh?: true | 'auto'; note?: string; carryOn?: boolean; final?: boolean; estimate?: ResumeEstimate; commandGrant?: CommandGrant; syncFirst?: boolean }
 interface PendingTurn { key: string; phase: TurnPhase; prompt: string; extraAllowed: string[]; oneShotCommands: string[]; opts: TurnOpts }
 
 /** The CLI's quote as the engine's estimate: the write when the cache has expired, a read of the same window when it has not. */
@@ -185,7 +186,7 @@ export class LiveEngine implements Engine {
     this.ciWorkflow = opts.ciWorkflow ?? 'CI';
     this.orchestrator = new Orchestrator(store, ports, {
       message: (id, text) => this.message(id, text, 'orchestrator'),
-      approvePlan: (id, notes, hold) => this.approvePlan(id, notes, 'orchestrator', { hold }),
+      approvePlan: (id, notes, hold, syncFirst) => this.approvePlan(id, notes, 'orchestrator', { hold, syncFirst }),
       holdMerge: (id, reason) => this.orchestratorHolds(id, reason),
       convertKind: (id, to, why) => this.convertKind(id, to, 'orchestrator', why).catch((e) => (e as Error).message),
       planEpic: (id, why) => this.planEpic(id, why),
@@ -999,6 +1000,9 @@ export class LiveEngine implements Engine {
   private runPendingTurn(id: string, turn: PendingTurn): Promise<TurnResult | undefined> {
     const current = this.store.requireItem(id).file.frontmatter.op_data?.pending_turn as PendingTurn | undefined;
     if (current?.key !== turn.key) return Promise.resolve(undefined);
+    if (turn.opts.syncFirst && !(this._paused || this.draining || this.stopping) && !this.store.requireItem(id).file.frontmatter.taken_over) {
+      return this.syncBeforeTurn(id, turn).then((synced) => { this.savePendingTurn(id, synced); return this.runPendingTurn(id, synced); });
+    }
     const data = this.store.requireItem(id).file.frontmatter.op_data ?? {};
     const messages = (data.pending_messages as string[] | undefined) ?? [];
     if (messages.length) {
@@ -1006,6 +1010,27 @@ export class LiveEngine implements Engine {
       this.store.mutateItem(id, [{ set: { op_data: { ...data, pending_turn: turn, pending_messages: [] } } }], 'engine');
     }
     return this.runTurnFor(id, turn.phase, turn.prompt, turn.extraAllowed, turn.oneShotCommands, turn.opts, turn);
+  }
+  /**
+   * A turn that starts on its base as it is now (#217): approved just after its base moved, an implement
+   * turn began on the base its plan was cut from, and the worker had to stop and ask for a sync. The git
+   * is syncBranch's (Engine.syncWithBase's): only when behind, pushed only if already on the remote. A
+   * conflict is the first thing the session reads, with the turn's own task after it. The sync's intent
+   * is in the pending turn until it has run, so a restart part-way syncs again (a no-op once on the tip).
+   */
+  private async syncBeforeTurn(id: string, turn: PendingTurn): Promise<PendingTurn> {
+    const { syncFirst: _done, ...opts } = turn.opts;
+    const next = (prompt: string): PendingTurn => ({ ...turn, prompt, opts });
+    const item = this.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    if (this.store.derived(item).flavor !== 'worker' || !fm.worktree || !fm.branch || fm.kind === 'epic') return next(turn.prompt);
+    const sync = await this.syncBranch(id, 'before implementation starts');
+    if (sync.kind === 'conflict') return next(`${this.conflictPrompt(id, sync)}\n\nOnce the rebase is done, start on this:\n\n${turn.prompt}`);
+    const said = sync.kind === 'synced' ? `planestro rebased your branch onto origin/${sync.base} (${sync.head.slice(0, 7)}) before you start, so it has what has merged there since the plan was made.`
+      : sync.kind === 'diverged' ? `planestro did not rebase your branch onto origin/${sync.base}: the worktree (${sync.local.slice(0, 7)}) and the pushed branch (${sync.remote.slice(0, 7)}) have diverged. Look at git log HEAD..origin/${fm.branch} first; ask with report_blocked if you need them brought in.`
+      : sync.kind === 'dirty' ? `Your branch is ${sync.behind} commit${sync.behind === 1 ? '' : 's'} behind origin/${sync.base}; planestro did not rebase it (${sync.why ?? `uncommitted changes: ${sync.files.slice(0, 5).join(', ')}`}). Commit or clear them first; ask with report_blocked if you need the rebase.`
+      : '';
+    return next(said ? `${said}\n\n${turn.prompt}` : turn.prompt);
   }
   private drivePendingTurns(): void {
     for (const item of this.store.listItems()) {
@@ -1059,8 +1084,9 @@ export class LiveEngine implements Engine {
    * `hold`: the pull request this opens stays out of the merge queue until it is released, for this
    * reason (#97). A plan that states a hold (holdShapeOf) is held when the orchestrator approves it,
    * with or without the argument; the user chooses, and approving without it is on the record.
+   * `syncFirst` (the default, #217): the branch is synced with its base before the implement turn starts.
    */
-  async approvePlan(id: string, notes?: string, by: 'user' | 'orchestrator' = 'user', { asItem = false, hold, mcpBudget }: { asItem?: boolean; hold?: string; mcpBudget?: number } = {}): Promise<void> {
+  async approvePlan(id: string, notes?: string, by: 'user' | 'orchestrator' = 'user', { asItem = false, hold, mcpBudget, syncFirst = true }: { asItem?: boolean; hold?: string; mcpBudget?: number; syncFirst?: boolean } = {}): Promise<void> {
     const item = this.store.requireItem(id);
     const impl = findModel(this.store.config, item.file.frontmatter.implementer);
     if (impl?.user_approves_plans && by !== 'user') throw new Error(`${id} is implemented by ${impl.label}, whose plans and their MCP budget are the user's to approve`);
@@ -1085,7 +1111,7 @@ export class LiveEngine implements Engine {
       ...(by === 'orchestrator' ? [{ activity: { actor: by, text: `approved the plan on your behalf${notes ? `: ${notes}` : ''}` } }] : notes ? [{ activity: { actor: by, text: `approval notes: ${notes}` } }] : []),
     ], by, { commit: `${id}: approve plan${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
     // queued, not dropped: the orchestrator can decide while the planner's turn is still ending
-    this.queueTurn(id, 'implement', this.withLoopNote(id, this.withHoldNote(id, this.withDelivered(id, 'implement-plan', this.store.renderPrompt('implement-plan', this.store.requireItem(id), { approval_notes: notes?.trim() || '(none)' })))), [], [], { opener: true });
+    this.queueTurn(id, 'implement', this.withLoopNote(id, this.withHoldNote(id, this.withDelivered(id, 'implement-plan', this.store.renderPrompt('implement-plan', this.store.requireItem(id), { approval_notes: notes?.trim() || '(none)' })))), [], [], { opener: true, ...(syncFirst ? { syncFirst: true } : {}) });
   }
 
   async rejectPlan(id: string, message: string, by: 'user' | 'orchestrator' = 'user', { amend = false }: { amend?: boolean } = {}): Promise<void> {

@@ -87,8 +87,8 @@ export interface OrchestratorHooks {
   /** The CI runners per label, read by planestro's own gh and cached (#216): online, busy, idle and queued jobs. */
   runnerStatus?(): Promise<string>;
   message(id: string, text: string): Promise<void>;
-  /** `hold`: the pull request it opens stays out of the merge queue, for this reason (#97). */
-  approvePlan(id: string, notes?: string, hold?: string): Promise<void>;
+  /** `hold`: the pull request it opens stays out of the merge queue, for this reason (#97). `syncFirst` (default true): sync the branch with its base first (#217). */
+  approvePlan(id: string, notes?: string, hold?: string, syncFirst?: boolean): Promise<void>;
   /** Hold an item out of the merge queue, with the reason on the item. Returns what happened. */
   holdMerge(id: string, reason: string): string;
   /** Make an item an epic or back while nothing has run for implementation (LiveEngine.convertKind). Returns what happened, or why not. */
@@ -465,6 +465,9 @@ export class Orchestrator {
         const budget = this.hooks.budgetLine?.(fm.id); if (budget) lines.push(budget);
         // A fact the state machine knows (p29): what it depends on merged after its worktree was cut, so its branch lacks it until synced.
         const since = fm.worktree && fm.started_at && ['PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS'].includes(fm.status) ? fm.depends_on.map((d) => this.store.getItem(d)?.file.frontmatter).filter((d) => d?.merged_at && Date.parse(d.merged_at) > Date.parse(fm.started_at!)) : [];
+        // And, for a plan awaiting approval, what has merged into its base since it was planned (#217): approval syncs it first.
+        const moved = fm.status === 'PLAN_READY' ? this.store.mergedSinceCut(item) : [];
+        if (moved.length) lines.push(`Merged into ${this.store.derived(item).base_branch} since it was planned: ${moved.join(', ')}. approve_plan rebases its branch onto that before implementation starts (unless sync_first: false).`);
         if (since.length) lines.push(`Merged since its worktree was cut: ${since.map((d) => `${d!.id} (${d!.merged_at!.slice(0, 16).replace('T', ' ')})`).join(', ')}. Its branch does not have that work yet: sync it (sync_with_base, or unblock_item with sync_first: true) before it resumes.`);
         const desc = getSection(item.file, 'Description'); if (desc) lines.push(`Description:\n${desc.slice(0, 1200)}`);
         const plan = getSection(item.file, 'Plan'); if (plan) lines.push(`Approved/submitted plan:\n${plan.slice(0, 2000)}`);
@@ -709,9 +712,9 @@ export class Orchestrator {
         } catch (e) { return `refused: ${(e as Error).message}. Nothing was submitted.`; }
       } },
       { name: 'mark_blocked', description: 'Block an item for the user with a reason. Refused while a step runs (a CI wait, a turn): a block then could not be cleared.', schema: { ...idArg, reason: z.string() }, handler: async (a) => { const busy = this.hooks.busyWith(String(a.id)); if (busy) return `refused: ${busy}. To reach its session, use message_session: it is delivered when this step ends.`; const { decision: stale, ...rest } = store.requireItem(String(a.id)).file.frontmatter.awaiting_data ?? {}; store.mutateItem(String(a.id), [{ set: { blocked: true, blocked_reason: 'orchestrator', awaiting: 'user' } }, { unset: ['triage'] }, ...(stale ? [(Object.keys(rest).length ? { set: { awaiting_data: rest } } : { unset: ['awaiting_data'] }) as ItemOp] : []), { activity: { actor: 'orchestrator', text: `blocked for the user: ${a.reason}${stale ? ' (the decision card it had is withdrawn: this block replaces it)' : ''}` } }], 'orchestrator', { commit: `${a.id}: blocked (orchestrator)` }); return 'blocked'; } },
-      { name: 'approve_plan', description: 'Approve a PLAN_READY item (only allowed when the item opted into auto-approval and config permits). Refused for a plan that reads as an epic breakdown (the packet says THIS IS AN EPIC): convert it with convert_item instead. With `hold`, its pull request stays out of the merge queue until the user releases it; a plan that states a merge hold (the packet says so) is held whether or not you pass it.', schema: { ...idArg, notes: z.string().optional(), hold: z.string().optional().describe('What the pull request waits for before it may merge ("until HH-12 has merged"). Only when it must wait.') }, handler: async (a) => {
+      { name: 'approve_plan', description: 'Approve a PLAN_READY item (only allowed when the item opted into auto-approval and config permits). Refused for a plan that reads as an epic breakdown (the packet says THIS IS AN EPIC): convert it with convert_item instead. With `hold`, its pull request stays out of the merge queue until the user releases it; a plan that states a merge hold (the packet says so) is held whether or not you pass it. Before the implement turn starts, planestro brings its branch up to date with its base (as sync_with_base; nothing happens if it is already on the base tip, and a conflict goes to the session first); sync_first: false skips that.', schema: { ...idArg, notes: z.string().optional(), hold: z.string().optional().describe('What the pull request waits for before it may merge ("until HH-12 has merged"). Only when it must wait.'), sync_first: z.boolean().optional().describe('Sync the branch with its base before implementation starts (default true)') }, handler: async (a) => {
         if (!this.hooks.planDelegated(String(a.id))) return 'not permitted: the user approves this plan (add review notes with annotate_item instead)';
-        try { await this.hooks.approvePlan(String(a.id), a.notes ? String(a.notes) : undefined, a.hold ? String(a.hold) : undefined); } catch (e) { return `refused: ${(e as Error).message}`; }
+        try { await this.hooks.approvePlan(String(a.id), a.notes ? String(a.notes) : undefined, a.hold ? String(a.hold) : undefined, a.sync_first !== false); } catch (e) { return `refused: ${(e as Error).message}`; }
         const held = heldReasonOf(store.requireItem(String(a.id)).file.frontmatter);
         return held ? `approved; its pull request will be held out of the merge queue: ${held}` : 'approved';
       } },

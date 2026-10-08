@@ -34,6 +34,8 @@ export interface ItemView {
   activity: { at: string; actor: string; text: string }[];
   /** A parked Bash request whose kind of command this item has parked on before: the allow rule that would have let it run (#108). */
   park_hint?: { shape: string; parks: number; rule: string } | null;
+  /** Items merged into its base since its plan was cut (#217): approving syncs the branch with the base first. */
+  merged_since_cut?: string[];
   derived: { lane: 'board' | 'icebox' | 'done'; needs_you: boolean; external: boolean; flavor: 'worker' | 'epic' | 'external'; base_branch?: string; base_branch_error?: string; deps_satisfied: boolean; children: string[] };
 }
 export interface ReviewImage { path: string; change: 'added' | 'modified' | 'deleted'; bytes?: number; width?: number; height?: number; kind?: 'image' | 'audio' | 'model' | 'text' }
