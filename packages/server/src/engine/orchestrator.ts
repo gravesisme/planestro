@@ -23,7 +23,7 @@ const EPIC_SUBMIT_POLICY = 'submit_item on an epic does not queue it: it has the
  * Takes to hear or see and pick from (#294): the worker's request_audition (#207) serves them on the item page, a phone
  * included, so a request for an "audition sheet" is an instruction to the worker, never a missing tool or a card.
  */
-const AUDITION_POLICY = 'When the user wants takes heard or seen and picked (sounds, model or image variants, an "audition sheet"): the worker puts them up with request_audition. planestro plays every take on the item page, from a phone too, and resumes the worker with one pick per role (or a regenerate note). Tell it so with unblock_item, or message_session while it runs; never a card that describes the takes, and never a note that no tool can do it.';
+const AUDITION_POLICY = 'When the user wants takes heard or seen and picked (sounds, model or image variants, an "audition sheet"): the worker puts them up with request_audition. planestro plays every take on the item page, from a phone too, and resumes the worker with the takes kept per role (and how many more to make, with a note), in rounds until each role is filled. Tell it so with unblock_item, or message_session while it runs; never a card that describes the takes, and never a note that no tool can do it.';
 
 /**
  * What a user_message wake is for, said in the packet rather than the prompt library: a data dir's

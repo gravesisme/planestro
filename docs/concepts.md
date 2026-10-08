@@ -55,7 +55,7 @@ Your answer resumes the same conversation — after an hour, after a restart.
 | `plan_approval` | Approve the plan or request changes |
 | `breakdown_approval` | An epic's proposed children: edit, approve, or send back |
 | `question` | The agent asked something; answer it |
-| `audition` | A worker made takes (a sound's a/b/c per role, a model's variants) to pick from before it builds on one: play them on the item page, from a phone too, and pick one per role, or ask for new ones if it offered that. Never sent to the orchestrator |
+| `audition` | A worker made takes (several per role for a sound, a model's variants) to pick from before it builds on them: play them on the item page, from a phone too, keep as many as each role needs, and regenerate the rest with a note; kept takes stay locked in the next round. Never sent to the orchestrator |
 | `permission` | A Claude worker wants to run something outside its allow-list: once, always, or deny |
 | `review` | A held pull request is synced and green; look at what was made, approve or send back |
 | `user` | The item is blocked; read the reason ([Troubleshooting](troubleshooting.md)) |
