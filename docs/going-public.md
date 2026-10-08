@@ -102,13 +102,23 @@ repo HEAD, remote and base existence, `gh auth status`, and whether `claude`/`co
 are on PATH. That would fit in `planestro check --preflight` and spends no quota.
 Network, model-entitlement and CI checks stay post-1.0.
 
-**D6 — Take a position on authentication. Don't leave it open (O4).** The README
-asks for API-key authentication, citing the Agent SDK's guidance. The site teaches
-a local sign-in, and Settings calls the key optional. The README's position is the
-conservative one. Align the site and Settings to it, or confirm the current
-provider terms before publishing anything looser. Apply the same check to Codex
-(ChatGPT sign-in vs. API key). This is a wording decision for the maintainer to
-make once. It is a gate, not a research project.
+**D6 — Authentication: decided.** Planestro uses the `claude` and `codex` logins
+already on the machine. Model API keys are dropped. It is a local developer
+workstation tool, so access to the machine is the access control. There is no
+Planestro login or access token, and none is planned. SECURITY.md has been
+rewritten for this model (P3, done on this branch). Two things remain:
+
+- The README's *Authentication and billing* section, operations.md and the site
+  still steer people to an Anthropic Console key. They move to "your existing
+  login" (P2).
+- The code still carries the key paths: the `anthropic_api_key` setting and its
+  Settings row, `accounts.api_key_env`, and the `subscription | api_key` billing
+  note. Removing them is P9. Until then, SECURITY.md describes the setting as
+  legacy and says to leave it unset.
+
+`--host 0.0.0.0` and `lan_access` stay, documented as moving the boundary from
+"this machine" to "every device on this network". SECURITY.md says to use them
+only where every device is yours (Tailscale and similar).
 
 ### What the first audit missed
 
@@ -189,8 +199,9 @@ own steps, not engine work. They stay as checklists below and are not issues.
 | # | Proposed issue | Covers | Size | Tier |
 | --- | --- | --- | --- | --- |
 | P1 | `init` creates and verifies a planning git repo, resolves the base or refuses to guess, and validates before writing | O1, O3 (base fallback, linked-worktree `ENOTDIR` via `git rev-parse --git-path`), D3 (withdraw `orphan-branch`) | M | v1.0 blocker |
-| P2 | One correct install path across README, Getting started and the site quick start | O1/O2/O4 docs, loopback-only examples, D6 auth wording, platform/Node statement, Codex-only recipe linked from the main path | M (docs) | v1.0 blocker, after P1 |
-| P3 | SECURITY.md and trust-model refresh | Stale access-token line, Codex app-server approvals, MCP/hook trust, A1 untrusted input, #242 accounts | S (docs) | v1.0 blocker |
+| P2 | One correct install path across README, Getting started and the site quick start | O1/O2/O4 docs, loopback-only examples, D6 "existing login" wording (README, operations.md, configuration.md, site), platform/Node statement, Codex-only recipe linked from the main path | M (docs) | v1.0 blocker, after P1 |
+| P3 | SECURITY.md and trust-model refresh | Machine-access trust model (D6), Codex app-server approvals, MCP/hook trust, A1 untrusted input, no telemetry | S (docs) | **Done on this branch**, so not an issue |
+| P9 | Remove the model API-key paths | `anthropic_api_key` (setting, Settings row, `LiveClaudePort` env), `accounts.api_key_env` (keep `home`), the `subscription \| api_key` billing note and its Budgets wording; decide whether an inherited `ANTHROPIC_API_KEY` is scrubbed from worker environments so the login is what bills | S–M | v1.0 blocker (D6) |
 | P4 | Public-repo hygiene | A2 (macOS CI, timeout), A3 (SDK dependency, `engines`), A4 (CONTRIBUTING, templates, Dependabot), A5 (non-affiliation, no telemetry) | M | v1.0 blocker |
 | P5 | Show running vs saved engine mode | D4 indicator | S | v1.0, cheap |
 | P6 | Bound multipart uploads before buffering | Body/file-count limits on both upload routes; bounded audition/media reads | S | v1.0, cheap hardening |
@@ -200,7 +211,7 @@ own steps, not engine work. They stay as checklists below and are not issues.
 Deferred until after 1.0 and not proposed as issues yet: guided onboarding and
 welcome screen, new-item simplification and sample tour (O6), site redesign
 (M1, M4–M7 beyond the minimum in D2), user study, network-preflight and model
-entitlement checks, access token / authenticated remote use, bundle splitting,
+entitlement checks, bundle splitting,
 packaging, Windows, and fencing external text in prompts (A1 hardening).
 
 ## What was verified
@@ -515,10 +526,9 @@ investment: a reliable, short path to a reviewed change is.
   is not proof of trust. Explicit `--host` binding and `lan_access` filtering
   are separate controls. Do not promise that all forwarding/proxy setups are
   blocked. No account system is required for a local-only first release.
-- **Reconcile the network roadmap.** SECURITY.md still says an access token
-  is planned and points here. That is a future feature, not protection present
-  today. Decide whether authenticated remote use is in scope before marketing
-  phone/LAN access beyond a trusted private network.
+- **Reconcile the network roadmap.** *Resolved (second review, D6):* no access
+  token is planned. Machine access is the access control, and LAN/phone use is
+  documented as extending it to a network where every device is yours.
 - **Document provider permission boundaries accurately.** Claude policies are
   guardrails, not OS isolation. Codex has separate exec/app-server capabilities;
   app-server can park a native command approval and use an exact one-time grant.
@@ -569,8 +579,9 @@ redesign and site redesign can follow a clearly labeled experimental release.
   silently undo that announced plan, but decide whether an experimental source
   opening precedes it and explain the distinction consistently. *(Second review,
   D1: the opening is v1.0.0, with a written support contract.)*
-- [ ] Document untrusted input in SECURITY.md: imported issues, PR comments and
-  CI logs on a public code repo (A1).
+- [x] Rewrite SECURITY.md for the machine-access trust model, including untrusted
+  input (A1). *(Second review, D6/P3.)*
+- [ ] Remove the model API-key paths from code and docs (D6, P9).
 - [ ] Add a macOS CI job and widen the 10-minute timeout. Declare the Agent SDK as
   a `packages/server` dependency (A2, A3).
 - [ ] Add CONTRIBUTING, issue/PR templates and Dependabot. Add a non-affiliation
