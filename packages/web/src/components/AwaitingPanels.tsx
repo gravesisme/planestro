@@ -14,7 +14,7 @@ type Question = { question: string; header?: string; options: { label: string; d
  */
 export function AwaitingPanels({ item }: { item: ItemView }) {
   const fm = item.frontmatter;
-  const data = fm.awaiting_data as { kind?: string; questions?: Question[]; tool?: string; input?: Record<string, unknown>; grantable?: boolean; handed_back?: boolean; escalated?: string } | undefined;
+  const data = fm.awaiting_data as { kind?: string; questions?: Question[]; tool?: string; input?: Record<string, unknown>; grantable?: boolean; grant_refusal?: string; handed_back?: boolean; escalated?: string } | undefined;
   const orchestrating = fm.awaiting === 'orchestrator' && data?.kind === 'permission';
   // One answer at a time, shown at once (#282): keyed by the request, so the next one starts unlocked.
   const { sending, send } = useSending(`${item.id}:${String(fm.awaiting_data?.requested_at ?? '')}`);
@@ -43,12 +43,12 @@ export function AwaitingPanels({ item }: { item: ItemView }) {
         <pre className="events">{!cannotGrant && command ? command : JSON.stringify(data.input, null, 2)}</pre>
         {nativeCodex && !cannotGrant && <p>Allow once resumes the agent and approves this exact command in this working directory once. Other commands still need their own permission.</p>}
         {nativeCodex && typeof data.input?.cwd === 'string' && <p className="small">Working directory: <code>{data.input.cwd}</code></p>}
-        {cannotGrant && <p>This permission cannot be carried into a new turn. Take over to perform the action yourself, then hand back, or deny it and ask for another approach.</p>}
+        {cannotGrant && <p>{data.grant_refusal ?? 'This permission cannot be carried into a new turn. Take over to perform the action yourself, then hand back, or deny it and ask for another approach.'}</p>}
         {item.park_hint && <ParkHint hint={item.park_hint} />}
         <div className="row">
           {!cannotGrant && <button className="primary" disabled={sending !== undefined} aria-busy={sending === 'allow'} onClick={() => void respond('allow', { kind: 'permission', decision: 'allow' })}>{sending === 'allow' ? <Sending /> : 'Allow once'}</button>}
           {!cannotGrant && !nativeCodex && <button title="Adds this exact command to permissions.allow" disabled={sending !== undefined} aria-busy={sending === 'always'} onClick={() => void respond('always', { kind: 'permission', decision: 'always' })}>{sending === 'always' ? <Sending /> : 'Always allow'}</button>}
-          <button className="danger" disabled={sending !== undefined} aria-busy={sending === 'deny'} onClick={() => { const reason = prompt('Reason for denying?'); if (reason !== null) void respond('deny', { kind: 'permission', decision: 'deny', reason }); }}>{sending === 'deny' ? <Sending /> : 'Deny'}</button>
+          <button className="danger" disabled={sending !== undefined} aria-busy={sending === 'deny'} onClick={() => { const reason = prompt('Reason for denying, and what to do instead?'); if (reason !== null) void respond('deny', { kind: 'permission', decision: 'deny', reason }); }}>{sending === 'deny' ? <Sending /> : 'Deny'}</button>
         </div>
       </div>
     );

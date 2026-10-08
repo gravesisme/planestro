@@ -311,7 +311,7 @@ describe('LiveEngine lifecycle (dry-run ports)', () => {
     expect(store.getItem(item.id)!.file.frontmatter.blocked).toBeUndefined();
     await engine.respond(item.id, { kind: 'permission', decision: 'deny', reason: 'use the check script' });
     await waitFor(() => work === 2 && store.getItem(item.id)!.file.frontmatter.awaiting === 'permission' && !(engine as any).jobs.has(item.id));
-    expect(prompts[1]).toContain('DENIED: The user denied your command `node -e 1`: use the check script. Do not retry it in another form');
+    expect(prompts[1]).toContain('DENIED: The user denied your command `node -e 1`: use the check script. This exact command is denied: do not run it again, reworded or by another route');
     world.commits.set(join(store.codeRepoPath(), '.claude/worktrees/tp-1-w'), 1);
     await engine.respond(item.id, { kind: 'permission', decision: 'allow' });
     await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
@@ -2830,7 +2830,7 @@ describe('permission requests delegated to the orchestrator', () => {
     // #203: the next request of the same kind is shown the ruling it got before
     expect(w.seen.prompts[0]).not.toContain('Earlier rulings');
     expect(w.seen.prompts[1]).toMatch(/Earlier rulings on `node` commands[\s\S]*deny \(orchestrator\): use the project check script instead/);
-    expect(w.seen.implementPrompts[1]).toContain('DENIED: The orchestrator denied your command `node -e 1`: use the project check script instead. Do not retry it in another form');
+    expect(w.seen.implementPrompts[1]).toContain('DENIED: The orchestrator denied your command `node -e 1`: use the project check script instead. This exact command is denied: do not run it again, reworded or by another route');
     expect(fmOf(ctx.store, ctx.id).op_data?.orchestrator_denials).toBe(3);
     // #95: the card says why it came to you, and your approval hands the item's next requests back to the orchestrator
     expect(fmOf(ctx.store, ctx.id).awaiting_data?.escalated).toBe('orchestrator_denials');

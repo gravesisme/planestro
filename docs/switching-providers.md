@@ -20,7 +20,7 @@ The conversation itself does not cross providers. The next session starts with a
 
 Approval and permission questions remain pending. An answer is carried with the original question in the persisted item record, never as an isolated answer.
 
-Codex native sandbox requests are recorded and immediately declined so no process waits for you. A complete local command can be approved with **Allow once**: the exact command and working directory are saved, then consumed before accepting its next matching request. Permanent grants and broader network, filesystem or session permissions remain unsupported. For those, choose **Deny** and give another approach, or take the item over, perform the action yourself and hand it back. Permissions for configured external MCP tools still follow their own rules and call budgets.
+Codex native sandbox requests are recorded and immediately declined so no process waits for you. A complete local command can be approved with **Allow once**: the exact command and working directory are saved, then consumed before accepting its next matching request. Permanent grants and broader network, filesystem or session permissions remain unsupported, and no setting grants them: such a request's card (and the orchestrator's wake, which is then offered only deny or ask_user) says it cannot be allowed and why. For those, choose **Deny** and say what to do instead (a denial with a reason tells the worker that exact command is refused but the alternative is its to do), or take the item over, perform the action yourself and hand it back. Permissions for configured external MCP tools still follow their own rules and call budgets.
 
 ## Items that must wait
 
