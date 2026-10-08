@@ -43,6 +43,15 @@ Protocol bindings were generated locally with `codex app-server generate-ts`.
   command followed by a dynamic tool call succeeded. This is the same open-stream
   requirement as [sdk-notes gotcha 11](sdk-notes.md). Approval requests are recorded
   then declined in their handling cycle; no RPC waits for a human.
+- **`thread/resume` does not replace developer instructions** (#246, 2026-10-08,
+  codex-cli 0.154.0, gpt-6-astra). A thread started with "Standing rule, version 1:
+  answer with RULE-1" and resumed with `developerInstructions` saying version 2 still
+  answered `RULE-1` (two runs); its rollout holds only the version-1 developer message (the resume
+  wrote none). `ThreadResumeParams` accepts the field and ignores it for a stored thread.
+  Restating version 2 at the top of the resumed turn's *input* did not win either: still
+  `RULE-1`. A changed `orchestrator-system` / `standing-decisions` therefore reaches a
+  resumed Codex conversation only through a fresh thread. Tokens: 10,818 fresh, 220 and
+  277 for the resumes.
 - Every start and resume specifies sandbox policy. Fresh and resumed workspace
   turns both wrote their expected fixture file. Coding turns share exec's narrow
   linked-worktree Git write paths (index/HEAD, objects and branch refs/logs); the
@@ -125,7 +134,8 @@ interruptions skip those end hooks, leaving that persisted ownership intact.
 
 Reproduce manually (these are authenticated, never CI commands):
 
-- `npx tsx spikes/app-server-validation.ts`: dynamic tools and resume.
+- `npx tsx spikes/app-server-validation.ts`: dynamic tools and resume, and whether resume
+  takes new developer instructions (#246).
 - `npx tsx spikes/app-server-representative.ts`: fresh-context measurements and isolated auth.
 - `npx tsx spikes/app-server-capabilities.ts`: writable resume, open stream and isolation;
   add `--images` for the optional raw-protocol art validation.
