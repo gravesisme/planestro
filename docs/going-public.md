@@ -33,6 +33,176 @@ and feature parity with another product are **not** prerequisites for opening
 an experimental repository. Fix the misleading and broken entry paths first;
 do not wait for every advanced feature or every cosmetic improvement.
 
+## Second review — 2026-10-08, at `caa7433`
+
+A second pass re-checked the findings below against **`caa7433`** (PR #329), 14
+commits / 83 files after the audited revision (#203, #218, #219, #231, #234, #236,
+#240, #242, #294, #295, #296, #297, #318). No tests, scans or probes were re-run.
+The evidence table further down still describes `05be427`. Every repository-level
+finding still holds at `caa7433`:
+
+- `init` still falls back to `main` when `origin/HEAD` is missing (`init.ts`,
+  `defaultBranchOf`). `orphan-branch` still only writes an exclude entry, and
+  `.git/info/exclude` is still built by hand.
+- The README and [Getting started](getting-started.md) still run `init` without
+  `git init`. They still say "switch `engine.mode` to `live`" without a restart, and
+  the README still lists Claude Code as required.
+- The README still has two `--host 0.0.0.0 --watch` background examples.
+  SECURITY.md still promises an access token "planned (see `docs/going-public.md`)",
+  and still describes Codex only as sandboxed with no network.
+- Both multipart routes (`routes/api.ts`, item and chat attachments) still call
+  `formData()` with no body limit.
+
+### Where this review disagrees
+
+**D1 — Ship the public opening as v1.0.0. Don't open as "experimental" first.**
+The site already says, in three places, that the repository becomes public
+**with** v1.0.0. A separate experimental opening followed by a later 1.0 means
+writing the release story twice. It also contradicts the published copy. The
+maintainer's stated goal is a public v1.0.0 open-source release. Make the opening
+*be* v1.0.0, with a narrow, written support contract:
+
+- macOS (Linux CI-tested), Node 24, loopback only, single user;
+- Claude-only and Codex-only setups; mixed projects documented as advanced;
+- data-dir compatibility guaranteed through migrations (`SCHEMA_VERSION`), the
+  only API that 1.x promises.
+
+"1.0" in this sense means a stable contract, not a polished product. The three
+tiers in the Recommendation table still apply, but the first row is the v1.0.0
+gate. The second row (live use) is exercised by the maintainer's own acceptance
+runs, not certified.
+
+**D2 — The five-developer study and the site redesign are not v1.0.0 gates.**
+They are good measures of adoption (O6, M1–M7) and belong after the release. For
+a one-maintainer project, gating 1.0 on recruiting five unfamiliar developers adds
+an open-ended dependency. Correct instructions and correct `init` behaviour remove
+most of the friction it would measure. For 1.0, the site needs only what changes
+at the flip: the CTA points at the public repo, prerequisites and cost are stated,
+and the "coming soon / private" copy is updated (M2, M3 and the Pages checklist).
+
+**D3 — Withdraw `--layout orphan-branch` rather than implementing it (O3).**
+It is advertised but does nothing beyond an exclude entry. The separate sibling
+planning repo is what every guide recommends. Implementing an orphan-branch layout
+correctly (a second worktree of the code repo, planning commits that must never be
+pushed by the engine's ref-locked git) adds risk to invariant 1 for a layout no
+newcomer needs. Remove the flag, or make it fail with a pointer to the sibling
+recipe, and keep the README's "can live anywhere" claim honest. It can return
+later as a feature with its own tests.
+
+**D4 — O2 needs instructions and a running-mode indicator, not a guided
+enable-live flow, for 1.0.** The danger is that the UI reads "live" while the engine
+is simulating. Two things fix that: the guide says to restart, and the header or
+Settings shows *saved: live · running: dry-run — restart to apply* whenever they
+differ. A drain/restart wizard can wait for guided onboarding.
+
+**D5 — The minimal preflight (O5) is recommended for 1.0, not required.** If O1/O3
+are fixed in `init` and the docs carry one correct path, a newcomer can succeed
+without it. The cheap part is local checks only: Node version, git identity, code
+repo HEAD, remote and base existence, `gh auth status`, and whether `claude`/`codex`
+are on PATH. That would fit in `planestro check --preflight` and spends no quota.
+Network, model-entitlement and CI checks stay post-1.0.
+
+**D6 — Take a position on authentication. Don't leave it open (O4).** The README
+asks for API-key authentication, citing the Agent SDK's guidance. The site teaches
+a local sign-in, and Settings calls the key optional. The README's position is the
+conservative one. Align the site and Settings to it, or confirm the current
+provider terms before publishing anything looser. Apply the same check to Codex
+(ChatGPT sign-in vs. API key). This is a wording decision for the maintainer to
+make once. It is a gate, not a research project.
+
+### What the first audit missed
+
+**A1 — Text from strangers reaches the agents once a managed repo is public.**
+Neither the audit nor SECURITY.md covers this. `importIssues` (#231) copies an
+issue's body into the item description, and the planner reads that as its brief.
+The orchestrator's PR tool (`prDetails`) returns every PR comment and review.
+Failed CI logs feed fix turns. On a public code repository, anyone can write these,
+including in fork-PR CI output that a log quotes. The existing defences are real:
+nothing is submitted without the user (#73), plans need approval, workers cannot
+push, and destructive operations need evidence. But nothing says that this text is
+untrusted input. For 1.0, document it in SECURITY.md: review imported issues before
+queueing, keep `issues.import_label` to a label only maintainers can set, and treat
+review comments from non-collaborators as data. Marking such text as untrusted in
+the rendered prompts (a fenced "external content" block) is a cheap hardening step.
+Do it after the docs.
+
+**A2 — The primary platform is not in CI, and the suite is close to its timeout.**
+The README calls macOS the platform that is used, but CI runs only `ubuntu-latest`.
+CI's `timeout-minutes: 10` already sits below the audit's local full-suite time
+(13m48s with `--maxWorkers=2` on macOS). Linux CI passes today, but the margin
+shrinks with every feature. Add a `macos-latest` job (it can run on pushes to
+`main` only, to save minutes) and raise or split the timeout before outside PRs
+start running.
+
+**A3 — The Agent SDK is a root devDependency imported at runtime.**
+`packages/server` imports `@anthropic-ai/claude-agent-sdk` (`LiveClaudePort.ts`,
+`claudeBin.ts`), but only the root `devDependencies` declares it. `npm ci` from a
+clone works because of hoisting. `npm ci --omit=dev`, or any later packaging,
+breaks. Declare it in `packages/server` dependencies, together with the `engines`
+field R8 already asks for. The SDK's own licence is not MIT. State in the README
+that it is a third-party dependency under its own terms. Planestro does not
+redistribute it.
+
+**A4 — Nothing for contributors exists yet.** There is no CONTRIBUTING.md, no
+issue or PR templates, and no Dependabot config. Beyond "expectations", 1.0 needs:
+
+- a short CONTRIBUTING (issues welcome, PRs by prior discussion, `npm test`,
+  `npm run typecheck`, the CLAUDE.md/AGENTS.md copy rule, and the invariants as
+  the review bar);
+- a bug template that asks for the platform, Node, provider CLI versions and the
+  `blocked_reason`, and that warns against pasting planning data or secrets;
+- `.github/dependabot.yml` for npm and Actions (this covers R6).
+
+**A5 — Say plainly what Planestro doesn't do and isn't.** There is no telemetry and
+no Planestro account (true from source inspection: the only outbound calls are
+git, `gh`, the provider runners and the user's own notification command). It is
+also not affiliated with Anthropic or OpenAI. The repository is a Claude Code
+plugin marketplace and the site uses the provider names prominently, so one
+non-affiliation line in the README and site footer is cheap and avoids confusion.
+These also belong in the M7 FAQ.
+
+**A6 — Working documents will be public.** `docs/codex-epic-plan.md`,
+`docs/notes/dogfood-crystal-cavern.md` (which names a private `planestro_issues`
+tracker) and this file are linked from the manual as working documents. That is
+fine; the owner already accepted Hurricane Harrison references. Read them once
+as public text before the flip, and label them as historical so a newcomer does
+not mistake the dogfood log's open items for the current bug list. Closed
+issue/PR bodies in this repository also become public. That review is already
+the first open gate item.
+
+**A7 — Releases since the audit add configuration surface the docs must cover
+at 1.0:** accounts (#242, `planestro.local.yml` `accounts` with `api_key_env`),
+`run_heavy` and runner shared labels (#218), `ci.infra_patterns` (#219), Undo last
+turn (#234) and the Usage page (#236). None changes the security posture.
+#242 deliberately keeps keys out of files, and is worth citing in SECURITY.md's
+secrets section. Confirm that [Configuration](configuration.md) lists them
+before release notes are written.
+
+### Proposed v1.0.0 work (not filed)
+
+These items are proposed for discussion and have not been filed. They are what
+this review would put on the backlog for v1.0.0. Anything else here stays in this
+document until after the release. Repository settings, the visibility change,
+Pages and DNS, the privacy read and the live acceptance runs are the maintainer's
+own steps, not engine work. They stay as checklists below and are not issues.
+
+| # | Proposed issue | Covers | Size | Tier |
+| --- | --- | --- | --- | --- |
+| P1 | `init` creates and verifies a planning git repo, resolves the base or refuses to guess, and validates before writing | O1, O3 (base fallback, linked-worktree `ENOTDIR` via `git rev-parse --git-path`), D3 (withdraw `orphan-branch`) | M | v1.0 blocker |
+| P2 | One correct install path across README, Getting started and the site quick start | O1/O2/O4 docs, loopback-only examples, D6 auth wording, platform/Node statement, Codex-only recipe linked from the main path | M (docs) | v1.0 blocker, after P1 |
+| P3 | SECURITY.md and trust-model refresh | Stale access-token line, Codex app-server approvals, MCP/hook trust, A1 untrusted input, #242 accounts | S (docs) | v1.0 blocker |
+| P4 | Public-repo hygiene | A2 (macOS CI, timeout), A3 (SDK dependency, `engines`), A4 (CONTRIBUTING, templates, Dependabot), A5 (non-affiliation, no telemetry) | M | v1.0 blocker |
+| P5 | Show running vs saved engine mode | D4 indicator | S | v1.0, cheap |
+| P6 | Bound multipart uploads before buffering | Body/file-count limits on both upload routes; bounded audition/media reads | S | v1.0, cheap hardening |
+| P7 | `planestro check --preflight` (local checks only) | D5 | M | Optional for 1.0 |
+| P8 | Release v1.0.0 | Version bump across the workspaces, CHANGELOG/release notes with known limitations, tag, site copy at the flip | S | Last; could stay a checklist |
+
+Deferred until after 1.0 and not proposed as issues yet: guided onboarding and
+welcome screen, new-item simplification and sample tour (O6), site redesign
+(M1, M4–M7 beyond the minimum in D2), user study, network-preflight and model
+entitlement checks, access token / authenticated remote use, bundle splitting,
+packaging, Windows, and fencing external text in prompts (A1 hardening).
+
 ## What was verified
 
 | Check | Result and limits |
@@ -397,7 +567,16 @@ redesign and site redesign can follow a clearly labeled experimental release.
 - [ ] Pick coherent release/version language. Package metadata says **0.1.0**;
   the site announces **v1.0.0** alongside Hurricane Harrison **v1.6.0**. Do not
   silently undo that announced plan, but decide whether an experimental source
-  opening precedes it and explain the distinction consistently.
+  opening precedes it and explain the distinction consistently. *(Second review,
+  D1: the opening is v1.0.0, with a written support contract.)*
+- [ ] Document untrusted input in SECURITY.md: imported issues, PR comments and
+  CI logs on a public code repo (A1).
+- [ ] Add a macOS CI job and widen the 10-minute timeout. Declare the Agent SDK as
+  a `packages/server` dependency (A2, A3).
+- [ ] Add CONTRIBUTING, issue/PR templates and Dependabot. Add a non-affiliation
+  and no-telemetry line (A4, A5).
+- [ ] Read the linked working documents as public text and label them as
+  historical (A6).
 - [ ] Record the release revision, CI, audit and scan evidence, accepted exceptions,
   installation/update/backup instructions and known limitations in release notes.
   Refresh checks on the actual release commit if it differs from this one.
