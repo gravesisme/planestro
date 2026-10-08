@@ -231,7 +231,7 @@ describe('take over (p28)', () => {
     const branch = 'tp/1-merged-by-hand', rel = '.claude/worktrees/tp-1-merged-by-hand';
     const cwd = (engine as any).absWorktree(rel); const head = world.sha();
     world.worktrees.set(cwd, { path: cwd, head, branch }); world.remoteBranches.set(branch, head);
-    world.prs.set(351, { number: 351, url: 'u', state: 'MERGED', headRefOid: head, headRefName: branch, baseRefName: 'trunk', polls: 0 });
+    world.prs.set(351, { number: 351, url: 'u', state: 'MERGED', headRefOid: head, headRefName: branch, baseRefName: 'trunk', polls: 0, failOnce: false });
     // Taken over in review; the person merged the PR by hand.
     store.mutateItem(item.id, [{ set: { status: 'IN_REVIEW', branch, worktree: rel, pr: 351 } }], 'engine');
     await engine.takeOver(item.id);
