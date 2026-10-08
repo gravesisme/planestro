@@ -24,6 +24,8 @@ export class FakeWorld {
   rerunLagPolls = 0;
   /** A re-run of failed jobs fails again (a real failure, not a flake). */
   rerunFailsAgain = false;
+  /** What `gh run view --log-failed` shows for a red run (#204: the files a failing check names); unset, the simulated line. */
+  failedLog: string | undefined = undefined;
   /** The next PR's first run is cancelled and nothing replaces it (HH-321), until its failed jobs are re-run. */
   ciCancelOnce = false;
   /** Free space the disk guard reads (#161): undefined is "cannot tell", which never pauses. */
@@ -226,7 +228,7 @@ export class DryRunGhPort implements GhPort {
     if (p.failOnce) { p.failOnce = false; p.polls = 0; return { state: 'failure', runId: 2, sha, url: 'https://example/run/2', attempt }; }
     return { state: 'success', runId: 3, sha, url: 'https://example/run/3', attempt };
   }
-  async runFailedLog() { return '[fake-check] FAIL: simulated failure (PLANESTRO_DRYRUN_CI=red-once)'; }
+  async runFailedLog() { return this.w.failedLog ?? '[fake-check] FAIL: simulated failure (PLANESTRO_DRYRUN_CI=red-once)'; }
   async isBillingBlocked() { return false; }
   async rerunFailed(_repo: string, runId: number) {
     this.say(`gh run rerun ${runId} --failed`);
