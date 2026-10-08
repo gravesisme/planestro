@@ -105,7 +105,7 @@ export class LiveCodexPort implements AgentPort {
     // grants WRITE access, and a worker must never be able to write the data dir (reads are unrestricted).
     // The git dirs a commit writes, by config rather than --add-dir, which `resume` does not take.
     const roots = gitWritableRoots(o.cwd);
-    const shared = ['--json', '--ignore-user-config', '-c', 'sandbox_mode="workspace-write"', ...(roots.length ? ['-c', `sandbox_workspace_write.writable_roots=${JSON.stringify(roots)}`] : []), '--output-schema', schemaFile, '-o', lastFile, ...this.extraArgs, ...(o.model ? ['-m', o.model] : []), ...(o.images ?? []).flatMap((p) => ['-i', p])];
+    const shared = ['--json', '--ignore-user-config', '-c', 'sandbox_mode="workspace-write"', ...(roots.length ? ['-c', `sandbox_workspace_write.writable_roots=${JSON.stringify(roots)}`] : []), '--output-schema', schemaFile, '-o', lastFile, ...this.extraArgs, ...(o.model ? ['-m', o.model] : []), ...(o.effort ? ['-c', `model_reasoning_effort="${o.effort}"`] : []), ...(o.serviceTier ? ['-c', `service_tier="${o.serviceTier}"`] : []), ...(o.images ?? []).flatMap((p) => ['-i', p])];
     const args = o.resume
       ? ['exec', 'resume', o.resume, ...shared]
       : ['exec', '-s', 'workspace-write', '-C', o.cwd, ...shared];

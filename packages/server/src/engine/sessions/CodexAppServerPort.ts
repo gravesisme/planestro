@@ -244,16 +244,21 @@ export class CodexAppServerPort implements AgentPort {
       const names = new Set<string>([effective.config, ...effective.layers.map((l: any) => l.config)].flatMap((c) => Object.keys(c?.mcp_servers ?? {})));
       const disabled = Object.fromEntries([...names].map((name) => [name, { enabled: false, command: process.execPath, args: ['-e', 'process.exit(1)'] }]));
       const writableRoots = readOnly ? [] : [o.cwd, ...gitWritableRoots(o.cwd)];
-      const params = { model: o.model, allowProviderModelFallback: false, cwd: o.cwd, sandbox: readOnly ? 'read-only' : 'workspace-write', approvalPolicy: 'on-request',
-        config: { web_search: 'disabled', 'sandbox_workspace_write.writable_roots': writableRoots, mcp_servers: disabled, 'features.apps': false, 'features.multi_agent': false, 'features.plugins': false, 'features.image_generation': false, 'features.skill_mcp_dependency_install': false, 'features.skip_host_skill_discovery': true }, developerInstructions: `${o.systemAppend}\n\nApp-server tool contract: use the provided dynamic tools to report; a final text message does not submit a report. Use ask_question for a worker question. During planning do not edit or commit. During implementation use apply_patch for file edits. Keep scratch files inside the worktree. Native image work is not enabled for this transport.`,
+      // Effort has no thread/start or thread/resume field: the config key carries it there, `effort` on the turn (#245).
+      const tier = o.serviceTier ? { serviceTier: o.serviceTier } : {};
+      const params = { model: o.model, allowProviderModelFallback: false, cwd: o.cwd, sandbox: readOnly ? 'read-only' : 'workspace-write', approvalPolicy: 'on-request', ...tier,
+        config: { web_search: 'disabled', ...(o.effort ? { model_reasoning_effort: o.effort } : {}), 'sandbox_workspace_write.writable_roots': writableRoots, mcp_servers: disabled, 'features.apps': false, 'features.multi_agent': false, 'features.plugins': false, 'features.image_generation': false, 'features.skill_mcp_dependency_install': false, 'features.skip_host_skill_discovery': true }, developerInstructions: `${o.systemAppend}\n\nApp-server tool contract: use the provided dynamic tools to report; a final text message does not submit a report. Use ask_question for a worker question. During planning do not edit or commit. During implementation use apply_patch for file edits. Keep scratch files inside the worktree. Native image work is not enabled for this transport.`,
         ...(o.resume ? { threadId: o.resume } : { dynamicTools: tools.map((t) => ({ type: 'function', name: t.name, description: t.description, inputSchema: t.inputSchema ?? z.toJSONSchema(z.strictObject(t.schema as z.ZodRawShape)) })) }) };
       const started = await rpc.request(o.resume ? 'thread/resume' : 'thread/start', params);
       if (o.model && started.model !== o.model) throw new Error(`Requested model ${o.model} was replaced with ${started.model}`);
+      // A tier the model does not offer is dropped silently (validated live, 0.154.0): refuse rather than run at another speed.
+      if (o.serviceTier && started.serviceTier !== o.serviceTier) throw new Error(`Requested service tier ${o.serviceTier} was not applied (the thread reports ${started.serviceTier ?? 'none'}); the model may not offer it`);
+      if (o.effort && started.reasoningEffort !== o.effort) throw new Error(`Requested reasoning effort ${o.effort} was not applied (the thread reports ${started.reasoningEffort ?? 'none'})`);
       thread = started.thread.id; result.sessionId = thread;
       // Resumes emit the previous total before the new turn; read it explicitly as well.
       const usage = started.thread.tokenUsage?.total;
       if (usage) counter = new TurnTokenCounter(budgetTokens({ input_tokens: usage.inputTokens, cached_input_tokens: usage.cachedInputTokens, output_tokens: usage.outputTokens }));
-      const t = await rpc.request('turn/start', { threadId: thread, model: o.model, cwd: o.cwd, approvalPolicy: 'on-request',
+      const t = await rpc.request('turn/start', { threadId: thread, model: o.model, cwd: o.cwd, approvalPolicy: 'on-request', ...(o.effort ? { effort: o.effort } : {}), ...tier,
         sandboxPolicy: readOnly ? { type: 'readOnly', networkAccess: false } : { type: 'workspaceWrite', writableRoots, networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true },
         input: [{ type: 'text', text: o.prompt, text_elements: [] }, ...(worker ? (o.images ?? []).map((path) => ({ type: 'localImage', path })) : [])] });
       turn ??= t.turn.id; scope ??= new ScopedTools(thread!, turn!, tools);

@@ -281,6 +281,13 @@ export const DEFAULT_RELEASE_SECTIONS: ReleaseSectionDef[] = [
 export const RUNNERS = ['claude', 'codex'] as const;
 export type Runner = typeof RUNNERS[number];
 
+/** Reasoning efforts every model in Codex's catalog offers (`model/list`, 0.154.0). Codex itself accepts any string unchecked. */
+export const CODEX_EFFORTS = ['low', 'medium', 'high', 'xhigh'] as const;
+export type CodexEffort = typeof CODEX_EFFORTS[number];
+/** Service tiers: `default` is standard speed; `priority` (Codex's "Fast") is quicker and drains usage faster. */
+export const CODEX_TIERS = ['default', 'priority'] as const;
+export type CodexTier = typeof CODEX_TIERS[number];
+
 export const ModelDef = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
@@ -289,6 +296,10 @@ export const ModelDef = z.object({
   /** Passed to the selected Codex transport; keep explicit for isolated app-server sessions. */
   codex_model: z.string().optional(),
   codex_transport: z.enum(['exec', 'app-server']).optional(),
+  /** Reasoning effort for every Codex turn on this row (#245); unset leaves the model's own default. */
+  codex_effort: z.enum(CODEX_EFFORTS, { error: 'a reasoning effort is low, medium, high or xhigh' }).optional(),
+  /** Service tier for every Codex turn on this row (#245); unset leaves Codex's default. */
+  codex_tier: z.enum(CODEX_TIERS, { error: 'a service tier is default or priority (the tiers Codex offers)' }).optional(),
   /** One line on what the model is for. The epic planner routes children by it. */
   description: z.string().optional(),
   /** Hold this model's pull requests before merge until a person releases them (art is reviewed by eye). */
@@ -327,6 +338,11 @@ export function modelCapabilities(m: Pick<ModelDef, 'runner' | 'external' | 'cod
     implement: !m.external, permissions: tools, accounting: claude ? 'dollars' as const : 'tokens' as const,
     /** A resumed Codex thread keeps the developer instructions it started with (#246, verified live): new ones need a fresh conversation. */
     resumeKeepsInstructions: !claude };
+}
+/** What a row asks of a Codex turn beyond its model (#245). Nothing for a Claude row. */
+export function runnerTurnSettings(m: Pick<ModelDef, 'runner' | 'codex_effort' | 'codex_tier'> | undefined): { effort?: CodexEffort; serviceTier?: CodexTier } {
+  if (!m || (m.runner ?? 'claude') !== 'codex') return {};
+  return { ...(m.codex_effort ? { effort: m.codex_effort } : {}), ...(m.codex_tier ? { serviceTier: m.codex_tier } : {}) };
 }
 export function canPlan(m: Pick<ModelDef, 'runner' | 'external' | 'codex_transport'>): boolean { return modelCapabilities(m).plan; }
 

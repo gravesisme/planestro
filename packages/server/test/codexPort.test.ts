@@ -58,6 +58,18 @@ describe('LiveCodexPort (against a recorded fake codex)', () => {
     expect(r).toMatchObject({ subtype: 'success', isError: false, tokens: 150, done: 'Generated icon.png and committed it.' });
     expect(t.calls).toEqual(['done:Generated icon.png and committed it.']);
   });
+  it('passes the row\'s reasoning effort and service tier as config overrides on a fresh turn and a resume (#245)', async () => {
+    const t = setup();
+    for (const resume of [undefined, 'thread-1']) {
+      await t.port.runTurn(t.opts('draw it', { resume, effort: 'low', serviceTier: 'priority' }));
+      const a = t.args();
+      expect(a.join(' ')).toContain('-c model_reasoning_effort="low"');
+      expect(a.join(' ')).toContain('-c service_tier="priority"');
+      expect(a.indexOf('model_reasoning_effort="low"')).toBeLessThan(a.indexOf('--'));
+    }
+    await t.port.runTurn(t.opts('draw it'));
+    expect(t.args().join(' ')).not.toMatch(/model_reasoning_effort|service_tier/);
+  });
   it('runs a fresh turn sandboxed, never feeds stdin, streams readable output and reports done with tokens', async () => {
     const t = setup();
     const r = await t.port.runTurn(t.opts('draw it', { model: 'gpt-art', images: ['/ref/rig.png'] }));

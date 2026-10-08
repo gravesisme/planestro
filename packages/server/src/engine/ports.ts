@@ -1,5 +1,5 @@
 import { basename, matchesGlob } from 'node:path';
-import type { Runner, RateLimitSnapshot } from '@planestro/shared';
+import type { Runner, RateLimitSnapshot, CodexEffort, CodexTier } from '@planestro/shared';
 /**
  * Everything that touches the world goes through a port. `Live*` ports act; `DryRun*`
  * ports log `Would …` and keep an in-memory fake world so the pipeline still advances.
@@ -167,6 +167,9 @@ export interface AgentTurnOptions {
   /** Files to attach to the prompt, for runners that take images (absolute paths). */
   images?: string[];
   transport?: 'exec' | 'app-server';
+  /** Codex only (#245): the row's reasoning effort and service tier; unset leaves Codex's defaults. */
+  effort?: CodexEffort;
+  serviceTier?: CodexTier;
   maxTokens?: number;
   /** Persist and park, or consume an exact saved command grant before returning allow. */
   onApproval?(req: PermissionRequest): Promise<'allow' | void>;
@@ -283,6 +286,9 @@ export interface CustomTurnOptions {
   resumeTotalUsd?: number;
   allowedTools: string[];
   mcpTools: CustomToolDef[];
+  /** Codex only (#245), as for worker turns. */
+  effort?: CodexEffort;
+  serviceTier?: CodexTier;
   maxTurns?: number;
   maxTokens?: number;
   onApproval?(req: PermissionRequest): Promise<void>;

@@ -21,7 +21,8 @@ by a spike against the real CLI, recorded in [`notes/codex-spike.md`](notes/code
 codex exec [resume <thread_id>] --json --ignore-user-config
            -c sandbox_mode="workspace-write"  [-s workspace-write -C <worktree>]   # the last two on a fresh thread only
            --output-schema final.schema.json -o last.json
-           [-m <codex_model>] [-i <image> …]   "<worker rules>\n\n---\n\n<prompt>"
+           [-m <codex_model>] [-c model_reasoning_effort="<codex_effort>"] [-c service_tier="<codex_tier>"]
+           [-i <image> …]   "<worker rules>\n\n---\n\n<prompt>"
 ```
 
 | Step | What happens | Why |

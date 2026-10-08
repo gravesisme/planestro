@@ -53,7 +53,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
  if (m.method==='config/read') send({id:m.id,result:{config:{mcp_servers:{}},layers:[{config:{mcp_servers:{unrelated:{command:'never-run'}}},disabledReason:'untrusted'}]}});
  if (m.method==='thread/start'||m.method==='thread/resume') {
   if(m.method==='thread/resume') send({method:'thread/tokenUsage/updated',params:{threadId:'thread',turnId:'old',tokenUsage:{total:{inputTokens:100,cachedInputTokens:50,outputTokens:10},last:{totalTokens:60}}}});
-  send({id:m.id,result:{thread:{id:'thread'},model:m.params.model}});
+  send({id:m.id,result:{thread:{id:'thread'},model:m.params.model,reasoningEffort:m.params.config?.model_reasoning_effort??null,serviceTier:mode==='tier-dropped'?null:m.params.serviceTier??null}});
  }
  if (m.method==='turn/start') {
   send({id:m.id,result:{turn:{id:'turn'}}});
@@ -171,3 +171,33 @@ it('reports whether a failed turn did anything, which decides the automatic retr
   expect(busy).toMatchObject({ subtype: 'runner_error', acted: true });
   expect(quietTransientFailure(busy)).toBe(false);
 });
+it('sends the model row\'s reasoning effort and service tier on every start, resume and turn (#245)', async () => {
+  const { root, log, port } = fixture('worker');
+  for (const resume of [undefined, 'thread']) {
+    const result = await port.runTurn(options(root, { resume, effort: 'xhigh', serviceTier: 'priority' }));
+    expect(result.isError).toBe(false);
+  }
+  const records = readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  const threads = records.filter((r) => ['thread/start', 'thread/resume'].includes(r.method));
+  expect(threads.map((r) => r.method)).toEqual(['thread/start', 'thread/resume']);
+  for (const r of threads) { expect(r.params.serviceTier).toBe('priority'); expect(r.params.config.model_reasoning_effort).toBe('xhigh'); }
+  const turns = records.filter((r) => r.method === 'turn/start');
+  expect(turns).toHaveLength(2);
+  for (const r of turns) expect(r.params).toMatchObject({ effort: 'xhigh', serviceTier: 'priority' });
+});
+it('leaves effort and tier to Codex when the row sets neither (#245)', async () => {
+  const { root, log, port } = fixture('worker');
+  await port.runCustomTurn({ label: 'wake', cwd: root, model: 'test-model', permissionMode: 'dontAsk', prompt: 'Test', systemAppend: 'Test', allowedTools: [], mcpTools: [], onOutput: () => {} });
+  const records = readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  const start = records.find((r) => r.method === 'thread/start').params; const turn = records.find((r) => r.method === 'turn/start').params;
+  expect(start).not.toHaveProperty('serviceTier'); expect(start.config).not.toHaveProperty('model_reasoning_effort');
+  expect(turn).not.toHaveProperty('effort'); expect(turn).not.toHaveProperty('serviceTier');
+});
+it('refuses the turn when the thread does not report the requested tier, as for a replaced model (#245)', async () => {
+  const { root, log, port } = fixture('tier-dropped');
+  const result = await port.runCustomTurn({ label: 'wake', cwd: root, model: 'test-model', effort: 'low', serviceTier: 'priority', permissionMode: 'dontAsk', prompt: 'Test', systemAppend: 'Test', allowedTools: [], mcpTools: [], onOutput: () => {} });
+  expect(result).toMatchObject({ isError: true, subtype: 'runner_error' });
+  expect(result.error).toMatch(/service tier priority .*not applied/i);
+  expect(readFileSync(log, 'utf8')).not.toContain('"method":"turn/start"');
+});
+

@@ -101,6 +101,14 @@ describe('Settings writes (#83)', () => {
     expect(lastCommit()).toBe('config: edit model opus-5');
     expect(store.config.models.find((m) => m.id === 'opus-5')?.label).toBe('Opus 5 (big)');
 
+    // Reasoning effort and service tier (#245): Codex rows only, from the values Codex offers.
+    r = await send('PUT', '/config/models/codex-fast', { label: 'Codex fast', runner: 'codex', codex_model: 'gpt-x', codex_transport: 'app-server', codex_effort: 'low', codex_tier: 'priority' });
+    expect(r.status).toBe(200);
+    expect(yml().models.find((m: { id: string }) => m.id === 'codex-fast')).toMatchObject({ codex_effort: 'low', codex_tier: 'priority' });
+    await refused('PUT', '/config/models/codex-fast', { label: 'Codex fast', runner: 'codex', codex_tier: 'flex' }, /codex_tier: .*default or priority/);
+    await refused('PUT', '/config/models/codex-fast', { label: 'Codex fast', runner: 'codex', codex_effort: 'turbo' }, /codex_effort: .*low, medium, high or xhigh/);
+    await refused('PUT', '/config/models/opus-5', { label: 'Opus 5', claude_model: 'claude-opus-5', codex_tier: 'priority' }, /only a Codex model/);
+    expect((await send('DELETE', '/config/models/codex-fast')).status).toBe(200);
     await refused('PUT', '/config/models/opus-5', { id: 'opus-6', label: 'x', claude_model: 'c' }, /id cannot change/);
     await refused('PUT', '/config/models/bad id', { label: 'x', claude_model: 'c' }, /letters, digits/);
     await refused('PUT', '/config/models/new-one', { label: 'New' }, /needs its Claude model id/);
