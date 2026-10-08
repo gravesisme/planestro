@@ -259,8 +259,8 @@ export class DataStore {
   /**
    * A base that is the integration branch of an epic that has merged no longer exists (the merge
    * deleted it): what it held is in that epic's own base, so that is the base now (dogfood p45:
-   * HH-163 was opened on feature/crystal-cavern, which HH-113's merge into develop deleted, and its
-   * PR could not be opened). Followed as far as it goes; a cycle stops where it started.
+   * a child opened on an epic's feature branch, which that epic's merge deleted, could not open its
+   * PR). Followed as far as it goes; a cycle stops where it started.
    */
   private liveBase(base: string): string {
     const seen = new Set<string>();

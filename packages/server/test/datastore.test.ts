@@ -255,13 +255,13 @@ describe('a base that was a merged epic\'s branch (p45)', () => {
     const { dataDir } = makeFixture();
     const store = await DataStore.open(dataDir);
     try {
-      const outer = store.createItem({ title: 'Crystal Cavern', description: 'x', kind: 'epic' });
-      store.mutateItem(outer.id, [{ set: { status: 'IN_PROGRESS', branch: 'feature/crystal-cavern' } }], 'engine');
+      const outer = store.createItem({ title: 'New level', description: 'x', kind: 'epic' });
+      store.mutateItem(outer.id, [{ set: { status: 'IN_PROGRESS', branch: 'feature/new-level' } }], 'engine');
       const inner = store.createItem({ title: 'Animate the enemies', description: 'x', kind: 'epic' });
-      store.mutateItem(inner.id, [{ set: { base_branch_override: 'feature/crystal-cavern', branch: 'feature/animate' } }], 'user');
+      store.mutateItem(inner.id, [{ set: { base_branch_override: 'feature/new-level', branch: 'feature/animate' } }], 'user');
       const child = store.createItem({ title: 'Walk cycle', description: 'x', parent: inner.id });
       const base = (id: string) => store.derived(store.getItem(id)!).base_branch;
-      expect(base(inner.id)).toBe('feature/crystal-cavern');            // the outer epic is still open: its branch is the base
+      expect(base(inner.id)).toBe('feature/new-level');            // the outer epic is still open: its branch is the base
       store.mutateItem(outer.id, [{ set: { status: 'MERGED' } }], 'engine');
       expect(base(inner.id)).toBe('trunk');                             // merged and deleted: its own base
       expect(base(child.id)).toBe('feature/animate');                   // the inner epic is open: unchanged

@@ -179,14 +179,20 @@ plugin marketplace and the site uses the provider names prominently, so one
 non-affiliation line in the README and site footer is cheap and avoids confusion.
 These also belong in the M7 FAQ.
 
-**A6 — Working documents will be public.** `docs/codex-epic-plan.md`,
-`docs/notes/dogfood-crystal-cavern.md` (which names a private `planestro_issues`
-tracker) and this file are linked from the manual as working documents. That is
-fine; the owner already accepted Hurricane Harrison references. Read them once
-as public text before the flip, and label them as historical so a newcomer does
-not mistake the dogfood log's open items for the current bug list. Closed
-issue/PR bodies in this repository also become public. That review is already
-the first open gate item.
+**A6 — Working documents will be public.** *Decided: the Crystal Cavern dogfood
+log is removed.* Crystal Cavern is a Hurricane Harrison level and doesn't belong
+in this repository. `docs/notes/dogfood-crystal-cavern.md` is deleted, and the
+one code comment and two test fixtures that named the level now use generic
+names. Two things remain:
+
+- **History still has the note.** It was added in `60d4fd2` (2026-10-07), and
+  the owner's standing decision is not to rewrite history. If the level must not
+  be public at all, history has to be rewritten before the flip. That is a
+  decision for the owner, not engine work.
+- **Code comments still cite its entries** as `dogfood pNN` (about 40, plus a
+  few `HH-`/`LM-` item ids). These are bare references with no level content.
+
+`docs/codex-epic-plan.md` stays, labelled as a historical working document.
 
 **A7 — Releases since the audit add configuration surface the docs must cover
 at 1.0:** accounts (#242, `planestro.local.yml` `accounts` with `api_key_env`),
