@@ -225,6 +225,44 @@ describe('take over (p28)', () => {
     await waitFor(() => fmOf(store, item.id).status === 'PLAN_READY');     // admitted once handed back
   });
 
+  it('a cleanup queued by a hand-back that finds the item already finished leaves it FINISHED, unblocked and off "needs you" (#214)', async () => {
+    const { store, engine, world } = await setup();
+    const item = store.createItem({ title: 'Merged by hand', description: 'x' });
+    const branch = 'tp/1-merged-by-hand', rel = '.claude/worktrees/tp-1-merged-by-hand';
+    const cwd = (engine as any).absWorktree(rel); const head = world.sha();
+    world.worktrees.set(cwd, { path: cwd, head, branch }); world.remoteBranches.set(branch, head);
+    world.prs.set(351, { number: 351, url: 'u', state: 'MERGED', headRefOid: head, headRefName: branch, baseRefName: 'trunk', polls: 0, failOnce: false });
+    // Taken over in review; the person merged the PR by hand.
+    store.mutateItem(item.id, [{ set: { status: 'IN_REVIEW', branch, worktree: rel, pr: 351 } }], 'engine');
+    await engine.takeOver(item.id);
+    store.mutateItem(item.id, [{ set: { status: 'MERGED' } }], 'engine');
+    // A job is still running for the item, so the hand-back's cleanup is queued behind it.
+    let release!: () => void;
+    (engine as any).runJob(item.id, () => new Promise<void>((r) => { release = r; }));
+    await engine.handBack(item.id);
+    expect((engine as any).followUps.has(item.id)).toBe(true);
+    // Another cleanup (reconcile's "MERGED but never finished") finishes the item first.
+    await (engine as any).cleanup(item.id);
+    expect(fmOf(store, item.id).status).toBe('FINISHED');
+    expect(fmOf(store, item.id).worktree).toBeUndefined();
+    release();
+    await waitFor(() => !(engine as any).jobs.has(item.id) && !(engine as any).followUps.has(item.id));
+    const fm = fmOf(store, item.id);
+    expect(fm.status).toBe('FINISHED');
+    expect(fm.blocked).toBeUndefined(); expect(fm.blocked_reason).toBeUndefined();
+    expect(store.derived(store.getItem(item.id)!).needs_you).toBe(false);
+  });
+
+  it('a failed engine step on a finished item is noted, not a block (#214)', async () => {
+    const { store, engine } = await setup();
+    const item = store.createItem({ title: 'Done', description: 'x' });
+    store.mutateItem(item.id, [{ set: { status: 'FINISHED' } }], 'engine');
+    (engine as any).runJob(item.id, async () => { throw new Error('boom'); });
+    await waitFor(() => !(engine as any).jobs.has(item.id));
+    expect(fmOf(store, item.id).blocked).toBeUndefined();
+    expect(store.derived(store.getItem(item.id)!).needs_you).toBe(false);
+  });
+
   it('leaving the board ends a take-over', async () => {
     const { store, engine } = await setup();
     const item = store.createItem({ title: 'Iced', description: 'x' });

@@ -947,7 +947,12 @@ export class LiveEngine implements Engine {
 
   private runJob(id: string, fn: () => Promise<unknown>): void {
     if (this.jobs.has(id)) return;
-    const p = fn().then(() => undefined, (e) => { this.block(id, 'engine_error', (e as Error).message); }).finally(() => {
+    const p = fn().then(() => undefined, (e) => {
+      // A finished or iceboxed item has nothing left for a person to decide: a failed step is noted, not a block (#214).
+      const status = this.store.getItem(id)?.file.frontmatter.status;
+      if (status === 'FINISHED' || status === 'ICEBOX') this.note('warn', `${id}: an engine step failed after the item reached ${status}: ${(e as Error).message}`);
+      else this.block(id, 'engine_error', (e as Error).message);
+    }).finally(() => {
       this.jobs.delete(id);
       const next = this.followUps.get(id);
       if (next) { this.followUps.delete(id); this.runJob(id, next); }
@@ -2613,6 +2618,8 @@ export class LiveEngine implements Engine {
   private async cleanup(id: string): Promise<void> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
+    // Only a merged item is cleaned up: a second cleanup queued behind one that already finished it has nothing to do (#214).
+    if (fm.status !== 'MERGED') return;
     // A person may be standing in the worktree: it and the branch stay until the item is handed back.
     if (fm.taken_over) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: 'merged; its worktree and branch stay until you hand the item back' } }], 'engine'); return; }
     const d = this.store.derived(item);
@@ -2621,11 +2628,12 @@ export class LiveEngine implements Engine {
       return;
     }
     const base = d.base_branch!;
-    const cwd = this.absWorktree(fm.worktree!);
     const opId = this.store.journal.begin('cleaning_up', id, { branch: fm.branch });
     this.store.mutateItem(id, [{ set: { op: 'cleaning_up', op_started_at: this.now() } }], 'engine');
     // invariant 7: positive evidence before anything is deleted
     try {
+      // No worktree path left means it was already removed, like a worktree missing from `git worktree list`.
+      const cwd = fm.worktree ? this.absWorktree(fm.worktree) : undefined;
       await this.ports.git.fetch(this.repo);
       const view = await this.ports.gh.prView(this.github, fm.pr!);
       // The proof covers exactly what is about to be deleted — the worktree's HEAD and the
@@ -2634,7 +2642,7 @@ export class LiveEngine implements Engine {
       // three are already gone (removed by hand), a merged PR leaves nothing to prove.
       const tips: Array<[string, string]> = [];
       const worktrees = await this.ports.git.worktreeList(this.repo);
-      if (worktrees.some((w) => w.path === cwd)) tips.push(['worktree HEAD', await this.ports.git.revParse(cwd, 'HEAD')]);
+      if (cwd && worktrees.some((w) => w.path === cwd)) tips.push(['worktree HEAD', await this.ports.git.revParse(cwd, 'HEAD')]);
       const localTip = fm.branch && await this.ports.git.localBranchExists(this.repo, fm.branch) ? await this.ports.git.revParse(this.repo, `refs/heads/${fm.branch}`) : null;
       if (localTip) tips.push([fm.branch!, localTip]);
       const remoteTip = fm.branch ? await this.ports.git.remoteBranchSha(this.repo, fm.branch) : null;
@@ -2642,15 +2650,17 @@ export class LiveEngine implements Engine {
       const stranded: string[] = [];
       for (const [what, sha] of tips) if (!await this.ports.git.isAncestor(this.repo, sha, `origin/${base}`)) stranded.push(`${what} ${sha.slice(0, 7)}`);
       if (view.state !== 'MERGED' || stranded.length) { this.store.journal.end(opId, id, 'aborted', { reason: 'unverifiable', stranded }); this.block(id, 'cleanup_unverifiable', view.state !== 'MERGED' ? `PR #${fm.pr} is ${view.state}; nothing was deleted` : `cannot prove ${stranded.join(', ')} reachable from origin/${base}; nothing was deleted`); return; }
-      const { clean } = worktrees.some((w) => w.path === cwd) ? await this.worktreeDirt(cwd) : { clean: true };
+      const { clean } = cwd && worktrees.some((w) => w.path === cwd) ? await this.worktreeDirt(cwd) : { clean: true };
       if (!clean) { this.store.journal.end(opId, id, 'aborted', { reason: 'dirty' }); this.block(id, 'cleanup_dirty', 'the worktree has uncommitted changes after the merge; remove it by hand or discard them'); return; }
-      let copied: string | undefined;
-      try { copied = await this.copyToCheckout(cwd); }
-      catch (e) { this.store.journal.end(opId, id, 'aborted', { reason: 'copy_failed' }); this.block(id, 'cleanup_dirty', `copying ${this.store.config.worktrees.copy_to_checkout.join(', ')} into the main checkout failed (${(e as Error).message.replace(/\s+/g, ' ').slice(0, 200)}); nothing was removed`); return; }
-      if (copied) this.store.mutateItem(id, [{ activity: { actor: 'app', text: copied } }], 'engine');
-      const kept = await this.setAsideBeforeRemove(id, cwd);
-      if (kept) this.store.mutateItem(id, [{ activity: { actor: 'app', text: kept } }], 'engine');
-      await this.ports.git.worktreeRemove(this.repo, cwd, false);
+      if (cwd) {
+        let copied: string | undefined;
+        try { copied = await this.copyToCheckout(cwd); }
+        catch (e) { this.store.journal.end(opId, id, 'aborted', { reason: 'copy_failed' }); this.block(id, 'cleanup_dirty', `copying ${this.store.config.worktrees.copy_to_checkout.join(', ')} into the main checkout failed (${(e as Error).message.replace(/\s+/g, ' ').slice(0, 200)}); nothing was removed`); return; }
+        if (copied) this.store.mutateItem(id, [{ activity: { actor: 'app', text: copied } }], 'engine');
+        const kept = await this.setAsideBeforeRemove(id, cwd);
+        if (kept) this.store.mutateItem(id, [{ activity: { actor: 'app', text: kept } }], 'engine');
+        await this.ports.git.worktreeRemove(this.repo, cwd, false);
+      }
       await this.ports.git.worktreePrune(this.repo);
       await this.ports.git.deleteLocalBranch(this.repo, fm.branch!, localTip);
       if (d.flavor !== 'external') await this.ports.git.deleteRemoteBranch(this.repo, fm.branch!, remoteTip);
