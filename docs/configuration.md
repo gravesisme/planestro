@@ -265,6 +265,7 @@ Default: **Release notes** and **Notes**.
 | `update.poll_min` | How often, in minutes, `update.channel: main-green` looks for a newer commit (default 15). |
 | `update.min_age_hours` | Take a commit only after its CI has been green this many hours (default 0): a soak time, so one project can trail another. |
 | `mcp_servers` | MCP servers a model row may name in `mcp`, with their keys, e.g. `elevenlabs: { command: uvx, args: [elevenlabs-mcp], env: { ELEVENLABS_API_KEY: … } }` or `meshy: { command: npx, args: [-y, "@meshy-ai/meshy-mcp-server"], env: { MESHY_API_KEY: … } }`. Machine-local and gitignored, like the API key. A url that is a running planestro's own operator endpoint (`/mcp` on a port `planestro start` recorded) is refused: workers never get it. |
+| `lan_access` | `true`: the server listens on every interface (`0.0.0.0`) unless `--host` says otherwise, at every start (`serve`, `serve --watch` restarts, `start`), so a phone on the same Wi-Fi can open planestro. It answers only the local network: loopback, `10/8`, `172.16/12`, `192.168/16`, `169.254/16`, `fe80::/10` and `fc00::/7` (IPv4-mapped IPv6 included); any other remote address gets a 403, logged. There is no login, so anyone on that network can use planestro while it is on: fine at home, not on shared Wi-Fi. See [Notify when something needs you](#notify-when-something-needs-you). |
 | `allowed_hosts` | Extra names this machine is reached by — a Tailscale or DNS name for the phone. The server answers only requests addressed to `localhost`, `127.0.0.1`, the `--host` it is bound to (with `0.0.0.0`: this machine's hostname and interface addresses) and these; anything else, and any request from another website, gets a 403. |
 | `codex_bin` | Path to `codex`, if not on `PATH`. Only used by models with `runner: codex`. |
 | `anthropic_api_key` | Bills Claude sessions to the API under the Commercial Terms instead of a claude.ai login. `ANTHROPIC_API_KEY` in the environment does the same. |
@@ -303,10 +304,20 @@ notifications:
   base_url: http://studio.local:4300   # how the phone reaches this machine
 ```
 
-The link opens planestro only where the server is reachable: your LAN, or a VPN you run. planestro has no remote
-access of its own. To be reached by another name, the server must listen beyond `127.0.0.1` (`planestro serve
---host 0.0.0.0`) and accept that name (`allowed_hosts` in `planestro.local.yml`). Anyone who can read your topic
-sees the item titles, so pick a topic nobody can guess, or run your own server.
+The link opens planestro only where the server is reachable. For a phone on the same Wi-Fi, turn on
+**Settings → This machine → Local network access** (`lan_access: true` in `planestro.local.yml`) and restart. The
+server then listens on every interface at every start, answers only the local network (anything else gets a
+403), and links are `http://<hostname>.local:<port>/items/<id>#<kind>`, a name iOS and current Android resolve on
+the LAN, so `base_url` can stay unset. Set `base_url` only to link by something else, a fixed IP or a router DNS
+name; the guard already accepts this machine's hostname, `<hostname>.local` and its interface addresses, and
+`allowed_hosts` takes any other name. `planestro check` reports the setting, the link address, and whether
+`base_url` names a host the guard would refuse. The **Test** button beside `on_needs_you` sends a link to the
+board: tap it on the phone to check the whole chain. There is no login: anyone on that network can use planestro
+while the setting is on, so keep it off on shared Wi-Fi.
+
+planestro has no remote access of its own. A VPN you already run works by hand: start with `--host 0.0.0.0`
+(`lan_access` answers only private addresses) and put its name in `allowed_hosts` and `base_url`. Anyone who can
+read your topic sees the item titles, so pick a topic nobody can guess, or run your own server.
 
 ## Disk guard
 

@@ -486,6 +486,8 @@ export const LocalConfig = z.object({
   codex_bin: z.string().optional(),
   /** Extra names this machine is reached by (a Tailscale name, a DNS alias); the server refuses any other Host. */
   allowed_hosts: z.array(z.string().min(1)).optional(),
+  /** Listen on every interface unless `--host` says otherwise, and answer only the local network (#255). There is no login: anyone on this network can use planestro. */
+  lan_access: z.boolean().optional(),
   /** Optional Console API key: sessions then bill the API under the Commercial Terms instead of a claude.ai login. Local file only (gitignored). */
   anthropic_api_key: z.string().optional(),
   /** MCP servers a model row may name in `mcp`, with their keys: this file is machine-local and gitignored. A stdio server (`command`, `args`, `env`) or an HTTP one (`url`, `headers`). */
