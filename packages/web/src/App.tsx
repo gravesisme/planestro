@@ -48,7 +48,8 @@ export function App() {
   const running = state?.engine.sessions.filter((s) => s.busy).length ?? 0;
   const restart = state?.engine.restart;
   const engineLabel = !connected ? 'Reconnecting' : paused ? 'Paused' : restart?.draining ? restart.by === 'update' ? 'Updating' : 'Draining' : state?.engine.mode === 'live' ? 'Live' : 'Dry-run';
-  const statusWarning = paused || restart?.draining || guards.length > 0 || (state?.engine.ci_queue?.queued ?? 0) > 0;
+  const runnerStalls = state?.engine.runner_stalls ?? [];
+  const statusWarning = paused || restart?.draining || guards.length > 0 || (state?.engine.ci_queue?.queued ?? 0) > 0 || runnerStalls.length > 0;
   const notes = useStore((s) => s.notes); const notesSeen = useStore((s) => s.notesSeen);
   const unreadNotes = notes.filter((n) => n.ts > notesSeen).length;
   return (
@@ -84,6 +85,7 @@ export function App() {
         </div>
       </header>
       {error && <div className="banner error">{error}</div>}
+      {runnerStalls.map((r) => <div key={r.label} className="banner warn">Runner {r.label} looks stalled or offline: {r.items.join(', ')} {r.items.length === 1 ? 'is' : 'are'} waiting on it. They wait for CI again once a runner takes a job.</div>)}
       {state?.readOnly && <div className="banner warn">Data dir schema is {state.config.schema_version} ({state.schema}) — read-only until migrated.</div>}
       {state?.invalid.length ? <div className="banner warn">{state.invalid.length} invalid file(s): {state.invalid.map((i) => `${i.path.split('/').pop()} — ${i.error}`).join('; ')}</div> : null}
       <main>

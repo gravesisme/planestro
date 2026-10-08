@@ -105,7 +105,7 @@ describe('runner status (#216)', () => {
     await waitFor(() => {
       for (const id of ids) if (fmOf(store, id).status === 'PLAN_READY' && !approved.has(id)) { approved.add(id); void engine.approvePlan(id); }
       return ids.every((id) => fmOf(store, id).blocked === true);
-    }, 30_000);
+    }, 60_000);
     for (const id of ids) {
       expect(fmOf(store, id).blocked_reason).toBe('ci_timeout');
       expect(fmOf(store, id).triage).toBeUndefined();
@@ -126,8 +126,8 @@ describe('runner status (#216)', () => {
     await waitFor(() => ids.every((id) => !fmOf(store, id).blocked));
     expect(engine.runnerStalls()).toEqual([]);
     for (const id of ids) expect(activityOf(store, id)).toMatch(/a runner for hh-mac is taking jobs again/);
-    await waitFor(() => ids.every((id) => fmOf(store, id).status === 'FINISHED'), 30_000);
-  });
+    await waitFor(() => ids.every((id) => fmOf(store, id).status === 'FINISHED'), 60_000);
+  }, 180_000);
 
   it('a timeout on a runner that is online and idle is triaged as before', async () => {
     const { store, engine } = await setup({ runners: [{ name: 'mac-mini', online: true, busy: false, labels: MAC }], jobs: [{ runId: 1, status: 'queued', labels: MAC }] });

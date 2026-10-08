@@ -83,6 +83,12 @@ export type CiState = 'none' | 'pending' | 'success' | 'failure' | 'cancelled' |
 export interface CiStatus { state: CiState; runId?: number; url?: string; sha?: string; startedAt?: string; attempt?: number; queued?: boolean }
 /** Runs of the CI workflow across the repository that are waiting for a runner, and running (#170). */
 export interface CiQueue { queued: number; running: number }
+/** A self-hosted runner as GitHub lists it for the repository, or its organization (#216). */
+export interface RunnerInfo { name: string; online: boolean; busy: boolean; labels: string[] }
+/** A job of the CI workflow's unfinished runs: the labels it asks a runner for (`runs-on`), and the runner that has it once one does. */
+export interface OpenJob { runId: number; status: 'queued' | 'in_progress'; labels: string[]; runner?: string }
+/** The repository's self-hosted runners and the workflow's open jobs (#216). GitHub-hosted runners are never listed. */
+export interface RunnerReport { runners: RunnerInfo[]; jobs: OpenJob[] }
 export interface PrInfo { number: number; url: string; state: 'OPEN' | 'MERGED' | 'CLOSED'; mergedAt?: string; headRefOid: string; headRefName: string; baseRefName: string; mergeCommit?: string; title?: string; isDraft?: boolean; author?: string; updatedAt?: string }
 
 export interface IssueInfo { number: number; title: string; body: string; url: string; state: string }
@@ -115,6 +121,8 @@ export interface GhPort {
   issueList?(repo: string, opts: { limit: number }): Promise<IssueInfo[]>;
   /** Open an issue (#231: an orchestrator note filed as one). Optional: a port without it cannot file. */
   issueCreate?(repo: string, args: { title: string; body: string }): Promise<{ number: number; url: string }>;
+  /** The self-hosted runners and the workflow's open jobs (#216). Optional: a port without it cannot tell a runner's state. */
+  runners?(repo: string, workflow: string): Promise<RunnerReport>;
   /** Latest run of the workflow on a branch (base health). */
   branchCi(repo: string, branch: string, workflow: string): Promise<CiStatus>;
 }
@@ -145,6 +153,8 @@ export interface TurnTools {
   /** Takes for the user to hear or see and pick from before the work builds on one (#207): parks the item on them (`awaiting: audition`). */
   request_audition(audition: unknown): Promise<string>;
   get_item(): Promise<string>;
+  /** The CI runners' state per label (#216), read by planestro's own gh: what a standing rule asks a worker to check before a heavy run. */
+  runners_busy?(): Promise<string>;
 }
 export interface PermissionRequest { tool: string; input: Record<string, unknown> }
 export type McpServerSpec = { type?: 'stdio'; command: string; args?: string[]; env?: Record<string, string> } | { type: 'http'; url: string; headers?: Record<string, string> };

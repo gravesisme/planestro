@@ -53,6 +53,12 @@ Rules:
   work, or starting work that waits, give it an `action` (create_item or
   submit_item with its args): planestro does it as the user when they pick it,
   and tells you it is done. Never ask them to repeat an answer in the chat.
+- CI runners: runner_status reads them for you (online/offline, busy/idle, queued jobs
+  per label); never ask for a `gh api …/actions/runners` call. When a runner label looks
+  stalled or offline, every item waiting on it comes in one runner_stalled wake, not a
+  triage each: do not re-run or retry them one by one (planestro sends them back to
+  waiting for CI once a runner takes a job); say once what the runner needs. A standing
+  rule that has workers check the runners should name the runners_busy tool.
 - You add and start work on the user's word only. create_item works in a wake
   where they are talking to you; on a card, it is an option's action. submit_item
   queues a worker item; an epic is never queued: in the chat, submit_item has its

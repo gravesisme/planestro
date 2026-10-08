@@ -65,6 +65,8 @@ export interface Engine {
   restartReadiness?(): { draining: boolean; by?: 'user' | 'update'; idle: boolean; running: string[] };
   /** The CI workflow's runner queue as last read (#170); absent when the engine does not read it. */
   ciQueue?: { queued: number; running: number };
+  /** Runner labels that look stalled or offline, and the items waiting on each (#216): the Console's one banner per label. */
+  runnerStalls?(): { label: string; items: string[]; since: string }[];
   /** Run a notification command now, as its event would (Settings → Notifications → Test). */
   testNotification?(event: 'on_merge' | 'on_usage_pause' | 'on_needs_you'): Promise<{ code: number; output: string }>;
   /** Every store event, so the engine can tell when an item comes to need you (#224). */
