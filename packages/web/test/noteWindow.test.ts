@@ -19,9 +19,9 @@ describe('the planestro feedback list (#220)', () => {
     const all = notes(100); const seen = all[36].ts;
     expect(noteWindow(all, seen, 1).older).toBe(37);
     const two = noteWindow(all, seen, 2);
-    expect(two.shown).toHaveLength(63 + (2 * NOTE_PAGE - 63));
+    expect(two.shown).toHaveLength(63 + NOTE_PAGE);
     expect(two.older).toBe(100 - two.shown.length);
-    const all3 = noteWindow(all, seen, 4);
+    const all3 = noteWindow(all, seen, 3);
     expect(all3.shown).toHaveLength(100);
     expect(all3.older).toBe(0);
   });

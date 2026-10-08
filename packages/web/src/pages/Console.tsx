@@ -7,6 +7,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { api, type NoteView, type QuestionView, type ParkSummary, type AllowSuggestReport, type OrchestratorSpend } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { usePhone } from '../usePhone.ts';
+import { noteWindow } from '../noteWindow.ts';
 
 export function ConsolePage() {
   const state = useStore((s) => s.state);
@@ -159,18 +160,26 @@ function RestartPrep() {
 }
 
 
-/** What the orchestrator would change about planestro (f8): a list of its own, with a badge until read. */
+/**
+ * What the orchestrator would change about planestro (f8): a list of its own, with a badge until read. Every unread
+ * note is shown; older, read ones a page at a time (#220), and **Mark all read** covers only what is shown.
+ */
 function PlanestroNotes() {
   const notes = useStore((s) => s.notes); const seen = useStore((s) => s.notesSeen);
   const items = useStore((s) => s.state?.items ?? []);
   const repo = useStore((s) => s.state?.config.feedback?.issue_repo);
-  const unread = notes.filter((n) => n.ts > seen).length;
+  const [pages, setPages] = useState(1);
+  const { shown, unread, older, newestShown } = noteWindow(notes, seen, pages);
   return (
     <div className="section"><h2>planestro feedback{unread > 0 && <span className="badge-n">{unread}</span>}</h2>
       <p className="muted small">The orchestrator's suggestions about planestro itself: a tool it lacked, a rule that misfired, a card that could not do what it asked. They are for you, not for the items.</p>
       {!notes.length && <p className="muted small">None yet.</p>}
-      <ul className="activity">{[...notes].reverse().slice(0, 30).map((n, i) => <li key={`${n.ts}-${i}`} className={n.ts > seen ? 'unread' : ''}><span className="at">{n.ts.slice(5, 16).replace('T', ' ')}</span><span className="muted">{n.item && items.some((x) => x.id === n.item) ? <Link to={`/items/${n.item}`}>{n.item}</Link> : (n.item ?? 'planestro')}</span><span>{String(n.data?.text ?? '')}<NoteFiling note={n} repo={repo} /></span></li>)}</ul>
-      {unread > 0 && <div className="row"><button className="small" onClick={() => useStore.getState().markNotesRead()}>Mark all read</button></div>}
+      <ul className="activity">{shown.map((n, i) => <li key={`${n.ts}-${i}`} className={n.ts > seen ? 'unread' : ''}><span className="at">{n.ts.slice(5, 16).replace('T', ' ')}</span><span className="muted">{n.item && items.some((x) => x.id === n.item) ? <Link to={`/items/${n.item}`}>{n.item}</Link> : (n.item ?? 'planestro')}</span><span>{String(n.data?.text ?? '')}<NoteFiling note={n} repo={repo} /></span></li>)}</ul>
+      {(unread > 0 || older > 0) && <div className="row">
+        {unread > 0 && <button className="small" onClick={() => useStore.getState().markNotesRead(newestShown)}>Mark all read</button>}
+        {older > 0 && <button className="small" onClick={() => setPages((p) => p + 1)}>Show older ({older})</button>}
+        {older > 0 && <span className="muted small">{shown.length} of {notes.length} shown</span>}
+      </div>}
     </div>
   );
 }

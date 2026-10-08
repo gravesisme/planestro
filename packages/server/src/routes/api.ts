@@ -491,7 +491,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   api.get('/engine', (c) => c.json({ mode: engine.mode, paused: engine.paused, ...guardView(store, engine.paused), sessions: engine.sessions(), ...(engine.ciQueue ? { ci_queue: engine.ciQueue } : {}), ...runnerStallsView(engine), ...(engine.restartReadiness ? { restart: engine.restartReadiness() } : {}), log: engine.log.slice(-200) }));
   // The orchestrator's suggestions about planestro itself (dogfood f8): a list of their own, not buried in Activity.
   // Each with what became of it (#231): the issues it was filed as, or handled by hand.
-  api.get('/orchestrator/notes', (c) => c.json(notesWithLinks(store, 100)));
+  api.get('/orchestrator/notes', (c) => c.json(notesWithLinks(store)));
   // File as issue in feedback.issue_repo (#231): a marked issue is linked, a likely match is offered first unless `force`.
   api.post('/orchestrator/notes/file', async (c) => {
     try {
