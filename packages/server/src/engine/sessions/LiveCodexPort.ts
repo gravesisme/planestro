@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { gitWritableRoots } from './gitWritableRoots.ts';
 export { gitWritableRoots } from './gitWritableRoots.ts';
 import { budgetTokens } from '@planestro/shared';
-import { CodexAppServerPort } from './CodexAppServerPort.ts';
+import { CodexAppServerPort, codexEnv } from './CodexAppServerPort.ts';
 import type { AgentPort, AgentTurnOptions, TurnOptions, CustomTurnOptions, TurnResult } from '../ports.ts';
 
 /**
@@ -16,7 +16,7 @@ import type { AgentPort, AgentTurnOptions, TurnOptions, CustomTurnOptions, TurnR
  *
  * Trust model: there is no per-command permission callback. The turn runs under Codex's
  * `workspace-write` sandbox — writes confined to the worktree and the git dirs its commits need
- * (gitWritableRoots), no network for its commands — and
+ * (gitWritableRoots), no network for its commands, only an allowlisted environment (codexEnv, #228) — and
  * planestro verifies the result afterwards like any other turn (clean tree, commits ahead).
  */
 export const FINAL_SCHEMA = {
@@ -89,12 +89,14 @@ export const IMAGE_TOOL_NOTE = [
 
 export class LiveCodexPort implements AgentPort {
   private lastError?: string;
-  constructor(private readonly codexBin = 'codex', private readonly extraArgs: string[] = []) {}
+  /** `passthrough` reads the project's codex_env_passthrough at each turn, so a settings change needs no restart. */
+  constructor(private readonly codexBin = 'codex', private readonly extraArgs: string[] = [], private readonly passthrough: () => readonly string[] = () => []) {}
+  private appServer() { return new CodexAppServerPort(this.codexBin, undefined, undefined, this.passthrough); }
 
-  async runCustomTurn(o: CustomTurnOptions): Promise<TurnResult> { return new CodexAppServerPort(this.codexBin).runCustomTurn(o); }
+  async runCustomTurn(o: CustomTurnOptions): Promise<TurnResult> { return this.appServer().runCustomTurn(o); }
 
   async runTurn(o: AgentTurnOptions | TurnOptions): Promise<TurnResult> {
-    if (o.transport === 'app-server') return new CodexAppServerPort(this.codexBin).runTurn(o as TurnOptions);
+    if (o.transport === 'app-server') return this.appServer().runTurn(o as TurnOptions);
     const result: TurnResult = { sessionId: o.resume, subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '' };
     const scratch = mkdtempSync(join(tmpdir(), 'planestro-codex-'));
     const schemaFile = join(scratch, 'final.schema.json');
@@ -119,7 +121,7 @@ export class LiveCodexPort implements AgentPort {
       // stdin MUST be ignored: given a pipe, `codex exec` waits on it forever. And `--` MUST end the
       // options: `-i` takes one or more files, so a prompt right after an image is read as another
       // image, and codex, finding no prompt, reads stdin — and gets nothing ("No prompt provided via stdin").
-      const child = spawn(this.codexBin, [...args, '--', prompt], { cwd: o.cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(this.codexBin, [...args, '--', prompt], { cwd: o.cwd, env: codexEnv(this.passthrough()), stdio: ['ignore', 'pipe', 'pipe'] });
       const onAbort = () => { killed = true; child.kill('SIGTERM'); };
       if (o.signal?.aborted) onAbort(); else o.signal?.addEventListener('abort', onAbort, { once: true });
       let buf = '';

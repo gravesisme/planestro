@@ -35,7 +35,7 @@ it('publishes a complete credential file atomically when multiple processes init
   expect(readdirSync(home)).toEqual(['auth.json']);
 });
 afterEach(() => { vi.unstubAllEnvs(); roots.forEach((p) => rmSync(p, { recursive: true, force: true })); roots.length = 0; });
-function fixture(mode: string) {
+function fixture(mode: string, passthrough?: () => readonly string[]) {
   const root = mkdtempSync(join(tmpdir(), 'planestro-fake-appserver-')); roots.push(root);
   const log = join(root, 'protocol.jsonl'); const bin = join(root, 'codex');
   const script = `#!/usr/bin/env node
@@ -44,6 +44,7 @@ const readline = require('node:readline');
 const log = ${JSON.stringify(log)};
 const mode = ${JSON.stringify(mode)};
 const send = (m) => process.stdout.write(JSON.stringify(m)+'\\n');
+fs.writeFileSync(log+'.env', require('node:child_process').execSync('echo "secret=\${PLANTED_SECRET:-unset} gh=\${GH_TOKEN:-unset} allowed=\${PROJECT_NEEDS:-unset}"', { encoding: 'utf8' }));
 process.stdin.on('end', () => fs.writeFileSync(log+'.stdin-ended','yes'));
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
  const m=JSON.parse(line); fs.appendFileSync(log,JSON.stringify(m)+'\\n');
@@ -67,7 +68,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
 });
 `;
   writeFileSync(bin, script, { mode: 0o755 });
-  return { root, log, port: new CodexAppServerPort(bin, join(root, 'home'), false) };
+  return { root, log, port: new CodexAppServerPort(bin, join(root, 'home'), false, passthrough) };
 }
 function options(root: string, overrides: Partial<TurnOptions> = {}): TurnOptions {
   const noop = async () => 'recorded';
@@ -75,6 +76,15 @@ function options(root: string, overrides: Partial<TurnOptions> = {}): TurnOption
     submit_plan: noop, submit_breakdown: noop, report_done: noop, report_blocked: noop, get_item: noop, hand_off: noop, add_note: noop, append_activity: noop, report_iteration: noop, report_progress: noop, request_audition: noop,
   }, ...overrides };
 }
+it("a worker's commands cannot read planestro's credentials; a project's codex_env_passthrough names get through (#228)", async () => {
+  vi.stubEnv('PLANTED_SECRET', 'hunter2'); vi.stubEnv('GH_TOKEN', 'ghp_planted'); vi.stubEnv('PROJECT_NEEDS', 'yes');
+  const plain = fixture('done');
+  await plain.port.runTurn(options(plain.root));
+  expect(readFileSync(plain.log + '.env', 'utf8').trim()).toBe('secret=unset gh=unset allowed=unset');
+  const passing = fixture('done', () => ['PROJECT_NEEDS']);
+  await passing.port.runTurn(options(passing.root));
+  expect(readFileSync(passing.log + '.env', 'utf8').trim()).toBe('secret=unset gh=unset allowed=yes');
+});
 it('binds calls to a role, item handler, thread and turn; rejects forged arguments and stale calls', async () => {
   let calls = 0;
   const scope = new ScopedTools('thread', 'turn', [{ name: 'report_done', description: 'bound report', schema: { summary: z.string() }, handler: async () => { calls++; return 'TEST-1'; } }]);

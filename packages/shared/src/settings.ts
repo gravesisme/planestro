@@ -176,6 +176,8 @@ export const SETTINGS: readonly SettingDef[] = [
       'Pushes, gh pr, protected branches, branch and worktree management, force operations and in-place shell edits (sed -i) are refused in code whatever this list says. Codex workers are governed by their sandbox instead.',
     ] }),
   C({ key: 'permissions.deny', tab: 'workers', group: 'Commands workers may run', label: 'Never allowed', summary: 'Checked before anything else.', control: 'list', mono: true, placeholder: 'Bash(rm -rf *)' }),
+  C({ key: 'codex_env_passthrough', tab: 'workers', group: 'Commands workers may run', label: 'Codex environment', summary: "Environment variables a Codex worker's commands may see. Nothing else of planestro's environment reaches them.", control: 'list', mono: true, placeholder: 'HTTPS_PROXY',
+    detail: ['A Codex process, exec or app-server, starts with PATH, HOME, USER, SHELL, TMPDIR, LANG and its CODEX_HOME only, so GH_TOKEN, API keys and cloud credentials never reach a command it runs. Name here what the project\'s tools need (a proxy, a toolchain path); a name planestro does not have is skipped.', 'Read at each turn. Codex signs in from its home (codex login), not from OPENAI_API_KEY in planestro\'s environment, unless you list it here.'] }),
 
   // ---- CI & merging
   C({ key: 'ci.mode', tab: 'ci', group: 'Checks', label: 'What counts as CI', summary: "GitHub Actions, or a local check when Actions can't run (billing, no workflow).", control: 'select',

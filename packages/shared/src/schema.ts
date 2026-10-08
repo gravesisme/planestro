@@ -434,6 +434,8 @@ export const Config = z.object({
   /** …and uncached tokens per item. A live art turn measured 20–35k; the default leaves room for a dozen revisions. */
   budget_tokens_per_item: z.number().int().positive().default(600_000),
   budget_tokens_per_plan_turn: z.number().int().positive().default(100_000),
+  /** Environment variables a Codex worker's commands may see, beyond PATH, HOME, USER, SHELL, TMPDIR and LANG; nothing else of planestro's environment reaches them (#228). */
+  codex_env_passthrough: z.array(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'an environment variable name')).default([]),
   concurrency: z.object({
     max_sessions: z.number().int().positive().default(3), max_local_jobs: z.number().int().positive().default(1),
     /** Simultaneous turns per runner, for runners with their own rate limits (image generation is slow). Unlisted runners are unlimited. */
