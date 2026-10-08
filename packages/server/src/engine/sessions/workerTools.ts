@@ -32,7 +32,8 @@ export function workerTools(o: TurnOptions, result: TurnResult): CustomToolDef[]
           async (a) => { const answer = await o.tools.request_audition(a); if (answer.startsWith(AUDITION_PARKED)) result.parked = 'audition'; return text(answer); }),
         tool('get_item', 'Read the backlog item file (frontmatter + sections).', {}, async () => text(await o.tools.get_item())),
         ...(o.tools.runners_busy ? [tool('runners_busy', "The project's CI runners per runner label, read by planestro: online/offline, busy/idle, and queued and running CI jobs. Call it where a rule asks you to check the runners (before a heavy local run, say) instead of a `gh api …/actions/runners` command, which is not allowed.", {}, async () => text(await o.tools.runners_busy!()))] : []),
+        ...(o.tools.run_heavy ? [tool('run_heavy', "Run a heavy local command (a stress batch, a load test, a long benchmark) through planestro: one heavy run at a time on this machine, and before each batch it waits while a CI job runs on a runner that shares the machine. It runs in your worktree and answers with each batch's exit code and output tail, and what it waited for. Give a batch loop as its batches, in order, so the runners are checked again between them. Commands your project names as heavy are refused in Bash and run here.", { commands: z.array(z.string().min(1)).min(1).describe('One command, or the batches of a batch loop in the order to run them') }, async ({ commands }) => text(await o.tools.run_heavy!(commands)))] : []),
       
   ];
-  return defs.filter((d) => o.phase === 'plan' ? !['report_done', 'report_iteration', 'hand_off'].includes(d.name) : !['submit_plan', 'submit_breakdown'].includes(d.name));
+  return defs.filter((d) => o.phase === 'plan' ? !['report_done', 'report_iteration', 'hand_off', 'run_heavy'].includes(d.name) : !['submit_plan', 'submit_breakdown'].includes(d.name));
 }
