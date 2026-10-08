@@ -12,6 +12,7 @@ import { PromptsPage } from './pages/Prompts.tsx';
 import { ReleasesPage } from './pages/Releases.tsx';
 import { SchedulesPage } from './pages/Schedules.tsx';
 import { QuestionPage } from './pages/Question.tsx';
+import { ProjectsPage } from './pages/Projects.tsx';
 import { CrashBoundary } from './components/CrashScreen.tsx';
 import { guardResume } from './resume.ts';
 import './styles.css';
@@ -39,6 +40,7 @@ createRoot(document.getElementById('root')!).render(
           <Route path="questions/:id" element={<QuestionPage />} />
           <Route path="switch-provider" element={<SwitchProviderPage />} />
           <Route path="settings" element={<SettingsPage />} />
+          <Route path="projects" element={<ProjectsPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

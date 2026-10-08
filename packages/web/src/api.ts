@@ -50,6 +50,12 @@ export interface QuestionView {
 export interface ScheduleView { name: string; path: string; frontmatter: ScheduleFrontmatter; description: string; next_run: string | null }
 export interface ScheduleFields { title?: string; description?: string; cron?: string; tz?: string; enabled?: boolean; skip_if_open?: boolean; submit?: boolean; kind?: 'item' | 'epic'; category?: string | null; priority?: Priority | null }
 export interface ReleaseFields { version?: string; title?: string | null; status?: ReleaseStatus; date?: string | null; tag?: string | null; items?: string[] }
+/** One project on this machine as the all-projects page shows it (#235): see packages/server/src/projects.ts. */
+export interface ProjectRow {
+  name: string; data_dir: string; self: boolean; reach: 'self' | 'ok' | 'unreachable' | 'not_running';
+  url?: string; host?: string; port?: number; error?: string;
+  summary?: { needs_you: number; blocked: number; in_review: number; running: number; mode?: string; paused: boolean; paused_by?: string; read_only: boolean; guards: { provider: string; window: string; status: string; resume_at?: string; resets_at?: string }[] };
+}
 export interface SessionView { item: string; session_id?: string; model?: string; op?: string; started_at?: string; busy: boolean; last_output?: string }
 export interface State {
   schema: string; readOnly: boolean; dataDir: string; codeRepo: string; config: Config;
@@ -79,6 +85,7 @@ export const api = {
   orchestratorSelection: () => req<{ configured?: string; current?: string; pending?: boolean }>('GET', '/api/orchestrator/selection'),
   retryProvider: (runner: string) => req('POST', `/api/providers/${runner}/retry`),
   state: () => req<State>('GET', '/api/state'),
+  projects: () => req<{ projects: ProjectRow[] }>('GET', '/api/projects'),
   createItem: (body: { title: string; category?: string; priority?: Priority; description?: string; kind?: 'item' | 'epic'; planner?: string; parent?: string; implementer?: string; status?: 'NOT_YET_SUBMITTED' | 'ICEBOX'; auto_approve_plan?: boolean; allow_model_fallback?: boolean }) => req<ItemView>('POST', '/api/items', body),
   patchItem: (id: string, body: { fields?: Record<string, unknown>; sections?: Record<string, string> }) => req<ItemView>('PATCH', `/api/items/${id}`, body),
   deleteItem: (id: string) => req<{ ok: true }>('DELETE', `/api/items/${id}`),

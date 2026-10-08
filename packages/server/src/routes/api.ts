@@ -16,6 +16,7 @@ import type { Engine } from '../engine/Engine.ts';
 import type { ConsoleBuffer } from '../store/ConsoleBuffer.ts';
 import { itemView, promptView, releaseView, scheduleView, questionView, stateView, guardView, runnerStallsView, publicLocal } from './views.ts';
 import { applyConfigSettings, applyLocalSettings, putModel, removeModel } from '../settingsWrite.ts';
+import { projectsOverview, liveOverviewDeps, type OverviewDeps } from '../projects.ts';
 import { importCandidates, importMcpServers, putMcpServer, removeMcpServer, testMcpServer } from '../mcpServers.ts';
 
 const EDITABLE_FIELDS = z.object({
@@ -42,7 +43,7 @@ function reviewFile(c: Context, path: string, buf: Buffer | null): Response {
   return new Response(new Uint8Array(buf), { headers: { 'content-type': type, 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'", 'x-content-type-options': 'nosniff' } });
 }
 
-export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBuffer): Hono {
+export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBuffer, opts: { projects?: OverviewDeps } = {}): Hono {
   const api = new Hono();
   const fail = (c: any, e: unknown, status = 400) => c.json({ error: (e as Error).message ?? String(e) }, status);
   const pending = (id: string) => Boolean(orchestratorOf(engine)?.questionPending?.(id));
@@ -53,6 +54,8 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   api.post('/providers/:runner/retry', (c) => { try { const runner = z.enum(['claude', 'codex']).parse(c.req.param('runner')); engine.retryProvider?.(runner); return c.json({ ok: true }); } catch (e) { return fail(c, e); } });
   api.get('/orchestrator/selection', (c) => c.json((engine as any).orchestrator?.selection ?? { restart_required: false }));
   api.get('/state', async (c) => c.json(stateView(store, engine, await store.git.status())));
+  // Every project on this machine (#235), read-only: the others are asked server-side, so the page makes no cross-origin read.
+  api.get('/projects', async (c) => c.json(await projectsOverview({ dataDir: store.dataDir, name: store.config.project.name, state: () => stateView(store, engine, null) }, opts.projects ?? liveOverviewDeps())));
   api.post('/reload', async (c) => { store.reload(); return c.json({ ok: true, invalid: store.invalid }); });
   api.post('/reconcile', async (c) => { const e = engine as Engine & { reconcile?: (s: 'manual') => Promise<string[]> }; if (!e.reconcile) return c.json({ corrections: [], note: 'no reconciler with this engine' }); return c.json({ corrections: await e.reconcile('manual') }); });
   api.post('/queue/order', async (c) => { try { const { ids } = z.object({ ids: z.array(z.string()).min(1) }).parse(await c.req.json()); ids.forEach((id, i) => store.mutateItem(id, [{ set: { merge_order: i + 1 } }], 'user')); store.git.commit('planestro: merge order'); engine.poke(); return c.json({ ok: true }); } catch (e) { return fail(c, e); } });
