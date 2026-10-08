@@ -1587,6 +1587,53 @@ describe('known flaky CI checks (p33)', () => {
   });
 });
 
+describe('infrastructure failure patterns (#219)', () => {
+  async function infra(log: string, patterns?: string[]) {
+    const ctx = await setup({ ci: 'red-once' });
+    ctx.world.ciMode = 'red-once';
+    ctx.world.failedLog = log;
+    if (patterns) ctx.store.updateConfig((doc) => { doc.setIn(['ci', 'infra_patterns'], patterns); }, 'config: infra');
+    const item = ctx.store.createItem({ title: 'Infra', description: 'x' });
+    ctx.store.transition(item.id, 'QUEUED', 'user');
+    await ctx.engine.start();
+    await waitFor(() => status(ctx.store, item.id) === 'PLAN_READY');
+    return { ...ctx, id: item.id };
+  }
+
+  it('a red run whose log matches a configured pattern is re-run without a worker turn and not counted', async () => {
+    const { store, engine, id } = await infra('checks_mac: 401/401 every check FAIL: missing .out', ['every check FAIL.*missing \\.out']);
+    await engine.approvePlan(id);
+    await waitFor(() => status(store, id) === 'FINISHED', 10000);
+    const activity = activityOf(store, id);
+    expect(activity).toContain('matches an infrastructure pattern (every check FAIL.*missing \\.out, ci.infra_patterns); re-running the failed jobs once');
+    expect(activity).not.toContain('CI red (github');
+    expect(store.getItem(id)!.file.frontmatter.ci_failed_count ?? 0).toBe(0);
+  });
+
+  it('a built-in pattern (runner shutdown) needs no configuration', async () => {
+    const { store, engine, id } = await infra('##[error]The runner has received a shutdown signal. This can happen when the runner service is stopped.');
+    await engine.approvePlan(id);
+    await waitFor(() => status(store, id) === 'FINISHED', 10000);
+    expect(activityOf(store, id)).toContain('matches an infrastructure pattern (The runner has received a shutdown signal, built in)');
+    expect(store.getItem(id)!.file.frontmatter.ci_failed_count ?? 0).toBe(0);
+  });
+
+  it('the same match on the re-run blocks ci_infra naming the pattern, not ci_red_twice, with no fix turn', async () => {
+    const { store, engine, world, id } = await infra('checks_mac: 401/401 every check FAIL: missing .out', ['every check FAIL.*missing \\.out']);
+    world.rerunFailsAgain = true;
+    await engine.approvePlan(id);
+    await waitFor(() => store.getItem(id)!.file.frontmatter.blocked === true, 12000);
+    const fm = store.getItem(id)!.file.frontmatter;
+    expect(fm.blocked_reason).toBe('ci_infra');
+    expect(fm.ci_failed_count ?? 0).toBe(0);
+    expect(fm.op_data?.last_red).toBeTruthy();
+    const activity = activityOf(store, id);
+    expect(activity).toContain('matched the infrastructure pattern every check FAIL.*missing \\.out again');
+    expect(activity.match(/re-running the failed jobs once/g)?.length).toBe(1);
+    expect(activity).not.toContain('CI red (github');
+  });
+});
+
 describe('session slots and stalls (p25, f1)', () => {
   /** An IN_PROGRESS worker item with a worktree and nothing driving it. */
   function idleItem(store: DataStore, engine: LiveEngine, world: FakeWorld, title: string, set: Record<string, unknown> = {}) {
