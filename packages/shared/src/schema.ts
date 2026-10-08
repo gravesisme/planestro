@@ -5,7 +5,7 @@
 import { z } from 'zod';
 import { parseCron, validTimeZone } from './cron.ts';
 
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 export const STATUSES = [
   'NOT_YET_SUBMITTED', 'QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY',
@@ -52,7 +52,7 @@ export type Attachment = z.infer<typeof Attachment>;
 export const AUTHORITATIVE_KEYS = [
   'schema', 'id', 'kind', 'parent', 'title', 'category', 'priority', 'status', 'rank',
   'planner', 'implementer', 'allow_model_fallback', 'auto_approve_plan', 'budget_usd', 'budget_turns', 'budget_tokens', 'mcp_budget', 'depends_on', 'attachments',
-  'merge_policy', 'base_branch_override', 'loop',
+  'merge_policy', 'base_branch_override', 'loop', 'source',
 ] as const;
 export const OPERATIONAL_KEYS = [
   'created_at', 'updated_at', 'queued_at', 'started_at', 'plan_ready_at', 'plan_approved_at',
@@ -98,6 +98,11 @@ export const ItemFrontmatter = z.object({
    * a budget of its own, beside the per-turn and per-item caps. Green ends in a review hold.
    */
   loop: z.object({ max_iterations: z.number().int().positive(), goal: z.string().optional() }).passthrough().optional(),
+  /**
+   * The GitHub issue it was imported from (#231), in the project's own repo (`code_repo.github`): the key that keeps an
+   * issue from being imported twice. `closes`: its PR says `Closes #N`, so merging it closes the issue; only on request.
+   */
+  source: z.object({ github_issue: z.number().int().positive(), closes: z.boolean().optional() }).passthrough().optional(),
 
   created_at: ts,
   updated_at: ts,
@@ -528,6 +533,8 @@ export const Config = z.object({
   /** The operator MCP endpoint (`/mcp`, #175): `allow_writes` lists `create_item`, which files to NOT_YET_SUBMITTED only (#232). */
   operator_mcp: z.object({ allow_writes: z.boolean().default(false) }).default({ allow_writes: false }),
   feedback: z.object({ issue_repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, 'owner/repo').optional() }).default({}),
+  /** Importing the project's GitHub issues as items (#231): with none selected, every open issue with this label is imported. */
+  issues: z.object({ import_label: z.string().min(1).optional() }).default({}),
   git: z.object({
     auto_commit: z.boolean().default(true),
     auto_push: z.boolean().default(true),

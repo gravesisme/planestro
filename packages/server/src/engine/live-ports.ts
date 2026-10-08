@@ -306,6 +306,8 @@ export function unsuccessful(jobs: any[]): string[] {
 const PR_FIELDS = 'number,url,state,mergedAt,headRefOid,headRefName,baseRefName,mergeCommit,title,isDraft,author,updatedAt';
 function toPr(p: any): PrInfo { return { number: p.number, url: p.url, state: p.state, mergedAt: p.mergedAt ?? undefined, headRefOid: p.headRefOid, headRefName: p.headRefName, baseRefName: p.baseRefName, mergeCommit: p.mergeCommit?.oid, title: p.title, isDraft: Boolean(p.isDraft), author: p.author?.login ?? undefined, updatedAt: p.updatedAt ?? undefined }; }
 
+const issueOf = (i: any): IssueInfo => ({ number: i.number, title: i.title ?? '', body: i.body ?? '', url: i.url, state: i.state, labels: (i.labels ?? []).map((l: { name: string }) => l.name) });
+
 export class LiveGhPort implements GhPort {
   async prDetails(repo: string, number: number) { return ghRead(['pr', 'view', String(number), '--repo', repo, '--json', 'number,url,title,body,state,headRefName,headRefOid,baseRefName,comments,reviews,reviewDecision']); }
   async prDiff(repo: string, number: number) { return (await ghRead(['pr', 'diff', String(number), '--repo', repo])).slice(0, 100_000); }
@@ -395,9 +397,12 @@ export class LiveGhPort implements GhPort {
     }
     return null;
   }
-  async issueList(repo: string, opts: { limit: number }): Promise<IssueInfo[]> {
-    return (JSON.parse(await ghRead(['issue', 'list', '--repo', repo, '--state', 'all', '--limit', String(opts.limit), '--json', 'number,title,body,url,state'])) as any[])
-      .map((i) => ({ number: i.number, title: i.title ?? '', body: i.body ?? '', url: i.url, state: i.state }));
+  async issueList(repo: string, opts: { limit: number; state?: 'open' | 'all'; label?: string }): Promise<IssueInfo[]> {
+    return (JSON.parse(await ghRead(['issue', 'list', '--repo', repo, '--state', opts.state ?? 'all', '--limit', String(opts.limit), ...(opts.label ? ['--label', opts.label] : []), '--json', 'number,title,body,url,state,labels'])) as any[]).map(issueOf);
+  }
+  async issueView(repo: string, number: number): Promise<IssueInfo | null> {
+    try { return issueOf(JSON.parse(await ghRead(['issue', 'view', String(number), '--repo', repo, '--json', 'number,title,body,url,state,labels']))); }
+    catch (e) { if (/could not resolve|not found/i.test((e as Error).message)) return null; throw e; }
   }
   async issueCreate(repo: string, a: { title: string; body: string }) {
     const url = (await gh(['issue', 'create', '--repo', repo, '--title', a.title, '--body', a.body])).trim().split('\n').pop()!;

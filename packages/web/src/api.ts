@@ -29,6 +29,10 @@ export type FileNoteOutcome =
 export interface McpServerBody { command?: string | null; args?: string[]; url?: string | null; env?: Record<string, string | null>; headers?: Record<string, string | null>; enabled?: boolean }
 /** A server an import could bring in: names only, never a key's value. */
 export interface McpImportCandidate { source: string; name: string; kind: 'stdio' | 'http'; command?: string; url?: string; env: string[]; headers: string[]; status: 'new' | 'present' | 'duplicate' | 'removed' | 'unsupported'; note?: string }
+/** The project's open GitHub issues, for Import issues (#231): each with the item already imported from it. */
+export interface ImportableIssues { repo: string; label?: string; issues: { number: number; title: string; url: string; labels: string[]; item?: string }[] }
+export interface ImportIssuesResult { repo: string; imported: { issue: number; item: string; title: string }[]; skipped: { issue: number; reason: string; item?: string }[] }
+
 export interface ParkSummary { item: string; parks: number; waited_ms: number; resume_cost: number; open: number; shapes: { shape: string; parks: number; rule?: string }[] }
 
 export interface ItemView {
@@ -182,6 +186,8 @@ export const api = {
   orchestratorNotes: () => req<NoteView[]>('GET', '/api/orchestrator/notes'),
   notesSeen: () => req<{ seen: string }>('GET', '/api/orchestrator/notes/seen'),
   markNotesSeen: (upTo: string) => req<{ seen: string }>('POST', '/api/orchestrator/notes/seen', { up_to: upTo }),
+  importableIssues: () => req<ImportableIssues>('GET', '/api/issues/importable'),
+  importIssues: (body: { issues?: number[]; label?: string; closes?: boolean }) => req<ImportIssuesResult>('POST', '/api/issues/import', body),
   fileNote: (note: string, force?: boolean) => req<FileNoteOutcome>('POST', '/api/orchestrator/notes/file', { note, ...(force ? { force: true } : {}) }),
   markNotes: (links: { note: string; issues?: number[]; handled?: boolean; comment?: string }[]) => req<{ ok: true }>('POST', '/api/orchestrator/notes/mark', { links }),
   gitCommit: () => req<{ committed: boolean }>('POST', '/api/git/commit'),

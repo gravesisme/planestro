@@ -94,7 +94,7 @@ export interface PrInfo { number: number; url: string; state: 'OPEN' | 'MERGED' 
 /** Who closed a pull request (#205): a person, or a commit (a closing keyword in another merge), with the PR that commit came from. */
 export interface PrClosure { actor?: string; commit?: string; pr?: number; at?: string }
 
-export interface IssueInfo { number: number; title: string; body: string; url: string; state: string }
+export interface IssueInfo { number: number; title: string; body: string; url: string; state: string; labels?: string[] }
 
 export interface GhPort {
   createPr(repo: string, args: { base: string; head: string; title: string; body: string; draft?: boolean }): Promise<{ number: number; url: string }>;
@@ -125,7 +125,9 @@ export interface GhPort {
   /** How deep the workflow's queue is, repository-wide (#170). Optional: a port without it reports no queue. */
   ciQueue?(repo: string, workflow: string): Promise<CiQueue>;
   /** Issues of a repository, open and closed, newest first, with their bodies (#231: a note's marker is searched for in them). Optional. */
-  issueList?(repo: string, opts: { limit: number }): Promise<IssueInfo[]>;
+  issueList?(repo: string, opts: { limit: number; state?: 'open' | 'all'; label?: string }): Promise<IssueInfo[]>;
+  /** One issue by number, or null when the repo has none (#231: an issue picked for import). Optional. */
+  issueView?(repo: string, number: number): Promise<IssueInfo | null>;
   /** Open an issue (#231: an orchestrator note filed as one). Optional: a port without it cannot file. */
   issueCreate?(repo: string, args: { title: string; body: string }): Promise<{ number: number; url: string }>;
   /** The self-hosted runners and the workflow's open jobs (#216). Optional: a port without it cannot tell a runner's state. */

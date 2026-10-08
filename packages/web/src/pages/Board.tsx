@@ -7,6 +7,7 @@ import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { ItemCard, statusLabel } from '../components/ItemCard.tsx';
 import { NewItemDialog } from '../components/NewItemDialog.tsx';
+import { ImportIssuesDialog } from '../components/ImportIssuesDialog.tsx';
 import { PreviewDrawer } from '../components/PreviewDrawer.tsx';
 import { usePhone } from '../usePhone.ts';
 import { activeFilters, emptyText, type ActiveFilter, type FilterKey } from '../boardFilters.ts';
@@ -60,6 +61,7 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
   const [category, setCategory] = useState<string>('');
   const [priority, setPriority] = useState<Priority | ''>('');
   const [creating, setCreating] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
   const [dragTarget, setDragTarget] = useState<{ status: string; ok: boolean } | null>(null);
   const needsOnly = params.get('needs') === '1';
@@ -141,6 +143,7 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
         </div>
         <span className="grow desk-only" />
         <span className="muted small desk-only">{items.length} item{items.length === 1 ? '' : 's'}</span>
+        {state.config.code_repo.github && lane === 'board' && <button className="desk-only" title={`File open issues of ${state.config.code_repo.github} as items`} onClick={() => setImporting(true)}>Import issues</button>}
         <button className="primary fab" onClick={() => setCreating(true)}>+ New item</button>
       </div>
       {phone && filters.length > 0 && (
@@ -151,6 +154,7 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
           <button className="link" onClick={clearAll}>Show all</button>
         </div>
       )}
+      {importing && <ImportIssuesDialog onClose={() => setImporting(false)} />}
       {creating && <NewItemDialog onClose={() => setCreating(false)} icebox={lane === 'icebox'} />}
       {preview && <PreviewDrawer id={preview} onClose={() => setPreview(null)} />}
       {lane === 'done' ? (
