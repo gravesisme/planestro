@@ -1,7 +1,7 @@
 import { it, expect, afterEach } from 'vitest';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { ModelDef, codexTurnSettings } from '@planestro/shared';
+import { ModelDef, runnerTurnSettings } from '@planestro/shared';
 import { DataStore } from '../src/store/DataStore.ts';
 import { LiveEngine } from '../src/engine/LiveEngine.ts';
 import { FakeWorld, DryRunGitPort, DryRunGhPort, DryRunProcPort, DryRunCodexPort } from '../src/engine/dryrun-ports.ts';
@@ -12,10 +12,10 @@ let store: DataStore | undefined; let engine: LiveEngine | undefined;
 afterEach(async () => { await engine?.stop(); store?.close(); store = undefined; engine = undefined; });
 
 it('only a Codex row contributes effort and tier to a turn (#245)', () => {
-  expect(codexTurnSettings(ModelDef.parse({ id: 'c', label: 'C', runner: 'codex', codex_effort: 'medium', codex_tier: 'default' }))).toEqual({ effort: 'medium', serviceTier: 'default' });
-  expect(codexTurnSettings(ModelDef.parse({ id: 'c', label: 'C', runner: 'codex' }))).toEqual({});
-  expect(codexTurnSettings(ModelDef.parse({ id: 'a', label: 'A', claude_model: 'x', codex_effort: 'high' }))).toEqual({});
-  expect(codexTurnSettings(undefined)).toEqual({});
+  expect(runnerTurnSettings(ModelDef.parse({ id: 'c', label: 'C', runner: 'codex', codex_effort: 'medium', codex_tier: 'default' }))).toEqual({ effort: 'medium', serviceTier: 'default' });
+  expect(runnerTurnSettings(ModelDef.parse({ id: 'c', label: 'C', runner: 'codex' }))).toEqual({});
+  expect(runnerTurnSettings(ModelDef.parse({ id: 'a', label: 'A', claude_model: 'x', codex_effort: 'high' }))).toEqual({});
+  expect(runnerTurnSettings(undefined)).toEqual({});
 });
 
 it('a worker turn carries its model row\'s reasoning effort and service tier (#245)', async () => {

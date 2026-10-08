@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
-import { modelCapabilities, codexTurnSettings, type ModelDef, type Runner, getSection, planToolsMissing, epicFlagOf, holdShapeOf, heldReasonOf, previewOf, type HoldFlag, partsSummary, serializeItemFile, serializeQuestionFile, parseThread, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent, parseActivity } from '@planestro/shared';
+import { modelCapabilities, runnerTurnSettings, type ModelDef, type Runner, getSection, planToolsMissing, epicFlagOf, holdShapeOf, heldReasonOf, previewOf, type HoldFlag, partsSummary, serializeItemFile, serializeQuestionFile, parseThread, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent, parseActivity } from '@planestro/shared';
 import { parkHint } from './parks.ts';
 import { hostNote, keptPathsNote } from './hostNote.ts';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
@@ -337,7 +337,7 @@ export class Orchestrator {
     this.activeModel = model;
     const result: TurnResult = await this.ports.agents[pick.runner]!.runCustomTurn!({
       signal: this.activeAbort?.signal,
-      label: events.map((e) => e.type).join(','), cwd: this.store.codeRepoPath(), model, ...codexTurnSettings(pick.def),
+      label: events.map((e) => e.type).join(','), cwd: this.store.codeRepoPath(), model, ...runnerTurnSettings(pick.def),
       ...(pick.sdkFallback ? { fallbackModel: pick.sdkFallback } : {}),
       permissionMode: 'dontAsk', prompt, resume: state.session_id, maxTurns: 30,
       maxTokens: state.session_id ? cfg.budget_tokens_per_wake : cfg.budget_tokens_per_fresh_wake,

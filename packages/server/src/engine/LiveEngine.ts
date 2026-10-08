@@ -1431,7 +1431,7 @@ export class LiveEngine implements Engine {
       result = await this.withRunnerSlot(runner, () => this.withSessionSlot(id, () => { if (abort.signal.aborted && !this.stopping) return Promise.resolve<TurnResult>({ subtype: 'killed', isError: false, costUsd: 0, numTurns: 0, text: '' });
         if (this.stopping || this._paused || this.draining || this.store.local.engine.provider_guards?.[runner]) return Promise.resolve<TurnResult>({ subtype: 'deferred', isError: false, costUsd: 0, numTurns: 0, text: '' }); admitted(); return agent.runTurn({
         itemId: id, phase, cwd, model: model as string,
-        transport: modelCapabilities(def).transport, ...codexTurnSettings(def),
+        transport: modelCapabilities(def).transport, ...runnerTurnSettings(def),
         maxTokens: metered ? undefined : Math.min(budget.tokens - (fm.tokens ?? 0), phase === 'plan' ? fm.op_data?.plan_retry_turns ? 10_000 : this.store.config.budget_tokens_per_plan_turn : Infinity),
         onApproval: async (req) => {
           if (abort.signal.aborted || this.store.requireItem(id).file.frontmatter.taken_over) return;
@@ -4520,7 +4520,7 @@ export class LiveEngine implements Engine {
         if (this._paused || this.draining || this.stopping || abort.signal.aborted || this.store.local.engine.provider_guards?.[runner])
           return { subtype: 'killed', isError: false, costUsd: 0, numTurns: 0, text: '' };
         return agent.runTurn({
-        itemId: id, phase: 'fix', cwd, model: model as string, transport: modelCapabilities(def).transport, ...codexTurnSettings(def), maxTokens: remainingTokens, permissionMode: 'acceptEdits', prompt,
+        itemId: id, phase: 'fix', cwd, model: model as string, transport: modelCapabilities(def).transport, ...runnerTurnSettings(def), maxTokens: remainingTokens, permissionMode: 'acceptEdits', prompt,
         systemAppend: `${this.store.renderPrompt(modelCapabilities(def).workerPrompt, item)}\n\n${this.hostNote}${runner === 'claude' ? cwdNote(cwd) : ''}`,
         ...(pick.sdkFallback ? { fallbackModel: pick.sdkFallback } : {}),
         allowedTools: sdkRules(allowed), extraDirs: [this.store.dataDir], maxBudgetUsd: cap, tools,

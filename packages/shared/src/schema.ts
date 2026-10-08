@@ -340,7 +340,7 @@ export function modelCapabilities(m: Pick<ModelDef, 'runner' | 'external' | 'cod
     resumeKeepsInstructions: !claude };
 }
 /** What a row asks of a Codex turn beyond its model (#245). Nothing for a Claude row. */
-export function codexTurnSettings(m: Pick<ModelDef, 'runner' | 'codex_effort' | 'codex_tier'> | undefined): { effort?: CodexEffort; serviceTier?: CodexTier } {
+export function runnerTurnSettings(m: Pick<ModelDef, 'runner' | 'codex_effort' | 'codex_tier'> | undefined): { effort?: CodexEffort; serviceTier?: CodexTier } {
   if (!m || (m.runner ?? 'claude') !== 'codex') return {};
   return { ...(m.codex_effort ? { effort: m.codex_effort } : {}), ...(m.codex_tier ? { serviceTier: m.codex_tier } : {}) };
 }
