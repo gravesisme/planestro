@@ -151,3 +151,15 @@ it('inspects item and outside PRs through project-scoped GitHub ports', async ()
   expect(ci).toHaveBeenCalledWith(store.config.code_repo.github, 'work', 'abc', 'Project checks');
   expect(logs).toHaveBeenCalledWith(store.config.code_repo.github, 55, 120);
 });
+it('a wake carries its own row\'s reasoning effort and service tier, even beside a row on the same Codex model (#245)', async () => {
+  const seen: CustomTurnOptions[] = [];
+  const { go } = await setup(async (o) => { seen.push(o); return result; });
+  store.updateConfig((d) => {
+    d.set('models', [...store.config.models, ModelDef.parse({ id: 'codex-planner', label: 'Codex planner', runner: 'codex', codex_model: 'shared-model', codex_transport: 'app-server', codex_effort: 'high' }),
+      ModelDef.parse({ id: 'codex-orchestrator', label: 'Codex orchestrator', runner: 'codex', codex_model: 'shared-model', codex_transport: 'app-server', codex_effort: 'low', codex_tier: 'priority' })]);
+    d.setIn(['orchestrator', 'model'], 'codex-orchestrator');
+  }, 'config: test models');
+  orchestrator.wake({ type: 'user_message', data: { text: 'hello' } }); go(); await settled();
+  expect(seen).toHaveLength(1);
+  expect(seen[0]).toMatchObject({ model: 'shared-model', effort: 'low', serviceTier: 'priority' });
+});
