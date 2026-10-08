@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
-import { WORKTREE_SCOPE, type Config } from '@planestro/shared';
+import { WORKTREE_SCOPE, type Config, type PermissionRedirect } from '@planestro/shared';
 import type { PermissionRequest } from './ports.ts';
 import { literal, readShell, type Command, type Item, type Word } from './shell.ts';
 import { secretDenial, type SecretOptions } from './secrets.ts';
@@ -34,14 +34,20 @@ export function denyPrefixes(deny: string[]): string[] {
   return deny.map((d) => d.trim()).filter(Boolean).map((d) => { const m = /^Bash\((.*)\)$/.exec(d); return m ? m[1].replace(/\s*\*$/, '').trim() : d; }).filter(Boolean);
 }
 
+/** The refusals a policy judges beyond its own (#229, #203): every layer's denials, and redirects (a deny with its own message). */
+export interface PolicyRules { deny: string[]; redirect?: PermissionRedirect[] }
+const asRules = (r: string[] | PolicyRules): PolicyRules => (Array.isArray(r) ? { deny: r } : r);
+/** Every rule that refuses, as written: a redirect is a kind of deny. */
+const refusing = (r: PolicyRules): string[] => [...r.deny, ...(r.redirect ?? []).map((x) => x.rule)];
+
 /**
  * The rules the SDK's own allow-list can read: a scoped rule is planestro's to judge, never the SDK's.
  * Nor is a Bash rule a deny touches (#229): the SDK approves what its list matches without asking
  * planestro, so a project's `Bash(npm *)` would let a machine policy's `npm publish` through. Such a
- * rule still allows, through canUseTool, where the denials are judged first.
+ * rule still allows, through canUseTool, where the denials are judged first. A redirect (#203) counts as a deny.
  */
-export function sdkRules(rules: string[], deny: string[] = []): string[] {
-  const denied = denyPrefixes(deny);
+export function sdkRules(rules: string[], deny: string[] | PolicyRules = []): string[] {
+  const denied = denyPrefixes(refusing(asRules(deny)));
   return rules.map((r) => r.trim()).filter((r) => {
     if (r.endsWith(SCOPE)) return false;
     const m = /^Bash\((.*)\)$/.exec(r);
@@ -198,9 +204,10 @@ function leavesWorktree(command: string, worktree: string): boolean {
  * Hard denials with an explanation. Everything else that reaches `canUseTool` is parked for
  * the user (invariant 2). Branch names come from config — never literals (invariant 8).
  * The secret-file deny list (#227) is judged first, for every tool. `deny` is the merged
- * deny list (`DataStore.permissionRules`); it defaults to the project's alone.
+ * deny list and redirects (`DataStore.permissionRules`); it defaults to the project's alone.
+ * A redirect (#203) refuses as a deny does, with its own message: what to do instead.
  */
-export function makePolicy(config: Config, baseBranch: string, worktree: string, secrets: SecretOptions = {}, deny: string[] = config.permissions.deny): Policy {
+export function makePolicy(config: Config, baseBranch: string, worktree: string, secrets: SecretOptions = {}, deny: string[] | PolicyRules = config.permissions): Policy {
   const protectedBranches = [baseBranch, config.code_repo.release_branch].filter((b): b is string => Boolean(b)).map(esc).join('|');
   const rules: { re: RegExp; why: string }[] = [
     { re: /^\s*git\b[^|;&]*?\bpush\b/, why: 'planestro pushes for you; commit on your worker branch and report_done.' },
@@ -217,7 +224,9 @@ export function makePolicy(config: Config, baseBranch: string, worktree: string,
     { re: /^\s*perl\b[^|;&]*?\s-[pln0-9]*i/, why: 'edit files with the Edit or Write tool, not through the shell.' },
   ];
   // Every layer's denials (#229: the machine policy, the project, this machine's local file), each as the prefix it refuses.
-  const userDeny = denyPrefixes(deny);
+  const given = asRules(deny);
+  const userDeny = denyPrefixes(given.deny);
+  const redirects = (given.redirect ?? []).flatMap((r) => denyPrefixes([r.rule]).map((prefix) => ({ prefix, message: r.message })));
   return {
     deny(req) {
       const secret = secretDenial(req, worktree, secrets);
@@ -240,6 +249,12 @@ export function makePolicy(config: Config, baseBranch: string, worktree: string,
         for (const form of new Set([own, unanchor(normalizeSegment(own).command, worktree)])) {
           for (const r of rules) if (r.re.test(form)) return r.why;
           for (const d of userDeny) if (form.trim().startsWith(d)) return `denied by planestro policy (${d}).`;
+        }
+      }
+      for (const seg of segments) {
+        const own = unanchor(seg.trim(), worktree);
+        for (const form of new Set([own, unanchor(normalizeSegment(own).command, worktree)])) {
+          for (const r of redirects) if (form.trim().startsWith(r.prefix)) return `${r.message} (planestro policy redirects ${r.prefix}).`;
         }
       }
       return null;

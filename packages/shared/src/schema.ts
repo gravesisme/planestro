@@ -394,12 +394,15 @@ export function runnerTurnSettings(m: Pick<ModelDef, 'runner' | 'codex_effort' |
 }
 export function canPlan(m: Pick<ModelDef, 'runner' | 'external' | 'codex_transport'>): boolean { return modelCapabilities(m).plan; }
 
-/** `allow` / `deny` permission rules: a project's `permissions`, this machine's in planestro.local.yml, and `~/.planestro/policy.yml` (#229). */
-export const PermissionRules = z.object({ allow: z.array(z.string()).default([]), deny: z.array(z.string()).default([]) });
+/** A deny that says what to do instead (#203): a matching call is refused up front with `message`, never parked. */
+export const PermissionRedirect = z.object({ rule: z.string().min(1), message: z.string().min(1) });
+export type PermissionRedirect = z.infer<typeof PermissionRedirect>;
+/** `allow` / `deny` / `redirect` permission rules: a project's `permissions`, this machine's in planestro.local.yml, and `~/.planestro/policy.yml` (#229). */
+export const PermissionRules = z.object({ allow: z.array(z.string()).default([]), deny: z.array(z.string()).default([]), redirect: z.array(PermissionRedirect).default([]) });
 export type PermissionRules = z.infer<typeof PermissionRules>;
 /** Where an effective permission rule comes from (#229), in the order they are merged: a deny from any of them wins. */
 export type PermissionSource = 'machine' | 'project' | 'local';
-export interface SourcedRule { rule: string; list: 'allow' | 'deny'; sources: PermissionSource[] }
+export interface SourcedRule { rule: string; list: 'allow' | 'deny' | 'redirect'; sources: PermissionSource[]; /** A redirect's, from the first layer that names it. */ message?: string }
 
 export const Config = z.object({
   schema_version: z.number().int().positive(),
@@ -456,7 +459,7 @@ export const Config = z.object({
     /** A turn that failed transiently before it produced anything is retried once after this many seconds (#241). 0 turns it off. */
     transient_retry_after_s: z.number().min(0).default(30),
   }).default({ max_sessions: 3, max_local_jobs: 1, runner_limits: { codex: 1 }, stall_after_min: 10, transient_retry_after_s: 30 }),
-  permissions: PermissionRules.default({ allow: [], deny: [] }),
+  permissions: PermissionRules.default({ allow: [], deny: [], redirect: [] }),
   ci: z.object({
     mode: z.enum(['github', 'github-or-local']).default('github'),
     require_green_base: z.boolean().default(true),

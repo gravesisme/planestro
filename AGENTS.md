@@ -191,6 +191,9 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   (`permission allow (reason): Bash(…)`) and, whole, from `permission.answered` (`tool`, `command`,
   `reason`); only safe classes get a `…@worktree` rule, and one that the replay finds would have let any
   past denial through, alone or with the others, is refused (zero false allows on the history).
+  `permissions.redirect` (`{rule, message}`, #203) is a deny with a reason, merged across layers like #229's
+  and judged in `makePolicy` after every deny: a match is refused up front, never parked. Suggest offers
+  redirect candidates with the snippet that installs one, never installs it, and skips what one covers.
   The same report (#203) offers redirects (a kind of command denied every time from several items, its reason, never
   one a past approval would have hit) and drift over the journal's `tools.ran` (one per Claude worker turn: what ran
   without a park): allow rules nothing matched, approvals rising. Neither is applied. A delegated permission request

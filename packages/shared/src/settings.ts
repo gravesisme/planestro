@@ -250,7 +250,8 @@ export const SETTINGS: readonly SettingDef[] = [
 
 /** Schema keys the page deliberately leaves out: stamps, runtime state and records written by other controls. */
 export const NOT_USER_FACING: Record<SettingFile, readonly string[]> = {
-  config: ['schema_version', 'tool_version'],
+  // permissions.redirect (#203) is a list of {rule, message} edited in the file: Workers & permissions shows it under Rules in effect.
+  config: ['schema_version', 'tool_version', 'permissions.redirect'],
   // engine.paused is the header's PAUSE AUTOMATION lever; the rest is what the usage guard recorded; model_unavailable is written by the model cards' Mark unavailable.
   // permissions (#229) is hand-edited, like ~/.planestro/policy.yml: Workers & permissions shows it under Rules in effect.
   local: ['engine.paused', 'engine.paused_by', 'engine.provider_guards', 'engine.provider_guard_last', 'engine.disk_guard', 'model_unavailable', 'permissions'],
