@@ -182,6 +182,9 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
 - Frontmatter keys are classified authoritative / operational / derived in
   `packages/shared/src/schema.ts`; derived values (`base_branch`, `lane`,
   `needs_you`, …) are never persisted. Dependencies unblock on MERGED.
+- Permission rules merge three layers (#229): `~/.planestro/policy.yml` (machine, hand-edited, read-only in the UI),
+  the project's `permissions`, then `planestro.local.yml`'s; lists are unioned (`DataStore.permissionRules`, each rule
+  with its sources), a deny from any layer wins (`sdkRules` keeps a touched allow off the SDK's list), secrets first.
 - Allow rules are suggested from the ruling history, never applied (`allowSuggest.ts`, #169: `planestro
   permissions suggest`, `GET /permissions/suggest`, the Console). Rulings come from Activity
   (`permission allow (reason): Bash(…)`) and, whole, from `permission.answered` (`tool`, `command`,

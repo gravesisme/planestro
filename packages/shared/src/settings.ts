@@ -250,7 +250,8 @@ export const SETTINGS: readonly SettingDef[] = [
 export const NOT_USER_FACING: Record<SettingFile, readonly string[]> = {
   config: ['schema_version', 'tool_version'],
   // engine.paused is the header's PAUSE AUTOMATION lever; the rest is what the usage guard recorded; model_unavailable is written by the model cards' Mark unavailable.
-  local: ['engine.paused', 'engine.paused_by', 'engine.provider_guards', 'engine.provider_guard_last', 'engine.disk_guard', 'model_unavailable'],
+  // permissions (#229) is hand-edited, like ~/.planestro/policy.yml: Workers & permissions shows it under Rules in effect.
+  local: ['engine.paused', 'engine.paused_by', 'engine.provider_guards', 'engine.provider_guard_last', 'engine.disk_guard', 'model_unavailable', 'permissions'],
 };
 
 export function settingDef(file: SettingFile, key: string): SettingDef | undefined { return SETTINGS.find((s) => s.file === file && s.key === key); }

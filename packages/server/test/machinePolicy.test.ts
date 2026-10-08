@@ -44,11 +44,11 @@ describe('the machine policy file (#229)', () => {
     expect(r.allow).toEqual(['Bash(npm test*)', 'Bash(git status*)', 'Bash(make*)']);
     expect(r.deny).toEqual(['Bash(git status*)', 'rm -rf']);
     expect(r.rules).toEqual([
-      { rule: 'Bash(npm test*)', list: 'allow', sources: ['machine', 'project'] },
       { rule: 'Bash(git status*)', list: 'deny', sources: ['machine'] },
+      { rule: 'Bash(npm test*)', list: 'allow', sources: ['machine', 'project'] },
       { rule: 'Bash(git status*)', list: 'allow', sources: ['project'] },
-      { rule: 'Bash(make*)', list: 'allow', sources: ['local'] },
       { rule: 'rm -rf', list: 'deny', sources: ['local'] },
+      { rule: 'Bash(make*)', list: 'allow', sources: ['local'] },
     ]);
   });
 

@@ -77,6 +77,7 @@ export function SettingsPage() {
               {list.map((d) => <SettingRow key={`${d.file}:${d.key}`} def={d} value={valueOf(d)} changed={isChanged(d)} state={state} />)}
             </div>
           ))}
+          {!searching && tab === 'workers' && <RulesInEffect state={state} />}
           {!rows.length && <p className="settings-empty">Nothing matches. Try a key like <code>ci.</code> or a word like “budget”.</p>}
         </section>
       </div>
@@ -109,6 +110,31 @@ function StorageBlock({ state }: { state: State }) {
           {state.invalid.length > 0 && <ul className="small settings-invalid">{state.invalid.map((i) => <li key={i.path}><code>{i.path}</code>: {i.error}</li>)}</ul>}
         </div>
         <div className="ctl"><ActionButton working="Committing…" onAct={() => act(() => api.gitCommit())}>Commit now</ActionButton><ActionButton working="Pushing…" onAct={() => act(() => api.gitPush())}>Push</ActionButton><ActionButton working="Reloading…" onAct={() => act(() => api.reload())} title="Read every file again: for edits made by hand while planestro runs">Reload from disk</ActionButton></div>
+      </div>
+    </div>
+  );
+}
+
+const SOURCE_FILE = { machine: 'policy.yml', project: 'planestro.yml', local: 'planestro.local.yml' } as const;
+
+/** The rules workers run under, merged from the machine policy, the project and this machine (#229). Read-only: the machine file is edited by hand. */
+function RulesInEffect({ state }: { state: State }) {
+  const p = state.permissions;
+  if (!p) return null;
+  return (
+    <div className="settings-group">
+      <h3>Rules in effect</h3>
+      <div className="settings-row wide">
+        <div>
+          <div className="label">Every allow and deny rule, and where it comes from</div>
+          <div className="sum">A deny from any file wins over an allow from any file. The machine policy applies to every project on this machine: edit <code>{p.machine_path}</code> by hand{p.machine_exists ? '' : ' (there is none yet)'}.</div>
+          {p.machine_error && <div className="sum rules-error" role="alert">That file could not be read ({p.machine_error}); the rules last read from it still hold.</div>}
+          {p.rules.length > 0
+            ? <ul className="rules-in-effect">{p.rules.map((r) => (
+                <li key={`${r.list}:${r.rule}`}><span className={`chip ${r.list === 'deny' ? 'warn' : ''}`}>{r.list}</span> <code>{r.rule}</code> {r.sources.map((s) => <span key={s} className="chip" title={s === 'machine' ? p.machine_path : SOURCE_FILE[s]}>{SOURCE_FILE[s]}</span>)}</li>
+              ))}</ul>
+            : <div className="meta"><span>No rules beyond planestro's built-in ones.</span></div>}
+        </div>
       </div>
     </div>
   );

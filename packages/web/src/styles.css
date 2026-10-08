@@ -414,6 +414,7 @@ button.link { background: none; border: 0; padding: 0; color: var(--accent); fon
 .settings-row .ctl .unit { color: var(--muted); } .ctl-note { flex: 1 1 100%; text-align: right; overflow-wrap: anywhere; } .ctl-inline { display: flex; gap: 6px; flex: 1 1 200px; min-width: 0; } .ctl-inline input { flex: 1; min-width: 0; }
 input.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; } .dim { color: #6f7883; }
 .settings-row .ro { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; text-align: right; overflow-wrap: anywhere; } .settings-row .ro span { font-family: inherit; }
+.rules-in-effect { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 6px; } .rules-in-effect li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; } .rules-in-effect code { overflow-wrap: anywhere; min-width: 0; } .settings-row .rules-error { color: var(--hot); }
 .switch { position: relative; width: 38px; height: 22px; flex: none; } .switch input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
 .switch span { position: absolute; inset: 0; border-radius: 999px; background: var(--line); transition: background .15s; pointer-events: none; }
 .switch span::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: var(--text); transition: transform .15s; }
