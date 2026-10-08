@@ -16,6 +16,8 @@ textarea { width: 100%; min-height: 120px; resize: vertical; font-family: ui-mon
 .status .status-trigger { gap: 6px; color: var(--muted); background: transparent; border-color: transparent; } .status .status-trigger:hover { color: var(--text); background: var(--panel2); } .status .status-trigger.warn, .status-notice { color: var(--warn); }
 .status-count { color: var(--muted); } .dot.warn { background: var(--warn); }
 .status-popover { position: fixed; inset: 64px 16px auto auto; margin: 0; width: min(360px, calc(100vw - 24px)); max-height: calc(100dvh - 90px); overflow-y: auto; padding: 16px; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 12px 32px #0006; font-size: 13px; }
+.status-running { margin-top: 14px; } .status-running-head { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); } .status-running ul { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 8px; }
+.status-running li { min-width: 0; overflow-wrap: anywhere; } .status-running .id { color: var(--muted); } .status-running .run-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .status-popover-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; } .status-popover-heading button { padding: 0 6px; border: 0; background: transparent; color: var(--muted); font-size: 20px; }
 .status-popover dl { display: grid; grid-template-columns: 1fr auto; gap: 8px 20px; margin: 16px 0; } .status-popover dt { color: var(--muted); } .status-popover dd { margin: 0; } .status-popover p { overflow-wrap: anywhere; } .status-notice { padding-top: 10px; border-top: 1px solid var(--line); margin: 12px 0; } .status-notice p { margin: 0 0 8px; }
 @media (min-width: 841px) and (max-width: 1480px) { .brand .wordmark, .status-count { display: none; } .brand .project { max-width: 150px; } }
@@ -38,6 +40,13 @@ main { padding: 16px; flex: 1; }
 .column h3, .stage h3 { margin: 4px 6px 10px; font-size: 12px; letter-spacing: .6px; color: var(--muted); display: flex; justify-content: space-between; }
 .card { background: var(--panel2); border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 10px; margin-bottom: 8px; cursor: grab; }
 .card.needs { border-color: var(--warn); } .card.needs.blocked { border-color: var(--hot); } .card.blocked { border-left: 3px solid var(--hot); } .card.dragging { opacity: .4; }
+.card.running { border-left: 3px solid var(--ok); }
+/* An agent working on the item now (#299): a pulsing dot, apart from the turn chip and the yellow waits. */
+.tag.running { display: inline-flex; align-items: center; gap: 5px; font: inherit; min-height: 0; padding: 1px 5px; border-radius: 4px; color: var(--ok); border-color: var(--ok); background: transparent; cursor: pointer; }
+.tag.running .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); animation: run-pulse 1.4s ease-in-out infinite; }
+@keyframes run-pulse { 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { .tag.running .pulse { animation: none; } }
+.card .run-output { margin-top: 6px; overflow-wrap: anywhere; }
 .card .id { color: var(--muted); font-size: 12px; margin-right: 6px; } .card .title { font-weight: 600; }
 .card .meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; font-size: 11px; color: var(--muted); }
 .tag { border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; } .tag.hot { color: var(--hot); border-color: var(--hot); } .tag.wait { color: var(--warn); border-color: var(--warn); } .tag.epic { color: var(--warn); border-color: var(--warn); } .tag.ok { color: var(--ok); border-color: var(--ok); }

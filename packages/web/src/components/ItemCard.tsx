@@ -5,7 +5,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { useNavigate } from 'react-router';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
-import { pendingTurnWait } from '../pendingTurn.ts';
+import { agentStateOf } from '../agentState.ts';
 import { confirmMove } from './QuickActions.tsx';
 import { afterChoices, columnOf, stepMove } from '../reorder.ts';
 import { connectionDropOf, decisionOf, heldReasonOf, previewOf, waitsFor } from '@planestro/shared';
@@ -19,10 +19,12 @@ export function ItemCard({ item, sortable = true, onSelect, selection }: {
   const nav = useNavigate();
   // Move after… swaps the menu for its list of places in the same spot: a submenu beside it has no room on a phone.
   const [pickingAfter, setPickingAfter] = useState(false);
+  // A running badge's last output is its title on a mouse; on glass, where nothing hovers, a tap shows it on the card (#299).
+  const [showOutput, setShowOutput] = useState(false);
   const state = useStore((s) => s.state);
   const fm = item.frontmatter;
   const d = item.derived;
-  const pendingWait = pendingTurnWait(fm, state);
+  const agent = agentStateOf(item, state);
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id, disabled: !sortable || !!selection, data: { status: fm.status } });
   const style = { transform: CSS.Transform.toString(transform), transition };
   // The mouse drags the whole card, touch only its handle: each takes its own sensor's activator.
@@ -50,7 +52,9 @@ export function ItemCard({ item, sortable = true, onSelect, selection }: {
             {fm.blocked && !fm.triage && !decisionOf(fm) && <span className="tag hot">BLOCKED{fm.blocked_reason ? `: ${fm.blocked_reason}` : ''}</span>}
             {decisionOf(fm) ? <span className="tag hot">decision needed</span> : fm.awaiting && !(fm.triage && fm.awaiting === 'user') && <span className={`tag ${d.needs_you ? 'wait' : ''}`}>awaiting {fm.awaiting.replace(/_/g, ' ')}</span>}
             {fm.op && <span className="tag">{fm.op.replace(/_/g, ' ')}</span>}
-            {pendingWait && <span className="tag wait" title={pendingWait}>waiting: saved instruction</span>}
+            {agent?.kind === 'running' && <button type="button" className="tag running" aria-expanded={showOutput} title={agent.output ? `Last output: ${agent.output}` : 'An agent is working on this now'} onMouseDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); setShowOutput(!showOutput); }}><span className="pulse" aria-hidden />{agent.label}</button>}
+            {agent?.kind === 'slot' && <span className="tag wait" title={agent.reason}>waiting for a slot</span>}
+            {agent?.kind === 'wait' && <span className="tag wait" title={agent.reason}>waiting: saved instruction</span>}
             {fm.parts?.length ? <span className={`tag ${fm.parts.some((p) => p.state === 'rejected') ? 'hot' : fm.parts.every((p) => p.state === 'accepted') ? 'ok' : 'wait'}`} title={fm.parts.map((p) => `${p.name}: ${p.state}`).join(', ')}>parts {fm.parts.filter((p) => p.state === 'accepted').length}/{fm.parts.length}</span> : null}
             {(() => { const cfg = state?.config; if (!cfg || d.lane !== 'board') return null; const usd = (fm.cost_usd ?? 0) / (fm.budget_usd ?? cfg.budget_usd_per_item); const tok = (fm.tokens ?? 0) / (fm.budget_tokens ?? cfg.budget_tokens_per_item); const share = Math.max(usd, tok); return share >= 0.8 ? <span className={`tag ${share >= 1 ? 'hot' : 'wait'}`} title="Of this item's budget; raise it on the item page">budget {Math.round(share * 100)}%</span> : null; })()}
             {!d.deps_satisfied && <span className="tag">waits on {fm.depends_on.join(', ')}</span>}
@@ -58,8 +62,9 @@ export function ItemCard({ item, sortable = true, onSelect, selection }: {
             {fm.resume_after && <span className="tag" title={`Resumes when these have merged, with: ${fm.resume_after.message}`}>resumes after {waitsFor(fm.resume_after)}</span>}
             {lane === 'done' && fm.finished_at && <span>{fm.finished_at.slice(0, 16).replace('T', ' ')}</span>}
           </div>
+          {agent?.kind === 'running' && showOutput && <div className="run-output small muted">{agent.output ?? 'No output yet.'}</div>}
   </>;
-  const cardClass = `card ${d.needs_you ? 'needs' : ''} ${fm.blocked && !fm.triage ? 'blocked' : ''}`;
+  const cardClass = `card ${d.needs_you ? 'needs' : ''} ${fm.blocked && !fm.triage ? 'blocked' : ''} ${agent?.kind === 'running' ? 'running' : ''}`;
   // Selection cards have no navigation, drag/drop, or lifecycle context menu.
   if (selection) return <div className={`${cardClass} provider-select-card ${selection.checked ? 'selected' : ''}`}>{content}</div>;
   return (

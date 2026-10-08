@@ -11,6 +11,7 @@ import { PreviewDrawer } from '../components/PreviewDrawer.tsx';
 import { usePhone } from '../usePhone.ts';
 import { activeFilters, emptyText, type ActiveFilter, type FilterKey } from '../boardFilters.ts';
 import { boardColumns } from '../boardColumns.ts';
+import { agentStateOf } from '../agentState.ts';
 
 const COL = 'col:';
 /** A drop target's column: `col:<status>` is a column (or a phone stage), `col:<status>@strip` a cell of the phone's stage strip. */
@@ -62,6 +63,7 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
   const [preview, setPreview] = useState<string | null>(null);
   const [dragTarget, setDragTarget] = useState<{ status: string; ok: boolean } | null>(null);
   const needsOnly = params.get('needs') === '1';
+  const runningOnly = params.get('running') === '1';
   const phone = usePhone();
   // A mouse drags the whole card; touch drags only from the card's handle, which has `touch-action: none` (#215).
   const sensors = useSensors(useSensor(MouseSensor, { activationConstraint: { distance: 6 } }), useSensor(TouchSensor, { activationConstraint: { distance: 4 } }));
@@ -72,8 +74,9 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
       .filter((i) => !category || i.frontmatter.category === category)
       .filter((i) => !priority || i.frontmatter.priority === priority)
       .filter((i) => !needsOnly || i.derived.needs_you)
+      .filter((i) => !runningOnly || agentStateOf(i, state)?.kind === 'running')
       .filter((i) => terms.every((t) => `${i.id} ${i.frontmatter.title} ${i.sections.Description} ${i.sections.Notes}`.toLowerCase().includes(t)));
-  }, [state, lane, q, category, priority, needsOnly]);
+  }, [state, lane, q, category, priority, needsOnly, runningOnly]);
 
   const statusAt = (overId: string | number): string | undefined => String(overId).startsWith(COL) ? colStatus(overId) : items.find((i) => i.id === overId)?.frontmatter.status;
   // Over a cell of the phone's strip the page must hold still: scrolled to the top, the strip is no longer stuck and moves away.
@@ -108,9 +111,11 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
     void act(() => api.move(a.id, before ? 'before' : 'after', o.id));
   };
 
-  const filters = activeFilters({ q, category, priority, needsOnly });
+  const filters = activeFilters({ q, category, priority, needsOnly, runningOnly });
+  const setRunning = (on: boolean) => setParams((p) => { if (on) p.set('running', '1'); else p.delete('running'); return p; });
   const clear = (key: FilterKey) => {
     if (key === 'needs') setParams((p) => { p.delete('needs'); return p; });
+    else if (key === 'running') setRunning(false);
     else if (key === 'category') setCategory(''); else if (key === 'priority') setPriority(''); else setQ('');
   };
   const clearAll = () => filters.forEach((f) => clear(f.key));
@@ -130,6 +135,8 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
           {state.config.categories.map((c) => <button key={c} className={`chip ${category === c ? 'on' : ''}`} onClick={() => setCategory(category === c ? '' : c)}>{c}</button>)}
           <span className="chip-sep" aria-hidden />
           {PRIORITIES.map((p) => <button key={p} className={`chip prio-${p} ${priority === p ? 'on' : ''}`} title={`Only ${p}-priority items`} onClick={() => setPriority(priority === p ? '' : p)}>{p}</button>)}
+          <span className="chip-sep" aria-hidden />
+          <button className={`chip running ${runningOnly ? 'on' : ''}`} aria-pressed={runningOnly} title="Only items with an agent working on them now" onClick={() => setRunning(!runningOnly)}>running</button>
           {needsOnly && <button className="chip on" onClick={() => clear('needs')}>needs you ×</button>}
         </div>
         <span className="grow desk-only" />
