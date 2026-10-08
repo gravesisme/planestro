@@ -8,7 +8,7 @@ import { makeFixture } from './helpers.ts';
 import { startServer } from '../src/server.ts';
 import { MockEngine } from '../src/engine/MockEngine.ts';
 import { DataStore } from '../src/store/DataStore.ts';
-import { OPERATOR_TOOLS, operatorMcpUrl } from '../src/routes/mcp.ts';
+import { OPERATOR_TOOLS, OPERATOR_READ_TOOLS, operatorMcpUrl } from '../src/routes/mcp.ts';
 import { instancePath } from '../src/instances.ts';
 
 // What the Agent SDK is handed for a worker or orchestrator turn: the MCP servers, and the tools of
@@ -43,7 +43,8 @@ describe('the operator MCP endpoint (#175, step 2)', () => {
     try {
       await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`)));
       const { tools } = await client.listTools();
-      expect(tools.map((t) => t.name).sort()).toEqual([...OPERATOR_TOOLS].sort());
+      // operator_mcp.allow_writes is off by default: only the read-only tools are listed (#232)
+      expect(tools.map((t) => t.name).sort()).toEqual([...OPERATOR_READ_TOOLS].sort());
       for (const t of tools) expect(t.annotations, t.name).toMatchObject({ readOnlyHint: true, destructiveHint: false });
 
       const all = text(await client.callTool({ name: 'list_items', arguments: {} }));
@@ -65,6 +66,45 @@ describe('the operator MCP endpoint (#175, step 2)', () => {
       expect((await fetch(`http://127.0.0.1:${port}/.well-known/oauth-protected-resource/mcp`)).status).toBe(404);
       // nothing that writes: an unknown tool is an error, not a side door
       await expect(client.callTool({ name: 'approve_plan', arguments: { id: q.id } })).resolves.toMatchObject({ isError: true });
+      await expect(client.callTool({ name: 'create_item', arguments: { title: 'Sneaky' } })).resolves.toMatchObject({ isError: true });
+      expect(srv.store.listItems().map((i) => i.file.frontmatter.title)).not.toContain('Sneaky');
+    } finally { await client.close(); await srv.engine.stop(); srv.server.close(); srv.store.close(); }
+  });
+
+  it('create_item, once the project opts in with operator_mcp.allow_writes, files to NOT_YET_SUBMITTED and nothing more (#232)', async () => {
+    const { dataDir } = makeFixture();
+    const port = await freePort();
+    const srv = await startServer({ dataDir, port, log: () => {}, engineFactory: (s, em) => new MockEngine(s, em) });
+    const client = new Client({ name: 'test', version: '1' });
+    try {
+      srv.store.updateConfig((d) => { d.setIn(['operator_mcp', 'allow_writes'], true); });
+      await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`)));
+      const { tools } = await client.listTools();
+      expect(tools.map((t) => t.name).sort()).toEqual([...OPERATOR_TOOLS].sort());
+      expect(tools.find((t) => t.name === 'create_item')!.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false });
+      // It takes nothing that would start or change work: no status, no parent, no submit.
+      expect(Object.keys((tools.find((t) => t.name === 'create_item')!.inputSchema as any).properties).sort()).toEqual(['category', 'description', 'kind', 'priority', 'title']);
+
+      const made = text(await client.callTool({ name: 'create_item', arguments: { title: 'Follow-up: tidy the cave map', description: 'Seen while reviewing TP-1.', priority: 'low' } }));
+      const item = srv.store.getItem(made.id)!;
+      expect(item.file.frontmatter).toMatchObject({ title: 'Follow-up: tidy the cave map', status: 'NOT_YET_SUBMITTED', priority: 'low', created_by: 'operator_mcp' });
+      expect(item.file.frontmatter.queued_at).toBeUndefined();
+      expect(made).toMatchObject({ id: item.id, status: 'NOT_YET_SUBMITTED' });
+      // Not the user's word (#73): the Activity says where it came from.
+      expect(item.file.sections.find((s) => s.title === 'Activity')!.body).toMatch(/\[app\] created through the operator MCP/);
+      await srv.store.flushCommits();
+      const { execFileSync } = await import('node:child_process');
+      expect(execFileSync('git', ['log', '-1', '--format=%s'], { cwd: dataDir, encoding: 'utf8' }).trim()).toBe(`${item.id}: create item`);
+
+      const bad = await client.callTool({ name: 'create_item', arguments: { title: 'Nowhere', category: 'Nope' } });
+      expect(bad.isError).toBe(true);
+      expect(text(bad).error).toMatch(/unknown category/);
+
+      // Off again: the tool is gone from the list, and a call is an unknown tool.
+      srv.store.updateConfig((d) => { d.setIn(['operator_mcp', 'allow_writes'], false); });
+      expect((await client.listTools()).tools.map((t) => t.name)).not.toContain('create_item');
+      await expect(client.callTool({ name: 'create_item', arguments: { title: 'Late' } })).resolves.toMatchObject({ isError: true });
+      expect(srv.store.listItems().map((i) => i.file.frontmatter.title)).not.toContain('Late');
     } finally { await client.close(); await srv.engine.stop(); srv.server.close(); srv.store.close(); }
   });
 
@@ -98,7 +138,8 @@ describe('worker isolation: no worker or orchestrator session can list or call a
     expect(Object.keys(o.mcpServers).sort()).toEqual(['planestro', 'sounds']);
     // planestro's worker server has its own tools, none of the operator's backlog-wide ones
     expect(seen.tools[0]).toContain('report_done');
-    for (const name of ['list_items', 'get_state']) expect(seen.tools[0]).not.toContain(name);
+    // (get_item is also a worker tool of its own: the item it is working on, not the backlog.)
+    for (const name of OPERATOR_TOOLS.filter((t) => t !== 'get_item')) expect(seen.tools[0]).not.toContain(name);
   });
 
   it('an orchestrator turn the same', async () => {

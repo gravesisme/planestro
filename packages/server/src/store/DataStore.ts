@@ -62,6 +62,8 @@ export interface CreateItemInput {
   priority?: Priority;
   /** Omitted: the project's `defaults.allow_model_fallback`. */
   allow_model_fallback?: boolean;
+  /** The Activity line it starts with; omitted, `created`. */
+  created_line?: string;
 }
 
 export interface AskInput { headline: string; summary: string; details?: string; recommendation?: string; item?: string }
@@ -324,7 +326,7 @@ export class DataStore {
     setSection(file, 'Description', input.description ?? '');
     setSection(file, 'Notes', input.notes ?? '');
     setSection(file, 'Plan', '');
-    appendActivity(file, actor === 'engine' ? 'app' : actor, 'created', now);
+    appendActivity(file, actor === 'engine' ? 'app' : actor, input.created_line ?? 'created', now);
     const stored = this.writeItem(file);
     this.journal.append({ type: 'item.created', item: id, actor, data: { title: fm.title, status } });
     this.emit({ type: 'item.created', id });
