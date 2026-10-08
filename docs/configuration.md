@@ -248,6 +248,28 @@ the worktree (`cd ..` from its root, `cd /tmp`, `cd ~`, `cd` alone) is refused i
 push: the worker is told to use a path instead and its turn goes on, where a park would have
 ended it. One that cannot be judged (`cd "$DIR"`, `cd -`) is left to the rules.
 
+### Heavy local runs
+
+A stress batch, a load test or a long benchmark that a worker runs on a machine which is also a
+self-hosted CI runner competes with CI for it (HH-432 lost five checks to a watchdog that way).
+With `heavy_runs.enabled`, a worker runs such a command through planestro's `run_heavy` tool:
+one heavy run at a time across the data dir's workers, and before each batch (a batch loop is
+given as its batches, in order) it waits while a CI job runs, or is queued for an online runner,
+on a label in `shared_labels`, read from planestro's runner report (#216). What it
+waited for, and how long, is in its answer and the item's Activity. A Bash call matching one of
+`patterns` is refused with the way to run it through `run_heavy`, which may run what the
+patterns or the allow rules permit and nothing the deny rules refuse. Waiting on the lock or on
+CI is not waiting on a person: a turn that is stopped stops waiting.
+
+| Key | Default | |
+|---|---|---|
+| `heavy_runs.enabled` | `false` | Offer workers `run_heavy` and redirect the patterns to it. |
+| `heavy_runs.patterns` | `[]` | Commands that count as heavy: a command prefix (`npm run stress`) or a `Bash(…)` rule. |
+| `heavy_runs.shared_labels` | `[]` | Runner labels whose runners share this machine (`hh-mac`). |
+| `heavy_runs.yield_to_ci` | `true` | Wait while CI runs on those labels; `false` keeps only the one-at-a-time lock. |
+| `heavy_runs.poll_s` | `30` | How often a waiting run reads the runners again. |
+| `heavy_runs.timeout_min` | `120` | How long one batch may run before it is stopped. |
+
 ### CI and merging
 
 | Key | Default | |

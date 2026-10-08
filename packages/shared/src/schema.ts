@@ -465,6 +465,21 @@ export const Config = z.object({
     transient_retry_after_s: z.number().min(0).default(30),
   }).default({ max_sessions: 3, max_local_jobs: 1, runner_limits: { codex: 1 }, stall_after_min: 10, transient_retry_after_s: 30 }),
   permissions: PermissionRules.default({ allow: [], deny: [], redirect: [] }),
+  /**
+   * Heavy local runs (#218): a worker's `run_heavy` runs one at a time across the data dir, and before each batch waits
+   * while a CI job runs on a runner carrying one of `shared_labels` (this host's runners). A Bash call matching one of
+   * `patterns` (a command prefix, or a `Bash(…)` rule) is redirected to it, and run_heavy may run what they match.
+   */
+  heavy_runs: z.object({
+    enabled: z.boolean().default(false),
+    patterns: z.array(z.string().min(1)).default([]),
+    shared_labels: z.array(z.string().min(1)).default([]),
+    yield_to_ci: z.boolean().default(true),
+    /** How often a waiting run reads the runners again. */
+    poll_s: z.number().positive().default(30),
+    /** How long one batch may run before it is stopped. */
+    timeout_min: z.number().positive().default(120),
+  }).default({ enabled: false, patterns: [], shared_labels: [], yield_to_ci: true, poll_s: 30, timeout_min: 120 }),
   ci: z.object({
     mode: z.enum(['github', 'github-or-local']).default('github'),
     require_green_base: z.boolean().default(true),

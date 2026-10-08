@@ -32,7 +32,7 @@ async function setup(report: RunnerReport, heavy: Record<string, unknown> = {}) 
   const proc: ProcPort = { async run(command) { log.push(`start ${command}`); await sleep(80); log.push(`end ${command}`); return { code: 0, stdout: `ran ${command}\n`, stderr: '' }; } };
   const dry = new DryRunClaudePort(world);
   const ports: Ports = { mode: 'dry-run', git: new DryRunGitPort(world), gh: new DryRunGhPort(world), proc, agents: { claude: dry as unknown as Ports['agents']['claude'] } };
-  engine = new LiveEngine(store, ports, () => {}, { sleep: (ms) => sleep(Math.min(ms, 20)), tickMs: 50 });
+  engine = new LiveEngine(store, ports, () => {}, { sleep: async (ms) => { await sleep(Math.min(ms, 20)); }, tickMs: 50 });
   const item = (title: string) => {
     const it = store!.createItem({ title, description: 'x' });
     store!.mutateItem(it.id, [{ set: { worktree: `.claude/worktrees/${it.id.toLowerCase()}` } }], 'engine');
@@ -72,7 +72,7 @@ describe('heavy local runs (#218)', () => {
     expect(log).toEqual(['start npm run stress -- 1', 'end npm run stress -- 1', 'start npm run stress -- 2', 'end npm run stress -- 2']);
     expect(answer).toMatch(/waited .* for CI on hh-mac \(run 37406430622 running on mac-mini\)/);
     expect(answer).toMatch(/batch 2.*waited .* for CI on hh-mac \(run 2 running on mac-mini\)/s);
-    expect(activityOf(store, id)).toMatch(/heavy run: waited .* for CI on hh-mac/);
+    expect(activityOf(store, id)).toMatch(/heavy run: batch 1\/2: waited .* for CI on hh-mac/);
   });
 
   it('a job on a label that does not share the host is not waited on; yield_to_ci off waits on nothing', async () => {

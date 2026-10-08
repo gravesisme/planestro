@@ -137,7 +137,8 @@ export interface GhPort {
 }
 
 export interface ProcPort {
-  run(command: string, opts: { cwd: string; timeoutMs?: number; env?: Record<string, string> }): Promise<{ code: number; stdout: string; stderr: string }>;
+  /** `cleanEnv`: `env` is the command's whole environment, none of planestro's own (a Codex worker's command, #228). */
+  run(command: string, opts: { cwd: string; timeoutMs?: number; env?: Record<string, string>; cleanEnv?: boolean }): Promise<{ code: number; stdout: string; stderr: string }>;
   /** Bytes free to this user on the volume holding `path` (#161), or undefined when it cannot be read. */
   freeBytes?(path: string): Promise<number | undefined>;
 }
@@ -164,6 +165,8 @@ export interface TurnTools {
   get_item(): Promise<string>;
   /** The CI runners' state per label (#216), read by planestro's own gh: what a standing rule asks a worker to check before a heavy run. */
   runners_busy?(): Promise<string>;
+  /** A heavy local run (#218): one at a time across the data dir, each batch after any CI job on a runner sharing this host; offered when `heavy_runs.enabled`. */
+  run_heavy?(commands: string[]): Promise<string>;
 }
 export interface PermissionRequest { tool: string; input: Record<string, unknown> }
 export type McpServerSpec = { type?: 'stdio'; command: string; args?: string[]; env?: Record<string, string> } | { type: 'http'; url: string; headers?: Record<string, string> };

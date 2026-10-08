@@ -441,9 +441,9 @@ export class LiveGhPort implements GhPort {
 
 export class LiveProcPort implements ProcPort {
   async freeBytes(path: string) { try { const s = await statfs(path); return Number(s.bavail) * Number(s.bsize); } catch { return undefined; } }
-  async run(command: string, opts: { cwd: string; timeoutMs?: number; env?: Record<string, string> }) {
+  async run(command: string, opts: { cwd: string; timeoutMs?: number; env?: Record<string, string>; cleanEnv?: boolean }) {
     return new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
-      execFile('/bin/bash', ['-lc', command], { cwd: opts.cwd, timeout: opts.timeoutMs ?? 60 * 60_000, maxBuffer: 64 * 1024 * 1024, env: { ...process.env, ...opts.env } }, (err, stdout, stderr) => {
+      execFile('/bin/bash', ['-lc', command], { cwd: opts.cwd, timeout: opts.timeoutMs ?? 60 * 60_000, maxBuffer: 64 * 1024 * 1024, env: opts.cleanEnv ? { ...opts.env } : { ...process.env, ...opts.env } }, (err, stdout, stderr) => {
         resolve({ code: err ? ((err as any).code ?? 1) : 0, stdout: String(stdout), stderr: String(stderr) });
       });
     });

@@ -13,6 +13,7 @@ import { listInstances } from '../instances.ts';
 import { makePolicy, ruleFor, allowedByRules, sdkRules, BASE_ALLOWED } from './policy.ts';
 import { answeredCommand, commandShape, rulingText, parkedRefusal, permissionGrantRefusal, AUDITION_PARKED } from './parks.ts';
 import { commandGrant, commandForms, matchesCommandGrant, type CommandGrant } from './sessions/nativeApproval.ts';
+import { codexEnv } from './sessions/CodexAppServerPort.ts';
 import { hostNote, keptPathsNote, cwdNote } from './hostNote.ts';
 import { Orchestrator } from './orchestrator.ts';
 import { NeedsYouWatch, type Wait } from './needsYou.ts';
@@ -21,6 +22,7 @@ import { findWorkflow, namedInLog, prSkippedByPaths } from './ciFilters.ts';
 import { quietTransientFailure } from './transient.ts';
 import { driveSchedules } from './schedules.ts';
 import { runnerStatusText, stallOf, recovered, type RunnerStall } from './runners.ts';
+import { HeavyLock, ciOnSharedHost, heavyRedirects, heavyAllowRules, took } from './heavyRuns.ts';
 import type { ReviewImage, ReviewDiff } from './Engine.ts';
 
 const IMAGE_FILE = /\.(png|jpe?g|webp|gif|svg)$/i;
@@ -1425,7 +1427,9 @@ export class LiveEngine implements Engine {
     }
     const images = fm.attachments.map((a) => this.store.attachmentAbsPath(a)).filter((p) => /\.(png|jpe?g|webp|gif)$/i.test(p));
     // The machine policy, the project's rules and this machine's (#229), read once for the turn: a deny from any of them wins.
-    const rules = this.store.permissionRules();
+    // A heavy command (#218) is redirected to run_heavy, so it never runs beside another or under a CI job on this host.
+    const effective = this.store.permissionRules();
+    const rules = { ...effective, redirect: [...effective.redirect, ...heavyRedirects(this.store.config)] };
     const policy = makePolicy(this.store.config, d.base_branch!, cwd, {}, rules);
     // Tools from outside (f5): the model row names MCP servers, the machine-local file holds them with
     // their keys. A name with no server on this machine is a stop, not a session without its tools.
@@ -3564,7 +3568,66 @@ export class LiveEngine implements Engine {
       request_audition: async (audition) => this.requestAudition(id, audition),
       get_item: async () => serializeItemFile(s.requireItem(id).file),
       runners_busy: async () => this.runnerStatus(),
+      ...(this.store.config.heavy_runs.enabled ? { run_heavy: async (commands: string[]) => this.runHeavy(id, commands) } : {}),
     };
+  }
+
+  // ---- heavy local runs (#218) ----
+  private readonly heavyLock = new HeavyLock();
+  /**
+   * A worker's heavy local run: what its rules (or the project's heavy patterns) let it run, in its worktree, one heavy
+   * run at a time, each batch after any CI job on a runner sharing this host (`heavy_runs.shared_labels`) has ended.
+   * The waits are the lock and CI, never a person (invariant 2); a turn that is stopped stops waiting.
+   */
+  private async runHeavy(id: string, commands: string[]): Promise<string> {
+    const cfg = this.store.config.heavy_runs;
+    const item = this.store.requireItem(id); const fm = item.file.frontmatter;
+    if (!fm.worktree) return 'Rejected: this item has no worktree to run in.';
+    const cwd = this.absWorktree(fm.worktree);
+    const rules = this.store.permissionRules();
+    const policy = makePolicy(this.store.config, this.store.derived(item).base_branch!, cwd, {}, rules);
+    for (const command of commands) {
+      const why = policy.deny({ tool: 'Bash', input: { command } });
+      if (why) return `Rejected: ${why} Nothing was run.`;
+      if (!allowedByRules({ tool: 'Bash', input: { command } }, [...BASE_ALLOWED.implement, ...rules.allow, ...heavyAllowRules(this.store.config)], cwd)) return `Rejected: run_heavy runs only commands your allow rules or the project's heavy_runs.patterns permit, and \`${command.slice(0, 200)}\` is neither. Nothing was run.`;
+    }
+    // A Codex worker's command sees only what its own would (#228): none of planestro's keys.
+    const codex = (this.store.config.models.find((m) => m.id === fm.implementer)?.runner ?? 'claude') !== 'claude';
+    const env = codex ? { env: codexEnv(this.store.config.codex_env_passthrough) as Record<string, string>, cleanEnv: true } : {};
+    const signal = this.turns.get(id)?.abort.signal;
+    const stopped = () => signal?.aborted || this.stopping || this.store.requireItem(id).file.frontmatter.taken_over;
+    const say = (text: string) => this.store.mutateItem(id, [{ activity: { actor: 'app', text: `heavy run: ${text}` } }], 'engine');
+    const out: string[] = [];
+    const t0 = Date.now();
+    const holder = this.heavyLock.holder;
+    const release = await this.heavyLock.acquire(id, signal);
+    if (!release) return 'Stopped: this turn was stopped while waiting for the heavy-run lock. Nothing was run.';
+    try {
+      if (holder !== undefined) { const w = `waited ${took(Date.now() - t0)} for ${holder}'s heavy run`; out.push(w); say(w); }
+      for (const [i, command] of commands.entries()) {
+        const label = commands.length > 1 ? `batch ${i + 1}/${commands.length}: ` : '';
+        if (cfg.yield_to_ci && cfg.shared_labels.length) {
+          const w0 = Date.now(); let first: string[] | undefined; let unread = '';
+          for (;;) {
+            if (stopped()) return [...out, `Stopped: this turn was stopped while waiting for CI${label ? ` before ${label.slice(0, -2)}` : ''}.`].join('\n');
+            let busy: string[] = [];
+            try { const r = await this.readRunners(cfg.poll_s * 1000); busy = r ? ciOnSharedHost(r.report, cfg.shared_labels) : []; if (!r) unread = 'the runners cannot be read here (no code_repo.github or no runner report), so nothing was waited for'; }
+            catch (e) { unread = `the runners could not be read (${(e as Error).message.replace(/\s+/g, ' ').slice(0, 160)}), so nothing was waited for`; }
+            if (!busy.length) break;
+            first ??= busy;
+            await this.sleep(cfg.poll_s * 1000);
+          }
+          if (first) { const w = `${label}waited ${took(Date.now() - w0)} for CI on ${cfg.shared_labels.join(', ')} (${first.join('; ')})`; out.push(w); say(w); }
+          else if (unread && i === 0) out.push(unread);
+        }
+        const r = await this.ports.proc.run(command, { cwd, timeoutMs: cfg.timeout_min * 60_000, ...env });
+        const tail = `${r.stdout}${r.stderr ? `\n[stderr]\n${r.stderr}` : ''}`.trim().slice(-4000);
+        out.push(`${label}\`${command}\` exited ${r.code}${tail ? `:\n${tail}` : ''}`);
+        if (r.code !== 0 && i < commands.length - 1) { out.push(`The batches after it were not run.`); break; }
+      }
+      say(`ran ${commands.length === 1 ? `\`${commands[0].slice(0, 120)}\`` : `${commands.length} batches`} in ${took(Date.now() - t0)}`);
+      return out.join('\n');
+    } finally { release(); }
   }
 
   // ---- loop until green (#171) ----
