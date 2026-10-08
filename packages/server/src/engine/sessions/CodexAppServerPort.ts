@@ -11,6 +11,7 @@ import { workerTools } from './workerTools.ts';
 import { externalTools } from './externalTools.ts';
 import { gitWritableRoots } from './gitWritableRoots.ts';
 import { commandGrant } from './nativeApproval.ts';
+import { projectSkills, skillIndex, readSkillTool } from './projectSkills.ts';
 
 export const CODEX_TOOL_CONTRACT = 'app-server-v1';
 const REPORTS = new Set(['submit_plan', 'submit_breakdown', 'report_done', 'report_blocked']);
@@ -122,20 +123,22 @@ export class CodexAppServerPort implements AgentPort {
     // enable image creation/editing: features.image_generation is always false below.
     const bridge = await externalTools(o, () => { result.parked = 'permission'; });
     try {
-      const tools = [...workerTools(o, result), ...bridge.tools, {
+      // The project's skills (#238): an index now, each one's text read from the worktree when asked.
+      const skills = o.skills ? projectSkills(o.cwd) : [];
+      const tools = [...workerTools(o, result), ...bridge.tools, ...(skills.length ? [readSkillTool(o.cwd)] : []), {
         name: 'ask_question', description: 'Persist a question for the user, then end this turn.',
         schema: { question: z.string() }, handler: async (a: Record<string, unknown>) => {
           await o.onQuestion([{ question: a.question, header: 'Codex asks', options: [] }]); result.parked = 'question';
           return 'Recorded by planestro — end this turn';
         },
       }];
-      return await this.run(o, tools, result);
+      return await this.run(o, tools, result, skillIndex(skills));
     } finally { await bridge.close(); }
   }
   async runCustomTurn(o: CustomTurnOptions): Promise<TurnResult> {
     return this.run(o, o.mcpTools, { subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', tokens: 0 });
   }
-  private async run(o: TurnOptions | CustomTurnOptions, tools: CustomToolDef[], result: TurnResult): Promise<TurnResult> {
+  private async run(o: TurnOptions | CustomTurnOptions, tools: CustomToolDef[], result: TurnResult, skills = ''): Promise<TurnResult> {
     const worker = 'itemId' in o;
     const readOnly = !worker || o.phase === 'plan';
     const home = isolatedCodexHome(this.home, this.inheritAuth);
@@ -253,7 +256,7 @@ export class CodexAppServerPort implements AgentPort {
       // Effort has no thread/start or thread/resume field: the config key carries it there, `effort` on the turn (#245).
       const tier = o.serviceTier ? { serviceTier: o.serviceTier } : {};
       const params = { model: o.model, allowProviderModelFallback: false, cwd: o.cwd, sandbox: readOnly ? 'read-only' : 'workspace-write', approvalPolicy: 'on-request', ...tier,
-        config: { web_search: 'disabled', ...(o.effort ? { model_reasoning_effort: o.effort } : {}), 'sandbox_workspace_write.writable_roots': writableRoots, mcp_servers: disabled, 'features.apps': false, 'features.multi_agent': false, 'features.plugins': false, 'features.image_generation': false, 'features.skill_mcp_dependency_install': false, 'features.skip_host_skill_discovery': true }, developerInstructions: `${o.systemAppend}\n\nApp-server tool contract: use the provided dynamic tools to report; a final text message does not submit a report. Use ask_question for a worker question. During planning do not edit or commit. During implementation use apply_patch for file edits. Keep scratch files inside the worktree. Native image work is not enabled for this transport.`,
+        config: { web_search: 'disabled', ...(o.effort ? { model_reasoning_effort: o.effort } : {}), 'sandbox_workspace_write.writable_roots': writableRoots, mcp_servers: disabled, 'features.apps': false, 'features.multi_agent': false, 'features.plugins': false, 'features.image_generation': false, 'features.skill_mcp_dependency_install': false, 'features.skip_host_skill_discovery': true }, developerInstructions: `${o.systemAppend}\n\nApp-server tool contract: use the provided dynamic tools to report; a final text message does not submit a report. Use ask_question for a worker question. During planning do not edit or commit. During implementation use apply_patch for file edits. Keep scratch files inside the worktree. Native image work is not enabled for this transport.${skills ? `\n\n${skills}` : ''}`,
         ...(o.resume ? { threadId: o.resume } : { dynamicTools: tools.map((t) => ({ type: 'function', name: t.name, description: t.description, inputSchema: t.inputSchema ?? z.toJSONSchema(z.strictObject(t.schema as z.ZodRawShape)) })) }) };
       const started = await rpc.request(o.resume ? 'thread/resume' : 'thread/start', params);
       if (o.model && started.model !== o.model) throw new Error(`Requested model ${o.model} was replaced with ${started.model}`);

@@ -344,6 +344,8 @@ export const ModelDef = z.object({
   codex_effort: z.enum(CODEX_EFFORTS, { error: 'a reasoning effort is low, medium, high or xhigh' }).optional(),
   /** Service tier for every Codex turn on this row (#245); unset leaves Codex's default. */
   codex_tier: z.enum(CODEX_TIERS, { error: 'a service tier is default or priority (the tiers Codex offers)' }).optional(),
+  /** Give this Codex row's workers the project's `.claude/skills` from their worktree, through the turn (#238). Claude rows load them already. */
+  skills: z.boolean().optional(),
   /** One line on what the model is for. The epic planner routes children by it. */
   description: z.string().optional(),
   /** Hold this model's pull requests before merge until a person releases them (art is reviewed by eye). */
@@ -384,9 +386,9 @@ export function modelCapabilities(m: Pick<ModelDef, 'runner' | 'external' | 'cod
     resumeKeepsInstructions: !claude };
 }
 /** What a row asks of a Codex turn beyond its model (#245). Nothing for a Claude row. */
-export function runnerTurnSettings(m: Pick<ModelDef, 'runner' | 'codex_effort' | 'codex_tier'> | undefined): { effort?: CodexEffort; serviceTier?: CodexTier } {
+export function runnerTurnSettings(m: Pick<ModelDef, 'runner' | 'codex_effort' | 'codex_tier' | 'skills'> | undefined): { effort?: CodexEffort; serviceTier?: CodexTier; skills?: true } {
   if (!m || (m.runner ?? 'claude') !== 'codex') return {};
-  return { ...(m.codex_effort ? { effort: m.codex_effort } : {}), ...(m.codex_tier ? { serviceTier: m.codex_tier } : {}) };
+  return { ...(m.codex_effort ? { effort: m.codex_effort } : {}), ...(m.codex_tier ? { serviceTier: m.codex_tier } : {}), ...(m.skills ? { skills: true as const } : {}) };
 }
 export function canPlan(m: Pick<ModelDef, 'runner' | 'external' | 'codex_transport'>): boolean { return modelCapabilities(m).plan; }
 

@@ -187,6 +187,8 @@ export interface AgentTurnOptions {
   /** Codex only (#245): the row's reasoning effort and service tier; unset leaves Codex's defaults. */
   effort?: CodexEffort;
   serviceTier?: CodexTier;
+  /** Codex only (#238): deliver the worktree's `.claude/skills` through the turn (the row's `skills`). */
+  skills?: boolean;
   maxTokens?: number;
   /** Persist and park, or consume an exact saved command grant before returning allow. */
   onApproval?(req: PermissionRequest): Promise<'allow' | void>;
