@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { resolveClaudeBin, newerVersion, bundledClaudeVersion } from '../src/engine/sessions/claudeBin.ts';
 import { noteApiErrorText } from '../src/engine/sessions/LiveClaudePort.ts';
 import type { TurnResult } from '../src/engine/ports.ts';
+import { quietTransientFailure } from '../src/engine/transient.ts';
 
 const ok = (): TurnResult => ({ subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '' });
 
@@ -36,6 +37,9 @@ describe('an API error returned as text is a failure (p5)', () => {
     expect(r1).toMatchObject({ isError: true, subtype: 'cli_too_old' });
     const r2 = ok(); noteApiErrorText({ type: 'result', subtype: 'success', is_error: false, result: 'API Error: 529 {"type":"overloaded_error"}' }, r2);
     expect(r2).toMatchObject({ isError: true, subtype: 'api_error' });
+    // The overload the CLI printed in the model's place is not the model saying something: retried by itself (#241); the CLI-too-old one is not.
+    expect(quietTransientFailure({ ...r2, text: 'API Error: 529 {"type":"overloaded_error"}\n' })).toBe(true);
+    expect(quietTransientFailure({ ...r1, text: 'API Error: 400 Claude Code 2.1.251 does not support this model\n' })).toBe(false);
     const r3 = ok(); noteApiErrorText({ type: 'result', subtype: 'success', is_error: false, result: 'Plan submitted. The API Error: 400 case is handled in step 3.' }, r3);
     expect(r3).toMatchObject({ isError: false, subtype: 'success' });
   });

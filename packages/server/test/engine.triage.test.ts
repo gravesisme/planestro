@@ -158,7 +158,8 @@ describe('needs-you triage', () => {
   });
 
   it('retry_op resumes a session stopped by a transient failure', async () => {
-    const fails = async (): Promise<TurnResult> => ({ ...ok, subtype: 'error_during_execution', isError: true, error: 'GitHub 503' });
+    // It had done something first: a failure before anything is retried by planestro itself (#241).
+    const fails = async (): Promise<TurnResult> => ({ ...ok, subtype: 'error_during_execution', isError: true, error: 'GitHub 503', acted: true });
     const a = agents({ firstTurn: fails, orchestrate: async (w) => { if (w.label === 'blocked_turn_error') expect(await w.tools('retry_op').handler({ id: 'TP-1' })).toContain('session is resumed'); } });
     const { store: s, engine: e, id } = await setup(a.claude);
     await e.start();

@@ -509,8 +509,9 @@ async function consume(q: AsyncIterable<unknown>, result: TurnResult, onOutput: 
       else if (m.type === 'assistant') {
         const said: string[] = [];
         for (const c of (m.message?.content ?? []) as any[]) {
-          if (c.type === 'text' && c.text) { result.text += c.text + '\n'; said.push(c.text); onOutput(c.text); }
-          else if (c.type === 'tool_use') onOutput(`→ ${describeToolUse(c.name, c.input ?? {})}`);
+          // An API error the CLI prints as the assistant's text is not the model saying anything (#241).
+          if (c.type === 'text' && c.text) { result.text += c.text + '\n'; said.push(c.text); onOutput(c.text); if (!m.error && !API_ERROR_TEXT.test(c.text.trim())) result.acted = true; }
+          else if (c.type === 'tool_use') { onOutput(`→ ${describeToolUse(c.name, c.input ?? {})}`); result.acted = true; }
         }
         if (said.length) result.lastMessage = said.join('\n');
       } else if (m.type === 'result') {

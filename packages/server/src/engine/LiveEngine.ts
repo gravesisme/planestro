@@ -17,6 +17,7 @@ import { Orchestrator } from './orchestrator.ts';
 import { NeedsYouWatch, type Wait } from './needsYou.ts';
 import { pngSize } from './placeholderPng.ts';
 import { findWorkflow, namedInLog, prSkippedByPaths } from './ciFilters.ts';
+import { quietTransientFailure } from './transient.ts';
 import type { ReviewImage } from './Engine.ts';
 
 const IMAGE_FILE = /\.(png|jpe?g|webp|gif|svg)$/i;
@@ -487,6 +488,7 @@ export class LiveEngine implements Engine {
     try {
       this.orchestrator.kick();
       this.drivePendingTurns();
+      this.driveTransientRetries();
       for (const item of this.store.listItems()) this.continueAfterProviderSwitch(item.id);
       this.reopenEpics();
       this.admit();
@@ -1520,6 +1522,8 @@ export class LiveEngine implements Engine {
       this.store.journal.end(opId, id, 'ok', { subtype: 'deferred', reason: 'admission paused; instruction saved' });
       return undefined;
     }
+    // A turn that did something, or ended well, ends the run of one automatic retry (#241).
+    if (!quietTransientFailure(result)) this.dropTransientRetry(id);
     const completedData = { ...this.store.requireItem(id).file.frontmatter.op_data };
     if (!(result.subtype === 'killed' && this.stopping) && (completedData.active_turn as PendingTurn | undefined)?.key === intent.key) {
       delete completedData.active_turn;
@@ -1595,11 +1599,60 @@ export class LiveEngine implements Engine {
       // A failure the person can act on keeps its own name; the rest are turn errors for the orchestrator to judge.
       const reason = ACTIONABLE_FAILURES.has(result.subtype) ? result.subtype : 'turn_error';
       if (result.subtype === 'session_lost' && !metered) { const { [runner]: _gone, ...rest } = this.store.requireItem(id).file.frontmatter.agent_sessions ?? {}; this.store.mutateItem(id, [{ set: { agent_sessions: rest } }], 'engine'); }
-      this.block(id, reason, `${result.subtype}: ${result.error ?? result.text.slice(-300)}`);
+      this.blockOrRetry(id, reason, `${result.subtype}: ${result.error ?? result.text.slice(-300)}`, result);
       return result;
     }
     await this.afterTurn(id, phase, result);
     return result;
+  }
+
+  /**
+   * A turn that failed before it did anything (#241) is retried once by itself after `concurrency.transient_retry_after_s`,
+   * through retryOp, instead of waking triage for a turn that only needs running again. The stop is recorded as any
+   * other, with the due time in `op_data.transient_retry` (driven from the tick, so a restart or a pause only delays it);
+   * the retried turn's own failure, or any other, blocks as it always did.
+   */
+  private blockOrRetry(id: string, reason: string, detail: string, result: TurnResult): void {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    const after = this.store.config.concurrency.transient_retry_after_s;
+    const prior = fm.op_data?.transient_retry;
+    if (!prior && after > 0 && !fm.taken_over && quietTransientFailure(result)) {
+      const due = new Date(Date.now() + after * 1000).toISOString();
+      this.store.mutateItem(id, [
+        { set: { blocked: true, blocked_reason: reason, op_data: { ...(fm.op_data ?? {}), transient_retry: { due_at: due, reason, subtype: result.subtype } } } },
+        ...(fm.op ? [{ unset: ['op', 'op_started_at'] } as ItemOp] : []),
+        { activity: { actor: 'app', text: `BLOCKED (${reason}): ${detail.replace(/\s+/g, ' ').slice(0, 500)}. The turn produced nothing, so planestro retries it once in ${after}s (concurrency.transient_retry_after_s)` } },
+      ], 'engine', { commit: `${id}: blocked (${reason}), retrying once` });
+      this.store.journal.append({ type: 'turn.transient_retry', item: id, actor: 'engine', data: { reason, subtype: result.subtype, error: (result.error ?? '').slice(0, 300), due_at: due } });
+      this.note('warn', `${id}: ${reason} (${result.subtype}) before the turn did anything; retrying once in ${after}s`);
+      return;
+    }
+    if (prior) this.dropTransientRetry(id);
+    this.block(id, reason, detail);
+  }
+
+  private dropTransientRetry(id: string): void {
+    const cur = this.store.getItem(id)?.file.frontmatter;
+    if (cur?.op_data?.transient_retry === undefined) return;
+    const { transient_retry: _gone, ...rest } = cur.op_data;
+    this.store.mutateItem(id, [{ set: { op_data: rest } }], 'engine');
+  }
+
+  /** The retries blockOrRetry scheduled, once due. One that someone else already moved (an unblock, a take-over) is dropped without running. */
+  private driveTransientRetries(): void {
+    for (const item of this.store.listItems()) {
+      const fm = item.file.frontmatter;
+      const r = fm.op_data?.transient_retry as { due_at?: string; reason?: string } | undefined;
+      if (!r?.due_at) continue;
+      const spend = () => this.store.mutateItem(item.id, [{ set: { op_data: { ...(this.store.requireItem(item.id).file.frontmatter.op_data ?? {}), transient_retry: { retried_at: this.now(), reason: r.reason } } } }], 'engine');
+      if (!fm.blocked || fm.taken_over) { this.dropTransientRetry(item.id); continue; }
+      if (Date.parse(r.due_at) > Date.now() || this.busyWith(item.id)) continue;
+      spend();
+      void this.retryOp(item.id, 'engine').then((said) => {
+        if (/^not now/.test(said)) { const cur = this.store.requireItem(item.id).file.frontmatter; this.store.mutateItem(item.id, [{ set: { op_data: { ...(cur.op_data ?? {}), transient_retry: r } } }], 'engine'); return; }
+        if (/^(not possible|nothing to retry)/.test(said)) { this.dropTransientRetry(item.id); this.block(item.id, r.reason ?? 'turn_error', `the automatic retry could not run: ${said}`); }
+      }).catch((e) => { this.dropTransientRetry(item.id); this.block(item.id, r.reason ?? 'turn_error', `the automatic retry failed: ${(e as Error).message}`); });
+    }
   }
 
   /** The session's lost report as the port saw it (#167), kept in op_data so a restart can still apply it; undefined drops it. */
@@ -1649,7 +1702,7 @@ export class LiveEngine implements Engine {
       { set: { op_data: { ...(fm.op_data ?? {}), mcp_drop: { ...d, final_message: last } } } },
       { activity: { actor: 'app', text: last ? `the session's last message, as it ended without a report that reached planestro:\n${last.slice(-1500)}` : 'the session ended with no message of its own and no report that reached planestro' } },
     ], 'engine');
-    this.block(id, 'connection_lost', `the session lost its connection to planestro at ${d.at}${d.tool ? ` (on ${d.tool})` : ''}: ${d.error}. The turn ended with no report that reached planestro, and none could be applied from the outbox. Its last message: ${last ? last.slice(-1500) : '(none)'}`);
+    this.blockOrRetry(id, 'connection_lost', `the session lost its connection to planestro at ${d.at}${d.tool ? ` (on ${d.tool})` : ''}: ${d.error}. The turn ended with no report that reached planestro, and none could be applied from the outbox. Its last message: ${last ? last.slice(-1500) : '(none)'}`, result);
     return true;
   }
 
@@ -3848,7 +3901,7 @@ export class LiveEngine implements Engine {
   }
 
   /** With `message` (an unblock of an engine-owned stop, #211), it goes to Activity and with any session the retry resumes. */
-  async retryOp(id: string, by: 'user' | 'orchestrator' = 'orchestrator', message?: string): Promise<string> {
+  async retryOp(id: string, by: 'user' | 'orchestrator' | 'engine' = 'orchestrator', message?: string): Promise<string> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
     if (fm.taken_over) return `not now: the user has taken ${id} over`;
@@ -3857,8 +3910,8 @@ export class LiveEngine implements Engine {
     const busy = this.busyWith(id); if (busy) return `not now: ${busy}`;
     const reason = fm.blocked_reason ?? 'blocked';
     const opData = LiveEngine.withoutDirtyCount(fm.op_data);
-    const clear = (text: string, extra: ItemOp[] = []): void => { this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, ...(opData !== fm.op_data ? [{ set: { op_data: opData } } as ItemOp] : []), ...extra, { activity: { actor: by, text: message ? `${text}: ${message}` : text } }], by, { commit: `${id}: retry${by === 'orchestrator' ? ' (orchestrator)' : ''}` }); };
-    const resume = (by === 'orchestrator'
+    const clear = (text: string, extra: ItemOp[] = []): void => { this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, ...(opData !== fm.op_data ? [{ set: { op_data: opData } } as ItemOp] : []), ...extra, { activity: { actor: by === 'engine' ? 'app' : by, text: message ? `${text}: ${message}` : by === 'engine' ? `${text} (automatic, once: the turn produced nothing)` : text } }], by, { commit: `${id}: retry${by === 'user' ? '' : ` (${by === 'engine' ? 'automatic' : by})`}` }); };
+    const resume = (by !== 'user'
       ? `The last step stopped on a transient failure (${reason}), which has been retried. Nothing of yours was lost: check your worktree and continue where you left off.`
       : `The user unblocked this item (it had stopped: ${reason}). Nothing of yours was lost: check your worktree and continue where you left off.`) + (message ? `\n\n${message}` : '');
     // A conflict once handed to a session that never finished it is the pipeline's again: it re-syncs, and a conflict comes back to a session.
@@ -4640,7 +4693,7 @@ export class LiveEngine implements Engine {
   }
 
   /** User-driven unblock: clears the flag and, if the item is in a session phase, resumes with a message. With `fresh`, in a new conversation that gets a brief. */
-  async unblock(id: string, message?: string, by: 'user' | 'orchestrator' = 'user', opts: { fresh?: boolean; retried?: boolean } = {}): Promise<void> {
+  async unblock(id: string, message?: string, by: 'user' | 'orchestrator' | 'engine' = 'user', opts: { fresh?: boolean; retried?: boolean } = {}): Promise<void> {
     const fm = this.store.requireItem(id).file.frontmatter;
     if (fm.taken_over) throw new Error(`${id} is taken over: hand it back instead`);
     const refusal = opts.fresh ? this.freshRefusal(fm, message) : undefined;
@@ -4657,10 +4710,10 @@ export class LiveEngine implements Engine {
       if (!/^(not possible|nothing to retry|not now)/.test(r)) return;
     }
     const opData = LiveEngine.withoutDirtyCount(fm.op_data);
-    this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, ...(opData !== fm.op_data ? [{ set: { op_data: opData } } as ItemOp] : []), { activity: { actor: by, text: `unblocked${message ? `: ${message}` : ''}` } }], by, { commit: `${id}: unblock${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
+    this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, ...(opData !== fm.op_data ? [{ set: { op_data: opData } } as ItemOp] : []), { activity: { actor: by === 'engine' ? 'app' : by, text: `unblocked${by === 'engine' ? ' (automatic retry)' : ''}${message && by !== 'engine' ? `: ${message}` : ''}` } }], by, { commit: `${id}: unblock${by === 'user' ? '' : ` (${by === 'engine' ? 'automatic' : by})`}` });
     const phase = this.phaseFor(fm.status);
     // The message is an instruction that stands on its own, so the engine may give it to a fresh conversation (#64); `fresh` asks for one.
-    if (message && phase) this.queueTurn(id, phase, message, [], [], { fresh: opts.fresh ? true : 'auto', note: by === 'orchestrator' ? 'the orchestrator' : 'a decision from the user' });
+    if (message && phase) this.queueTurn(id, phase, message, [], [], { fresh: opts.fresh ? true : 'auto', note: by === 'orchestrator' ? 'the orchestrator' : by === 'engine' ? 'planestro, retrying a turn that failed before it did anything' : 'a decision from the user' });
     // p50: a merged item that stopped in cleanup (a worktree removal failed) retries it now, the path reconcile takes
     // five minutes later; with a message, or a retry that declined, clearing the flag alone left it MERGED until then.
     else if (fm.status === 'MERGED') this.runJob(id, () => this.cleanup(id));

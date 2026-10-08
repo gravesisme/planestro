@@ -169,6 +169,7 @@ export class LiveCodexPort implements AgentPort {
       result.tokens = (result.tokens ?? 0) + budgetTokens(u);
     }
     if (e.type === 'item.completed' && e.item?.type === 'agent_message' && e.item.text) result.text += `${e.item.text}\n`;
+    if ((e.type === 'item.started' || e.type === 'item.completed') && e.item?.type && e.item.type !== 'reasoning') result.acted = true;
     if (e.type === 'error' || e.type === 'turn.failed') this.lastError = String(e.message ?? e.error?.message ?? JSON.stringify(e)).slice(0, 400);
     const said = describeEvent(e);
     if (said) o.onOutput(said);

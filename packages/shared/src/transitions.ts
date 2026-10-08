@@ -129,6 +129,8 @@ export const NEEDS_YOU_AWAITING = new Set(['plan_approval', 'breakdown_approval'
 export function needsYou(fm: Pick<ItemFrontmatter, 'blocked' | 'awaiting' | 'triage'> & Partial<Pick<ItemFrontmatter, 'status' | 'skip_merge' | 'ci_result' | 'op_data' | 'taken_over' | 'op'>>): boolean {
   // You took it over: you are already on it, and nothing on it waits for anyone else.
   if (fm.triage || fm.taken_over) return false;
+  // A turn that failed before it did anything is planestro's to retry first (#241): a stop that clears itself in seconds is not yours yet.
+  if ((fm.op_data?.transient_retry as { due_at?: string } | undefined)?.due_at) return false;
   if (fm.blocked || (fm.awaiting !== undefined && NEEDS_YOU_AWAITING.has(fm.awaiting))) return true;
   // A held pull request waits on a person releasing the hold, whatever its CI says (dogfood p44: HH-162 sat held and
   // green at NEEDS YOU 0). Counting it only once CI was green hid HH-242 for four and a half hours (#116): its hold was

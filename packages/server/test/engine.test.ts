@@ -1667,7 +1667,7 @@ describe('API errors returned as text (p5)', () => {
     await waitFor(() => store.getItem(item.id)!.file.frontmatter.blocked_reason === 'cli_too_old');
   });
 
-  it('an orchestrator wake that fails on an API error is retried once, and the journal says it failed', async () => {
+  it('an orchestrator wake that fails on an API error is retried once after transient_retry_after_s, and the journal says it failed (#241)', async () => {
     let wakes = 0;
     const scripted = (world: FakeWorld) => {
       const inner = new DryRunClaudePort(world);
@@ -1677,9 +1677,12 @@ describe('API errors returned as text (p5)', () => {
       };
     };
     const { store, engine } = await setup({ claude: scripted });
+    store.updateConfig((doc) => { doc.setIn(['concurrency', 'transient_retry_after_s'], 0.05); }, 'config');
+    await engine.start();
     engine.orchestrator.wake({ type: 'user_message', data: { message: 'hi' } });
     await waitFor(() => store.journal.read({ type: 'orchestrator.done' }).length === 1);
     expect(wakes).toBe(2);
+    expect(store.journal.read({ type: 'orchestrator.transient_retry' })).toHaveLength(1);
     expect(String(store.journal.read({ type: 'orchestrator.done' })[0].data?.summary)).toBe('(failed: api_error) API Error: 500 internal');
   });
 });
