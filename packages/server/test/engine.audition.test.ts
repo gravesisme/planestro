@@ -18,7 +18,7 @@ import { makeFixture, sleep } from './helpers.ts';
 let store: DataStore | undefined; let engine: LiveEngine | undefined;
 afterEach(async () => { await engine?.stop(); store?.close(); store = undefined; engine = undefined; });
 
-async function setup() {
+async function setup(onTurn?: (o: TurnOptions) => Promise<TurnResult | undefined>) {
   const { dataDir, codeRepo } = makeFixture();
   mkdirSync(join(codeRepo, '.git', 'info'), { recursive: true });
   const cfg = join(dataDir, 'planestro.yml');
@@ -28,7 +28,7 @@ async function setup() {
   const inner = new DryRunClaudePort(world);
   const prompts: string[] = [];
   const wakes: string[] = [];
-  const claude: Ports['agents']['claude'] = { async runTurn(o: TurnOptions) { prompts.push(o.prompt); return inner.runTurn(o); }, runCustomTurn: async (o) => { wakes.push(o.label); return inner.runCustomTurn(o); } };
+  const claude: Ports['agents']['claude'] = { async runTurn(o: TurnOptions) { prompts.push(o.prompt); return (await onTurn?.(o)) ?? inner.runTurn(o); }, runCustomTurn: async (o) => { wakes.push(o.label); return inner.runCustomTurn(o); } };
   const ports: Ports = { mode: 'dry-run', git: new DryRunGitPort(world), gh: new DryRunGhPort(world), proc: new DryRunProcPort(world), agents: { claude } };
   engine = new LiveEngine(store, ports, () => {}, { sleep: async () => {}, tickMs: 50 });
   const it = store.createItem({ title: 'Desert SFX', description: 'six sounds for the desert' });
@@ -103,20 +103,59 @@ describe('mid-build auditions (#207)', () => {
     await tools.request_audition(AUDITION);
     await engine.message(id, 'Keep it quieter than the city.');
     expect(store.requireItem(id).file.frontmatter.awaiting).toBe('audition');
-    // Every role needs a pick, from its own takes; regenerating is only offered when the worker allowed it.
+    // Every role needs a pick from its own takes, or a regenerate.
     await expect(engine.respond(id, { kind: 'audition', picks: { wind: { take: 'tmp/desert_sfx/wind_a.mp3' } } })).rejects.toThrow(/sand/);
     await expect(engine.respond(id, { kind: 'audition', picks: { wind: { take: 'tmp/desert_sfx/sand_a.mp3' }, sand: { take: 'tmp/desert_sfx/sand_a.mp3' } } })).rejects.toThrow(/wind/);
     await engine.respond(id, { kind: 'audition', picks: { wind: { take: 'tmp/desert_sfx/wind_b.mp3' }, sand: { regenerate: 'softer, less crunch' } } });
     await until(() => prompts.length > 0);
-    expect(prompts[0]).toContain('Audition picks from the user (Desert ambience):\n\nwind tmp/desert_sfx/wind_b.mp3\nsand regenerate: softer, less crunch');
+    expect(prompts[0]).toContain('Audition picks from the user (Desert ambience):\n\nwind keep tmp/desert_sfx/wind_b.mp3\nsand regenerate 1 more: softer, less crunch');
     expect(prompts[0]).toContain('- Keep it quieter than the city.');
     const item = store.requireItem(id);
     expect(item.file.frontmatter.awaiting).not.toBe('audition');
-    expect(getSection(item.file, 'Activity')).toContain('audition picked: wind tmp/desert_sfx/wind_b.mp3; sand regenerate: softer, less crunch');
+    expect(getSection(item.file, 'Activity')).toContain('audition picked: wind keep tmp/desert_sfx/wind_b.mp3; sand regenerate 1 more: softer, less crunch');
     expect(getSection(item.file, 'Notes')).toContain('**Audition: Desert ambience**');
     expect(getSection(item.file, 'Notes')).toContain('- Wind loop (`wind`): `tmp/desert_sfx/wind_b.mp3`');
     // Answered, the takes are no longer served.
     expect(await engine.auditionFile(id, 'tmp/desert_sfx/wind_b.mp3')).toBeNull();
+  });
+
+  it('in rounds: the user keeps 2 of 3 and regenerates with a note, the worker re-auditions, one more pick completes it (#318)', async () => {
+    const gust = (i: number) => `tmp/desert_sfx/gust_${i}.wav`;
+    const round2 = { title: 'Gusts', roles: [{ id: 'gust', name: 'Gust', pick: 3, kept: [gust(0), gust(3)], takes: [gust(10), gust(11), gust(12)] }] };
+    let said2 = '';
+    const { store, engine, id, tools, prompts, cwd } = await setup(async (o) => {
+      if (!o.prompt.includes('regenerate 1 more')) return undefined;
+      // The worker makes new takes from the note and puts them up beside the ones already kept.
+      said2 = await o.tools.request_audition(round2);
+      return { sessionId: 's1', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', parked: 'audition' };
+    });
+    for (const i of [0, 1, 2, 3, 4, 5, 6, 7, 10, 11, 12]) writeFileSync(join(cwd, gust(i)), `RIFF ${i}`);
+    expect(await tools.request_audition({ title: 'Gusts', roles: [{ id: 'gust', name: 'Gust', pick: 3, takes: [0, 1, 2, 3, 4, 5, 6, 7].map(gust) }] })).toMatch(/^Audition recorded by planestro/);
+    await expect(engine.respond(id, { kind: 'audition', picks: { gust: { takes: [gust(0), gust(1), gust(2), gust(3)] } } })).rejects.toThrow(/at most 3/);
+    await engine.respond(id, { kind: 'audition', picks: { gust: { takes: [gust(0), gust(3)], regenerate: 'less reverb' } } });
+    await until(() => store.requireItem(id).file.frontmatter.awaiting === 'audition' && prompts.length === 1);
+    expect(said2).toMatch(/^Audition recorded by planestro/);
+    expect(prompts[0]).toContain(`gust keep ${gust(0)} ${gust(3)}; regenerate 1 more: less reverb`);
+    expect(prompts[0]).toMatch(/kept/);
+    // Round two: the kept takes still play, and only the new ones are picked from.
+    expect((await engine.auditionFile(id, gust(3)))?.toString()).toBe('RIFF 3');
+    expect(await engine.auditionFile(id, gust(5))).toBeNull();
+    await expect(engine.respond(id, { kind: 'audition', picks: { gust: { takes: [gust(10), gust(11)] } } })).rejects.toThrow(/at most 1/);
+    await engine.respond(id, { kind: 'audition', picks: { gust: { takes: [gust(11)] } } });
+    await until(() => prompts.length > 1);
+    expect(prompts[1]).toContain(`gust keep ${gust(0)} ${gust(3)} ${gust(11)}`);
+    expect(prompts[1]).not.toMatch(/regenerate \d+ more/);
+    const notes = getSection(store.requireItem(id).file, 'Notes');
+    expect(notes).toContain('regenerate 1 more: less reverb');
+    expect(notes).toContain(`- Gust (\`gust\`): \`${gust(0)}\`, \`${gust(3)}\`, \`${gust(11)}\` (3 of 3)`);
+  });
+
+  it('an audition parked in the #207 shape still takes its answer (#318)', async () => {
+    const { store, engine, id, prompts } = await setup();
+    store.mutateItem(id, [{ set: { awaiting: 'audition', awaiting_data: { audition: AUDITION, requested_at: '2026-10-01T00:00:00Z', park: 'p1' } } }], 'engine');
+    await engine.respond(id, { kind: 'audition', picks: { wind: { take: 'tmp/desert_sfx/wind_b.mp3' }, sand: { regenerate: 'softer' } } });
+    await until(() => prompts.length > 0);
+    expect(prompts[0]).toContain('wind keep tmp/desert_sfx/wind_b.mp3\nsand regenerate 1 more: softer');
   });
 
   it('the worker tool ends the turn as parked once the audition is recorded', async () => {
