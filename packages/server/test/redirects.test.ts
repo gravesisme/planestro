@@ -61,7 +61,7 @@ describe('redirect candidates from permissions suggest (#203)', () => {
     const rep = suggestForStore(source([]), { minApprovals: 3, minItems: 2 });
     expect(rep.redirects.map((x) => x.rule)).toEqual(['Bash(python3)']);
     expect(rep.redirects[0].snippet).toBe('permissions:\n  redirect:\n    - rule: Bash(python3)\n      message: use the Edit tool\n');
-    expect(formatSuggestReport(rep)).toContain('permissions:\n  redirect:');
+    expect(formatSuggestReport(rep)).toMatch(/permissions:\n\s+redirect:\n\s+- rule: Bash\(python3\)/);
     expect(suggestForStore(source([{ rule: 'Bash(python3 *)', message: 'use the Edit tool' }]), { minApprovals: 3, minItems: 2 }).redirects).toEqual([]);
   });
 });

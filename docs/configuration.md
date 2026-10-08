@@ -135,6 +135,7 @@ dollar figures elsewhere carry a short hint.
 |---|---|---|
 | `permissions.allow` | `[]` | Extra allow rules (`Bash(npm test*)`, …) on top of the built-in ones. "Always allow" in the UI appends here. A rule ending in `@worktree` holds only while the command stays in the item's worktree (below). |
 | `permissions.deny` | `[]` | Extra deny patterns, checked before anything else. |
+| `permissions.redirect` | `[]` | Denials that say what to do instead (#203): each entry is a `permissions.redirect.rule`, read as a deny pattern is (`Bash(python3 *)` or a bare prefix), and a `permissions.redirect.message`. A call it matches is refused up front with the message, never parked for a ruling. Edited in the file; Settings shows it under Rules in effect. |
 | `codex_env_passthrough` | `[]` | Environment variable names a Codex worker's commands may see (#228). A Codex process, `exec` or `app-server`, starts with `PATH`, `HOME`, `USER`, `SHELL`, `TMPDIR`, `LANG` and its `CODEX_HOME` only, so `GH_TOKEN`, `*_API_KEY`, `AWS_*` and the like never reach a command it runs. List what the project's tools need (`HTTPS_PROXY`). Codex signs in from its home (`codex login`); an `OPENAI_API_KEY` in planestro's environment reaches it only if listed here. Read at each turn. |
 
 **Rules for every project on this machine** (#229) go in an optional `~/.planestro/policy.yml`
@@ -146,6 +147,9 @@ allow:
   - Bash(npm test*)
 deny:
   - Bash(npm publish *)
+redirect:
+  - rule: Bash(python3 *)
+    message: edit files with the Edit tool, not a python script
 ```
 
 The lists are merged in that order, machine policy, project, local, and a deny from any of them
@@ -154,6 +158,19 @@ allow-list, so the deny is judged before it. The secret-file list below comes fi
 The file is read again when it changes; one that turns unreadable while planestro runs keeps
 the rules last read from it, and one unreadable at startup stops it. Settings → Workers &
 permissions shows every rule in effect and the file it came from; the machine file is edited by hand.
+
+**Redirects** (#203) are denials with a reason: a worker that keeps asking for a command you keep
+refusing (`python3 -` to write a file, `pkill`) is refused at once with your message instead of
+parking for the same ruling. They are judged as deny rules are, after the secret-file list, the
+built-in denials and every `deny`, so a deny wins where both match; like a deny, a redirect keeps
+the CLI from pre-approving an allow rule it touches. A rule named in several files keeps the first
+file's message (machine policy, project, local). They apply to Bash commands wherever planestro's
+policy judges a request: every Claude worker request, and on Codex the tool calls that come through
+planestro and any app-server command grant (a parked Codex approval for a redirected command cannot
+be granted, and says why; the request itself still parks, since Codex asks inside its sandbox).
+`planestro permissions suggest` (and the Console) offers redirect candidates, kinds of command
+denied from several items and never approved, each with the snippet that installs it; a kind a
+configured redirect already refuses is not offered again. Nothing is installed for you.
 
 Pushes, `gh pr`, protected branches, branch and worktree management and force operations
 are denied in code (`engine/policy.ts`) whatever these say, and so are in-place shell edits

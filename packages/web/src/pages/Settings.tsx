@@ -126,12 +126,12 @@ function RulesInEffect({ state }: { state: State }) {
       <h3>Rules in effect</h3>
       <div className="settings-row wide">
         <div>
-          <div className="label">Every allow and deny rule, and where it comes from</div>
-          <div className="sum">A deny from any file wins over an allow from any file. The machine policy applies to every project on this machine: edit <code>{p.machine_path}</code> by hand{p.machine_exists ? '' : ' (there is none yet)'}.</div>
+          <div className="label">Every allow, deny and redirect rule, and where it comes from</div>
+          <div className="sum">A deny from any file wins over an allow from any file; a redirect is a deny that tells the worker what to do instead (<code>permissions.redirect</code>, edited in the file). The machine policy applies to every project on this machine: edit <code>{p.machine_path}</code> by hand{p.machine_exists ? '' : ' (there is none yet)'}.</div>
           {p.machine_error && <div className="sum rules-error" role="alert">That file could not be read ({p.machine_error}); the rules last read from it still hold.</div>}
           {p.rules.length > 0
             ? <ul className="rules-in-effect">{p.rules.map((r) => (
-                <li key={`${r.list}:${r.rule}`}><span className={`chip ${r.list === 'deny' ? 'warn' : ''}`}>{r.list}</span> <code>{r.rule}</code> {r.sources.map((s) => <span key={s} className="chip" title={s === 'machine' ? p.machine_path : SOURCE_FILE[s]}>{SOURCE_FILE[s]}</span>)}</li>
+                <li key={`${r.list}:${r.rule}`}><span className={`chip ${r.list === 'allow' ? '' : 'warn'}`}>{r.list}</span> <code>{r.rule}</code> {r.sources.map((s) => <span key={s} className="chip" title={s === 'machine' ? p.machine_path : SOURCE_FILE[s]}>{SOURCE_FILE[s]}</span>)}{r.message && <span className="small" style={{ overflowWrap: 'anywhere', minWidth: 0 }}>“{r.message}”</span>}</li>
               ))}</ul>
             : <div className="meta"><span>No rules beyond planestro's built-in ones.</span></div>}
         </div>

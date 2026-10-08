@@ -15,7 +15,7 @@ export interface AllowSuggestReport {
   replay: { current: { allowed_now: number; still_parks: number; false_allows: number }; proposed: { allowed_now: number; still_parks: number; false_allows: number } };
   current_false_allows: { item: string; at: string; command: string }[];
   /** Kinds of command denied every time (#203): refused up front with this reason, they would not park. Reported only. */
-  redirects?: { rule: string; shape: string; class: string; denials: number; items: number; message: string; examples: string[] }[];
+  redirects?: { rule: string; shape: string; class: string; denials: number; items: number; message: string; examples: string[]; snippet: string }[];
   drift?: { window_days: number; recorded_since?: string; runs: number; idle_rules: { rule: string; last_matched?: string }[]; rising: { shape: string; class: string; recent: number; before: number; items: number; rule?: string }[] };
 }
 

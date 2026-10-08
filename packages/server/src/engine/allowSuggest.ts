@@ -1,5 +1,6 @@
 import { isAbsolute, join } from 'node:path';
-import { parseActivity, type Config, type ItemFile, type JournalEntry } from '@planestro/shared';
+import YAML from 'yaml';
+import { parseActivity, type Config, type ItemFile, type JournalEntry, type PermissionRedirect } from '@planestro/shared';
 import { allowedByRules, BASE_ALLOWED, makePolicy, normalizeSegment, unanchor, type ScopeOptions } from './policy.ts';
 import { commandShape, suggestedRule } from './parks.ts';
 import { secretInCommand } from './secrets.ts';
@@ -250,9 +251,13 @@ export interface SuggestReport {
 
 /**
  * A kind of command to refuse up front with the reason it keeps getting (#203), instead of parking it for the same ruling.
- * Offered only when it was denied from several items, never approved, and its rule would have denied no past approval.
+ * Offered only when it was denied from several items, never approved, and its rule would have denied no past approval,
+ * nor when planestro's policy (a configured `permissions.redirect` among it) refuses it already. `snippet` installs it.
  */
-export interface Redirect { rule: string; shape: string; class: CommandClass; denials: number; items: number; message: string; reasons: string[]; examples: string[] }
+export interface Redirect { rule: string; shape: string; class: CommandClass; denials: number; items: number; message: string; reasons: string[]; examples: string[]; snippet: string }
+
+/** What installs a redirect in planestro.yml (#203); `~/.planestro/policy.yml` takes the `redirect:` list at the top. */
+export const redirectSnippet = (rule: string, message: string): string => YAML.stringify({ permissions: { redirect: [{ rule, message }] } });
 
 /**
  * What changed over the window (#203). `idle_rules`: the project's allow rules nothing recorded as run without a park
@@ -448,10 +453,12 @@ function redirectsOf(allowed: Ruling[], denied: Ruling[], o: { min: number; minI
     const counts = new Map<string, number>();
     for (const r of g.rulings) if (r.reason?.trim()) counts.set(r.reason.trim(), (counts.get(r.reason.trim()) ?? 0) + 1);
     const reasons = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([t]) => t.slice(0, 300));
+    const rule = `Bash(${g.shape})`;
+    const message = reasons[0] ?? `denied every time it was asked (${g.rulings.length} times); do it another way`;
     out.push({
-      rule: `Bash(${g.shape})`, shape: g.shape, class: g.cls, denials: g.rulings.length, items,
-      message: reasons[0] ?? `denied every time it was asked (${g.rulings.length} times); do it another way`,
+      rule, shape: g.shape, class: g.cls, denials: g.rulings.length, items, message,
       reasons: reasons.slice(0, 3), examples: [...new Set(g.rulings.map((r) => (r.command ?? '').slice(0, 160)))].slice(0, 3),
+      snippet: redirectSnippet(rule, message),
     });
   }
   return out.sort((a, b) => b.denials - a.denials || a.rule.localeCompare(b.rule));
@@ -532,7 +539,7 @@ export interface RulingSource {
   worktreesRoot(): string;
   config: { permissions: { allow: string[] }; code_repo?: { default_branch: string } };
   /** The machine policy's, the project's and this machine's rules merged (#229); the project's alone when absent. */
-  permissionRules?(): { allow: string[]; deny: string[] };
+  permissionRules?(): { allow: string[]; deny: string[]; redirect?: PermissionRedirect[] };
 }
 
 /** Every ruling the data dir holds. */
@@ -546,14 +553,15 @@ export function rulingsOf(store: RulingSource): Ruling[] {
 
 /**
  * The report for a data dir, against the allow rules workers run under: the machine policy's, the project's and this
- * machine's (#229), so a rule one of them already has is never suggested. Every layer's denials are replayed.
+ * machine's (#229), so a rule one of them already has is never suggested. Every layer's denials are replayed, and its
+ * redirects (#203): a kind of command one already refuses is not offered as a redirect again.
  */
 export function suggestForStore(store: RulingSource, opts: SuggestOptions = {}): SuggestReport {
   const items = store.listItems();
   const recorded = new Map(items.map((s) => [s.id, typeof s.file.frontmatter.worktree === 'string' ? s.file.frontmatter.worktree : undefined]));
   const find = worktreeFinder(store.worktreesRoot(), store.codeRepoPath(), (id) => recorded.get(id));
   const rules = store.permissionRules?.();
-  const policy = store.config.code_repo ? (r: Ruling) => makePolicy(store.config as Config, store.config.code_repo!.default_branch, r.worktree, {}, rules?.deny).deny({ tool: 'Bash', input: { command: r.command ?? '' } }) !== null : undefined;
+  const policy = store.config.code_repo ? (r: Ruling) => makePolicy(store.config as Config, store.config.code_repo!.default_branch, r.worktree, {}, rules ?? (store.config as Config).permissions).deny({ tool: 'Bash', input: { command: r.command ?? '' } }) !== null : undefined;
   return suggestAllowRules(rulingsOf(store), rules?.allow ?? store.config.permissions.allow, { runs: runsFromJournal(store.journal.read({ type: 'tools.ran' }), find), ...(policy ? { policyDenies: policy } : {}), ...opts });
 }
 
@@ -573,7 +581,7 @@ export function formatSuggestReport(r: SuggestReport): string {
   ];
   if (r.current_false_allows.length) lines.push('', 'Denied once, allowed by the current rules today (a rule added since):', ...r.current_false_allows.slice(0, 10).map((d) => `  ${d.item} ${d.at}: ${d.command.slice(0, 120)}`));
   if (r.refused.length) lines.push('', 'Refused (it would have allowed a past denial):', ...r.refused.slice(0, 15).map((x) => `  ${x.rule.padEnd(48)} ${String(x.approvals).padStart(4)} approvals; denied ${x.denied[0].item} ${x.denied[0].at}: ${x.denied[0].command.slice(0, 90)}`));
-  if (r.redirects.length) lines.push('', 'Denied every time (a refusal with this reason up front would spare the park; none applied):', ...r.redirects.map((x) => `  ${x.rule.padEnd(32)} ${String(x.denials).padStart(4)} denials, ${x.items} items  [${x.class}]\n      "${x.message.slice(0, 140)}"`));
+  if (r.redirects.length) lines.push('', 'Denied every time (a refusal with this reason up front would spare the park; none applied). To refuse one up front, add it to planestro.yml:', ...r.redirects.map((x) => `  ${x.rule.padEnd(32)} ${String(x.denials).padStart(4)} denials, ${x.items} items  [${x.class}]\n${x.snippet.trimEnd().split('\n').map((l) => `      ${l}`).join('\n')}`));
   const d = r.drift;
   lines.push('', `Drift over the last ${d.window_days} days:`);
   if (!d.recorded_since) lines.push('  nothing recorded as run without a park yet: idle rules show once workers have run with it.');

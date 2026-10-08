@@ -294,7 +294,8 @@ function AllowSuggestions() {
           <ul>{report.current_false_allows.map((d, i) => <li key={i}>{d.item}: <code>{d.command.slice(0, 120)}</code></li>)}</ul>
         </details>}
         {(report.redirects?.length ?? 0) > 0 && <details className="small"><summary>{report.redirects!.length === 1 ? '1 kind' : `${report.redirects!.length} kinds`} of command denied every time (a refusal with the reason up front would spare the wait)</summary>
-          <ul>{report.redirects!.map((x) => <li key={x.rule} title={x.examples.join('\n')}><code>{x.rule}</code> ({x.denials} denials, {x.items} items): “{x.message.slice(0, 160)}”</li>)}</ul>
+          <p>To refuse one up front with its reason, add it to planestro.yml (none is applied for you):</p>
+          <ul>{report.redirects!.map((x) => <li key={x.rule} title={x.examples.join('\n')}><code>{x.rule}</code> ({x.denials} denials, {x.items} items): “{x.message.slice(0, 160)}”<pre className="mono" style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{x.snippet}</pre></li>)}</ul>
         </details>}
         {report.drift && (report.drift.idle_rules.length > 0 || report.drift.rising.length > 0) && <details className="small"><summary>Drift over the last {report.drift.window_days} days: {report.drift.idle_rules.length === 1 ? '1 rule' : `${report.drift.idle_rules.length} rules`} nothing matched, {report.drift.rising.length === 1 ? '1 kind' : `${report.drift.rising.length} kinds`} of command approved more often</summary>
           {report.drift.idle_rules.length > 0 && <ul>{report.drift.idle_rules.map((x) => <li key={x.rule}><code>{x.rule}</code> {x.last_matched ? `last matched ${x.last_matched.slice(0, 10)}` : 'never matched'}</li>)}</ul>}
