@@ -30,7 +30,7 @@ describe('migrations', () => {
     writeFileSync(path, yaml);
     const cfg = join(dataDir, 'planestro.yml');
     writeFileSync(cfg, readFileSync(cfg, 'utf8').replace(`schema_version: ${SCHEMA_VERSION}`, 'schema_version: 3'));
-    expect((await migrate(dataDir)).applied).toEqual([4, 5]);
+    expect((await migrate(dataDir)).applied).toEqual([4, 5, 6]);
     store = await DataStore.open(dataDir, { lock: false });
     expect(store.requireItem(item.id).file.frontmatter).toMatchObject({ session_id: 'old-claude', cost_usd: 4, agent_sessions: { codex: { session_id: 'old-art', transport: 'exec', tool_contract: 'exec-v1' } } });
     expect(readFileSync(path, 'utf8')).toContain('Keep this context');
@@ -43,7 +43,7 @@ describe('migrations', () => {
     writeFileSync(cfg, readFileSync(cfg, 'utf8').replace(`schema_version: ${SCHEMA_VERSION}`, 'schema_version: 0'));
     const r = await migrate(dataDir);
     expect(r.from).toBe(0);
-    expect(r.applied).toEqual([1, 2, 3, 4, 5]);
+    expect(r.applied).toEqual([1, 2, 3, 4, 5, 6]);
     expect(currentVersion(dataDir)).toBe(SCHEMA_VERSION);
     expect(readFileSync(cfg, 'utf8')).toContain('# planestro project config'); // comments preserved
   });
@@ -55,7 +55,7 @@ describe('migrations', () => {
     expect(before.readOnly).toBe(true); // an older dir is never rewritten behind the user's back
     before.close();
     const r = await migrate(dataDir);
-    expect(r.applied).toEqual([2, 3, 4, 5]); // and 3, which finds no questions to import
+    expect(r.applied).toEqual([2, 3, 4, 5, 6]); // and 3, which finds no questions to import
     const text = readFileSync(cfg, 'utf8');
     expect(text).toContain('max_local_jobs: 4');
     expect(text).not.toContain('godot');

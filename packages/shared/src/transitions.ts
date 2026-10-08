@@ -124,7 +124,7 @@ export function laneOf(status: Status): Lane {
   return 'board';
 }
 
-export const NEEDS_YOU_AWAITING = new Set(['plan_approval', 'breakdown_approval', 'permission', 'question', 'review', 'user']);
+export const NEEDS_YOU_AWAITING = new Set(['plan_approval', 'breakdown_approval', 'permission', 'question', 'audition', 'review', 'user']);
 /** A stop the orchestrator is still triaging is not yours yet: it resolves it, or comes back with one decision. */
 export function needsYou(fm: Pick<ItemFrontmatter, 'blocked' | 'awaiting' | 'triage'> & Partial<Pick<ItemFrontmatter, 'status' | 'skip_merge' | 'ci_result' | 'op_data' | 'taken_over' | 'op'>>): boolean {
   // You took it over: you are already on it, and nothing on it waits for anyone else.

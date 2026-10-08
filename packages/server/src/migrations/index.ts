@@ -10,6 +10,7 @@ export interface Migration { version: number; describe: string; up(dataDir: stri
 
 /** Ordered by version; each `up` takes the dir from version-1 to version. */
 export const MIGRATIONS: Migration[] = [
+  { version: 6, describe: 'an item can wait on an audition of takes the user picks from (awaiting: audition)', up() { /* A new awaiting value; existing items are unchanged. Older readers must not open an item parked on one. */ } },
   { version: 5, describe: 'decision cards support explicit turn and token budget extensions', up() { /* Additive option fields; existing cards remain valid. Older writers must not drop approved extensions. */ } },
   { version: 4, describe: 'runner sessions carry role and tool contract', up(dataDir, log) {
     const dir = join(dataDir, 'items');

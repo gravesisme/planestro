@@ -4,7 +4,7 @@ import { needsYou } from '@planestro/shared';
 import type { DataStore } from '../store/DataStore.ts';
 
 /** What a person is waited on for (#224); also the fragment of the item link (`/items/:id#plan`, #226). */
-export type WaitKind = 'plan' | 'breakdown' | 'permission' | 'question' | 'review' | 'decision' | 'blocked' | 'hold';
+export type WaitKind = 'plan' | 'breakdown' | 'permission' | 'question' | 'audition' | 'review' | 'decision' | 'blocked' | 'hold';
 
 /**
  * One wait on a person: an item whose `needs_you` is true, or an open orchestrator question. `key` names this wait and
@@ -13,7 +13,7 @@ export type WaitKind = 'plan' | 'breakdown' | 'permission' | 'question' | 'revie
  */
 export interface Wait { key: string; subject: string; item?: string; question?: string; kind: WaitKind; path: string; title: string; message: string }
 
-const KIND_OF: Record<string, WaitKind> = { plan_approval: 'plan', breakdown_approval: 'breakdown', permission: 'permission', question: 'question', review: 'review', user: 'decision' };
+const KIND_OF: Record<string, WaitKind> = { plan_approval: 'plan', breakdown_approval: 'breakdown', permission: 'permission', question: 'question', audition: 'audition', review: 'review', user: 'decision' };
 
 /** The wait this item is, or undefined when it does not need you (the same answer as the board's `needs_you`). */
 export function itemWait(fm: ItemFrontmatter): Wait | undefined {
@@ -26,6 +26,7 @@ export function itemWait(fm: ItemFrontmatter): Wait | undefined {
     breakdown: ['breakdown ready', fm.plan_ready_at ?? ''],
     permission: ['permission requested', String(d.requested_at ?? '')],
     question: ['the worker asks', String(d.requested_at ?? '')],
+    audition: ['takes to hear and pick', String(d.requested_at ?? '')],
     review: ['ready for your review', String(fm.ci_head_sha ?? '')],
     decision: ['decision needed', d.decision ? createHash('sha1').update(JSON.stringify(d.decision)).digest('hex').slice(0, 12) : ''],
     blocked: [`blocked (${fm.blocked_reason ?? 'no reason'})`, fm.blocked_reason ?? ''],

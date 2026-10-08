@@ -2,7 +2,7 @@ import { parkSummary } from '../engine/parks.ts';
 import { suggestForStore } from '../engine/allowSuggest.ts';
 import { previewSwitch, applySwitch, itemModelSwitchOps } from '../providerSwitch.ts';
 import { orchestratorSpend } from '../engine/orchestratorSpend.ts';
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { join } from 'node:path';
 import { managedAttachmentPath } from '../store/managedAttachments.ts';
@@ -30,6 +30,14 @@ const CHAT_TYPES = new Set(['orchestrator.user_message', 'orchestrator.reply', '
 /** The orchestrator, when this engine has one (the live engine, in live or dry-run mode; never the mock). */
 type Orch = { wake: (ev: { type: string; item?: string; data?: Record<string, unknown> }) => void; enabled: boolean; questionPending?: (id: string) => boolean };
 const orchestratorOf = (engine: Engine): Orch | undefined => (engine as Engine & { orchestrator?: Orch }).orchestrator;
+
+/** A file a person reviews by eye or ear, typed by its extension. SVG can carry script: it is served as an image only, never as a document. */
+function reviewFile(c: Context, path: string, buf: Buffer | null): Response {
+  if (!buf) return c.json({ error: 'not found' }, 404);
+  const ext = path.split('.').pop()!.toLowerCase();
+  const type = ({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', svg: 'image/svg+xml', mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', flac: 'audio/flac', m4a: 'audio/mp4', aac: 'audio/aac', glb: 'model/gltf-binary', gltf: 'model/gltf+json', obj: 'text/plain', fbx: 'application/octet-stream' } as Record<string, string>)[ext] ?? 'application/octet-stream';
+  return new Response(new Uint8Array(buf), { headers: { 'content-type': type, 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'", 'x-content-type-options': 'nosniff' } });
+}
 
 export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBuffer): Hono {
   const api = new Hono();
@@ -176,11 +184,13 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   api.get('/items/:id/image', async (c) => {
     const path = c.req.query('path') ?? ''; const side = c.req.query('side') === 'before' ? 'before' : 'after';
     const buf = await engine.reviewImage(c.req.param('id'), path, side).catch(() => null);
-    if (!buf) return c.json({ error: 'not found' }, 404);
-    const ext = path.split('.').pop()!.toLowerCase();
-    const type = ({ png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', gif: 'image/gif', svg: 'image/svg+xml', mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', flac: 'audio/flac', m4a: 'audio/mp4', aac: 'audio/aac', glb: 'model/gltf-binary', gltf: 'model/gltf+json', obj: 'text/plain', fbx: 'application/octet-stream' } as Record<string, string>)[ext] ?? 'application/octet-stream';
-    // SVG can carry script: serve it as an image only, never as a document.
-    return new Response(new Uint8Array(buf), { headers: { 'content-type': type, 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'", 'x-content-type-options': 'nosniff' } });
+    return reviewFile(c, path, buf);
+  });
+  // A take of the audition the item waits on (#207), which may be in an ignored folder; nothing else in the worktree.
+  api.get('/items/:id/audition', async (c) => {
+    const path = c.req.query('path') ?? '';
+    const buf = engine.auditionFile ? await engine.auditionFile(c.req.param('id'), path).catch(() => null) : null;
+    return reviewFile(c, path, buf);
   });
   api.post('/items/:id/review/changes', async (c) => { try { const { note } = z.object({ note: z.string().min(1) }).parse(await c.req.json()); await engine.requestReviewChanges(c.req.param('id'), note); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
   api.post('/items/:id/hold/release', async (c) => { try { const { note } = z.object({ note: z.string().optional() }).parse(await c.req.json().catch(() => ({}))); await engine.releaseHold(c.req.param('id'), note); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });

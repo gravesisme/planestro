@@ -32,6 +32,8 @@ export interface Engine {
   approveBreakdown(id: string, children?: BreakdownChild[], opts?: { queue?: boolean }): Promise<string[]>;
   reviewImages(id: string): Promise<ReviewImage[]>;
   reviewImage(id: string, path: string, side: 'before' | 'after'): Promise<Buffer | null>;
+  /** A take of the audition the item waits on (#207), and only while it waits; null for any other path. */
+  auditionFile?(id: string, path: string): Promise<Buffer | null>;
   requestReviewChanges(id: string, note: string): Promise<void>;
   /** Let a held pull request (a review hold, or skip_merge) back into the merge pipeline; before the pull request exists, drop the hold. */
   releaseHold(id: string, note?: string): Promise<void>;

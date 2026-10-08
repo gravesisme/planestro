@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { TurnOptions, TurnResult, CustomToolDef } from '../ports.ts';
-import { PARKED_REFUSAL } from '../parks.ts';
+import { PARKED_REFUSAL, AUDITION_PARKED } from '../parks.ts';
 const text = (s: string) => s;
 const PARTS = z.array(z.object({ name: z.string(), state: z.enum(['accepted', 'pending', 'rejected']), reason: z.string().optional() }));
 function tool<S extends z.ZodRawShape>(name: string, description: string, schema: S, handler: (args: z.infer<z.ZodObject<S>>) => Promise<string>): CustomToolDef {
@@ -27,6 +27,9 @@ export function workerTools(o: TurnOptions, result: TurnResult): CustomToolDef[]
         tool('hand_off', 'Give files you made to another backlog item that waits on this one (its depends_on names your item, or you share an epic): planestro copies them into that item\'s attachments and tells its session. Use it when your output is needed by another item before your branch merges. Paths are relative to your worktree.',
           { to: z.string().describe('The receiving item id'), paths: z.array(z.string()).min(1).describe('Files in your worktree, relative paths'), note: z.string().describe('What they are and how to use them') },
           async ({ to, paths, note }) => text(await o.tools.hand_off(to, paths, note))),
+        tool('request_audition', 'Candidates for the user to hear or see and pick from before you build on one (takes of a sound, variants of a model or an image): planestro parks the item, plays every take on the item page (a phone included) and resumes you with one pick per role, as `<role id> <take path>` or `<role id> regenerate: <note>`. Paths are relative to your worktree and may be in ignored folders (tmp/). Never play takes locally (afplay) or ask a blind a/b/c question instead. Then end your turn.',
+          { title: z.string().describe('What is being auditioned, e.g. "Desert ambience"'), roles: z.array(z.object({ id: z.string().describe('Short id the pick comes back under, e.g. "wind"'), name: z.string().describe('What the role is, for the user'), where: z.string().optional().describe('Where it plays in the project'), prompt: z.string().optional().describe('What the takes were generated from'), takes: z.array(z.string()).min(1).describe('Worktree-relative paths of the takes') })).min(1), allow_regenerate: z.boolean().optional().describe('true: the user may answer "none of these, regenerate" with a note') },
+          async (a) => { const answer = await o.tools.request_audition(a); if (answer.startsWith(AUDITION_PARKED)) result.parked = 'audition'; return text(answer); }),
         tool('get_item', 'Read the backlog item file (frontmatter + sections).', {}, async () => text(await o.tools.get_item())),
       
   ];

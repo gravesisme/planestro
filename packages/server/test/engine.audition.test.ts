@@ -87,8 +87,9 @@ describe('mid-build auditions (#207)', () => {
 
   it('refuses an audition whose takes are missing or outside the worktree, and parks nothing', async () => {
     const { store, id, tools, cwd } = await setup();
-    symlinkSync(join(cwd, '..', '..', '..'), join(cwd, 'tmp', 'escape'));
-    for (const takes of [['tmp/desert_sfx/nope.mp3'], ['../outside.mp3'], ['/etc/hosts'], ['tmp/escape/README.md']]) {
+    writeFileSync(join(cwd, '..', 'outside.mp3'), 'ID3 outside');
+    symlinkSync(join(cwd, '..'), join(cwd, 'tmp', 'escape'));
+    for (const takes of [['tmp/desert_sfx/nope.mp3'], ['../outside.mp3'], ['/etc/hosts'], ['tmp/escape/outside.mp3'], ['secret.txt']]) {
       const said = await tools.request_audition({ title: 'x', roles: [{ id: 'wind', name: 'Wind', takes }] });
       expect(said).toMatch(/^Rejected:/);
     }

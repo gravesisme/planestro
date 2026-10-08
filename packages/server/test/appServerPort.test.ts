@@ -70,7 +70,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
 function options(root: string, overrides: Partial<TurnOptions> = {}): TurnOptions {
   const noop = async () => 'recorded';
   return { itemId: 'TEST-1', cwd: root, phase: 'implement', model: 'test-model', permissionMode: 'acceptEdits', prompt: 'Test', systemAppend: 'Test', allowedTools: [], extraDirs: [], onOutput: () => {}, onQuestion: async () => {}, onPermission: async () => ({ action: 'park' }), tools: {
-    submit_plan: noop, submit_breakdown: noop, report_done: noop, report_blocked: noop, get_item: noop, hand_off: noop, add_note: noop, append_activity: noop, report_iteration: noop, report_progress: noop,
+    submit_plan: noop, submit_breakdown: noop, report_done: noop, report_blocked: noop, get_item: noop, hand_off: noop, add_note: noop, append_activity: noop, report_iteration: noop, report_progress: noop, request_audition: noop,
   }, ...overrides };
 }
 it('binds calls to a role, item handler, thread and turn; rejects forged arguments and stale calls', async () => {
