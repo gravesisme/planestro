@@ -110,6 +110,17 @@ export class DryRunGitPort implements GitPort {
   }
   async checkpoints(_repo: string, prefix: string) { return [...this.w.refs.values()].filter((c) => c.ref.startsWith(prefix)); }
   async treeDiff() { return { files: [], patch: '' }; }
+  /** Every dry-run file is new on its branch: each line of the worktree's branch files that holds the needle (#240). */
+  async addedLinesWith(cwd: string, _base: string, needle: string) {
+    const branch = this.w.worktrees.get(cwd)?.branch;
+    const files = branch ? this.w.files.get(branch) : undefined;
+    const hits: { path: string; line: number; text: string }[] = [];
+    for (const [path, buf] of files ?? []) {
+      if (buf.includes(0)) continue;
+      buf.toString('utf8').split('\n').forEach((text, i) => { if (text.includes(needle)) hits.push({ path, line: i + 1, text }); });
+    }
+    return hits;
+  }
   async restoreSnapshot(cwd: string, _from: WorktreeSnapshot, to: WorktreeSnapshot) {
     this.say(`restore ${cwd} to ${to.head?.slice(0, 7)}`);
     const wt = this.w.worktrees.get(cwd); if (wt && to.head) wt.head = to.head;

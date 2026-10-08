@@ -138,6 +138,23 @@ export class LiveGitPort implements GitPort {
     const indexTrees = (await git(repo, ['rev-parse', ...rows.map((r) => `${r[3].split(' ').pop()}^{tree}`)])).stdout.trim().split('\n');
     return rows.map(([ref, sha, tree, parents, at], i) => { const p = parents.split(' '); return { ref, sha, tree, head: p.length > 1 ? p[0] : null, index: indexTrees[i], at }; });
   }
+  /** One zero-context diff of the snapshot's tree against the merge base, limited by `-G` to the files whose changes hold the needle (#240). */
+  async addedLinesWith(cwd: string, base: string, needle: string): Promise<{ path: string; line: number; text: string }[]> {
+    const { tree } = await this.snapshot(cwd);
+    const from = (await this.mergeBase(cwd, base, 'HEAD')) ?? base;
+    const pattern = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const patch = (await git(cwd, ['-c', 'core.quotePath=false', 'diff', '-U0', '--no-color', '--no-ext-diff', '--no-textconv', '--no-renames', `-G${pattern}`, from, tree])).stdout;
+    const hits: { path: string; line: number; text: string }[] = [];
+    let path = ''; let line = 0; let header = false;
+    for (const l of patch.split('\n')) {
+      if (l.startsWith('diff --git ')) { header = true; path = ''; continue; }
+      if (l.startsWith('@@')) { header = false; line = Number(/\+(\d+)/.exec(l)?.[1] ?? 0); continue; }
+      if (header) { if (l.startsWith('+++ ')) path = l === '+++ /dev/null' ? '' : l.slice(4).replace(/^"?b\//, '').replace(/"$/, ''); continue; }
+      if (l.startsWith('+')) { if (path && l.includes(needle)) hits.push({ path, line, text: l.slice(1) }); line += 1; }
+      else if (l.startsWith(' ')) line += 1;
+    }
+    return hits;
+  }
   async treeDiff(cwd: string, from: string, to: string, maxBytes = 200_000) {
     const out = (await git(cwd, ['diff', '--name-status', '--no-renames', '-z', from, to])).stdout.split('\0');
     const files: ChangedFile[] = [];

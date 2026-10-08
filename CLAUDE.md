@@ -170,7 +170,9 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   from the turn's record (#167): the port keeps the session's last lost report with its arguments, the engine
   persists it in `op_data.outbox` and applies it through the same tool when the turn ends (or at the next start),
   and those tools are idempotent. Rejected/invalid reports are retained as `op_data.rejected_report`
-  for inspection, removed from the replay outbox, and active work blocks `connection_lost`; they do not retry forever. The prompt goes to the SDK as a stream held open while background work runs, so
+  for inspection, removed from the replay outbox, and active work blocks `connection_lost`; they do not retry forever
+  (a `report_done` refused for debug markers resumes the session with the refusal instead). `report_done` is refused
+  in words while the branch adds a `planestro:debug-begin`/`-end` line (the `debug` template, #240; `addedLinesWith`). The prompt goes to the SDK as a stream held open while background work runs, so
   stdin is not closed under it (sdk-notes gotcha 11). A drop is shown on the item within the turn (`DropWatch` →
   `op_data.mcp_drop`, the card's **lost connection**, cleared by the next turn that runs with its connection); a work turn
   that ends after one with no report landed or applied blocks `connection_lost`, with the session's last message for the

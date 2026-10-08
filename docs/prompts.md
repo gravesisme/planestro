@@ -73,8 +73,16 @@ created with the text filled in.
 |---|---|
 | `feature` — the problem before the build | `art-item` — subject, path, size, style, provenance |
 | `bug-fixes` — a list of observed bugs | `art-repaint` — repaint from an attached reference, saying what must be kept |
+| `debug` — a bug whose cause is unknown: hypotheses first, probes only in marked blocks | |
 | `audit-recent-code`, `audit-repo` — reviews | |
 | `review-external-branch` — review a branch someone else pushed | |
+
+**Debug instrumentation** (`debug`, #240): a worker's temporary probes go between a `planestro:debug-begin`
+and a `planestro:debug-end` line, written as comments in the file's own syntax (`//`, `#`, `<!-- -->`, `--`).
+For every item, not only those made from `debug`, planestro refuses `report_done` while the branch still adds
+a line with either marker (its commits and uncommitted and untracked files, against its merge base with the
+base), naming each file and line; the worker removes them and calls again. A lost `report_done` replayed from
+the turn's record (#167) is refused the same way, and the session is resumed with the refusal.
 
 **Favorites** (the ☆ on the Prompts page; `favorite: true` in the file) lead the library
 list and the New item picker. **+ New** creates a prompt from the UI; **Render** previews a
