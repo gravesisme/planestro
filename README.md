@@ -224,7 +224,8 @@ npm --prefix ../planestro run -s planestro -- stop "$PWD/planning"
 ### The backlog from any MCP client
 
 A running server also serves the backlog over MCP at `/mcp` (streamable HTTP).
-It is read-only and has three tools:
+It has three read-only tools, and one that writes only when the project opts
+in:
 
 - `get_state`: the project, engine mode and pause, counts by status, and what
   is running, queued, blocked, waiting for you, waiting for review and open as a
@@ -233,6 +234,10 @@ It is read-only and has three tools:
 - `list_items`: one summary line per item, filtered by `status`, `epic` (its
   children), `queued` or text `q`.
 - `get_item`: one item in full.
+- `create_item`: with `operator_mcp.allow_writes: true` in `planestro.yml`
+  (off by default), files a new item (title, description, kind, category,
+  priority) to Not yet submitted, marked `created_by: operator_mcp`. It cannot
+  submit, edit or approve anything: starting the work is still yours.
 
 Register it once per project, at **user scope**, under a name of its own.
 `planestro status` prints each instance's MCP URL:

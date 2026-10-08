@@ -88,6 +88,8 @@ export const SETTINGS: readonly SettingDef[] = [
   C({ key: 'engine.mode', tab: 'project', group: 'Engine', label: 'Live or dry-run', summary: 'Dry-run logs "Would …" for every git, GitHub and session step instead of doing it.', control: 'select', restart: true,
     options: [{ value: 'dry-run', label: 'Dry-run (log what would happen)' }, { value: 'live', label: 'Live' }],
     detail: ['Watch a dry run against your repository before going live. This machine can override it (This machine → Engine mode). Takes effect the next time planestro starts.'] }),
+  C({ key: 'operator_mcp.allow_writes', tab: 'project', group: 'Your own MCP clients', label: 'May file new items', summary: "The backlog's MCP endpoint (/mcp) also offers create_item, which files to Not yet submitted. Off, it is read-only.", control: 'toggle',
+    detail: ['For your own Claude Code or Codex sessions registered with the endpoint: a follow-up filed from there lands in Not yet submitted, marked as filed through the operator MCP, for you to read and submit. It cannot submit, edit or approve anything.', "planestro's workers and orchestrator never reach this endpoint, with this on or off."] }),
 
   // ---- Models
   C({ key: 'models', tab: 'models', group: 'Models', label: 'Models', summary: 'The models items can use, what each runs on, and which one takes over while it is out of usage.', control: 'models',

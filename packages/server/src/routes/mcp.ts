@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
-import { STATUSES, PRIORITIES } from '@planestro/shared';
+import { STATUSES, PRIORITIES, KINDS } from '@planestro/shared';
 import type { DataStore, StoredItem } from '../store/DataStore.ts';
 import type { Engine } from '../engine/Engine.ts';
 import { TOOL_VERSION } from '../config.ts';
@@ -12,14 +12,20 @@ import { allowedHosts, hostnameOf } from '../guard.ts';
 
 // ---- the operator MCP endpoint (#175, step 2) ----
 // `/mcp` on the running server: the backlog for whoever operates planestro from an MCP client
-// (Claude Code, Codex, Cursor), registered at user scope. Read-only. It is a different thing from
+// (Claude Code, Codex, Cursor), registered at user scope. Read-only, unless the project sets
+// `operator_mcp.allow_writes`: then `create_item` too, which files to NOT_YET_SUBMITTED and nothing
+// more (#232): submitting stays the user's word (#73). It is a different thing from
 // the in-process `planestro` server each worker and the orchestrator get (submit_plan, report_done,
 // …), and must never reach them: workers never touch planning state (invariant 1). They run with
 // strictMcpConfig (Claude) or --ignore-user-config (Codex), so a user-scope registration is not
 // inherited, and a project's own MCP servers may not point at an operator endpoint (operatorMcpUrl).
 
-/** The tools this endpoint offers; operatorMcp.test.ts pins that a worker session gets none of them. */
-export const OPERATOR_TOOLS = ['list_items', 'get_item', 'get_state'] as const;
+/** The tools this endpoint always offers. */
+export const OPERATOR_READ_TOOLS = ['list_items', 'get_item', 'get_state'] as const;
+/** Listed only with `operator_mcp.allow_writes` (#232); off, they are unknown tools. */
+export const OPERATOR_WRITE_TOOLS = ['create_item'] as const;
+/** Every tool this endpoint can offer; operatorMcp.test.ts pins that a worker session gets none of them. */
+export const OPERATOR_TOOLS = [...OPERATOR_READ_TOOLS, ...OPERATOR_WRITE_TOOLS] as const;
 
 /** Whether a URL is some planestro server's operator endpoint: `/mcp` on a host and port a recorded instance serves, or any loopback `/mcp` on a known port. */
 export function operatorMcpUrl(url: string, instances: (Pick<Instance, 'port'> & Partial<Pick<Instance, 'host' | 'url'>>)[] = [], aliases: readonly string[] = []): boolean {
@@ -89,9 +95,12 @@ function stateSummary(store: DataStore, engine: Engine) {
 
 const json = (v: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(v, null, 2) }] });
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+const FILES = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
 
 export function operatorServer(store: DataStore, engine: Engine): McpServer {
-  const server = new McpServer({ name: 'planestro', version: TOOL_VERSION }, { instructions: `The backlog of ${store.config.project.name} (${store.dataDir}), read-only. get_state for the overview, list_items to find items, get_item for one.` });
+  // Read per request (the server is made per request), so turning the key off in Settings takes effect at once.
+  const writes = store.config.operator_mcp.allow_writes;
+  const server = new McpServer({ name: 'planestro', version: TOOL_VERSION }, { instructions: `The backlog of ${store.config.project.name} (${store.dataDir}), ${writes ? 'read-only but for create_item, which files a new item for the user to submit' : 'read-only'}. get_state for the overview, list_items to find items, get_item for one.` });
   server.registerTool('list_items', {
     description: 'List backlog items, one summary line each (id, title, kind, status, priority, epic, blocked reason, awaiting, needs_you, PR and CI). Filters combine.',
     inputSchema: {
@@ -123,6 +132,23 @@ export function operatorServer(store: DataStore, engine: Engine): McpServer {
     inputSchema: {},
     annotations: READ_ONLY,
   }, async () => json(stateSummary(store, engine)));
+  if (writes) server.registerTool('create_item', {
+    description: 'File a new backlog item (a follow-up, a bug seen in passing). It lands in Not yet submitted for the user to read, edit and submit: nothing starts work on it.',
+    inputSchema: {
+      title: z.string().trim().min(1).describe('A short title'),
+      description: z.string().optional().describe('What is wanted and why, in Markdown: what the planner will read'),
+      kind: z.enum(KINDS).optional().describe('item (default), or epic for work that breaks into several items'),
+      category: z.string().optional().describe(`One of the project's categories (${store.config.categories.join(', ')}); omitted, ${store.config.defaults.category}`),
+      priority: z.enum(PRIORITIES).optional().describe('high, medium or low; omitted, unset'),
+    },
+    annotations: FILES,
+  }, async ({ title, description, kind, category, priority }) => {
+    try {
+      // Never the user's word (#73): `created_by` says where it came from, and the actor is not the user.
+      const item = store.createItem({ title, ...(description ? { description } : {}), ...(kind ? { kind } : {}), ...(category ? { category } : {}), ...(priority ? { priority } : {}), extra: { created_by: 'operator_mcp' }, created_line: 'created through the operator MCP' }, 'engine');
+      return json(itemSummary(store, item));
+    } catch (e) { return { ...json({ error: (e as Error).message }), isError: true }; }
+  });
   return server;
 }
 

@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { OPERATOR_TOOLS } from '../src/routes/mcp.ts';
+import { OPERATOR_READ_TOOLS } from '../src/routes/mcp.ts';
 
 // The Claude Code plugin (#175, step 3): plugins/planestro, listed by .claude-plugin/marketplace.json.
 const ROOT = resolve(import.meta.dirname, '..', '..', '..');
@@ -27,7 +27,7 @@ describe('the Claude Code plugin (#175)', () => {
     expect(front).toMatch(/^name: planestro$/m);
     const tools = [...skill.matchAll(/planestro" call (\w+)/g)].map((m) => m[1]);
     expect(tools.length).toBeGreaterThan(0);
-    for (const t of tools) expect(OPERATOR_TOOLS).toContain(t);
+    for (const t of tools) expect(OPERATOR_READ_TOOLS).toContain(t);
     expect(skill).toMatch(/never with `run_in_background`/);
   });
 

@@ -60,7 +60,7 @@ export const OPERATIONAL_KEYS = [
   'branch', 'worktree', 'pr', 'session_id', 'agent_sessions', 'session_context', 'awaiting', 'awaiting_data', 'triage', 'resume_after', 'taken_over',
   'op', 'op_started_at', 'op_data', 'plan_revisions', 'ci_head_sha', 'ci_result', 'ci_failed_count',
   'merge_order', 'skip_merge', 'hold_reason', 'hold_waits_on', 'review_hold', 'loop_state', 'delivered', 'parts', 'blocked', 'blocked_reason', 'cost_usd', 'turns', 'agent_turns', 'tokens',
-  'imported_from', 'dates_estimated', 'scheduled_from',
+  'imported_from', 'dates_estimated', 'scheduled_from', 'created_by',
 ] as const;
 export const DERIVED_KEYS = ['base_branch', 'lane', 'external', 'children', 'deps_satisfied', 'needs_you'] as const;
 /** Canonical frontmatter key order; unknown keys follow, alphabetically. */
@@ -185,6 +185,8 @@ export const ItemFrontmatter = z.object({
   dates_estimated: z.boolean().optional(),
   /** `<schedule>:<slot>`: the schedule and slot that filed it (#247), the evidence that the slot is done. */
   scheduled_from: z.string().optional(),
+  /** Who filed it, when that was not the user: `operator_mcp` (#232). Never the user's word to start it (#73). */
+  created_by: z.string().optional(),
 }).passthrough();
 export type ItemFrontmatter = z.infer<typeof ItemFrontmatter>;
 
@@ -514,6 +516,8 @@ export const Config = z.object({
     idle_after_min: z.number().min(0).default(2),
   }).default({ idle_after_min: 2 }),
   /** Where the orchestrator's notes about planestro are filed as issues (#231), `owner/repo`; unset, **File as issue** is not offered. Not the project's own repo, unless planestro is the project. */
+  /** The operator MCP endpoint (`/mcp`, #175): `allow_writes` lists `create_item`, which files to NOT_YET_SUBMITTED only (#232). */
+  operator_mcp: z.object({ allow_writes: z.boolean().default(false) }).default({ allow_writes: false }),
   feedback: z.object({ issue_repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, 'owner/repo').optional() }).default({}),
   git: z.object({
     auto_commit: z.boolean().default(true),
