@@ -306,14 +306,15 @@ export class Orchestrator {
     if (!retried) this.activeAbort = new AbortController();
     const pick = this.modelForWake();
     let state = this.readState();
-    const contract = modelCapabilities(findModel(this.store.config, pick.model) ?? { runner: pick.runner, external: false }).toolContract;
+    const caps = modelCapabilities(findModel(this.store.config, pick.model) ?? { runner: pick.runner, external: false });
+    const contract = caps.toolContract;
     if ((state.runner ?? 'claude') !== pick.runner || (state.tool_contract && state.tool_contract !== contract)) state = { wakes_served: 0 };
-    // A resumed Codex thread keeps the developer instructions it started with (#246, verified live), so an edit to
-    // the standing rules reaches it only in a fresh conversation. A state from before the hash resumes and records it.
+    // Some runners keep the instructions a conversation started with when it is resumed (#246, verified live), so an edit
+    // to the standing rules reaches them only in a fresh conversation. A state from before the hash resumes and records it.
     const intro = this.systemIntro();
     const introHash = createHash('sha256').update(intro).digest('hex').slice(0, 16);
-    if (pick.runner === 'codex' && state.session_id && state.intro_hash && state.intro_hash !== introHash) {
-      this.log('info', 'orchestrator: its instructions changed; starting a fresh conversation (a resumed Codex thread keeps its old ones)');
+    if (caps.resumeKeepsInstructions && state.session_id && state.intro_hash && state.intro_hash !== introHash) {
+      this.log('info', 'orchestrator: its instructions changed; starting a fresh conversation (a resumed one would keep the old ones)');
       state = { wakes_served: 0 };
     }
     const tooOld = state.started_at && (Date.now() - Date.parse(state.started_at)) / 86_400_000 > cfg.rotate_after_days;
