@@ -28,6 +28,13 @@ describe("an epic's children: queue, or what they wait on (#284)", () => {
     expect(childQueueState(fm('NOT_YET_SUBMITTED', ['HH-999']), lookup)).toEqual({ kind: 'waits', on: [{ id: 'HH-999', status: undefined }] });
   });
 
+  it('until the epic has its branch, a child cannot be queued, and says so', () => {
+    expect(childQueueState(fm('NOT_YET_SUBMITTED'), lookup, false)).toEqual({ kind: 'epic_closed' });
+    const html = renderToStaticMarkup(createElement(MemoryRouter, null, createElement(ChildQueue, { id: 'HH-350', state: { kind: 'epic_closed' } })));
+    expect(html).toContain('waits on the epic branch (Open epic branch above)');
+    expect(html).not.toContain('<button');
+  });
+
   it('a child in any other status gets nothing new', () => {
     for (const s of ['QUEUED', 'IN_PROGRESS', 'FINISHED', 'ICEBOX']) expect(childQueueState(fm(s), lookup)).toBeUndefined();
   });
@@ -37,7 +44,7 @@ describe("an epic's children: queue, or what they wait on (#284)", () => {
     expect(queue).toMatch(/<button[^>]*>Queue<\/button>/);
     const waits = renderToStaticMarkup(createElement(MemoryRouter, null, createElement(ChildQueue, { id: 'HH-351', state: { kind: 'waits', on: [{ id: 'HH-349', status: 'QUEUED' }, { id: 'HH-999', status: undefined }] } })));
     expect(waits).toContain('waits on');
-    expect(waits).toContain('<a href="/items/HH-349">HH-349</a> (queued)');
+    expect(waits).toMatch(/<a href="\/items\/HH-349"[^>]*>HH-349<\/a> \(queued\)/);
     expect(waits).toContain('HH-999 (not found)');
     expect(waits).not.toContain('<button');
   });

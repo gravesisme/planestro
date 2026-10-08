@@ -18,6 +18,7 @@ import { DiscardButton, DiscardPanel } from '../components/Discard.tsx';
 import { AwaitingPanels } from '../components/AwaitingPanels.tsx';
 import { PartsStrip } from '../components/PartsStrip.tsx';
 import { DecisionCard } from '../components/DecisionCard.tsx';
+import { ChildQueue, childQueueState } from '../components/ChildQueue.tsx';
 import { prepareUpload } from '../uploadImage.ts';
 import { setTitle as setTabTitle } from '../tabBadge.ts';
 import { useLandOnWait } from '../deepLink.ts';
@@ -233,7 +234,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
               {fm.status === 'IN_PROGRESS' && <button className="small" onClick={() => act(() => api.epicAction(item.id, 'sync'))}>Sync with {d.base_branch}</button>}{' '}
               {fm.status === 'IN_PROGRESS' && children.length > 0 && children.every((c) => ['MERGED', 'FINISHED'].includes(c.frontmatter.status)) && <button className="small primary" onClick={() => act(() => api.epicAction(item.id, 'submit'))}>Submit epic PR</button>}
             </span></h2>
-            <table><tbody>{children.map((c) => <tr key={c.id}><td><Link to={`/items/${c.id}`}>{c.id}</Link></td><td>{c.frontmatter.title}</td><td>{statusLabel(c.frontmatter.status)}</td><td>{c.frontmatter.pr ? `PR #${c.frontmatter.pr}` : ''}</td></tr>)}</tbody></table>
+            <table><tbody>{children.map((c) => { const q = childQueueState(c.frontmatter, (id) => state.items.find((i) => i.id === id)?.frontmatter, Boolean(fm.branch)); return <tr key={c.id}><td><Link to={`/items/${c.id}`}>{c.id}</Link></td><td>{c.frontmatter.title}</td><td>{statusLabel(c.frontmatter.status)}</td><td>{q ? <ChildQueue id={c.id} state={q} /> : c.frontmatter.pr ? `PR #${c.frontmatter.pr}` : ''}</td></tr>; })}</tbody></table>
             {!children.length && <p className="muted small">No children yet — plan the breakdown, or create items with this epic as their parent.</p>}
           </div>
         )}
