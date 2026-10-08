@@ -19,6 +19,8 @@ import { itemView, promptView, releaseView, scheduleView, questionView, stateVie
 import { applyConfigSettings, applyLocalSettings, putModel, removeModel } from '../settingsWrite.ts';
 import { projectsOverview, liveOverviewDeps, type OverviewDeps } from '../projects.ts';
 import { importCandidates, importMcpServers, putMcpServer, removeMcpServer, testMcpServer } from '../mcpServers.ts';
+import { changeConcurrency, concurrencyView, hostLoad, rollbackConcurrency } from '../concurrency.ts';
+import type { HostLoad } from '@planestro/shared';
 
 const EDITABLE_FIELDS = z.object({
   title: z.string().min(1).optional(), category: z.string().min(1).optional(), priority: z.enum(PRIORITIES).nullable().optional(), planner: z.string().optional(), implementer: z.string().optional(),
@@ -51,7 +53,7 @@ function reviewFile(c: Context, path: string, buf: Buffer | null): Response {
   return new Response(new Uint8Array(buf), { headers: { 'content-type': type, 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'", 'x-content-type-options': 'nosniff' } });
 }
 
-export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBuffer, opts: { projects?: OverviewDeps } = {}): Hono {
+export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBuffer, opts: { projects?: OverviewDeps; hostLoad?: () => HostLoad | undefined } = {}): Hono {
   const api = new Hono();
   const fail = (c: any, e: unknown, status = 400) => c.json({ error: (e as Error).message ?? String(e) }, status);
   const pending = (id: string) => Boolean(orchestratorOf(engine)?.questionPending?.(id));
@@ -379,6 +381,16 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   api.get('/config', (c) => c.json({ config: store.config, local: publicLocal(store.local), configText: readFileSync(join(store.dataDir, 'planestro.yml'), 'utf8') }));
   // Settings writes: only keys the shared registry marks editable, validated through the schema (settingsWrite.ts).
   api.put('/config', async (c) => { try { return c.json({ config: applyConfigSettings(store, await c.req.json()) }); } catch (e) { return fail(c, e); } });
+  // The concurrency control (#330): the same write path, journaled with who and why; a raise above the recommendation needs `confirm`.
+  const host = () => (opts.hostLoad ?? hostLoad)();
+  const concurrencyFail = (c: Context, e: unknown) => {
+    const err = e as Error & { status?: number; needs_confirm?: boolean; issues?: { path: PropertyKey[]; message: string }[] };
+    const error = err instanceof z.ZodError ? err.issues.map((i) => `${i.path.join('.') || 'body'}: ${i.message}`).join('; ') : err.message;
+    return c.json({ error, ...(err.needs_confirm ? { needs_confirm: true } : {}) }, err.status === 409 ? 409 : 400);
+  };
+  api.get('/concurrency', async (c) => c.json(await concurrencyView(store, engine, host())));
+  api.put('/concurrency', async (c) => { try { const h = host(); changeConcurrency(store, await c.req.json(), 'user', { host: h }); engine.poke(); return c.json(await concurrencyView(store, engine, h)); } catch (e) { return concurrencyFail(c, e); } });
+  api.post('/concurrency/rollback', async (c) => { try { const h = host(); rollbackConcurrency(store, await c.req.json().catch(() => ({})), 'user', { host: h }); engine.poke(); return c.json(await concurrencyView(store, engine, h)); } catch (e) { return concurrencyFail(c, e); } });
   api.put('/config/models/:id', async (c) => { try { const config = putModel(store, c.req.param('id'), await c.req.json()); engine.poke(); return c.json({ config }); } catch (e) { return fail(c, e); } });
   api.delete('/config/models/:id', (c) => { try { return c.json({ config: removeModel(store, c.req.param('id')) }); } catch (e) { return fail(c, e); } });
   // Settings → Notifications → Test: the saved command, run the way its event runs it (dry-run only logs it).

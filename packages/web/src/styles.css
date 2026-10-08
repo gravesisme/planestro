@@ -573,3 +573,15 @@ input.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 .usage-readout { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 8px 0; font-size: 13px; font-variant-numeric: tabular-nums; } .usage-readout-item { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); } .usage-readout .status-notice-inline { flex-basis: 100%; color: var(--warn); }
 .usage-table-wrap { overflow-x: auto; margin-bottom: 8px; } .usage-table { border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; } .usage-table th, .usage-table td { padding: 4px 10px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; } .usage-table th:first-child { text-align: left; } .usage-table thead th { color: var(--muted); font-weight: 600; }
 .usage-events { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 13px; } .usage-events li { overflow-wrap: anywhere; } .usage-events li.warn { color: var(--warn); } .usage-events time { color: var(--muted); margin-right: 6px; }
+/* The concurrency control in the status popover (#330). */
+.concurrency { margin-top: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.concurrency-head { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); } .concurrency-head strong { color: var(--text); font-weight: 600; }
+.stepper-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; }
+.stepper-label { display: flex; flex-direction: column; min-width: 0; overflow-wrap: anywhere; } .warn-text { color: var(--warn); }
+.stepper { display: inline-flex; align-items: center; flex: none; border: 1px solid var(--line); border-radius: 6px; }
+.stepper button { width: 32px; height: 30px; padding: 0; border: 0; border-radius: 0; background: transparent; font-size: 16px; } .stepper output { min-width: 28px; text-align: center; font-variant-numeric: tabular-nums; }
+.concurrency-note { margin: 8px 0 0; }
+.concurrency-apply { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; } .concurrency-apply input { flex: 1 1 140px; min-width: 0; }
+.status-popover dl.concurrency-signals { margin: 12px 0 6px; gap: 4px 12px; } .concurrency-signals dd { text-align: right; overflow-wrap: anywhere; }
+.concurrency-reasons { margin: 4px 0; padding-left: 18px; font-size: 12px; } .concurrency-reasons.warn { color: var(--warn); }
+.concurrency-last { margin-top: 8px; } .concurrency-last p { margin: 0 0 6px; }

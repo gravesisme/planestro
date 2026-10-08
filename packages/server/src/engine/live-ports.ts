@@ -404,7 +404,7 @@ export class LiveGhPort implements GhPort {
     if (ci.state !== 'failure' || !ci.runId) return ci;
     // GitHub's `failure` is not proof that anything failed: read the jobs (#213).
     const jobs = await ghRead(['run', 'view', String(ci.runId), '--repo', repo, '--json', 'jobs']).then((v) => (JSON.parse(v).jobs ?? []) as any[], () => []);
-    return onlyCancelled(jobs) ? { ...ci, state: 'cancelled' } : ci;
+    return onlyCancelled(jobs) ? { ...ci, state: 'cancelled', timedOut: true } : ci;
   }
   async ciQueue(repo: string, workflow: string): Promise<CiQueue> {
     const count = async (status: string) => (JSON.parse(await ghRead(['run', 'list', '--repo', repo, '--workflow', workflow, '--status', status, '--limit', '100', '--json', 'databaseId'])) as any[]).length;
