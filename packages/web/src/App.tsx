@@ -34,7 +34,7 @@ export function App() {
   const nav = useNavigate();
   const { pathname, search } = useLocation();
   const needsFilter = pathname === '/' && new URLSearchParams(search).get('needs') === '1';
-  useEffect(() => { if (!pathname.startsWith('/items/') && !pathname.startsWith('/questions/') && pathname !== '/projects') setTitle(`${TABS.find((t) => t.to !== '/' && pathname.startsWith(t.to))?.label ?? (pathname === '/icebox' ? 'Icebox' : pathname === '/done' ? 'Done' : 'Board')} · ${state?.config.project.name ?? 'planestro'}`); }, [pathname, state?.config.project.name]);
+  useEffect(() => { if (!pathname.startsWith('/items/') && !pathname.startsWith('/questions/') && pathname !== '/projects' && pathname !== '/usage') setTitle(`${TABS.find((t) => t.to !== '/' && pathname.startsWith(t.to))?.label ?? (pathname === '/icebox' ? 'Icebox' : pathname === '/done' ? 'Done' : 'Board')} · ${state?.config.project.name ?? 'planestro'}`); }, [pathname, state?.config.project.name]);
   useEffect(() => { connect(); }, [connect]);
   // A clicked desktop notification opens its link here, on the panel it is about (#226).
   useEffect(() => { setNotificationNavigate((path) => nav(path)); }, [nav]);
@@ -86,7 +86,7 @@ export function App() {
             {paused && state?.engine.paused_by === 'disk' && state.engine.disk_guard && <p className="status-notice">Disk nearly full · {state.engine.disk_guard.free_gib} GiB free on {state.engine.disk_guard.path}. Automation resumes once there is {state.config.disk_guard.resume_free_gib} GiB free.</p>}
             {state?.engine.ci_queue && state.engine.ci_queue.queued > 0 && <p className="status-notice">CI queue · {state.engine.ci_queue.queued} waiting · {state.engine.ci_queue.running} running.{state.config.ci.max_queued_runs > 0 && state.engine.ci_queue.queued >= state.config.ci.max_queued_runs ? ' New items are waiting for capacity.' : ''}</p>}
             {guards.map(([provider, guard]) => <div key={provider} className="status-notice"><p>{provider === 'codex' ? 'Codex' : 'Claude'}: {guardPill(guard)}</p><ActionButton working="Retrying…" onAct={() => act(() => api.retryProvider(provider))}>Retry {provider === 'codex' ? 'Codex' : 'Claude'}</ActionButton></div>)}
-            <div className="status-links"><Link to="/console">Open Console →</Link><Link to="/projects">All projects →</Link></div>
+            <div className="status-links"><Link to="/console">Open Console →</Link><Link to="/usage">Usage →</Link><Link to="/projects">All projects →</Link></div>
           </div>
           <button className={`needs ${needsHot ? 'hot' : needs.length ? 'wait' : ''} ${needsFilter ? 'on' : ''}`} aria-pressed={needsFilter} onClick={() => (needsFilter ? nav('/') : needs.length === 1 ? nav(`/items/${needs[0].id}`, { state: TO_WAIT }) : nav('/?needs=1'))} aria-label={`${needs.length} items need you${needsFilter ? ': showing only these, tap to show all' : ''}`} title={needsFilter ? 'The board shows only items waiting on you: show all' : needs.length === 1 ? `${needs[0].id} is waiting on you: open it on what it waits for` : 'Items waiting on you (red: one of them is blocked)'}><span className="dot" /> <span className="desk-only">Needs you</span><span>{needs.length}</span></button>
           {state && <Link className="button provider-switch-button" to={switchProviderPath} aria-label={`Provider: ${providerLabel}. Switch provider`} title={`Orchestrator provider: ${providerLabel}. Open provider switching. Individual items may use another provider.`}><span className="desk-only">Provider: </span>{providerLabel}</Link>}

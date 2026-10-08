@@ -164,6 +164,8 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   prompt that stands on its own; explicit provider handoffs may plan or answer a persisted question when both the original question and answer are carried), or
   `over_budget` before anything is spent. The fresh session replaces `session_id`; its intent is
   persisted first (`op_data.fresh_brief`). `commit_paths` commits named dirty files with no turn.
+  Every turn and wake that ran journals one `usage.turn` as it ends (provider, model, role, dollars or tokens as
+  the runner reports them); the Usage page (`GET /usage`, #236) reads only those, never item totals (pre-#107 ones are inflated).
 - A report (`submit_plan`, `submit_breakdown`, `report_done`, `report_blocked`) whose call never reached planestro is applied
   from the turn's record (#167): the port keeps the session's last lost report with its arguments, the engine
   persists it in `op_data.outbox` and applies it through the same tool when the turn ends (or at the next start),

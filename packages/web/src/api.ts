@@ -1,4 +1,4 @@
-import type { ItemFrontmatter, PromptFrontmatter, ReleaseFrontmatter, ReleaseStatus, Config, LocalConfig, BillingMode, ModelDef, Status, JournalEntry, UsageGuardState, QuestionFrontmatter, ThreadEntry, ScheduleFrontmatter } from '@planestro/shared';
+import type { ItemFrontmatter, PromptFrontmatter, ReleaseFrontmatter, ReleaseStatus, Config, LocalConfig, BillingMode, ModelDef, Status, JournalEntry, UsageGuardState, QuestionFrontmatter, ThreadEntry, ScheduleFrontmatter, UsageReport } from '@planestro/shared';
 import type { BreakdownChild, Priority, SourcedRule } from '@planestro/shared';
 
 export interface OrchestratorSpend {
@@ -163,6 +163,7 @@ export const api = {
   drain: () => req<{ draining: boolean; idle: boolean; running: string[] }>('POST', '/api/engine/drain'),
   undrain: () => req<{ draining: boolean; idle: boolean; running: string[] }>('DELETE', '/api/engine/drain'),
   resume: () => req<{ paused: boolean }>('POST', '/api/engine/resume'),
+  usage: (days: number) => req<UsageReport>('GET', `/api/usage?days=${days}`),
   orchestratorSpend: () => req<OrchestratorSpend>('GET', '/api/orchestrator/spend'),
   parks: () => req<ParkSummary[]>('GET', '/api/parks'),
   allowSuggest: () => req<AllowSuggestReport>('GET', '/api/permissions/suggest'),

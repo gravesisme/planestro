@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
-import { modelCapabilities, runnerTurnSettings, type ModelDef, type Runner, getSection, planToolsMissing, epicFlagOf, holdShapeOf, heldReasonOf, previewOf, type HoldFlag, partsSummary, serializeItemFile, serializeQuestionFile, parseThread, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent, parseActivity } from '@planestro/shared';
+import { modelCapabilities, runnerTurnSettings, type ModelDef, type Runner, getSection, planToolsMissing, epicFlagOf, holdShapeOf, heldReasonOf, previewOf, type HoldFlag, partsSummary, serializeItemFile, serializeQuestionFile, parseThread, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent, parseActivity, usageTurnData, USAGE_TURN } from '@planestro/shared';
 import { parkHint } from './parks.ts';
 import { precedents, rulingsFromJournal, worktreeFinder, worstOf } from './allowSuggest.ts';
 import { hostNote, keptPathsNote } from './hostNote.ts';
@@ -362,6 +362,9 @@ export class Orchestrator {
       mcpTools: this.tools((s) => { doneSummary = s; }, events.some((e) => e.type === 'user_message' || e.type === 'question_message')),
       onOutput: (t) => this.emit({ type: 'engine.log', level: 'info', message: `[orchestrator] ${t.slice(0, 300)}` }),
     });
+    // Every wake that ran is counted (#236), the ones retried below too: each was paid for.
+    const spent = usageTurnData({ provider: pick.runner, model, role: 'orchestrator', op: 'orchestrator_wake', accounting: pick.def ? modelCapabilities(pick.def).accounting : pick.runner === 'claude' ? 'dollars' : 'tokens', result });
+    if (spent) this.store.journal.append({ type: USAGE_TURN, actor: 'orchestrator', data: { ...spent } });
     this.hooks.usageSeen?.(result.rateLimit, pick.runner);
     if (result.subtype === 'usage_exhausted') {
       const def = findModel(this.store.config, model);

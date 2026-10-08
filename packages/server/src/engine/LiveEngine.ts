@@ -4,7 +4,7 @@ import { join, relative, isAbsolute, extname, basename, matchesGlob } from 'node
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { Audition, AuditionPicks, auditionProblem, takePathProblem, auditionPicksProblem, auditionPickLines, auditionNote, auditionComplete, auditionTakes, runnerTurnSettings, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem } from '@planestro/shared';
+import { Audition, AuditionPicks, auditionProblem, takePathProblem, auditionPicksProblem, auditionPickLines, auditionNote, auditionComplete, auditionTakes, runnerTurnSettings, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem, usageTurnData, USAGE_TURN, type UsageRole, type ModelDef } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import { matchesPathPattern, type Checkpoint, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote, type CiQueue, type RunnerReport, type UndeliveredReport, type ConnectionDrop } from './ports.ts';
@@ -280,6 +280,12 @@ export class LiveEngine implements Engine {
     this._paused = paused;
     this.store.updateLocal({ engine: { ...this.store.local.engine, paused, paused_by: paused ? by : undefined, disk_guard: paused ? disk : undefined } });
     this.emit({ type: 'engine.paused', paused, ...(paused && by ? { by } : {}) });
+  }
+
+  /** What a turn spent, journaled as it ends (#236): the Usage page's facts, never rebuilt from item totals later. */
+  private recordUsage(item: string, def: ModelDef, model: string, role: UsageRole, op: string, result: TurnResult): void {
+    const data = usageTurnData({ provider: def.runner ?? 'claude', model, role, op, accounting: modelCapabilities(def).accounting, result });
+    if (data) this.store.journal.append({ type: USAGE_TURN, item, actor: 'engine', data: { ...data } });
   }
 
   // ---- usage guard: pause before a subscription window runs out, resume once it resets ----
@@ -1574,6 +1580,7 @@ export class LiveEngine implements Engine {
     }
     // What ran without a park, once per turn: the drift report's record of what the allow rules still match (#203).
     if (result.ran?.length) this.store.journal.append({ type: 'tools.ran', item: id, actor: 'engine', data: { phase, runner, ran: result.ran } });
+    this.recordUsage(id, def, model ?? def.label, phase === 'plan' ? 'planner' : 'worker', op, result);
     if (result.subtype === 'deferred') {
       defer();
       const { active_turn: _active, ...data } = this.store.requireItem(id).file.frontmatter.op_data ?? {};
@@ -4884,6 +4891,7 @@ export class LiveEngine implements Engine {
       });
       }));
     } finally { this.turns.delete(id); }
+    this.recordUsage(id, def, model ?? def.label, 'worker', 'conflict_session', result);
     const after = this.store.requireItem(id).file.frontmatter;
     this.store.mutateItem(id, [{ set: { cost_usd: Math.round(((after.cost_usd ?? 0) + result.costUsd) * 10000) / 10000, turns: (after.turns ?? 0) + result.numTurns, tokens: (after.tokens ?? 0) + (result.tokens ?? 0), agent_turns: (after.agent_turns ?? 0) + (result.numTurns > 0 ? 1 : 0) } }, { unset: ['op', 'op_started_at'] }], 'engine');
     this.usageSeen(result.rateLimit, runner);

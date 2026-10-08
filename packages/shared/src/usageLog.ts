@@ -48,7 +48,7 @@ export interface UsageReport {
   totals: UsageCell & { by: Record<UsageGroup, Record<string, UsageCell>> };
   /** Newest first. */
   events: UsageEvent[];
-  /** The first `usage.turn` ever recorded: nothing before it is counted. */
+  /** The first `usage.turn` among the entries read: when it falls inside the range, nothing before it was recorded. */
   recorded_since?: string;
 }
 

@@ -287,9 +287,9 @@ html { -webkit-text-size-adjust: 100%; }
   .events, .console { font-size: 11px; overflow-wrap: anywhere; } .md { overflow-wrap: anywhere; } .md table { display: block; overflow-x: auto; }
 
   /* data tables (not a plan's markdown tables) fold into one wrapped line per row */
-  table:not(.md table, .diff), table:not(.md table, .diff) tbody { display: block; } table:not(.md table, .diff) thead { display: none; }
-  table:not(.md table, .diff) tr { display: flex; flex-wrap: wrap; gap: 2px 10px; padding: 9px 0; border-bottom: 1px solid var(--line); } table:not(.md table, .diff) tr:last-child { border-bottom: 0; }
-  table:not(.md table, .diff) td { padding: 0; border: 0; min-width: 0; overflow-wrap: anywhere; } table:not(.md table, .diff) td:empty { display: none; }
+  table:not(.md table, .diff, .usage-table), table:not(.md table, .diff, .usage-table) tbody { display: block; } table:not(.md table, .diff, .usage-table) thead { display: none; }
+  table:not(.md table, .diff, .usage-table) tr { display: flex; flex-wrap: wrap; gap: 2px 10px; padding: 9px 0; border-bottom: 1px solid var(--line); } table:not(.md table, .diff, .usage-table) tr:last-child { border-bottom: 0; }
+  table:not(.md table, .diff, .usage-table) td { padding: 0; border: 0; min-width: 0; overflow-wrap: anywhere; } table:not(.md table, .diff, .usage-table) td:empty { display: none; }
 
   /* prompts: the list, then the prompt it opened */
   .prompts { grid-template-columns: minmax(0, 1fr); } .prompts.picked .prompt-list { display: none; }
@@ -560,3 +560,16 @@ input.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 .issue-pick { display: grid; gap: 2px; max-height: 50vh; overflow: auto; border: 1px solid var(--line); border-radius: 6px; padding: 6px; }
 .issue-pick label.row { align-items: baseline; gap: 6px; flex-wrap: nowrap; } .issue-pick label.row > .grow { min-width: 0; overflow-wrap: anywhere; }
 .issue-result { margin: 0; padding-left: 18px; display: grid; gap: 2px; }
+/* Usage (#236): daily stacked bars, a readout for the picked day, the guards' crossings and pauses. */
+.usage-page { max-width: 1100px; } .usage-toolbar { flex-wrap: wrap; row-gap: 8px; } @media (max-width: 840px) { .usage-toolbar h2 { flex-basis: 100%; } } .usage-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.usage-section { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; margin-bottom: 12px; min-width: 0; } .usage-section h3 { margin: 0 0 8px; font-size: 13px; color: var(--muted); letter-spacing: .4px; }
+.usage-stats { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-bottom: 10px; } .usage-stats div { display: flex; flex-direction: column; } .usage-stats strong { font-size: 20px; font-variant-numeric: tabular-nums; } .usage-stats span { color: var(--muted); font-size: 12px; }
+.usage-legend { list-style: none; display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0 0 8px; padding: 0; font-size: 12px; } .usage-legend li { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
+.swatch { flex: none; display: inline-block; width: 10px; height: 10px; border-radius: 3px; }
+.usage-mark-key { flex: none; width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent; border-top: 7px solid var(--warn); }
+.usage-chart { width: 100%; overflow: hidden; touch-action: pan-y; } .usage-chart svg { display: block; }
+.usage-grid { stroke: var(--line); stroke-width: 1; } .usage-base { stroke: var(--muted); stroke-width: 1; } .usage-axis { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.usage-hit { fill: transparent; cursor: pointer; } .usage-day.picked .usage-hit { fill: #ffffff0d; } .usage-mark { fill: var(--warn); }
+.usage-readout { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 8px 0; font-size: 13px; font-variant-numeric: tabular-nums; } .usage-readout-item { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); } .usage-readout .status-notice-inline { flex-basis: 100%; color: var(--warn); }
+.usage-table-wrap { overflow-x: auto; margin-bottom: 8px; } .usage-table { border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; } .usage-table th, .usage-table td { padding: 4px 10px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; } .usage-table th:first-child { text-align: left; } .usage-table thead th { color: var(--muted); font-weight: 600; }
+.usage-events { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 13px; } .usage-events li { overflow-wrap: anywhere; } .usage-events li.warn { color: var(--warn); } .usage-events time { color: var(--muted); margin-right: 6px; }
