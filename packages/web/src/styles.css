@@ -511,3 +511,14 @@ input.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 /* An epic in the quick view (#290): marked as one, its children listed as on its page. */
 .pill.epic { border-color: var(--warn); color: var(--warn); }
 .drawer-children { overflow-x: auto; } .drawer-children table { width: 100%; font-size: 13px; } .drawer-children td { vertical-align: top; padding: 4px 6px; } .drawer-children td:first-child, .drawer-children td:nth-child(3) { white-space: nowrap; }
+/* the all-projects page (#235) */
+.status-links { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 16px; }
+.projects-title { margin: 0; font-size: 16px; margin-right: auto; }
+.project-grid { list-style: none; margin: 0 0 12px; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 12px; }
+.project-card { min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; } .project-card.unreachable { border-color: var(--hot); } .project-card.not_running { opacity: .7; }
+.project-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; } .project-name { font-weight: 700; font-size: 15px; overflow-wrap: anywhere; }
+.project-where { margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-counts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-top: 10px; }
+.project-count { display: flex; flex-direction: column; align-items: center; padding: 6px 2px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font-size: 12px; } .project-count strong { font-size: 18px; color: var(--text); }
+.project-count.wait { border-color: var(--warn); } .project-count.wait strong { color: var(--warn); } .project-count.hot { border-color: var(--hot); } .project-count.hot strong { color: var(--hot); } .project-count.run strong { color: var(--ok); }
+.project-guards { margin: 10px 0 0; padding: 8px 0 0; border-top: 1px solid var(--line); list-style: none; color: var(--warn); font-size: 13px; display: grid; gap: 4px; }

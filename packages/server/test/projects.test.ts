@@ -78,6 +78,7 @@ describe('the all-projects overview (#235)', () => {
       registry: () => [{ name: 'Hurricane Harrison', data_dir: '/w/hh/planning' }, { name: 'Old Thing', data_dir: '/w/old/planning' }],
       instances: () => [{ data_dir: '/w/lm/planning', url: 'http://127.0.0.1:4391', host: '127.0.0.1', port: 4391 }],
       unrecorded: (dir) => (dir === '/w/old/planning' ? { url: 'http://127.0.0.1:4392', host: '127.0.0.1', port: 4392 } : undefined),
+      fetch: async (url) => json({ ...remoteState, config: { project: { name: String(url).includes(':4392') ? 'Old Thing' : 'Lake Monomonac' } } }),
     }));
     expect(projects.map((p) => [p.name, p.reach, p.port])).toEqual([
       ['Hurricane Harrison', 'self', undefined], ['Lake Monomonac', 'ok', 4391], ['Old Thing', 'ok', 4392],
