@@ -13,7 +13,7 @@ import { listInstances } from '../instances.ts';
 import { makePolicy, ruleFor, allowedByRules, sdkRules, BASE_ALLOWED } from './policy.ts';
 import { answeredCommand, commandShape, rulingText, parkedRefusal, permissionGrantRefusal, AUDITION_PARKED } from './parks.ts';
 import { commandGrant, commandForms, matchesCommandGrant, type CommandGrant } from './sessions/nativeApproval.ts';
-import { codexEnv } from './sessions/CodexAppServerPort.ts';
+import { workerCommandEnv } from './sessions/commandEnv.ts';
 import { hostNote, keptPathsNote, cwdNote } from './hostNote.ts';
 import { Orchestrator } from './orchestrator.ts';
 import { NeedsYouWatch, type Wait } from './needsYou.ts';
@@ -3591,9 +3591,8 @@ export class LiveEngine implements Engine {
       if (why) return `Rejected: ${why} Nothing was run.`;
       if (!allowedByRules({ tool: 'Bash', input: { command } }, [...BASE_ALLOWED.implement, ...rules.allow, ...heavyAllowRules(this.store.config)], cwd)) return `Rejected: run_heavy runs only commands your allow rules or the project's heavy_runs.patterns permit, and \`${command.slice(0, 200)}\` is neither. Nothing was run.`;
     }
-    // A Codex worker's command sees only what its own would (#228): none of planestro's keys.
-    const codex = (this.store.config.models.find((m) => m.id === fm.implementer)?.runner ?? 'claude') !== 'claude';
-    const env = codex ? { env: codexEnv(this.store.config.codex_env_passthrough) as Record<string, string>, cleanEnv: true } : {};
+    // The command sees what the worker's own commands would (#228), by its runner.
+    const env = workerCommandEnv(this.store.config.models.find((m) => m.id === fm.implementer)?.runner ?? 'claude', this.store.config);
     const signal = this.turns.get(id)?.abort.signal;
     const stopped = () => signal?.aborted || this.stopping || this.store.requireItem(id).file.frontmatter.taken_over;
     const say = (text: string) => this.store.mutateItem(id, [{ activity: { actor: 'app', text: `heavy run: ${text}` } }], 'engine');
