@@ -50,7 +50,8 @@ async function checkForNewBundle(): Promise<void> {
 }
 if (typeof window !== 'undefined') {
   setInterval(() => void checkForNewBundle(), 5000);
-  document.addEventListener('visibilitychange', () => void checkForNewBundle());
+  // Not at the moment it shows: a reload while iOS is still restoring an installed web app can leave it unpainted (#280).
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) setTimeout(() => void checkForNewBundle(), 1000); });
 }
 
 export const useStore = create<Store>((set, get) => ({

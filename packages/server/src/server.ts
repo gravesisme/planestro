@@ -22,6 +22,18 @@ import { PortInUseError } from './exitCodes.ts';
 
 export interface ServeOptions { dataDir: string; port?: number; host?: string; mock?: boolean; engineFactory?: (store: DataStore, emit: (e: ServerEvent) => void) => Engine; log?: (level: string, msg: string) => void }
 
+/**
+ * The built web UI. The page that names the bundles is always revalidated (#280): a reload answered with a stale page
+ * loads the bundles it names, and an installed iPhone web app came back from the background to a black screen. The
+ * bundles are content-hashed, so they may be cached.
+ */
+export function serveWeb(app: Hono, webDist: string): void {
+  const root = relative(process.cwd(), webDist) || '.';
+  app.use('/*', async (c, next) => { await next(); if (c.res.headers.get('content-type')?.startsWith('text/html')) c.res.headers.set('cache-control', 'no-cache'); });
+  app.use('/*', serveStatic({ root }));
+  app.get('*', (c) => c.html(readFileSync(join(webDist, 'index.html'), 'utf8')));
+}
+
 export async function startServer(o: ServeOptions) {
   const log = o.log ?? ((level, msg) => console.log(`[${level}] ${msg}`));
   const sockets = new Set<{ send(data: string): void }>();
@@ -58,11 +70,8 @@ export async function startServer(o: ServeOptions) {
   app.get('/healthz', (c) => c.json({ ok: true, version: TOOL_VERSION }));
 
   const webDist = new URL('../../web/dist/', import.meta.url).pathname;
-  if (existsSync(join(webDist, 'index.html'))) {
-    const root = relative(process.cwd(), webDist) || '.';
-    app.use('/*', serveStatic({ root }));
-    app.get('*', (c) => c.html(readFileSync(join(webDist, 'index.html'), 'utf8')));
-  } else {
+  if (existsSync(join(webDist, 'index.html'))) serveWeb(app, webDist);
+  else {
     app.get('/', (c) => c.text(`planestro ${TOOL_VERSION} API is up; the web UI is not built (run \`npm run build\`, or \`npm run dev:web\` for Vite on :5173).`));
   }
 
