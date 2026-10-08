@@ -73,3 +73,28 @@ describe('a head\'s CI verdict from its runs (HH-174, HH-180)', () => {
     expect(ciFromRuns([], 'abc').state).toBe('none');
   });
 });
+
+describe('the lines a worktree adds that hold a marker (#240)', () => {
+  it('reads commits, uncommitted and untracked files against the merge base, never what the base already had', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'planestro-markers-'));
+    const origin = join(root, 'origin.git'), repo = join(root, 'repo');
+    git(root, 'init', '-q', '--bare', '-b', 'trunk', origin);
+    git(root, 'clone', '-q', origin, repo);
+    writeFileSync(join(repo, 'old.ts'), '// planestro:debug-begin left on the base long ago\nconst a = 1;\n');
+    writeFileSync(join(repo, 'a.ts'), 'one\ntwo\nthree\n');
+    git(repo, 'add', '-A'); git(repo, 'commit', '-q', '-m', 'init'); git(repo, 'push', '-q', 'origin', 'HEAD:trunk');
+    const port = new LiveGitPort();
+    const wt = join(root, 'wt');
+    await port.worktreeAdd(repo, wt, 'fix', 'origin/trunk');
+    writeFileSync(join(wt, 'a.ts'), 'one\n# planestro:debug-begin\nprint(x)\n# planestro:debug-end\ntwo\nthree\n');
+    git(wt, 'add', '-A'); git(wt, 'commit', '-q', '-m', 'instrument');
+    writeFileSync(join(wt, 'old.ts'), '// planestro:debug-begin left on the base long ago\nconst a = 2;\n');   // a change beside an old marker
+    writeFileSync(join(wt, 'b.sql'), 'select 1;\n-- planestro:debug-end\n');                                   // untracked
+    const hits = await port.addedLinesWith(wt, 'origin/trunk', 'planestro:debug-');
+    expect(hits.map((h) => `${h.path}:${h.line}`).sort()).toEqual(['a.ts:2', 'a.ts:4', 'b.sql:2']);
+    expect(hits.find((h) => h.path === 'b.sql')!.text).toBe('-- planestro:debug-end');
+    expect(git(wt, 'status', '--porcelain')).toContain('?? b.sql');   // the real index is untouched
+    writeFileSync(join(wt, 'a.ts'), 'one\ntwo\nthree\n'); writeFileSync(join(wt, 'b.sql'), 'select 1;\n');
+    expect(await port.addedLinesWith(wt, 'origin/trunk', 'planestro:debug-')).toEqual([]);
+  });
+});
