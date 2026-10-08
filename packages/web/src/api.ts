@@ -96,6 +96,12 @@ export interface State {
   statuses: Status[];
 }
 
+/** A /api/state body worth drawing. A resumed iPhone web app can get a 200 whose body does not parse, which `req` reads as `{}`: stored, it crashed every page on `state.config.project` (#342). */
+export function isState(s: unknown): s is State {
+  const v = s as Partial<State> | null;
+  return typeof v === 'object' && v !== null && typeof v.config?.project?.name === 'string' && Array.isArray(v.items);
+}
+
 async function req<T>(method: string, url: string, body?: unknown, raw?: BodyInit): Promise<T> {
   const res = await fetch(url, { method, headers: raw ? undefined : { 'content-type': 'application/json' }, body: raw ?? (body === undefined ? undefined : JSON.stringify(body)) });
   const data = await res.json().catch(() => ({}));
@@ -108,7 +114,7 @@ export const api = {
   applyProviderSwitch: (body: unknown) => req<any>('POST', '/api/providers/apply', body),
   orchestratorSelection: () => req<{ configured?: string; current?: string; pending?: boolean }>('GET', '/api/orchestrator/selection'),
   retryProvider: (runner: string) => req('POST', `/api/providers/${runner}/retry`),
-  state: () => req<State>('GET', '/api/state'),
+  state: async () => { const s = await req<unknown>('GET', '/api/state'); if (!isState(s)) throw new Error('the server sent an unreadable state'); return s; },
   projects: () => req<{ projects: ProjectRow[] }>('GET', '/api/projects'),
   createItem: (body: { title: string; category?: string; priority?: Priority; description?: string; kind?: 'item' | 'epic'; planner?: string; parent?: string; implementer?: string; status?: 'NOT_YET_SUBMITTED' | 'ICEBOX'; auto_approve_plan?: boolean; allow_model_fallback?: boolean }) => req<ItemView>('POST', '/api/items', body),
   patchItem: (id: string, body: { fields?: Record<string, unknown>; sections?: Record<string, string> }) => req<ItemView>('PATCH', `/api/items/${id}`, body),

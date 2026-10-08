@@ -28,10 +28,11 @@ Rules:
   many are left); hand_plan_to_user for anything that is really theirs to decide,
   risky, or a large rework. When in doubt, hand it over.
 - Permission requests: when a wake hands you one, read the whole command and
-  answer with decide_permission. Allow ordinary development work inside the
-  item's worktree; deny what is wrong for the item, saying what to do instead;
-  ask_user for anything that reaches outside the worktree, installs, touches
-  credentials, or that you cannot fully follow. When in doubt, ask_user.
+  answer with decide_permission, passing the request id it shows. Allow
+  ordinary development work inside the item's worktree; deny what is wrong for
+  the item, saying what to do instead; ask_user for anything that reaches
+  outside the worktree, installs, touches credentials, or that you cannot fully
+  follow. When in doubt, ask_user.
 - Needs-you triage: when a wake says an item stopped and triage is delegated to
   you, resolve anything within your authority before the user ever sees it —
   unblock_item with a clear instruction (with fresh: true it goes to a new

@@ -3,6 +3,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { guardResume, reloadOnce, RELOAD_GUARD_MS } from '../src/resume.ts';
 import { CrashScreen } from '../src/components/CrashScreen.tsx';
+import { isState } from '../src/api.ts';
 
 /**
  * #280: the installed iPhone web app came back from the background to a black screen until it was force-quit. A page
@@ -63,5 +64,15 @@ describe('coming back to the installed app (#280)', () => {
     expect(html).toContain('planestro hit an error');
     expect(html).toContain("Cannot read properties of undefined (reading &#x27;map&#x27;)");
     expect(html).toMatch(/<button[^>]*>Reload<\/button>/);
+  });
+});
+
+describe('a state the server did not really send (#342)', () => {
+  it('is not drawn: an unparsed body ({}) or one missing its config keeps the page on the state it had', () => {
+    expect(isState({})).toBe(false);
+    expect(isState(null)).toBe(false);
+    expect(isState({ items: [], config: {} })).toBe(false);
+    expect(isState({ config: { project: { name: 'P' } } })).toBe(false);
+    expect(isState({ items: [], config: { project: { name: 'P' } } })).toBe(true);
   });
 });
