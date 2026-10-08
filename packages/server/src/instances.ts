@@ -4,7 +4,8 @@ import { existsSync, mkdirSync, openSync, closeSync, readFileSync, readdirSync, 
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CONFIG_FILE } from './config.ts';
+import { CONFIG_FILE, readLocalConfig } from './config.ts';
+import { bindHost } from './guard.ts';
 import { EXIT_DATA_DIR_IN_USE, EXIT_PORT_IN_USE } from './exitCodes.ts';
 import { pidAlive } from './supervise.ts';
 
@@ -164,8 +165,9 @@ export interface StartResult {
  */
 export async function startInstance(o: StartOptions): Promise<StartResult> {
   const dataDir = resolve(o.dataDir);
-  const port = o.port ?? 4300, host = o.host ?? '127.0.0.1';
   if (!existsSync(join(dataDir, CONFIG_FILE))) throw new Error(`not a planestro data dir (no ${CONFIG_FILE}): ${dataDir}`);
+  // lan_access (#255) is read at each start; the serve it records gets the resolved --host, so the record says where it listens.
+  const port = o.port ?? 4300, host = bindHost(o.host, readLocalConfig(dataDir));
 
   const running = liveInstance(dataDir);
   if (running && running.port === port && running.host === host) return { instance: running, corrections: undefined, already: true };

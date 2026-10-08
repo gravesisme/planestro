@@ -25,8 +25,10 @@ upgrade:
   is refused, which defeats cross-site request forgery.
 
 What's left is everything that reaches the port *as this machine*: other processes and
-other user accounts on it, and, with `--host 0.0.0.0`, anyone on your network. Only expose
-it on a network you trust, or over a private overlay such as Tailscale. Names you reach it
+other user accounts on it, and, with `--host 0.0.0.0` or `lan_access`, anyone on your network.
+`lan_access` also refuses any remote address outside loopback, private (RFC 1918), link-local
+and IPv6 ULA ranges, so a port-forward gets a 403. Only expose it on a network you trust, or
+over a private overlay such as Tailscale. Names you reach it
 by go in `allowed_hosts` in `planestro.local.yml`.
 
 **Why your Claude login isn't the lock.** Your Claude login decides who pays for and runs

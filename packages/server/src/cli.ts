@@ -6,7 +6,8 @@ import { SCHEMA_VERSION } from '@planestro/shared';
 import { DataStore } from './store/DataStore.ts';
 import { initDataDir } from './init.ts';
 import { migrate } from './migrations/index.ts';
-import { locateDataDir, TOOL_VERSION, CONFIG_FILE } from './config.ts';
+import { locateDataDir, readLocalConfig, TOOL_VERSION, CONFIG_FILE } from './config.ts';
+import { bindHost } from './guard.ts';
 import { exitCodeFor } from './exitCodes.ts';
 import { desktopNotify } from './notifier.ts';
 
@@ -16,7 +17,7 @@ const USAGE = `planestro ${TOOL_VERSION}
   planestro check [data_dir]        validate every file and report
   planestro migrate [data_dir]      apply schema migrations (${SCHEMA_VERSION} is current)
   planestro serve [data_dir] [--port N] [--host H] [--mock] [--watch] [--open]
-                                    run the web UI + engine (default host 127.0.0.1; use 0.0.0.0 for LAN access)
+                                    run the web UI + engine (default host 127.0.0.1, or 0.0.0.0 with lan_access in planestro.local.yml)
                                     --watch  restart on planestro source changes (between agent turns) and rebuild the UI
                                     --open   open the UI in a browser once it is up
   planestro start [data_dir] [--port N] [--host H] [--watch]
@@ -77,6 +78,8 @@ try {
         const d = store.derived(item);
         if (d.base_branch_error) log(`  WARN ${item.id}: ${d.base_branch_error}`);
       }
+      const { accessReport } = await import('./server.ts');
+      for (const line of accessReport(store.local, store.config.notifications, values.port ? Number(values.port) : 4300)) log(line);
       store.close();
       if (store.invalid.length) process.exit(1);
       break;
@@ -113,7 +116,8 @@ try {
     }
     case 'serve': {
       const dir = locateDataDir(arg);
-      const host = values.host ?? '127.0.0.1'; const port = values.port ? Number(values.port) : 4300;
+      // lan_access is re-read by every serve the supervisor restarts: only an explicit --host is passed down (#255).
+      const host = bindHost(values.host, readLocalConfig(dir)); const port = values.port ? Number(values.port) : 4300;
       if (values.watch) {
         const { supervise } = await import('./supervise.ts');
         await supervise({ dataDir: dir, serveArgs: [dir, ...(values.port ? ['--port', values.port] : []), ...(values.host ? ['--host', values.host] : []), ...(values.mock ? ['--mock'] : [])], host, port, open: values.open });
