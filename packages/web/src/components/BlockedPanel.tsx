@@ -27,8 +27,9 @@ export function BlockedPanel({ item, compact = false }: { item: ItemView; compac
   const unblockFresh = () => { const m = prompt(`Unblock ${item.id} in a fresh session. It gets a brief from the item and git, and this as its task (required):`); if (m?.trim()) void act(() => api.unblock(item.id, m.trim(), true)); };
   const fresh = canUnblockFresh(item) && <button title={FRESH_HINT} onClick={unblockFresh}>Unblock in a fresh session…</button>;
   // A red run judged a flake is re-run as it stands, with nothing to fix (#139): only the head's own red run, while nothing else runs.
-  // A run still cancelled after planestro's own re-run (#174) is re-run whole, the same way.
+  // A run still cancelled after planestro's own re-run (#174) is re-run whole, the same way. A PR closed outside planestro is reopened (#205).
   const rerun = fm.status === 'IN_REVIEW' && reason === 'ci_cancelled' && !!fm.op_data?.last_cancelled ? <button title="Re-runs this head's cancelled CI run, once what cancelled it (a job time limit, a concurrency group) is fixed. The new attempt's verdict is the one that counts." onClick={() => void act(() => api.rerunCi(item.id))}>Re-run cancelled CI</button>
+    : fm.status === 'IN_REVIEW' && reason === 'pr_closed_externally' && !!fm.pr ? <button title="Reopens the pull request on GitHub and goes back to waiting for its CI, on the head it has. For a close nobody meant, such as a closing keyword in another merge." onClick={() => void act(() => api.reopenPr(item.id))}>Reopen and resume</button>
     : fm.status === 'IN_REVIEW' && /^ci_red/.test(reason) && !!fm.op_data?.last_red && <button title="Re-runs the failed jobs of this head's red CI run: for a flake, when nothing in the branch needs fixing. The new attempt's verdict is the one that counts." onClick={() => void act(() => api.rerunCi(item.id))}>Re-run failed CI jobs</button>;
   if (fm.triage) return (
     <div className="blocked-panel triaging" id="blocked">

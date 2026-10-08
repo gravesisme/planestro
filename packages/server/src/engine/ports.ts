@@ -91,6 +91,9 @@ export interface OpenJob { runId: number; status: 'queued' | 'in_progress'; labe
 export interface RunnerReport { runners: RunnerInfo[]; jobs: OpenJob[] }
 export interface PrInfo { number: number; url: string; state: 'OPEN' | 'MERGED' | 'CLOSED'; mergedAt?: string; headRefOid: string; headRefName: string; baseRefName: string; mergeCommit?: string; title?: string; isDraft?: boolean; author?: string; updatedAt?: string }
 
+/** Who closed a pull request (#205): a person, or a commit (a closing keyword in another merge), with the PR that commit came from. */
+export interface PrClosure { actor?: string; commit?: string; pr?: number; at?: string }
+
 export interface IssueInfo { number: number; title: string; body: string; url: string; state: string }
 
 export interface GhPort {
@@ -113,6 +116,10 @@ export interface GhPort {
   mergePr(repo: string, number: number, opts: { headSha: string }): Promise<'merged' | 'head_moved'>;
   /** Close a pull request without merging it, with a comment saying why (#135). */
   closePr(repo: string, number: number, comment: string): Promise<void>;
+  /** Reopen a pull request that was closed without merging (#205). */
+  reopenPr(repo: string, number: number): Promise<void>;
+  /** The PR's last `closed` event (#205): who closed it, or the commit that did and the PR that commit belongs to. Optional. */
+  prClosedBy?(repo: string, number: number): Promise<PrClosure | null>;
   /** The URL of the newest successful deployment for this commit (a Vercel or Netlify preview), or null (#137). */
   previewUrl(repo: string, sha: string): Promise<string | null>;
   /** How deep the workflow's queue is, repository-wide (#170). Optional: a port without it reports no queue. */

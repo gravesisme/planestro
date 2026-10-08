@@ -3045,7 +3045,7 @@ export class LiveEngine implements Engine {
             correct(id, `PR #${fm.pr} was merged outside planestro`, [{ transition: { to: 'MERGED', actor: 'engine' } }, { set: { merged_at: pr.mergedAt ? isoLocal(new Date(pr.mergedAt)) : this.now(), ci_result: 'green' } }]);
             this.runJob(id, () => this.cleanup(id));
           } else if (pr?.state === 'CLOSED' && fm.status === 'IN_REVIEW' && !fm.blocked && !fm.taken_over) {
-            this.block(id, 'pr_closed_externally', `PR #${fm.pr} was closed without merging`);
+            await this.blockClosedPr(id, fm.pr);
             corrections.push(`${id}: PR #${fm.pr} closed externally`);
           } else if (pr?.state === 'OPEN' && fm.status === 'IN_REVIEW' && fm.ci_head_sha && pr.headRefOid !== fm.ci_head_sha && fm.ci_result !== 'pending') {
             correct(id, `branch tip moved (${pr.headRefOid.slice(0, 7)}); CI verdict discarded`, [{ set: { ci_result: 'pending' } }]);
@@ -3347,10 +3347,63 @@ export class LiveEngine implements Engine {
           this.announce('on_merge', `${item.id} merged`, `PR #${pr.number} merged into ${pr.baseRefName}: ${item.file.frontmatter.title}`, item.id);
           await this.cleanup(item.id);
         } else if (pr.state === 'CLOSED') {
-          this.block(item.id, 'pr_closed_externally', `PR #${pr.number} was closed without merging`);
+          await this.blockClosedPr(item.id, pr.number);
         }
       } catch (e) { this.note('warn', `${item.id}: external poll failed: ${(e as Error).message}`); }
     }
+  }
+
+  /**
+   * A PR closed outside planestro (#205, HH-375): its close event says by whom. A commit that closed it (a closing
+   * keyword, "fixes #563", in another PR's merge message) is named on the item, in Notes and in the stop, so nobody
+   * takes it for the user's decision; reopening it is the user's (reopenPr). An event that cannot be read says less.
+   */
+  private async blockClosedPr(id: string, n: number): Promise<void> {
+    const by = await this.ports.gh.prClosedBy?.(this.github, n).catch(() => null) ?? null;
+    if (by?.commit) {
+      const note = `PR #${n} was closed by commit ${by.commit.slice(0, 7)}${by.pr ? ` (merge of #${by.pr})` : ''}: GitHub closing keyword, probably not intended`;
+      const cur = this.store.requireItem(id).file.frontmatter;
+      const notes = getSection(this.store.requireItem(id).file, 'Notes');
+      this.store.mutateItem(id, [
+        { section: 'Notes', body: notes ? `${notes}\n\n${note}.` : `${note}.` },
+        { set: { op_data: { ...(cur.op_data ?? {}), pr_closed_by: { commit: by.commit, ...(by.pr ? { pr: by.pr } : {}), ...(by.actor ? { actor: by.actor } : {}), ...(by.at ? { at: by.at } : {}) } } } },
+      ], 'engine', { commit: `${id}: PR #${n} closed by ${by.commit.slice(0, 7)}` });
+      this.block(id, 'pr_closed_externally', `${note}. Nobody decided to close it; only the user reopens it (Reopen and resume)`);
+    } else this.block(id, 'pr_closed_externally', `PR #${n} was closed without merging${by?.actor ? `, by @${by.actor}` : ''}`);
+  }
+
+  /** What reopenPr would refuse that the store can tell without GitHub: checked when a card offering it is filed. */
+  private reopenRefusal(id: string): string | null {
+    const fm = this.store.getItem(id)?.file.frontmatter;
+    if (!fm) return `there is no item ${id}`;
+    if (fm.status !== 'IN_REVIEW' || !fm.pr || fm.blocked_reason !== 'pr_closed_externally') return `${id} has no pull request closed outside planestro`;
+    if (fm.taken_over) return `${id} is taken over: the user is finishing it by hand`;
+    return this.busyWith(id) ?? null;
+  }
+
+  /**
+   * Reopen and resume (#205): reopen the item's PR that was closed outside planestro and go back to where it was, waiting
+   * for CI on the head it has (an external item is watched again). The user's: reopening is an external write, and the
+   * close may have been meant. Nothing is asked of the orchestrator. Returns what happened, or why not, in words.
+   */
+  async reopenPr(id: string): Promise<string> {
+    const refusal = this.reopenRefusal(id);
+    if (refusal) return `not possible: ${refusal}`;
+    const fm = this.store.requireItem(id).file.frontmatter;
+    const n = fm.pr!;
+    const pr = await this.ports.gh.prView(this.github, n);
+    if (pr.state === 'MERGED') return `not possible: PR #${n} is merged; planestro takes that in by itself`;
+    if (pr.state === 'CLOSED') await this.ports.gh.reopenPr(this.github, n);
+    const { pr_closed_by: _by, ...od } = fm.op_data ?? {};
+    const external = this.store.derived(this.store.requireItem(id)).flavor === 'external';
+    const head = pr.headRefOid;
+    this.store.mutateItem(id, [
+      { unset: ['blocked', 'blocked_reason', 'triage', ...(fm.awaiting === 'user' ? ['awaiting', 'awaiting_data'] : [])] },
+      { set: { ci_result: 'pending', op_data: od, ...(external ? {} : { ci_head_sha: head, op: 'awaiting_ci', op_started_at: this.now() }) } },
+      { activity: { actor: 'user', text: `reopened PR #${n} and resumed ${external ? 'watching it' : `the CI wait (head ${head.slice(0, 7)})`}` } },
+    ], 'user', { commit: `${id}: reopen PR #${n}` });
+    this.poke();
+    return `reopened PR #${n}; ${external ? 'watching it again' : `waiting for CI on ${head.slice(0, 7)}`}`;
   }
 
   // ---- helpers ----
@@ -4215,6 +4268,7 @@ export class LiveEngine implements Engine {
     if (action.tool === 'discard_item') return this.discardRefusal(action.args.id);
     if (action.tool === 'close_as_done') return this.closeAsDoneRefusal(action.args.id);
     if (action.tool === 'rerun_ci') return this.rerunRefusal(action.args.id);
+    if (action.tool === 'reopen_pr') return this.reopenRefusal(action.args.id);
     if (action.tool === 'submit_item') {
       const item = this.store.getItem(action.args.id);
       if (!item) return `there is no item ${action.args.id}`;
@@ -4263,7 +4317,7 @@ export class LiveEngine implements Engine {
    */
   private performAction(action: DecisionAction, from: string): string {
     const why = `you chose it on ${from}'s decision card`;
-    if (action.tool === 'discard_item' || action.tool === 'close_as_done' || action.tool === 'rerun_ci') throw new Error(`${action.tool} is carried out by answerDecision`);
+    if (action.tool === 'discard_item' || action.tool === 'close_as_done' || action.tool === 'rerun_ci' || action.tool === 'reopen_pr') throw new Error(`${action.tool} is carried out by answerDecision`);
     if (action.tool === 'submit_item') return this.submitAsUser(action.args.id, why) === 'planning' ? `epic ${action.args.id} is having its breakdown planned` : `${action.args.id} is queued for planning`;
     const a = action.args; const epic = a.kind === 'epic';
     const planner = findModel(this.store.config, a.planner)?.id; const implementer = findModel(this.store.config, a.implementer)?.id;
@@ -4333,10 +4387,11 @@ export class LiveEngine implements Engine {
     // So does closing one as done (#126): both are async, and both can end this card's own item (icebox, FINISHED).
     const act = chosen?.action;
     // A re-run clears the block and the card with it (#162): the same ending as the two that move the item.
-    const ends = act?.tool === 'discard_item' || act?.tool === 'close_as_done' || act?.tool === 'rerun_ci';
+    const ends = act?.tool === 'discard_item' || act?.tool === 'close_as_done' || act?.tool === 'rerun_ci' || act?.tool === 'reopen_pr';
     const done = act?.tool === 'discard_item' ? await this.discard(act.args.id, act.args.reason, { deleteBranch: act.args.delete_branch === true, from: `your answer on ${id}'s decision card` })
       : act?.tool === 'close_as_done' ? (await this.closeAsDone(act.args.id, `${act.args.reason} (your answer on ${id}'s decision card)`), `${act.args.id} closed as done`)
       : act?.tool === 'rerun_ci' ? await (async () => { const r = await this.rerunCi(act.args.id, 'user'); if (/^not (possible|now)/.test(r)) throw new Error(r); return r; })()
+      : act?.tool === 'reopen_pr' ? await (async () => { const r = await this.reopenPr(act.args.id); if (/^not (possible|now)/.test(r)) throw new Error(r); return r; })()
       : act ? this.performAction(act, id) : undefined;
     if (ends && !decisionOf(this.store.requireItem(id).file.frontmatter)) {
       this.store.mutateItem(id, [{ activity: { actor: 'user', text: `decided: ${decision.question} → ${said} (done for you: ${done})` } }], 'user', { commit: `${id}: decision answered` });

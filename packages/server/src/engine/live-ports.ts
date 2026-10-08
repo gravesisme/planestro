@@ -4,7 +4,7 @@ import { statfs } from 'node:fs/promises';
 import { existsSync, mkdirSync, renameSync, copyFileSync, unlinkSync, lstatSync, readdirSync, readFileSync, statSync, constants as fsConstants } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { matchesPathPattern } from './ports.ts';
-import type { GitPort, GhPort, ProcPort, WorktreeEntry, RebaseResult, CiStatus, CiQueue, PrInfo, ChangedFile, IssueInfo, RunnerReport, RunnerInfo, OpenJob } from './ports.ts';
+import type { GitPort, GhPort, ProcPort, WorktreeEntry, RebaseResult, CiStatus, CiQueue, PrInfo, ChangedFile, IssueInfo, PrClosure, RunnerReport, RunnerInfo, OpenJob } from './ports.ts';
 
 const execFileP = promisify(execFile);
 
@@ -404,6 +404,18 @@ export class LiveGhPort implements GhPort {
     return { number: Number(url.split('/').pop()), url };
   }
   async closePr(repo: string, number: number, comment: string) { await gh(['pr', 'close', String(number), '--repo', repo, '--comment', comment]); }
+  async reopenPr(repo: string, number: number) { await gh(['pr', 'reopen', String(number), '--repo', repo]); }
+  async prClosedBy(repo: string, number: number): Promise<PrClosure | null> {
+    // One line per `closed` event, page by page; the last is the close that stands.
+    const lines = (await ghRead(['api', '--paginate', `repos/${repo}/issues/${number}/events?per_page=100`, '--jq', '.[] | select(.event == "closed") | {actor: .actor.login, commit: .commit_id, at: .created_at}'])).trim().split('\n').filter(Boolean);
+    if (!lines.length) return null;
+    const ev = JSON.parse(lines[lines.length - 1]) as { actor?: string | null; commit?: string | null; at?: string | null };
+    const closure: PrClosure = { ...(ev.actor ? { actor: ev.actor } : {}), ...(ev.commit ? { commit: ev.commit } : {}), ...(ev.at ? { at: ev.at } : {}) };
+    if (!ev.commit) return closure;
+    // The commit's own pull request: the merge whose message carried the closing keyword.
+    const pr = (await ghRead(['api', `repos/${repo}/commits/${ev.commit}/pulls`, '--jq', `[.[] | select(.number != ${number})][0].number // empty`]).catch(() => '')).trim();
+    return pr && /^\d+$/.test(pr) ? { ...closure, pr: Number(pr) } : closure;
+  }
   async mergePr(repo: string, number: number, opts: { headSha: string }): Promise<'merged' | 'head_moved'> {
     try {
       await gh(['pr', 'merge', String(number), '--repo', repo, '--merge', '--match-head-commit', opts.headSha]);
