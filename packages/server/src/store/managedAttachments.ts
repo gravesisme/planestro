@@ -1,16 +1,16 @@
 import { existsSync, lstatSync, mkdirSync, realpathSync } from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
 
-import { ID_RE } from '@planestro/shared';
+import { ID_RE, CHAT_ATTACHMENTS_DIR } from '@planestro/shared';
 const FILE = /^[A-Za-z0-9._-]+$/;
 const inside = (root: string, path: string): boolean => {
   const rel = relative(root, path);
   return rel !== '' && !isAbsolute(rel) && rel !== '..' && !rel.startsWith('../') && !rel.startsWith('..\\');
 };
 
-/** Managed files never traverse a symlink, even one currently pointing inside the tree. */
+/** Managed files never traverse a symlink, even one currently pointing inside the tree. `id` is an item's, or the chat's folder (#288). */
 export function managedAttachmentPath(dataDir: string, id: string, file: string, create = false): string {
-  if (!ID_RE.test(id) || !FILE.test(file) || file === '.' || file === '..') throw new Error('invalid managed attachment path');
+  if (!(ID_RE.test(id) || id === CHAT_ATTACHMENTS_DIR) || !FILE.test(file) || file === '.' || file === '..') throw new Error('invalid managed attachment path');
   const data = realpathSync(dataDir);
   let dir = data;
   for (const part of ['attachments', id]) {

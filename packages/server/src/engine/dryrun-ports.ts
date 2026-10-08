@@ -310,7 +310,7 @@ export class DryRunClaudePort implements ClaudePort {
 
   /** Fake orchestrator: approves the plans whose approval was delegated to it, annotates nothing else, and closes with done_with_wake. */
   async runCustomTurn(o: CustomTurnOptions): Promise<TurnResult> {
-    this.w.log(`Would run an orchestrator wake (${o.label}) with ${o.model}${o.resume ? `, resuming ${o.resume.slice(0, 8)}` : ''}`);
+    this.w.log(`Would run an orchestrator wake (${o.label}) with ${o.model}${o.resume ? `, resuming ${o.resume.slice(0, 8)}` : ''}${o.images?.length ? ` with ${o.images.length} image(s)` : ''}`);
     o.onOutput(`(dry-run) wake: ${o.prompt.slice(0, 120).replace(/\n/g, ' ')}…`);
     const approve = o.mcpTools.find((t) => t.name === 'approve_plan');
     const convert = o.mcpTools.find((t) => t.name === 'convert_item');

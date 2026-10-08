@@ -148,7 +148,12 @@ export const api = {
   queueOrder: (ids: string[]) => req<{ ok: true }>('POST', '/api/queue/order', { ids }),
   resumeAfter: (id: string, items: string[], message: string, prs: number[] = []) => req<ItemView>('POST', `/api/items/${encodeURIComponent(id)}/resume-after`, { items, message, prs }),
   cancelResumeAfter: (id: string) => req<ItemView>('DELETE', `/api/items/${encodeURIComponent(id)}/resume-after`),
-  orchestratorMessage: (text: string, item?: string) => req<{ ok: true }>('POST', '/api/orchestrator/message', { text, item }),
+  orchestratorMessage: (text: string, item?: string, files: File[] = []) => {
+    if (!files.length) return req<{ ok: true }>('POST', '/api/orchestrator/message', { text, item });
+    const fd = new FormData(); fd.append('text', text); if (item) fd.append('item', item);
+    for (const f of files) fd.append('file', f, f.name);
+    return req<{ ok: true }>('POST', '/api/orchestrator/message', undefined, fd);
+  },
   orchestratorChat: () => req<{ enabled: boolean; entries: JournalEntry[] }>('GET', '/api/orchestrator/chat'),
   orchestratorQuestions: () => req<JournalEntry[]>('GET', '/api/orchestrator/questions'),
   questions: (status?: 'open' | 'resolved' | 'withdrawn') => req<QuestionView[]>('GET', `/api/questions${status ? `?status=${status}` : ''}`),

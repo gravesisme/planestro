@@ -296,6 +296,8 @@ export interface CustomTurnOptions {
   resumeTotalUsd?: number;
   allowedTools: string[];
   mcpTools: CustomToolDef[];
+  /** Images that come with the prompt (absolute paths): what the user attached in the chat (#288). */
+  images?: string[];
   /** Codex only (#245), as for worker turns. */
   effort?: CodexEffort;
   serviceTier?: CodexTier;

@@ -42,7 +42,7 @@ const send = (app: Hono, text: string, files: [string, Buffer, string][] = [], i
   const fd = new FormData();
   fd.append('text', text);
   if (item) fd.append('item', item);
-  for (const [name, data, type] of files) fd.append('file', new File([data], name, { type }));
+  for (const [name, data, type] of files) fd.append('file', new File([new Uint8Array(data)], name, { type }));
   return app.request('/api/orchestrator/message', { method: 'POST', body: fd });
 };
 const lastMessage = (s: DataStore) => s.journal.read({ type: 'orchestrator.user_message' }).at(-1)!;
@@ -57,7 +57,7 @@ describe('the orchestrator chat takes images and files (#288)', () => {
     const entry = lastMessage(s);
     expect(entry.data?.text).toBe(long);
     const atts = entry.data?.attachments as { path: string; name: string; kind: string; bytes: number }[];
-    expect(atts.map((a) => [a.name, a.kind, a.bytes])).toEqual([['board shot.png', 'image', PNG.length], ['notes.md', 'file', 27]]);
+    expect(atts.map((a) => [a.name, a.kind, a.bytes])).toEqual([['board shot.png', 'image', PNG.length], ['notes.md', 'file', 26]]);
     for (const a of atts) {
       expect(a.path).toMatch(/^attachments\/chat\/[A-Za-z0-9._-]+$/);
       expect(existsSync(join(dataDir, a.path))).toBe(true);
@@ -80,7 +80,7 @@ describe('the orchestrator chat takes images and files (#288)', () => {
     expect(img.status).toBe(200);
     expect(img.headers.get('content-type')).toBe('image/png');
     const chat = await (await app.request('/api/orchestrator/chat')).json();
-    expect(chat.entries.at(-1).data.attachments).toHaveLength(2);
+    expect(chat.entries.find((j: { type: string }) => j.type === 'orchestrator.user_message').data.attachments).toHaveLength(2);
   });
 
   it('a message may be only an attachment; JSON messages still work', async () => {
@@ -120,11 +120,10 @@ describe('the orchestrator chat takes images and files (#288)', () => {
   });
 
   it('a fresh conversation hears what the user attached lately', async () => {
-    const { store: s, wakes, app } = await setup();
+    const { wakes, app } = await setup();
     await send(app, 'see this', [['shot.png', PNG, 'image/png']]);
     await waitFor(() => wakes.length === 1);
-    expect(wakes[0].prompt).toMatch(/user: see this \(attached: shot\.png\)/);
-    void s;
+    expect(wakes[0].prompt).toMatch(/user: see this \(attached: shot\.png at \/.*shot\.png\)/);
   });
 
   it('the chat route serves only regular files inside attachments/chat', async () => {

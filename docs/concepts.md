@@ -250,6 +250,14 @@ not start it refuses an epic and says why, rather than reporting something that 
 triage (`unblock_item`, `retry_op`, …). The **Ask the orchestrator** button on a blocked item
 opens the chat about that item. While automation is paused it answers when you resume.
 
+The input grows with what you write, up to 40% of the screen. Enter sends at a keyboard (Shift+Enter
+for a new line); on a phone Enter is a new line and **Send** sends. Paste an image into it, or attach
+images and documents (text, markdown, JSON, CSV, YAML, logs, PDF; up to 8, each within
+`attachments.managed_max_bytes`, photos converted and shrunk as on an item) with the paperclip.
+planestro stores them in the data dir under `attachments/chat/`, commits them, and records them on
+the message; the wake hands the images to the model (Claude as image content, Codex as local
+images) and names every attachment by its path, so the orchestrator can Read it again later.
+
 ### Its questions for you
 
 When the orchestrator needs something from you that is not a stopped item's decision card, it

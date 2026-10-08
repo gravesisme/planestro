@@ -266,7 +266,7 @@ export class CodexAppServerPort implements AgentPort {
       if (usage) counter = new TurnTokenCounter(budgetTokens({ input_tokens: usage.inputTokens, cached_input_tokens: usage.cachedInputTokens, output_tokens: usage.outputTokens }));
       const t = await rpc.request('turn/start', { threadId: thread, model: o.model, cwd: o.cwd, approvalPolicy: 'on-request', ...(o.effort ? { effort: o.effort } : {}), ...tier,
         sandboxPolicy: readOnly ? { type: 'readOnly', networkAccess: false } : { type: 'workspaceWrite', writableRoots, networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true },
-        input: [{ type: 'text', text: o.prompt, text_elements: [] }, ...(worker ? (o.images ?? []).map((path) => ({ type: 'localImage', path })) : [])] });
+        input: [{ type: 'text', text: o.prompt, text_elements: [] }, ...(o.images ?? []).map((path) => ({ type: 'localImage', path }))] });
       turn ??= t.turn.id; scope ??= new ScopedTools(thread!, turn!, tools);
       await Promise.race([ended, rpc.closed]);
       await serial;

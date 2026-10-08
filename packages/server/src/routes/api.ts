@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { managedAttachmentPath } from '../store/managedAttachments.ts';
 import { existsSync, readFileSync } from 'node:fs';
 import YAML from 'yaml';
-import { allowedTransitions, parsePromptFile, RenderError, STATUSES, PRIORITIES, type Priority, PROMPT_KINDS, RELEASE_STATUSES, KINDS, markUnavailable, type Status, type Actor } from '@planestro/shared';
+import { allowedTransitions, parsePromptFile, RenderError, STATUSES, PRIORITIES, type Priority, PROMPT_KINDS, RELEASE_STATUSES, KINDS, markUnavailable, CHAT_ATTACHMENTS_DIR, type Status, type Actor } from '@planestro/shared';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Engine } from '../engine/Engine.ts';
 import type { ConsoleBuffer } from '../store/ConsoleBuffer.ts';
@@ -412,11 +412,21 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
 
   api.post('/orchestrator/message', async (c) => {
     try {
-      const { text, item } = z.object({ text: z.string().min(1), item: z.string().optional() }).parse(await c.req.json());
+      // JSON, or a form with `file` parts (#288): what the user pasted or picked, stored and committed before the message is.
+      const files: { name: string; data: Buffer }[] = [];
+      let body: unknown;
+      if ((c.req.header('content-type') ?? '').includes('multipart/form-data')) {
+        const form = await c.req.formData();
+        for (const f of form.getAll('file')) if (f instanceof File) files.push({ name: f.name || 'paste.png', data: Buffer.from(await f.arrayBuffer()) });
+        body = { text: String(form.get('text') ?? '').replace(/\r\n/g, '\n'), item: form.get('item') || undefined }; // a form sends its line breaks as CRLF
+      } else body = await c.req.json();
+      const { text, item } = z.object({ text: z.string(), item: z.string().optional() }).parse(body);
+      if (!text.trim() && !files.length) throw new Error('nothing to send');
       const e = engine as Engine & { orchestrator?: { wake: (ev: { type: string; item?: string; data?: Record<string, unknown> }) => void; enabled: boolean } };
       if (!e.orchestrator?.enabled) throw new Error('the orchestrator is not available with this engine');
-      store.journal.append({ type: 'orchestrator.user_message', item, actor: 'user', data: { text } });
-      e.orchestrator.wake({ type: 'user_message', item, data: { message: text } });
+      const attachments = store.addChatAttachments(files);
+      store.journal.append({ type: 'orchestrator.user_message', item, actor: 'user', data: { text, ...(attachments.length ? { attachments } : {}) } });
+      e.orchestrator.wake({ type: 'user_message', item, data: { message: text, ...(attachments.length ? { attachments } : {}) } });
       return c.json({ ok: true });
     } catch (e) { return fail(c, e); }
   });
@@ -524,7 +534,7 @@ export function attachmentRoutes(store: DataStore): Hono {
   const r = new Hono();
   r.get('/:id/:file', (c) => {
     const id = c.req.param('id'), file = c.req.param('file');
-    if (!store.getItem(id)) return c.notFound();
+    if (id !== CHAT_ATTACHMENTS_DIR && !store.getItem(id)) return c.notFound();
     try {
       const abs = managedAttachmentPath(store.dataDir, id, file);
       const ext = file.split('.').pop()?.toLowerCase() ?? '';

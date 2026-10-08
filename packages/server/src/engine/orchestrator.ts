@@ -10,7 +10,7 @@ import { hostNote, keptPathsNote } from './hostNote.ts';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Ports, CustomToolDef, TurnResult } from './ports.ts';
 import { quietTransientFailure } from './transient.ts';
-import type { DecisionInput, DecisionAction, RateLimitSnapshot, Priority } from '@planestro/shared';
+import type { DecisionInput, DecisionAction, RateLimitSnapshot, Priority, ChatAttachment } from '@planestro/shared';
 
 /**
  * What submit_item does with an epic, said wherever the user is talking to it (#73): the tool list
@@ -67,6 +67,8 @@ const RECENT_CHAT_ENTRIES = 30;
 export interface WakeEvent { type: string; item?: string; data?: Record<string, unknown>; retry?: { not_before: number } }
 const due = (e: WakeEvent): boolean => !e.retry || e.retry.not_before <= Date.now();
 /** The question a wake is about: `question_message` and `question_review` carry its id in `data.question`. */
+/** What a chat message carried (#288), as the journal recorded it. */
+const chatAttachmentsOf = (e: { data?: Record<string, unknown> }): ChatAttachment[] => (Array.isArray(e.data?.attachments) ? (e.data.attachments as ChatAttachment[]) : []);
 const questionOf = (e: WakeEvent): string | undefined => (e.type.startsWith('question_') && typeof e.data?.question === 'string' ? e.data.question : undefined);
 
 /**
@@ -331,6 +333,7 @@ export class Orchestrator {
       state = { wakes_served: 0 };
     }
     const packet = [...events.map((e) => this.renderPacket(e)), ...(await this.inFlightSection(events))].join('\n\n---\n\n');
+    const images = events.filter((e) => e.type === 'user_message').flatMap((e) => chatAttachmentsOf(e)).filter((a) => a.kind === 'image').flatMap((a) => this.chatAbs(a.path) ?? []).filter((p) => existsSync(p));
     const carried = state.session_id ? '' : this.recentChat();
     const prompt = `${state.session_id ? '' : intro + '\n\n'}${carried ? carried + '\n\n' : ''}# Wake: ${events.map((e) => e.type).join(', ')} — ${isoLocal()}\n\n${packet}\n\nHandle what needs judgment using the planestro tools, then call done_with_wake with a one-line summary. Everything mechanical is already handled by the app; do not attempt git or gh operations.`;
     let doneSummary = '';
@@ -341,7 +344,7 @@ export class Orchestrator {
       signal: this.activeAbort?.signal,
       label: events.map((e) => e.type).join(','), cwd: this.store.codeRepoPath(), model, ...runnerTurnSettings(pick.def),
       ...(pick.sdkFallback ? { fallbackModel: pick.sdkFallback } : {}),
-      permissionMode: 'dontAsk', prompt, resume: state.session_id, maxTurns: 30,
+      permissionMode: 'dontAsk', prompt, resume: state.session_id, maxTurns: 30, ...(images.length ? { images } : {}),
       maxTokens: state.session_id ? cfg.budget_tokens_per_wake : cfg.budget_tokens_per_fresh_wake,
       onApproval: async (req) => { this.store.journal.append({ type: 'orchestrator.permission_declined', actor: 'orchestrator', data: { ...req } }); },
       ...(state.session_id && state.total_usd !== undefined ? { resumeTotalUsd: state.total_usd } : {}),
@@ -407,7 +410,8 @@ export class Orchestrator {
       const who = j.type === 'orchestrator.user_message' ? 'user' : 'you';
       const text = String(j.data?.text ?? '').replace(/\s+/g, ' ').trim();
       const max = who === 'user' ? 1000 : 300;
-      return `- ${j.ts.slice(0, 16).replace('T', ' ')} ${who}${j.item ? ` (on ${j.item})` : ''}: ${text.length > max ? `${text.slice(0, max)}…` : text}`;
+      const atts = chatAttachmentsOf(j);
+      return `- ${j.ts.slice(0, 16).replace('T', ' ')} ${who}${j.item ? ` (on ${j.item})` : ''}: ${text.length > max ? `${text.slice(0, max)}…` : text}${atts.length ? ` (attached: ${atts.map((a) => `${a.name}${this.chatAbs(a.path) ? ` at ${this.chatAbs(a.path)}` : ''}`).join(', ')})` : ''}`;
     };
     return [
       `# What the user said to you lately\nThis is a fresh conversation: the one before it was rotated away, and with it what the user told you in the chat (the last ${RECENT_CHAT_DAYS} days, from the journal). An instruction there that is not yet carried out, done or withdrawn still stands: act on it when its moment comes, as if they had just said it.`,
@@ -482,13 +486,26 @@ export class Orchestrator {
         if (fm.triage) lines.push(e.type === 'decision_answered' ? this.decisionAnsweredPacket() : this.triagePacket(fm));
       }
     }
-    if (e.type === 'user_message') lines.push(CHAT_POLICY);
+    if (e.type === 'user_message') { lines.push(...this.chatMessageLines(e), CHAT_POLICY); return lines.join('\n'); }
     if (e.type === 'epic_message') lines.push(e.data?.queued_for ? `The user sent this message to the epic while ${String(e.data.queued_for)} was live: it is queued for that session, which reads it when its turn ends (a one-shot conflict session never does: its merge is not pushed, and the epic stops for you). message_session reaches that session too. Children it changes still hear of it only through you.\n${EPIC_MESSAGE_POLICY.split('\n').slice(1).join('\n')}` : EPIC_MESSAGE_POLICY);
     const q = questionOf(e);
     if (q) { lines.push(this.questionPacket(e, q)); return lines.join('\n'); }
     for (const [k, v] of Object.entries(e.data ?? {})) lines.push(`${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`.slice(0, 2000));
     return lines.join('\n');
   }
+
+  /**
+   * What the user said in the chat, whole (#288: every other packet line stops at 2,000 characters), and what they
+   * attached, each by a path it can Read: the images also come with the message on runners that take them.
+   */
+  private chatMessageLines(e: WakeEvent): string[] {
+    const lines = [`message: ${String(e.data?.message ?? '').slice(0, 20_000)}`];
+    const atts = chatAttachmentsOf(e);
+    if (atts.length) lines.push(`The user attached ${atts.length === 1 ? 'a file' : `${atts.length} files`} (stored by planestro; Read a path to look at it${atts.some((a) => a.kind === 'image') ? ', and the images also come with this message where your runner takes them' : ''}):`,
+      ...atts.map((a) => `- ${a.name} (${a.kind}, ${Math.max(1, Math.round(a.bytes / 1024))} KB): ${this.chatAbs(a.path) ?? `${a.path} (missing from the data dir)`}`));
+    return lines;
+  }
+  private chatAbs(path: string): string | undefined { try { return this.store.chatAttachmentAbsPath(path); } catch { return undefined; } }
 
   /**
    * The whole question file (the files are the memory: the thread holds everything said so far),
