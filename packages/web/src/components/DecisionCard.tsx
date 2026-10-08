@@ -1,3 +1,4 @@
+import { UsageProviderSwitch } from './UsageProviderSwitch.tsx';
 import { useState } from 'react';
 import { decisionOf, describeAction, dollarHint } from '@planestro/shared';
 import { api, type ItemView } from '../api.ts';
@@ -36,6 +37,7 @@ export function DecisionCard({ item }: { item: ItemView }) {
       <div className="decision-kicker">Your decision · {item.id}</div>
       <h2 className="decision-question">{decision.question}</h2>
       <p className="decision-why">{decision.why}</p>
+      <UsageProviderSwitch item={item} />
       <div className="decision-options">
         {decision.options.map((o) => (
           <button key={o.label} className={`decision-option ${o.recommended ? 'recommended' : ''}`} disabled={sending} onClick={() => void send({ choice: o.label, ...(text.trim() ? { text: text.trim() } : {}) })}>

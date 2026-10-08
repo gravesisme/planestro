@@ -5,6 +5,7 @@ import { LiveEngine } from '../src/engine/LiveEngine.ts';
 import { FakeWorld, DryRunGitPort, DryRunGhPort, DryRunProcPort } from '../src/engine/dryrun-ports.ts';
 import type { Ports, TurnOptions, TurnResult } from '../src/engine/ports.ts';
 import { itemModelSwitchOps } from '../src/providerSwitch.ts';
+import { itemView } from '../src/routes/views.ts';
 import { makeFixture, sleep } from './helpers.ts';
 
 let store: DataStore;
@@ -119,12 +120,77 @@ it('refuses unusable native Codex grants without persisting a fake allow rule; d
   const ctx = await setup();
   const id = ctx.item({ implementer: 'codex-general', awaiting: 'permission', awaiting_data: { tool: 'CodexApproval', input: { command: 'needs network', method: 'item/commandExecution/requestApproval' } } });
   const rules = store.config.permissions.allow;
-  for (const decision of ['allow', 'always']) await expect(engine.respond(id, { kind: 'permission', decision })).rejects.toThrow('cannot be granted here');
+  await expect(engine.respond(id, { kind: 'permission', decision: 'allow' })).rejects.toThrow('cannot be granted here');
+  await expect(engine.respond(id, { kind: 'permission', decision: 'always' })).rejects.toThrow('only be allowed once');
   expect(store.config.permissions.allow).toEqual(rules);
   expect(store.requireItem(id).file.frontmatter.awaiting).toBe('permission');
   await engine.respond(id, { kind: 'permission', decision: 'deny', reason: 'Use the project inspection tool' });
   await until(() => ctx.calls.length === 1);
   expect(ctx.calls[0].prompt).toContain('Use the project inspection tool');
+});
+
+it('persists an exact Codex approval through pause/restart and consumes it once before accepting', async () => {
+  const seen: unknown[] = [];
+  let req: { tool: string; input: Record<string, unknown> };
+  const ctx = await setup(async (o) => {
+    // A different command cannot spend the grant.
+    seen.push(await o.onApproval!({ ...req, input: { ...req.input, command: 'different command' } }));
+    seen.push(await o.onApproval!(req));
+    expect((store.requireItem(o.itemId).file.frontmatter.op_data?.active_turn as any).opts.commandGrant).toBeUndefined();
+    seen.push(await o.onApproval!(req));
+    return { ...success, parked: 'permission' };
+  });
+  req = { tool: 'CodexApproval', input: { method: 'item/commandExecution/requestApproval', command: 'gh api repos/owner/project/actions/runners', cwd: ctx.codeRepo, environmentId: 'local' } };
+  const id = ctx.item({ implementer: 'codex-general', awaiting: 'permission', awaiting_data: { ...req, grantable: false } });
+  expect(itemView(store, store.requireItem(id)).frontmatter.awaiting_data?.grantable).toBe(true);
+  expect(store.requireItem(id).file.frontmatter.awaiting_data?.grantable).toBe(false); // old files need no rewrite
+  const rules = [...store.config.permissions.allow];
+  engine.pause();
+  await expect(engine.respond(id, { kind: 'permission', decision: 'always' })).rejects.toThrow('only be allowed once');
+  await engine.respond(id, { kind: 'permission', decision: 'allow' });
+  await until(() => !(engine as any).jobs.has(id));
+  expect((store.requireItem(id).file.frontmatter.op_data?.pending_turn as any).opts.commandGrant).toMatchObject({ command: req.input.command, cwd: ctx.codeRepo });
+  await ctx.restart(); engine.resume();
+  await until(() => ctx.calls.length === 1 && engine.sessions().length === 0);
+  expect(seen).toEqual([undefined, 'allow', undefined]);
+  expect(store.config.permissions.allow).toEqual(rules);
+  expect(ctx.calls[0].allowedTools).not.toContain('CodexApproval');
+  expect(ctx.calls[0].prompt).toContain(req.input.command);
+});
+
+it('does not resurrect a consumed Codex grant after a process is interrupted', async () => {
+  let req: { tool: string; input: Record<string, unknown> };
+  let accepted = 0;
+  const ctx = await setup(async (o) => {
+    const answer = await o.onApproval!(req);
+    if (answer === 'allow') {
+      accepted++;
+      await new Promise<void>((resolve) => o.signal!.addEventListener('abort', () => resolve(), { once: true }));
+      return { ...success, subtype: 'killed' };
+    }
+    return { ...success, parked: 'permission' };
+  });
+  req = { tool: 'CodexApproval', input: { method: 'item/commandExecution/requestApproval', command: 'gh api repos/owner/project/actions/runners', cwd: ctx.codeRepo } };
+  const id = ctx.item({ implementer: 'codex-general', awaiting: 'permission', awaiting_data: req });
+  await engine.respond(id, { kind: 'permission', decision: 'allow' });
+  await until(() => accepted === 1);
+  await ctx.restart(); engine.resume();
+  await until(() => ctx.calls.length === 2 && engine.sessions().length === 0);
+  expect(accepted).toBe(1);
+  expect(store.requireItem(id).file.frontmatter.awaiting).toBe('permission');
+});
+
+it('refuses a native grant outside the item worktree and applies worker hard denials to shell bodies', async () => {
+  const ctx = await setup();
+  for (const input of [
+    { command: 'echo ok', cwd: '/outside' },
+    { command: '/bin/zsh -lc "git push origin worker"', cwd: ctx.codeRepo },
+  ]) {
+    const id = ctx.item({ implementer: 'codex-general', awaiting: 'permission', awaiting_data: { tool: 'CodexApproval', input: { method: 'item/commandExecution/requestApproval', ...input } } });
+    await expect(engine.respond(id, { kind: 'permission', decision: 'allow' })).rejects.toThrow();
+    expect(store.requireItem(id).file.frontmatter.awaiting).toBe('permission');
+  }
+  expect(ctx.calls).toHaveLength(0);
 });
 
 it.each(['rejected', 'throws', 'wrong-phase'])('quarantines a %s outbox once and surfaces recovery instead of stalling', async (mode) => {

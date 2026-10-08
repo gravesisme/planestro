@@ -2,11 +2,13 @@ import type { JournalEntry } from '@planestro/shared';
 import { WORKTREE_SCOPE } from '@planestro/shared';
 import { literal, readShell } from './shell.ts';
 import type { PermissionRequest } from './ports.ts';
+import { commandGrant } from './sessions/nativeApproval.ts';
 
-/** Native approval callbacks cannot carry a grant into a later turn. Also covers
- * requests persisted before the grantable flag was introduced. */
-export function permissionGrantRefusal(req: PermissionRequest): string | undefined {
-  if (req.tool === 'CodexApproval') return 'Codex sandbox permissions cannot be granted here. Take over to perform the action yourself, then hand back, or deny it and ask the worker for another approach.';
+/** Only an exact local command can be approved on its next request; never widen a turn's sandbox. */
+export function permissionGrantRefusal(req: PermissionRequest, decision = 'allow'): string | undefined {
+  if (req.tool !== 'CodexApproval') return;
+  if (decision === 'always') return 'Codex commands can only be allowed once; permanent sandbox grants are not supported.';
+  if (!commandGrant(req)) return 'These Codex sandbox permissions cannot be granted here. Only a complete local command can be allowed once. Take over to perform the action yourself, then hand back, or deny it and ask the worker for another approach.';
 }
 
 /**
@@ -121,6 +123,8 @@ export function parkedRequestText(req: { tool: string; input: Record<string, unk
  * again in any other form.
  */
 export function rulingText(req: { tool: string; input: Record<string, unknown> }, decision: 'allow' | 'always' | 'deny', who: string, note?: string): string {
+  const native = commandGrant(req);
+  if (decision === 'allow' && native) return `APPROVED ONCE: ${who} approved your original command in ${native.cwd}${note ? ` (${note})` : ''}. Reissue the original exec tool call with exactly the same command and working directory, requesting the same escalation. planestro will accept that matching request once. Do not add a nested shell wrapper or change the command. Any different command requires a new decision. The sandbox is otherwise unchanged.\n\nFull command as shown by Codex:\n${native.command}\n\nOriginal command actions:\n${JSON.stringify(req.input.commandActions ?? [])}\n\nThen continue.`;
   const what = req.tool === 'Bash' ? `your command ${parkedRequestText(req)}` : `your ${parkedRequestText(req)} call`;
   if (decision === 'deny') return `DENIED: ${who} denied ${what}${note ? `: ${note}` : ''}. Do not retry it in another form (a rewritten command, a script, another tool to the same effect). Continue without it, or call report_blocked if you cannot.`;
   return `APPROVED: ${who} approved ${what}${note ? ` (${note})` : ''}. Run it now, as it was; it is allowed. Then continue.`;

@@ -46,7 +46,8 @@ const send = (m) => process.stdout.write(JSON.stringify(m)+'\\n');
 process.stdin.on('end', () => fs.writeFileSync(log+'.stdin-ended','yes'));
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
  const m=JSON.parse(line); fs.appendFileSync(log,JSON.stringify(m)+'\\n');
- if (m.id===100) { send({method:'turn/completed',params:{threadId:'thread',turn:{id:'turn'}}}); return; }
+ if (m.id===100 && m.result?.decision==='accept') { send({id:101,method:'item/tool/call',params:{threadId:'thread',turnId:'turn',callId:'after-approval',tool:'report_done',arguments:{summary:'Approved command completed'}}}); return; }
+ if (m.id===100 || m.id===101) { send({method:'turn/completed',params:{threadId:'thread',turn:{id:'turn'}}}); return; }
  if (m.method==='initialize') send({id:m.id,result:{}});
  if (m.method==='config/read') send({id:m.id,result:{config:{mcp_servers:{}},layers:[{config:{mcp_servers:{unrelated:{command:'never-run'}}},disabledReason:'untrusted'}]}});
  if (m.method==='thread/start'||m.method==='thread/resume') {
@@ -57,7 +58,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   send({id:m.id,result:{turn:{id:'turn'}}});
   send({method:'turn/started',params:{threadId:'thread',turn:{id:'turn'}}});
   if(mode==='cap') { send({method:'thread/tokenUsage/updated',params:{threadId:'thread',turnId:'turn',tokenUsage:{total:{inputTokens:200,cachedInputTokens:100,outputTokens:20},last:{totalTokens:120}}}}); return; }
-  if(mode==='approval') send({id:100,method:'item/commandExecution/requestApproval',params:{threadId:'thread',turnId:'turn',command:'network command'}});
+  if(mode.startsWith('approval')) send({id:100,method:'item/commandExecution/requestApproval',params:{threadId:mode==='approval-foreign'?'other':'thread',turnId:'turn',command:'network command',cwd:${JSON.stringify(root)},environmentId:'local',...(mode==='approval-scope'?{additionalPermissions:{network:{enabled:true}}}:{})}});
   else send({id:100,method:'item/tool/call',params:{threadId:'thread',turnId:'turn',callId:'call',tool:mode==='plan'?'submit_plan':'report_done',arguments:mode==='plan'?{plan:'A synthetic plan'}:{summary:'Done',attach:['capture.png'],review:'Loop review'}}});
  }
  if(m.method==='turn/interrupt') { send({id:m.id,result:{}}); send({method:'turn/completed',params:{threadId:'thread',turn:{id:'turn'}}}); }
@@ -102,6 +103,31 @@ it('records approvals then declines them in the same cycle and exits without a h
   } }));
   expect(persisted).toBe(true); expect(result.parked).toBe('permission');
   expect(readFileSync(log,'utf8')).toContain('"decision":"decline"');
+});
+it('accepts a consumed saved command grant and continues, without changing the turn sandbox', async () => {
+  const { root, log, port } = fixture('approval');
+  const result = await port.runTurn(options(root, { onApproval: async () => 'allow' }));
+  expect(result.done).toBe('Approved command completed');
+  expect(result.parked).toBeUndefined();
+  const records = readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  expect(records.find((r) => r.id === 100).result).toEqual({ decision: 'accept' });
+  expect(records.some((r) => r.method === 'turn/interrupt')).toBe(false);
+  expect(records.find((r) => r.method === 'turn/start').params.sandboxPolicy).toMatchObject({ type: 'workspaceWrite', networkAccess: false });
+});
+it.each(['approval-foreign', 'approval-scope', 'approval-throws'])('never accepts %s, even if a caller attempts a grant', async (mode) => {
+  const { root, log, port } = fixture(mode);
+  const approval = vi.fn(async () => { if (mode === 'approval-throws') throw new Error('persistence failed'); return 'allow' as const; });
+  await port.runTurn(options(root, { onApproval: approval }));
+  const records = readFileSync(log, 'utf8');
+  expect(records).toContain('"decision":"decline"');
+  expect(records).not.toContain('"decision":"accept"');
+  if (mode === 'approval-foreign') expect(approval).not.toHaveBeenCalled();
+});
+it('declines if the turn is stopped while its saved approval is being consumed', async () => {
+  const { root, log, port } = fixture('approval');
+  const controller = new AbortController();
+  await port.runTurn(options(root, { signal: controller.signal, onApproval: async () => { controller.abort(); return 'allow'; } }));
+  expect(readFileSync(log, 'utf8')).not.toContain('"decision":"accept"');
 });
 it('retains complete lost-report arguments and exposes a connection drop', async () => {
   const { root, port } = fixture('lost'); let saved: unknown; let dropped = false;

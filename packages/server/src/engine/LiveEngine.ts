@@ -10,6 +10,7 @@ import { operatorMcpUrl } from '../routes/mcp.ts';
 import { listInstances } from '../instances.ts';
 import { makePolicy, ruleFor, allowedByRules, sdkRules, BASE_ALLOWED } from './policy.ts';
 import { answeredCommand, commandShape, rulingText, parkedRefusal, permissionGrantRefusal } from './parks.ts';
+import { commandGrant, commandForms, matchesCommandGrant, type CommandGrant } from './sessions/nativeApproval.ts';
 import { hostNote, keptPathsNote, cwdNote } from './hostNote.ts';
 import { Orchestrator } from './orchestrator.ts';
 import { NeedsYouWatch, type Wait } from './needsYou.ts';
@@ -61,7 +62,7 @@ const MAX_TRIAGE_ROUNDS = 4;
  * session itself asked. `carryOn`: the prompt only says "continue", so an interrupted fresh turn keeps
  * the task it was given. `final`: the prompt is already what the agent is to read (a re-run).
  */
-interface TurnOpts { opener?: boolean; fresh?: true | 'auto'; note?: string; carryOn?: boolean; final?: boolean; estimate?: ResumeEstimate }
+interface TurnOpts { opener?: boolean; fresh?: true | 'auto'; note?: string; carryOn?: boolean; final?: boolean; estimate?: ResumeEstimate; commandGrant?: CommandGrant }
 interface PendingTurn { key: string; phase: TurnPhase; prompt: string; extraAllowed: string[]; oneShotCommands: string[]; opts: TurnOpts }
 
 /** The CLI's quote as the engine's estimate: the write when the cache has expired, a read of the same window when it has not. */
@@ -1161,29 +1162,37 @@ export class LiveEngine implements Engine {
       if (fm.awaiting !== 'permission' && !(fm.awaiting === 'orchestrator' && fm.awaiting_data?.kind === 'permission')) throw new Error(`${id} is not awaiting a permission decision`);
       const req = fm.awaiting_data as unknown as PermissionRequest;
       const decision = payload.decision as 'allow' | 'always' | 'deny';
+      if (!['allow', 'always', 'deny'].includes(decision)) throw new Error('unknown permission decision');
       if (by === 'orchestrator' && decision === 'always') throw new Error('only the user adds allow rules');
-      // Native sandbox approvals are always declined and the process exits. There is
-      // no scoped grant carried into a new app-server turn; accepting here would lie
-      // to the user (and "always" would persist a rule no adapter can enforce).
-      const grantRefusal = permissionGrantRefusal(req);
+      const grantRefusal = permissionGrantRefusal(req, decision);
       if (decision !== 'deny' && grantRefusal) throw new Error(grantRefusal);
+      const native = decision === 'allow' ? commandGrant(req) : undefined;
+      if (native) {
+        const model = this.store.config.models.find((m) => m.id === (phase === 'plan' ? fm.planner : fm.implementer));
+        if (!fm.worktree || native.cwd !== this.absWorktree(fm.worktree) || !model || modelCapabilities(model).transport !== 'app-server') throw new Error('This command no longer matches the item worktree or app-server runner; request it again in the current session.');
+        const policy = makePolicy(this.store.config, this.store.derived(item).base_branch!, native.cwd);
+        for (const command of commandForms(native.command)) {
+          const why = policy.deny({ tool: 'Bash', input: { command } });
+          if (why) throw new Error(why);
+        }
+      }
       const rule = ruleFor(req);
       const who = by === 'orchestrator' ? 'The orchestrator' : 'The user';
-      const ops: ItemOp[] = [{ unset: ['awaiting', 'awaiting_data'] }, { activity: { actor: by, text: `permission ${decision}${by === 'orchestrator' && payload.reason ? ` (${String(payload.reason).slice(0, 300)})` : ''}: ${rule.slice(0, 400)}` } }];
+      const ops: ItemOp[] = [{ unset: ['awaiting', 'awaiting_data'] }, { activity: { actor: by, text: `permission ${decision}${by === 'orchestrator' && payload.reason ? ` (${String(payload.reason).slice(0, 300)})` : ''}: ${(native ? `${rule} ${native.command}` : rule).slice(0, 400)}` } }];
       // Consecutive denials (#95): any approval, the user's included, means the worker adapted, and the item's requests go back to the
       // orchestrator. Counted for the item's life, HH-253's three reasonable denials sent every later request to the designer's phone.
       if (by === 'orchestrator' && decision === 'deny') ops.push({ set: { op_data: { ...(fm.op_data ?? {}), orchestrator_denials: Number(fm.op_data?.orchestrator_denials ?? 0) + 1 } } });
       else if (decision !== 'deny' && Number(fm.op_data?.orchestrator_denials ?? 0) > 0) ops.push({ set: { op_data: { ...(fm.op_data ?? {}), orchestrator_denials: 0 } } });
       if (decision === 'always' && !this.store.config.permissions.allow.includes(rule)) this.store.updateConfig((doc) => { doc.setIn(['permissions', 'allow'], [...this.store.config.permissions.allow, rule]); }, `config: always allow ${rule.slice(0, 60)}`);
       this.store.mutateItem(id, ops, by, { commit: `${id}: permission ${decision}${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
-      this.recordAnswer(id, fm, by, decision, { tool: req.tool, ...(req.tool === 'Bash' ? answeredCommand(String(req.input.command ?? '')) : {}), ...(payload.reason ? { reason: String(payload.reason).slice(0, 1000) } : {}) });   // after: those ops write op_data from the snapshot, which would drop the resume tag
+      this.recordAnswer(id, fm, by, decision, { tool: req.tool, ...(req.tool === 'Bash' || native ? answeredCommand(String(req.input.command ?? '')) : {}), ...(payload.reason ? { reason: String(payload.reason).slice(0, 1000) } : {}) });   // after: those ops write op_data from the snapshot, which would drop the resume tag
       const msg = `${this.resumeNote(id, 'a permission decision')}\n\n${rulingText(req, decision, who, payload.reason ? String(payload.reason) : undefined)}`;
       // A chained/heredoc command can't be expressed as a matchable allow rule (the SDK's
       // matcher and segment matching both refuse it), so an approval is also carried into the
       // turn as a one-shot exact-command pass (consumed on first use).
       const oneShot = decision !== 'deny' && req.tool === 'Bash' ? [String(req.input.command ?? '')] : [];
       // queued, not dropped: the orchestrator can answer while the turn that asked is still ending
-      this.queueTurn(id, phase, msg, decision === 'deny' ? [] : [rule], oneShot);
+      this.queueTurn(id, phase, msg, decision === 'deny' || native ? [] : [rule], oneShot, native ? { commandGrant: native } : {});
       return;
     }
     throw new Error(`unknown response kind ${String(payload.kind)}`);
@@ -1394,7 +1403,26 @@ export class LiveEngine implements Engine {
         transport: modelCapabilities(def).transport,
         maxTokens: metered ? undefined : Math.min(budget.tokens - (fm.tokens ?? 0), phase === 'plan' ? fm.op_data?.plan_retry_turns ? 10_000 : this.store.config.budget_tokens_per_plan_turn : Infinity),
         onApproval: async (req) => {
-          this.store.mutateItem(id, [{ set: { awaiting: 'permission', awaiting_data: { tool: req.tool, input: req.input, grantable: false, requested_at: this.now() } } }, { activity: { actor: 'app', text: 'Runner permission request recorded; turn ended for a decision' } }], 'engine', { commit: `${id}: awaiting permission` });
+          if (abort.signal.aborted || this.store.requireItem(id).file.frontmatter.taken_over) return;
+          if (modelCapabilities(def).transport === 'app-server' && opts.commandGrant?.cwd === cwd && matchesCommandGrant(opts.commandGrant, req)) {
+            for (const command of commandForms(opts.commandGrant.command)) {
+              const why = policy.deny({ tool: 'Bash', input: { command } });
+              if (why) throw new Error(why);
+            }
+            // Persist consumption BEFORE replying to the runner. A crash after this write may require
+            // another decision, but can never replay an already accepted command on restart.
+            delete opts.commandGrant;
+            delete intent.opts.commandGrant;
+            const data = { ...this.store.requireItem(id).file.frontmatter.op_data };
+            for (const key of ['active_turn', 'pending_turn']) {
+              const saved = data[key] as PendingTurn | undefined;
+              if (saved?.key === intent.key) { const { commandGrant: _grant, ...kept } = saved.opts; data[key] = { ...saved, opts: kept }; }
+            }
+            this.store.mutateItem(id, [{ set: { op_data: data } }, { activity: { actor: 'app', text: 'one-shot command approval consumed' } }], 'engine', { commit: `${id}: consume command approval` });
+            return 'allow';
+          }
+          const park = this.recordPark(id, 'permission', String(req.input.command ?? req.tool), this.permissionsDelegated() ? 'orchestrator' : 'user');
+          this.store.mutateItem(id, [{ set: { awaiting: 'permission', awaiting_data: { tool: req.tool, input: req.input, grantable: !permissionGrantRefusal(req), requested_at: this.now(), park } } }, { activity: { actor: 'app', text: 'Runner permission request recorded; turn ended for a decision' } }], 'engine', { commit: `${id}: awaiting permission` });
         }, permissionMode: phase === 'plan' ? 'plan' : 'acceptEdits', prompt, resume: resumeId, images,
         ...(known?.total_usd !== undefined ? { resumeTotalUsd: known.total_usd } : {}),
         // The CLI's own quote, before the first request: the same choice as above, on its numbers. It is

@@ -1,3 +1,4 @@
+import { UsageProviderSwitch } from './UsageProviderSwitch.tsx';
 import { blockHelp } from '@planestro/shared';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
@@ -33,7 +34,7 @@ export function BlockedPanel({ item, compact = false }: { item: ItemView; compac
     <div className="blocked-panel triaging">
       <TriageNote item={item} />
       {detail && <details className="decision-details"><summary>details</summary><p className="blocked-said">{detail}</p></details>}
-      {!compact && <div className="row">{rerun}<button onClick={unblock}>Unblock it myself…</button>{fresh}</div>}
+      {!compact && <div className="row">{rerun}<UsageProviderSwitch item={item} /><button onClick={unblock}>Unblock it myself…</button>{fresh}</div>}
     </div>
   );
   return (
@@ -42,7 +43,7 @@ export function BlockedPanel({ item, compact = false }: { item: ItemView; compac
       {detail && <p className="blocked-said">{detail}</p>}
       {help && <div className="small"><Markdown text={`**What it means.** ${help.meaning}\n\n**What to do.** ${help.todo}`} /></div>}
       {estimate && <p className="small muted">Resuming its conversation costs {reloadText(estimate)}, before any work. A fresh session gets a brief instead and needs no reload.</p>}
-      {!compact && <div className="row">{rerun}<button className="danger" onClick={unblock}>Unblock…</button>{fresh}{fm.status === 'IN_PROGRESS' && fm.worktree && <button title={FINISH_HINT} onClick={() => promptFinishFromWorktree(item.id)}>Finish from here…</button>}<ResumeAfterButton item={item} /><button onClick={() => useStore.getState().openChat({ item: item.id, draft: `Why is ${item.id} blocked (${reason}), and what should I do? If an instruction to the worker would fix it, unblock it with one.` })}>Ask the orchestrator</button><span className="small muted">Unblocking retries from where it stopped; with a message, the session is resumed with it.</span></div>}
+      {!compact && <div className="row">{rerun}<UsageProviderSwitch item={item} /><button className="danger" onClick={unblock}>Unblock…</button>{fresh}{fm.status === 'IN_PROGRESS' && fm.worktree && <button title={FINISH_HINT} onClick={() => promptFinishFromWorktree(item.id)}>Finish from here…</button>}<ResumeAfterButton item={item} /><button onClick={() => useStore.getState().openChat({ item: item.id, draft: `Why is ${item.id} blocked (${reason}), and what should I do? If an instruction to the worker would fix it, unblock it with one.` })}>Ask the orchestrator</button><span className="small muted">Unblocking retries from where it stopped; with a message, the session is resumed with it.</span></div>}
     </div>
   );
 }

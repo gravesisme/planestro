@@ -2,7 +2,7 @@
 
 Switch when one subscription runs out, when you want a different model's judgment, or when you want a Codex-only setup. Switching is explicit: Planestro does not automatically move work between providers.
 
-Open **Settings → Switch provider**, or use the usage banner. The banner offers the other provider when it has an available configured model. Choose Claude or Codex, then a model with planning capability. You can change the orchestrator, defaults for new items, and selected unfinished items independently.
+Open **Settings → Switch provider**, or use the navbar’s **Provider** button. A usage-blocked item also offers **Switch to Codex…** (or **Switch to Claude…**) in its stop panel or decision card. That link preselects only the item and leaves orchestrator and new-item defaults unchecked; preview and save the changes to apply them. Choose Claude or Codex, then a model with planning capability. You can change the orchestrator, defaults for new items, and selected unfinished items independently.
 
 The item picker uses the board's status columns. **Select only queued and underway** selects Queued, Plan in progress, Plan ready, In progress and In review, leaving the backlog unselected. Use each column's checkbox or individual cards to narrow the selection. Cards keep the board's model, PR, hold and waiting labels; the preview checks whether each selected item can switch now.
 
@@ -20,7 +20,7 @@ The conversation itself does not cross providers. The next session starts with a
 
 Approval and permission questions remain pending. An answer is carried with the original question in the persisted item record, never as an isolated answer.
 
-Codex native sandbox requests are recorded and immediately declined so no process waits for you. They cannot be granted through **Allow once** or **Always allow** in a later turn. Choose **Deny** and give another approach, or take the item over, perform the action yourself and hand it back. Permissions for configured external MCP tools still follow their own rules and call budgets.
+Codex native sandbox requests are recorded and immediately declined so no process waits for you. A complete local command can be approved with **Allow once**: the exact command and working directory are saved, then consumed before accepting its next matching request. Permanent grants and broader network, filesystem or session permissions remain unsupported. For those, choose **Deny** and give another approach, or take the item over, perform the action yourself and hand it back. Permissions for configured external MCP tools still follow their own rules and call budgets.
 
 ## Items that must wait
 

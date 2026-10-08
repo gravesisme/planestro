@@ -101,13 +101,16 @@ a cap. Exec only reports usage at turn completion; Planestro must not kill the
 already completed turn before ingesting its final JSON. Its full usage is charged,
 and the engine checks the item cap before the next turn. Reasoning tokens are already included in output.
 
-Native app-server sandbox approval requests remain immediate-decline requests.
-The inspected 0.154.0 protocol has no exact prior-request grant that can be carried
-into a new turn: answering a later request with `accept` would change our
-always-decline contract, and widening the next turn's sandbox would grant more
-than the single requested operation. The UI therefore offers denial or manual
-takeover, not a nonfunctional Allow/Always rule. External MCP tools retain their
-separate permission policy and scoped call budgets.
+Native app-server requests without an existing decision are persisted, declined
+immediately and parked. **Allow once** for a complete local command saves its exact
+command and working directory in the pending turn. When the worker reissues that
+same request, planestro persists consumption before replying `accept`. Unconsumed
+grants survive a deferred turn or restart; consumed grants cannot be replayed.
+This is a planestro-owned grant, not a Codex grant on the old request. It never
+widens the next turn's sandbox or writes an exec-policy rule. Different commands
+park again. Remote execution, host/network grants, additional filesystem
+permissions, unknown permission fields and permanent approvals remain unsupported.
+External MCP tools retain their separate permission policy and scoped call budgets.
 
 App-server credentials are seeded once into the dedicated home by atomically
 linking a complete private file. Subsequent turns preserve Codex's refresh-token
