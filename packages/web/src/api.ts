@@ -22,6 +22,10 @@ export type FileNoteOutcome =
   | { outcome: 'filed' | 'linked'; issue: { number: number; url?: string } }
   | { outcome: 'candidates'; candidates: { number: number; title: string; url: string; state: string }[] };
 
+/** A change to one MCP server (#237): `env` / `headers` set a value, `null` removes it, '' keeps it. */
+export interface McpServerBody { command?: string | null; args?: string[]; url?: string | null; env?: Record<string, string | null>; headers?: Record<string, string | null>; enabled?: boolean }
+/** A server an import could bring in: names only, never a key's value. */
+export interface McpImportCandidate { source: string; name: string; kind: 'stdio' | 'http'; command?: string; url?: string; env: string[]; headers: string[]; status: 'new' | 'present' | 'duplicate' | 'removed' | 'unsupported'; note?: string }
 export interface ParkSummary { item: string; parks: number; waited_ms: number; resume_cost: number; open: number; shapes: { shape: string; parks: number; rule?: string }[] }
 
 export interface ItemView {
@@ -117,6 +121,11 @@ export const api = {
   putModel: (id: string, model: Partial<ModelDef>) => req<{ config: Config }>('PUT', `/api/config/models/${encodeURIComponent(id)}`, model),
   removeModel: (id: string) => req<{ config: Config }>('DELETE', `/api/config/models/${encodeURIComponent(id)}`),
   testNotification: (event: 'on_merge' | 'on_usage_pause' | 'on_needs_you') => req<{ code: number; output: string }>('POST', '/api/config/notifications/test', { event }),
+  putMcpServer: (name: string, body: McpServerBody) => req<{ local: LocalConfig }>('PUT', `/api/config/mcp-servers/${encodeURIComponent(name)}`, body),
+  removeMcpServer: (name: string) => req<{ local: LocalConfig }>('DELETE', `/api/config/mcp-servers/${encodeURIComponent(name)}`),
+  testMcpServer: (name: string) => req<{ ok: true; tools: string[] } | { ok: false; error: string }>('POST', `/api/config/mcp-servers/${encodeURIComponent(name)}/test`),
+  mcpImportCandidates: () => req<{ candidates: McpImportCandidate[] }>('GET', '/api/config/mcp-servers/import'),
+  importMcpServers: (pick?: string[]) => req<{ local: LocalConfig; added: string[] }>('POST', '/api/config/mcp-servers/import', { pick }),
   markModelUnavailable: (id: string, until: string, reason?: string) => req<{ local: LocalConfig }>('PUT', `/api/models/${encodeURIComponent(id)}/unavailable`, { until, reason }),
   clearModelUnavailable: (id: string) => req<{ local: LocalConfig }>('DELETE', `/api/models/${encodeURIComponent(id)}/unavailable`),
   categories: (body: Record<string, string>) => req<{ config: Config; affected: number }>('POST', '/api/config/categories', body),

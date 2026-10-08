@@ -1396,6 +1396,7 @@ export class LiveEngine implements Engine {
     for (const name of modelCapabilities(def).permissions ? def.mcp : []) {
       const spec = this.store.local.mcp_servers[name];
       if (!spec || (!spec.command && !spec.url)) { this.block(id, 'mcp_missing', `${def.label} names the MCP server "${name}", which planestro.local.yml on this machine does not define (mcp_servers.${name} needs a command or a url)`); return undefined; }
+      if (spec.enabled === false) { this.block(id, 'mcp_missing', `${def.label} names the MCP server "${name}", which is turned off on this machine: turn it on in Settings → MCP servers, or take it off the model's mcp list`); return undefined; }
       // Workers never touch planning state (invariant 1): a planestro server's operator endpoint is not a worker's tool (#175).
       if (spec.url && operatorMcpUrl(spec.url, listInstances({ prune: false }).live, this.store.local.allowed_hosts)) { this.block(id, 'mcp_missing', `${def.label} names the MCP server "${name}", whose url (${spec.url}) is a planestro server's operator endpoint; workers never get that one: remove it from the model's mcp list`); return undefined; }
       mcpServers[name] = spec.url ? { type: 'http', url: spec.url, headers: spec.headers } : { command: spec.command!, args: spec.args, env: spec.env };

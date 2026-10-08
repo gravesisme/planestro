@@ -516,7 +516,13 @@ export const LocalConfig = z.object({
   mcp_servers: z.record(z.string(), z.object({
     command: z.string().optional(), args: z.array(z.string()).default([]), env: z.record(z.string(), z.string()).default({}),
     url: z.string().optional(), headers: z.record(z.string(), z.string()).default({}),
+    /** Off: kept here, but a model naming it stops as `mcp_missing` (#237). Unset reads as on. */
+    enabled: z.boolean().optional(),
+    /** Where Settings imported it from (`~/.claude.json`, `~/.codex/config.toml`); unset for one added here or by hand. */
+    source: z.string().optional(),
   })).default({}),
+  /** Imported MCP servers removed here, as `<source>:<name>`, so an import does not bring them back (#237). */
+  mcp_import_skip: z.array(z.string()).optional(),
   /** Models this machine's account cannot use right now, by model id: detected usage limits and ones marked in Settings. */
   model_unavailable: z.record(z.string(), ModelUnavailable).optional(),
   /**

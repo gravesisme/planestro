@@ -35,7 +35,7 @@ export type SettingsTabId = (typeof SETTINGS_TABS)[number]['id'];
  * can plan); `models`, `categories` and `sections` are whole editors of their own; `secret` shows
  * set / not set and takes a replacement, never the value.
  */
-export type SettingControl = 'number' | 'toggle' | 'text' | 'select' | 'model' | 'list' | 'record' | 'commands' | 'secret' | 'readonly' | 'categories' | 'models' | 'sections';
+export type SettingControl = 'number' | 'toggle' | 'text' | 'select' | 'model' | 'list' | 'record' | 'commands' | 'secret' | 'mcp' | 'categories' | 'models' | 'sections';
 export type SettingFile = 'config' | 'local';
 
 export interface SettingDef {
@@ -230,8 +230,8 @@ export const SETTINGS: readonly SettingDef[] = [
     detail: ['The server listens on every interface (unless --host says otherwise) so a phone on the same Wi-Fi can open the links in alerts: http://<this machine>.local:<port>. There is no login, so only the local network is answered: a request from any other address (a port-forward, a public address) gets a 403.', 'Test the whole chain with the Test button under Notifications → When something needs you, then tap the alert on the phone.'] }),
   L({ key: 'allowed_hosts', group: 'Access', label: 'Reachable as', summary: 'Extra names for this machine, e.g. a Tailscale name for your phone.', control: 'list', mono: true, placeholder: 'macbook.tailnet.ts.net', restart: true,
     detail: ['The server answers only requests addressed to localhost, 127.0.0.1, the host it is bound to and these; anything else, and any request from another website, gets a 403.'] }),
-  L({ key: 'mcp_servers', group: 'Access', label: 'MCP servers', summary: 'Services a model may name in its MCP list, with their keys. Edit planestro.local.yml by hand.', control: 'readonly',
-    detail: ['A stdio server (command, args, env) or an HTTP one (url, headers). Read-only here because the entries carry API keys, which the page never shows.'] }),
+  L({ key: 'mcp_servers', group: 'Access', label: 'MCP servers', summary: 'Services a model may name in its MCP list, with their keys. Add one, import yours from Claude Code or Codex, test it, turn it off.', control: 'mcp', covers: ['mcp_import_skip'],
+    detail: ['A stdio server (command, args, env) or an HTTP one (url, headers). Env values and headers are keys: stored only in planestro.local.yml, which is gitignored, and never shown back; leave one empty to keep it.', 'A server reaches a worker only through a model that lists it (Models → Edit). One turned off stops that model\'s items as mcp_missing instead of running them without their tools. Removing an imported one keeps it from being imported again.'] }),
   L({ key: 'engine.mode', group: 'Engine', label: 'Engine mode on this machine', summary: 'Overrides Project → Live or dry-run here only.', control: 'select', restart: true,
     options: [{ value: 'dry-run', label: 'Dry-run' }, { value: 'live', label: 'Live' }] }),
 
@@ -293,7 +293,7 @@ export function getPath(obj: unknown, key: string): unknown {
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 /** Whether the current value differs from what planestro would use unset (never for required keys or the whole-list editors). */
 export function settingChanged(def: SettingDef, value: unknown): boolean {
-  if (def.control === 'models' || def.control === 'categories' || def.control === 'readonly' || def.control === 'secret') return false;
+  if (def.control === 'models' || def.control === 'categories' || def.control === 'mcp' || def.control === 'secret') return false;
   const d = settingDefault(def.file, def.key);
   if (!d) return false;
   if ('none' in d) return value !== undefined && value !== '' && !(Array.isArray(value) && !value.length);

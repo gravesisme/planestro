@@ -30,11 +30,22 @@ marked. Models are cards with **Edit**, **Add a model** and **Mark unavailable**
 never changes (items store it), and a model still used by a default, a fallback, the
 orchestrator or an open item cannot be removed.
 
-What stays read-only: `project.id_prefix` once items exist, `mcp_servers` (its entries carry
-API keys: edit `planestro.local.yml`), and the stamps and runtime state (`schema_version`,
+What stays read-only: `project.id_prefix` once items exist, and the stamps and runtime state (`schema_version`,
 `tool_version`, `engine.paused`, `engine.provider_guards`, `model_unavailable`, which the model
 cards write). The Anthropic API key is never sent to the page: it shows *set here*, *set in the
 environment* or *not set*, and takes a replacement.
+
+**MCP servers** (Access, #237) are cards with **Test** (connects the way a session would and lists
+the server's tools), **Edit**, **Turn off** and **Remove**, plus **Add a server** and **Import from
+Claude Code or Codex**. Their env values and headers are keys, write-only like the API key: the
+page shows their names, an empty value keeps the one stored, and nothing is returned or logged.
+**Import** reads `~/.claude.json` (your servers and this project's) and `~/.codex/config.toml` on
+this machine, lists what it found by name, and copies the ones you tick, recording `source`; a
+name this machine already has is never overwritten. Removing an imported server adds it to
+`mcp_import_skip` so the next import leaves it out, and a server a model lists cannot be removed
+(turn it off instead). Importing or adding a server attaches it to no model: a model gets it only
+when you tick it on the model card. All of it is one write to `planestro.local.yml`, which is
+gitignored, so nothing is committed.
 
 **Budget dollars.** With a Claude login, the dollars planestro counts (budgets, an item's cost,
 a decision card's "+$15 and resume") are what the same work would cost at API prices, the SDK's
@@ -268,7 +279,8 @@ Default: **Release notes** and **Notes**.
 | `update.channel` | With `serve --watch`, keep this machine's planestro checkout current (#103). `main-green` moves the checkout the supervisor runs from to the newest `main` commit whose CI passed, runs `npm ci` if the lockfile changed, and restarts between turns like any update. Never your data, never backwards past the data dir's schema, never a checkout with local changes or one ahead of `origin/main` (a development tree). `off` (the default) leaves it alone. The Console shows the running commit and what the last check found. Give each project its own clone (for example `~/.planestro/app/<project>`, started with that as `PLANESTRO_HOME`), not the tree you develop planestro in. |
 | `update.poll_min` | How often, in minutes, `update.channel: main-green` looks for a newer commit (default 15). |
 | `update.min_age_hours` | Take a commit only after its CI has been green this many hours (default 0): a soak time, so one project can trail another. |
-| `mcp_servers` | MCP servers a model row may name in `mcp`, with their keys, e.g. `elevenlabs: { command: uvx, args: [elevenlabs-mcp], env: { ELEVENLABS_API_KEY: … } }` or `meshy: { command: npx, args: [-y, "@meshy-ai/meshy-mcp-server"], env: { MESHY_API_KEY: … } }`. Machine-local and gitignored, like the API key. A url that is a running planestro's own operator endpoint (`/mcp` on a port `planestro start` recorded) is refused: workers never get it. |
+| `mcp_servers` | MCP servers a model row may name in `mcp`, with their keys, e.g. `elevenlabs: { command: uvx, args: [elevenlabs-mcp], env: { ELEVENLABS_API_KEY: … } }` or `meshy: { command: npx, args: [-y, "@meshy-ai/meshy-mcp-server"], env: { MESHY_API_KEY: … } }`. Machine-local and gitignored, like the API key; managed in Settings → Access → MCP servers. `enabled: false` keeps a server but turns it off: a model that lists it stops as `mcp_missing`. `source` is where Settings imported it from (`~/.claude.json`, `~/.codex/config.toml`). A url that is a running planestro's own operator endpoint (`/mcp` on a port `planestro start` recorded) is refused: workers never get it. |
+| `mcp_import_skip` | Imported MCP servers you removed, as `<source>:<name>`, so **Import** does not bring them back. Delete an entry to import that server again. |
 | `lan_access` | `true`: the server listens on every interface (`0.0.0.0`) unless `--host` says otherwise, at every start (`serve`, `serve --watch` restarts, `start`), so a phone on the same Wi-Fi can open planestro. It answers only the local network: loopback, `10/8`, `172.16/12`, `192.168/16`, `169.254/16`, `fe80::/10` and `fc00::/7` (IPv4-mapped IPv6 included); any other remote address gets a 403, logged. There is no login, so anyone on that network can use planestro while it is on: fine at home, not on shared Wi-Fi. See [Notify when something needs you](#notify-when-something-needs-you). |
 | `allowed_hosts` | Extra names this machine is reached by — a Tailscale or DNS name for the phone. The server answers only requests addressed to `localhost`, `127.0.0.1`, the `--host` it is bound to (with `0.0.0.0`: this machine's hostname and interface addresses) and these; anything else, and any request from another website, gets a 403. |
 | `codex_bin` | Path to `codex`, if not on `PATH`. Only used by models with `runner: codex`. |

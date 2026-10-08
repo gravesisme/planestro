@@ -16,6 +16,7 @@ import type { Engine } from '../engine/Engine.ts';
 import type { ConsoleBuffer } from '../store/ConsoleBuffer.ts';
 import { itemView, promptView, releaseView, questionView, stateView, guardView, publicLocal } from './views.ts';
 import { applyConfigSettings, applyLocalSettings, putModel, removeModel } from '../settingsWrite.ts';
+import { importCandidates, importMcpServers, putMcpServer, removeMcpServer, testMcpServer } from '../mcpServers.ts';
 
 const EDITABLE_FIELDS = z.object({
   title: z.string().min(1).optional(), category: z.string().min(1).optional(), priority: z.enum(PRIORITIES).nullable().optional(), planner: z.string().optional(), implementer: z.string().optional(),
@@ -368,6 +369,16 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
     return c.json({ local: publicLocal(store.local) });
   });
   api.put('/config/local', async (c) => { try { return c.json({ local: publicLocal(applyLocalSettings(store, await c.req.json())) }); } catch (e) { return fail(c, e); } });
+  // Settings → MCP servers (#237): machine-local, keys write-only (mcpServers.ts).
+  api.get('/config/mcp-servers/import', (c) => { try { return c.json({ candidates: importCandidates(store) }); } catch (e) { return fail(c, e); } });
+  api.post('/config/mcp-servers/import', async (c) => { try { const { local, added } = importMcpServers(store, await c.req.json().catch(() => ({}))); return c.json({ local: publicLocal(local), added }); } catch (e) { return fail(c, e); } });
+  api.put('/config/mcp-servers/:name', async (c) => { try { return c.json({ local: publicLocal(putMcpServer(store, c.req.param('name'), await c.req.json())) }); } catch (e) { return fail(c, e); } });
+  api.delete('/config/mcp-servers/:name', (c) => { try { return c.json({ local: publicLocal(removeMcpServer(store, c.req.param('name'))) }); } catch (e) { return fail(c, e); } });
+  api.post('/config/mcp-servers/:name/test', async (c) => {
+    const spec = store.local.mcp_servers[c.req.param('name')];
+    if (!spec) return fail(c, new Error(`no MCP server ${c.req.param('name')} on this machine`));
+    return c.json(await testMcpServer(spec));
+  });
   api.post('/config/categories', async (c) => {
     try {
       const body = z.discriminatedUnion('op', [

@@ -559,6 +559,18 @@ describe('tools from outside: MCP servers per model (f5)', () => {
     await waitFor(() => fmOf(store, item.id).blocked_reason === 'mcp_missing');
     expect(activityOf(store, item.id)).toContain('names the MCP server "nowhere", which planestro.local.yml on this machine does not define');
   });
+
+  it('a server turned off in Settings stops the item as mcp_missing too, rather than running without its tools (#237)', async () => {
+    const { store, engine } = await setup({ config: MCP });
+    store.updateLocal({ mcp_servers: { sounds: { command: 'uvx', args: [], env: {}, headers: {}, enabled: false } } });
+    const item = store.createItem({ title: 'Door', description: 'x', implementer: 'sfx' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => fmOf(store, item.id).status === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => fmOf(store, item.id).blocked_reason === 'mcp_missing');
+    expect(activityOf(store, item.id)).toContain('names the MCP server "sounds", which is turned off on this machine');
+  });
 });
 
 it.each(['turn_budget', 'token_budget'] as const)('extends the exhausted %s and actually starts a fresh Codex session', async (reason) => {
