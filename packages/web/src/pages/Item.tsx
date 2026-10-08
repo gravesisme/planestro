@@ -158,6 +158,12 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
             <select value="" onChange={(e) => e.target.value && field({ depends_on: [...fm.depends_on, e.target.value] })}><option value="">add…</option>{others.filter((o) => !fm.depends_on.includes(o.id)).map((o) => <option key={o.id} value={o.id}>{o.id} {o.frontmatter.title.slice(0, 70)}</option>)}</select>
           </span>
         </div>
+        {fm.source?.github_issue && (() => { const n = fm.source.github_issue; const repo = state.config.code_repo.github; return (
+          <div className="controls">
+            <span className="small">from issue {repo ? <a href={`https://github.com/${repo}/issues/${n}`} target="_blank" rel="noreferrer">#{n}</a> : `#${n}`}</span>
+            <label title={fm.pr ? `PR #${fm.pr} is already open: its description is not rewritten` : 'Its pull request says "Closes #N", so GitHub closes the issue when it merges into the default branch'}><input type="checkbox" checked={!!fm.source.closes} disabled={!!fm.pr} onChange={(e) => field({ source: { ...fm.source, closes: e.target.checked } })} /> close the issue when its PR merges</label>
+          </div>
+        ); })()}
         {(d.external || fm.kind === 'epic') && (
           <div className="controls">
             <label>branch <input placeholder={fm.kind === 'epic' ? 'feature/<slug>' : 'external branch name'} onBlur={(e) => e.target.value !== (fm.branch ?? '') && field({ branch: e.target.value || null })} key={fm.branch} defaultValue={fm.branch ?? ''} /></label>

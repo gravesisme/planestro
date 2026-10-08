@@ -69,6 +69,7 @@ dollar figures elsewhere carry a short hint.
 | `code_repo.default_branch` | — | The **base branch**: every branch planestro creates targets it, unless the item belongs to an epic or sets `base_branch_override`. |
 | `code_repo.release_branch` | none | Protected from workers like the base branch. |
 | `code_repo.github` | detected | `owner/repo`, for pull requests and CI. |
+| `issues.import_label` | none | **Import issues** (the board, or `planestro import issues`) files open issues of `code_repo.github` as items; with none picked, every open issue with this label. Each item keeps `source: {github_issue: N}`, so an issue is never imported twice, and is left unsubmitted. Its PR says `Closes #N` only if asked at import (`--closes`) or on the item. |
 
 ### Worktrees and hooks
 

@@ -391,6 +391,19 @@ Changing the cron or time zone, or turning a schedule back on, starts it from th
 - **AUTOMATION PAUSED** stops the filing; on resume the latest missed slot is filed once. A
   provider usage guard holds only the turns, never the filing.
 
+## Issues as items
+
+The project's GitHub issues (those of `code_repo.github`, where its pull requests open) can be
+filed as items: **Import issues** on the board picks them from the open ones, or imports every
+open issue with the label `issues.import_label`; `planestro import issues [N ...] [--label L]`
+does the same from a terminal (through the running server, when there is one). Each item takes
+the issue's title and text and keeps `source: {github_issue: N}`, so an issue already imported is
+skipped, never filed twice. Nothing is submitted: queue the item when you want it worked on.
+
+Its pull request says `Closes #N`, closing the issue when it merges, only when you ask: **close the
+issue when its PR merges** at import (`--closes`), or on the item before its PR opens. GitHub
+closes an issue only from a PR into the default branch: on an epic's child it does nothing.
+
 ## Handing files to another item
 
 The merge-time hand-off above needs the giver's branch merged. When another item needs a

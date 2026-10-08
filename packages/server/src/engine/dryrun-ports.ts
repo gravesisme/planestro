@@ -19,7 +19,7 @@ export class FakeWorld {
   dirty = new Set<string>();
   /** Shas the fake base does not contain (isAncestor answers false for them). */
   unreachable = new Set<string>();
-  prs = new Map<number, PrInfo & { polls: number; failOnce: boolean; attempt?: number; staleFailures?: number; cancelled?: boolean }>();
+  prs = new Map<number, PrInfo & { body?: string; polls: number; failOnce: boolean; attempt?: number; staleFailures?: number; cancelled?: boolean }>();
   /** Polls after a re-run request that still report the old, failed attempt (GitHub's lag). */
   rerunLagPolls = 0;
   /** What each PR's close event says (#205): a person, or a commit and the PR it merged in. */
@@ -207,10 +207,10 @@ export class DryRunGhPort implements GhPort {
   async runView(repo: string, runId: number) { return `Would read run ${runId} in ${repo}`; }
   constructor(private readonly w: FakeWorld) {}
   private say(m: string) { this.w.log(`Would ${m}`); }
-  async createPr(repo: string, a: { base: string; head: string; title: string; draft?: boolean }) {
+  async createPr(repo: string, a: { base: string; head: string; title: string; body?: string; draft?: boolean }) {
     const number = this.w.nextPr++;
     this.say(`gh pr create --base ${a.base} --head ${a.head} --title "${a.title}"${a.draft ? ' --draft' : ''}`);
-    this.w.prs.set(number, { number, url: `https://github.com/${repo}/pull/${number}`, state: 'OPEN', isDraft: Boolean(a.draft), headRefOid: this.w.remoteBranches.get(a.head) ?? this.w.sha(), headRefName: a.head, baseRefName: a.base, polls: 0, failOnce: this.w.ciMode === 'red-once', cancelled: this.w.ciCancelOnce });
+    this.w.prs.set(number, { number, url: `https://github.com/${repo}/pull/${number}`, state: 'OPEN', isDraft: Boolean(a.draft), headRefOid: this.w.remoteBranches.get(a.head) ?? this.w.sha(), headRefName: a.head, baseRefName: a.base, body: a.body, polls: 0, failOnce: this.w.ciMode === 'red-once', cancelled: this.w.ciCancelOnce });
     this.w.ciCancelOnce = false;
     return { number, url: `https://github.com/${repo}/pull/${number}` };
   }
@@ -251,7 +251,10 @@ export class DryRunGhPort implements GhPort {
   }
   async rerunAll(_repo: string, runId: number) { this.say(`gh run rerun ${runId}`); for (const p of this.w.prs.values()) if (p.cancelled) { p.cancelled = false; p.attempt = (p.attempt ?? 1) + 1; p.polls = 0; } }
   async previewUrl(_repo: string, sha: string): Promise<string | null> { return this.w.previews.get(sha) ?? null; }
-  async issueList(_repo: string, opts: { limit: number }): Promise<IssueInfo[]> { return [...this.w.issues].sort((a, b) => b.number - a.number).slice(0, opts.limit); }
+  async issueList(_repo: string, opts: { limit: number; state?: 'open' | 'all'; label?: string }): Promise<IssueInfo[]> {
+    return this.w.issues.filter((i) => (opts.state !== 'open' || i.state === 'OPEN') && (!opts.label || i.labels?.includes(opts.label))).sort((a, b) => b.number - a.number).slice(0, opts.limit);
+  }
+  async issueView(_repo: string, number: number): Promise<IssueInfo | null> { return this.w.issues.find((i) => i.number === number) ?? null; }
   async issueCreate(repo: string, a: { title: string; body: string }) {
     const number = Math.max(this.w.nextIssue++, ...this.w.issues.map((i) => i.number + 1));
     this.say(`gh issue create --repo ${repo} --title "${a.title}"`);

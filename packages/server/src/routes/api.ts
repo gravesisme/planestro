@@ -1,6 +1,7 @@
 import { parkSummary } from '../engine/parks.ts';
 import { suggestForStore } from '../engine/allowSuggest.ts';
 import { notesWithLinks, fileNote, markNotes, notesSeen, markNotesSeen } from '../engine/feedback.ts';
+import { importIssues, importableIssues } from '../engine/issueImport.ts';
 import type { GhPort } from '../engine/ports.ts';
 import { previewSwitch, applySwitch, itemModelSwitchOps } from '../providerSwitch.ts';
 import { orchestratorSpend } from '../engine/orchestratorSpend.ts';
@@ -27,6 +28,7 @@ const EDITABLE_FIELDS = z.object({
   skip_merge: z.boolean().nullable().optional(),
   budget_usd: z.number().positive().nullable().optional(), budget_turns: z.number().int().positive().nullable().optional(), budget_tokens: z.number().int().positive().nullable().optional(), mcp_budget: z.number().int().nonnegative().nullable().optional(),
   loop: z.object({ max_iterations: z.number().int().positive(), goal: z.string().optional() }).nullable().optional(),
+  source: z.object({ github_issue: z.number().int().positive(), closes: z.boolean().optional() }).nullable().optional(),
 }).strict();
 
 const CHAT_TYPES = new Set(['orchestrator.user_message', 'orchestrator.reply', 'orchestrator.question', 'orchestrator.done']);
@@ -34,6 +36,12 @@ const CHAT_TYPES = new Set(['orchestrator.user_message', 'orchestrator.reply', '
 /** The orchestrator, when this engine has one (the live engine, in live or dry-run mode; never the mock). */
 type Orch = { wake: (ev: { type: string; item?: string; data?: Record<string, unknown> }) => void; enabled: boolean; questionPending?: (id: string) => boolean };
 const orchestratorOf = (engine: Engine): Orch | undefined => (engine as Engine & { orchestrator?: Orch }).orchestrator;
+/** The engine's gh port (through its orchestrator), for issues (#231); the mock engine has none. */
+function ghOf(engine: Engine, what: string): GhPort {
+  const gh = (engine as Engine & { orchestrator?: { gh?: GhPort } }).orchestrator?.gh;
+  if (!gh) throw Object.assign(new Error(`this engine cannot ${what}`), { status: 400 });
+  return gh;
+}
 
 /** A file a person reviews by eye or ear, typed by its extension. SVG can carry script: it is served as an image only, never as a document. */
 function reviewFile(c: Context, path: string, buf: Buffer | null): Response {
@@ -516,8 +524,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   api.post('/orchestrator/notes/file', async (c) => {
     try {
       const { note, force } = z.object({ note: z.string().min(1), force: z.boolean().optional() }).parse(await c.req.json());
-      const gh = (engine as Engine & { orchestrator?: { gh?: GhPort } }).orchestrator?.gh;
-      if (!gh) throw Object.assign(new Error('this engine cannot file issues'), { status: 400 });
+      const gh = ghOf(engine, 'file issues');
       return c.json(await fileNote(store, gh, note, { force }));
     } catch (e) { return fail(c, e, (e as { status?: number }).status ?? 400); }
   });
@@ -529,6 +536,15 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
       markNotes(store, links);
       return c.json({ ok: true });
     } catch (e) { return fail(c, e); }
+  });
+  // The project's GitHub issues as items (#231): the open ones, each with the item already imported from it…
+  api.get('/issues/importable', async (c) => { try { return c.json(await importableIssues(store, ghOf(engine, 'read issues'))); } catch (e) { return fail(c, e, (e as { status?: number }).status ?? 400); } });
+  // …and the import: the issues named, or every open one with the label (issues.import_label). Idempotent; submits nothing.
+  api.post('/issues/import', async (c) => {
+    try {
+      const body = z.object({ issues: z.array(z.number().int().positive()).optional(), label: z.string().min(1).optional(), closes: z.boolean().optional() }).parse(await c.req.json().catch(() => ({})));
+      return c.json(await importIssues(store, ghOf(engine, 'read issues'), body));
+    } catch (e) { return fail(c, e, (e as { status?: number }).status ?? 400); }
   });
   api.post('/engine/pause', (c) => { engine.pause(); return c.json({ paused: true }); });
   // Restart preparation (f3): POST drain, then poll GET /engine until restart.idle is true; DELETE cancels it.

@@ -39,6 +39,11 @@ const USAGE = `planestro ${TOOL_VERSION}
                                     orchestrator and the user keep approving, each replayed against every past ruling so
                                     none would have allowed anything ever denied; also kinds of command denied every time
                                     and drift (rules nothing ran under, approvals rising) (#203). Read-only: add the ones you accept in Settings
+  planestro import issues [data_dir] [N ...] [--label L] [--closes] [--port N]
+                                    file GitHub issues of code_repo.github as items, unsubmitted (#231): the numbers given,
+                                    or every open issue with --label (default issues.import_label). One already imported is
+                                    skipped. --closes: their PRs say "Closes #N". Goes through the running server when there is one
+                                    (one started with serve rather than start: name its --port)
   planestro notify <title> <message>
                                     show a desktop notification (osascript on a Mac, notify-send on Linux); for notifications.* commands,
                                     which also get PLANESTRO_TITLE and PLANESTRO_MESSAGE
@@ -51,7 +56,7 @@ const { values, positionals } = parseArgs({
     repo: { type: 'string' }, name: { type: 'string' }, prefix: { type: 'string' }, 'default-branch': { type: 'string' },
     'release-branch': { type: 'string' }, github: { type: 'string' }, layout: { type: 'string' }, 'no-commit': { type: 'boolean' },
     commit: { type: 'boolean' }, 'copy-small': { type: 'boolean' }, data: { type: 'string' },
-    help: { type: 'boolean', short: 'h' }, port: { type: 'string' }, host: { type: 'string' }, mock: { type: 'boolean' }, watch: { type: 'boolean' }, open: { type: 'boolean' }, reset: { type: 'boolean' }, 'no-serve': { type: 'boolean' }, all: { type: 'boolean' }, json: { type: 'boolean' }, min: { type: 'string' },
+    help: { type: 'boolean', short: 'h' }, port: { type: 'string' }, host: { type: 'string' }, mock: { type: 'boolean' }, watch: { type: 'boolean' }, open: { type: 'boolean' }, reset: { type: 'boolean' }, 'no-serve': { type: 'boolean' }, all: { type: 'boolean' }, json: { type: 'boolean' }, min: { type: 'string' }, label: { type: 'string' }, closes: { type: 'boolean' },
   },
 });
 const [cmd, arg] = positionals;
@@ -217,6 +222,36 @@ try {
       const report = suggestForStore(store, { minApprovals: values.min ? Number(values.min) : undefined });
       store.close();
       log(values.json ? JSON.stringify(report, null, 2) : formatSuggestReport(report));
+      break;
+    }
+    case 'import': {
+      if (arg !== 'issues') throw new Error('usage: planestro import issues [data_dir] [N ...] [--label L] [--closes]');
+      const rest = positionals.slice(2);
+      const issues = rest.filter((p) => /^#?\d+$/.test(p)).map((p) => Number(p.replace('#', '')));
+      const dir = locateDataDir(rest.find((p) => !/^#?\d+$/.test(p)));
+      const body = { ...(issues.length ? { issues } : {}), ...(values.label ? { label: values.label } : {}), ...(values.closes ? { closes: true } : {}) };
+      const { liveInstance } = await import('./instances.ts');
+      // A server `start` recorded is found; one run with `serve` is named by --port.
+      const server = liveInstance(dir)?.url ?? (values.port ? `http://127.0.0.1:${values.port}` : undefined);
+      let r: import('./engine/issueImport.ts').ImportResult;
+      if (server) {
+        // While planestro runs it is the only writer of the data dir (invariant 1): the server files the items.
+        const res = await fetch(`${server}/api/issues/import`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+        const json = await res.json() as any;
+        if (!res.ok) throw new Error(json.error ?? `the server answered ${res.status}`);
+        r = json;
+      } else {
+        const store = await DataStore.open(dir, { log: () => {} });
+        try {
+          const { makePorts } = await import('./engine/makePorts.ts');
+          const { importIssues } = await import('./engine/issueImport.ts');
+          r = await importIssues(store, makePorts(store.config.engine.mode, log, store).gh, body);
+          await store.flushCommits();
+        } finally { store.close(); }
+      }
+      for (const x of r.imported) log(`imported #${x.issue} as ${x.item}: ${x.title}`);
+      for (const x of r.skipped) log(`skipped  #${x.issue}: ${x.reason}`);
+      log(`${r.imported.length} imported from ${r.repo}, ${r.skipped.length} skipped${r.imported.length ? ' (not submitted: queue them when you want them worked on)' : ''}`);
       break;
     }
     case 'notify': {

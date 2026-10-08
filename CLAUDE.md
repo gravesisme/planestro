@@ -217,6 +217,9 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   files one item per slot keyed `scheduled_from: <name>:<slot>`; that key and the schedule's `last_slot` / `armed_at`
   mean a restart never files twice, a sleep files the latest missed slot once. `skip_if_open` skips while the last
   one is open. `submit` is honoured only with `created_by: user` and set only by the user (#73).
+- Issues of `code_repo.github` become items through `importIssues` (`planestro import issues`, the board's **Import
+  issues**, #231): the ones picked, or every open one with `issues.import_label`. `source: {github_issue}` is the evidence
+  an issue is in (never filed twice); nothing is submitted (#73); the PR says `Closes #N` only with `source.closes`.
 - Provider switches in either direction keep item state, worktrees, PRs and decisions, using the existing fresh-brief intent. `agent_sessions` (schema 4) stores a session id, role and tool contract per runner. Provider usage guards are machine-local and independent of the global user/disk pause. Orchestrator model changes apply next wake without a restart; its queue remains in memory, including when a wake hits its token cap.
 - A wait on a person (an item whose `needs_you` turns true, an open orchestrator question) is announced once
   (#224): `NeedsYouWatch` (`engine/needsYou.ts`) sees every store event, journals one `notification`

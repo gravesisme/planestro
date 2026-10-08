@@ -1,3 +1,4 @@
+import { closesLine } from './issueImport.ts';
 import { itemModelSwitchOps, clearUsageStopOps } from '../providerSwitch.ts';
 import { join, relative, isAbsolute, extname, basename, matchesGlob } from 'node:path';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
@@ -2046,7 +2047,7 @@ export class LiveEngine implements Engine {
     if (existing && draft && !existing.isDraft) await this.ports.gh.setDraft(this.github, existing.number, true);
     const pr = existing ? { number: existing.number, url: existing.url } : await this.ports.gh.createPr(this.github, {
       base, head: fm.branch!, title: `${fm.title} (${id})`, draft,
-      body: `${summary ?? getSection(item.file, 'Description').slice(0, 1500)}\n\n---\nplanestro item **${id}** · plan:\n\n${getSection(item.file, 'Plan').slice(0, 3000)}\n\n🤖 Opened by planestro`,
+      body: `${summary ?? getSection(item.file, 'Description').slice(0, 1500)}\n\n---\nplanestro item **${id}** · plan:\n\n${getSection(item.file, 'Plan').slice(0, 3000)}${closesLine(fm)}\n\n🤖 Opened by planestro`,
     });
     this.store.mutateItem(id, [
       { transition: { to: 'IN_REVIEW', actor: 'engine' } },
@@ -3350,7 +3351,7 @@ export class LiveEngine implements Engine {
     const existing = (await this.ports.gh.prList(this.github, { head: fm.branch!, state: 'open' }))[0];
     const pr = existing ? { number: existing.number, url: existing.url } : await this.ports.gh.createPr(this.github, {
       base, head: fm.branch!, title: `${fm.title} (${id})`,
-      body: `Integration branch for epic **${id}**. Child pull requests:\n\n${children.map((c) => `- ${c.id}: ${c.title}${c.pr ? ` (#${c.pr})` : ''}`).join('\n')}\n\n🤖 Opened by planestro`,
+      body: `Integration branch for epic **${id}**. Child pull requests:\n\n${children.map((c) => `- ${c.id}: ${c.title}${c.pr ? ` (#${c.pr})` : ''}`).join('\n')}${closesLine(fm)}\n\n🤖 Opened by planestro`,
     });
     this.store.mutateItem(id, [
       { transition: { to: 'IN_REVIEW', actor: 'engine' } },
