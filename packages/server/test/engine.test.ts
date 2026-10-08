@@ -2718,7 +2718,7 @@ describe('permission requests delegated to the orchestrator', () => {
         seen.implementPrompts.push(o.prompt);
         if (seen.implementPrompts.length === 1 || opts.again?.()) { expect((await o.onPermission({ tool: 'Bash', input: { command: 'node -e 1', description: 'try it' } })).action).toBe('park'); return { ...ok, parked: 'permission' as const }; }
         await o.tools.report_done('did it');
-        return { ...ok, done: 'did it' };
+        return { ...ok, done: 'did it', ran: [{ tool: 'Bash', command: 'npm test', n: 2 }] };
       },
       async runCustomTurn(o: any): Promise<TurnResult> {
         if (o.label.includes('permission_request')) { seen.prompts.push(o.prompt); await decide((n) => o.mcpTools.find((x: any) => x.name === n), o.prompt); }
@@ -2751,6 +2751,9 @@ describe('permission requests delegated to the orchestrator', () => {
     expect(w.seen.implementPrompts[1]).toContain('APPROVED: The orchestrator approved your command `node -e 1` (a harmless local check). Run it now, as it was');
     expect(activityOf(ctx.store, ctx.id)).toContain('[orchestrator] permission allow (a harmless local check): Bash(node -e 1)');
     expect(ctx.store.config.permissions.allow).not.toContain('Bash(node -e 1)'); // it never writes allow rules
+    expect(w.seen.prompts[0]).toContain('Ruling rubric');
+    // #203: what the turn ran without a park is journaled once per turn, for drift
+    expect(ctx.store.journal.read({ item: ctx.id, type: 'tools.ran' }).map((e) => e.data?.ran)).toEqual([[{ tool: 'Bash', command: 'npm test', n: 2 }]]);
   });
 
   it('asks you when it says so or decides nothing, and you answer as before', async () => {
@@ -2777,6 +2780,9 @@ describe('permission requests delegated to the orchestrator', () => {
     const ctx = await begin(w.claude);
     await waitFor(() => fmOf(ctx.store, ctx.id).awaiting === 'permission', 8000);
     expect(denials).toBe(3);
+    // #203: the next request of the same kind is shown the ruling it got before
+    expect(w.seen.prompts[0]).not.toContain('Earlier rulings');
+    expect(w.seen.prompts[1]).toMatch(/Earlier rulings on `node` commands[\s\S]*deny \(orchestrator\): use the project check script instead/);
     expect(w.seen.implementPrompts[1]).toContain('DENIED: The orchestrator denied your command `node -e 1`: use the project check script instead. Do not retry it in another form');
     expect(fmOf(ctx.store, ctx.id).op_data?.orchestrator_denials).toBe(3);
     // #95: the card says why it came to you, and your approval hands the item's next requests back to the orchestrator

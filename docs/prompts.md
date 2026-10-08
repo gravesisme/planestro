@@ -40,6 +40,7 @@ favorite: true
 | `cleanup` | `cleanup-worktree` | Not sent by the engine (cleanup is code, with positive evidence); kept for cleaning up by hand. |
 | `orchestrator_system` | `orchestrator-system` | The orchestrator's standing rules. Each wake's context packet is built in code from the item files. |
 | (partial) | `standing-decisions` | The project's own rulings, included at the end of `orchestrator-system` with `{{> standing-decisions}}`, so the orchestrator applies them on every wake and after every fresh conversation. Ships empty; add one line per ruling ("art is reviewed by the designer: never approve it on their behalf"). A data dir without its own copy uses the shipped one. |
+| (partial) | `permission-rubric` | How the orchestrator rules a delegated permission request, kind of command by kind, with the standard reason for each. Added to every permission request it is handed, after the earlier rulings on the same kind of command, so equivalent requests get the same answer. A data dir without its own copy uses the shipped one. |
 | (partial) | `loop-until-green` | Appended by the engine to a loop item's implementation and carry-on turns (an item with `loop`, #171): contracts proven to fail first, then iterate and `report_iteration` each pass within `{{loop.max_iterations}}`, and hand off with `report_done` `review`. Context: `loop.max_iterations`, `loop.used`, `loop.tally`, `loop.goal`. A data dir without its own copy uses the shipped one. |
 
 ## Placeholders

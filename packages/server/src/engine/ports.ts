@@ -282,6 +282,8 @@ export interface TurnResult {
   usageLimit?: { message: string; resetsAt?: string };
   /** The most pressing rate-limit reading the turn saw (Claude subscriptions report one per turn): what the usage guard reads. */
   rateLimit?: RateLimitSnapshot;
+  /** The tool calls the turn ran without a park, counted (#203): Bash by command, other tools by name. Claude runner only. */
+  ran?: { tool: string; command?: string; n: number }[];
 }
 export interface CustomToolDef {
   name: string;

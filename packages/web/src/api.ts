@@ -14,6 +14,9 @@ export interface AllowSuggestReport {
   refused: { rule: string; approvals: number; denied: { item: string; at: string; command: string; reason?: string }[] }[];
   replay: { current: { allowed_now: number; still_parks: number; false_allows: number }; proposed: { allowed_now: number; still_parks: number; false_allows: number } };
   current_false_allows: { item: string; at: string; command: string }[];
+  /** Kinds of command denied every time (#203): refused up front with this reason, they would not park. Reported only. */
+  redirects?: { rule: string; shape: string; class: string; denials: number; items: number; message: string; examples: string[] }[];
+  drift?: { window_days: number; recorded_since?: string; runs: number; idle_rules: { rule: string; last_matched?: string }[]; rising: { shape: string; class: string; recent: number; before: number; items: number; rule?: string }[] };
 }
 
 /** An orchestrator note about planestro and what became of it (#231): the issues it was filed as, or handled by hand. */

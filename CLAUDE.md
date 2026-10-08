@@ -186,6 +186,10 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   (`permission allow (reason): Bash(…)`) and, whole, from `permission.answered` (`tool`, `command`,
   `reason`); only safe classes get a `…@worktree` rule, and one that the replay finds would have let any
   past denial through, alone or with the others, is refused (zero false allows on the history).
+  The same report (#203) offers redirects (a kind of command denied every time from several items, its reason, never
+  one a past approval would have hit) and drift over the journal's `tools.ran` (one per Claude worker turn: what ran
+  without a park): allow rules nothing matched, approvals rising. Neither is applied. A delegated permission request
+  carries the earlier rulings on its kind of command and the `permission-rubric` partial.
 - Semantic git commits only (`HH-143: approve plan`), scoped to the paths the
   mutation touched; telemetry is checkpointed (`planestro: checkpoint <ts>`).
 - Releases (`releases/<version>.md`) are a second file type beside items: status

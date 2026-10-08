@@ -37,7 +37,8 @@ const USAGE = `planestro ${TOOL_VERSION}
   planestro permissions suggest [data_dir] [--json] [--min N]
                                     allow rules suggested from past permission rulings (#169): safe kinds of command the
                                     orchestrator and the user keep approving, each replayed against every past ruling so
-                                    none would have allowed anything ever denied. Read-only: add the ones you accept in Settings
+                                    none would have allowed anything ever denied; also kinds of command denied every time
+                                    and drift (rules nothing ran under, approvals rising) (#203). Read-only: add the ones you accept in Settings
   planestro notify <title> <message>
                                     show a desktop notification (osascript on a Mac, notify-send on Linux); for notifications.* commands,
                                     which also get PLANESTRO_TITLE and PLANESTRO_MESSAGE

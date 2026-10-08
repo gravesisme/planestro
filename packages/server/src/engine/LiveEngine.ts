@@ -1524,6 +1524,8 @@ export class LiveEngine implements Engine {
     } finally {
       this.turns.delete(id);
     }
+    // What ran without a park, once per turn: the drift report's record of what the allow rules still match (#203).
+    if (result.ran?.length) this.store.journal.append({ type: 'tools.ran', item: id, actor: 'engine', data: { phase, runner, ran: result.ran } });
     if (result.subtype === 'deferred') {
       defer();
       const { active_turn: _active, ...data } = this.store.requireItem(id).file.frontmatter.op_data ?? {};
