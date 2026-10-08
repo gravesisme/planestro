@@ -21,6 +21,7 @@ import { Journal } from './Journal.ts';
 import { GitCommitter } from './GitCommitter.ts';
 import { IdAllocator } from './IdAllocator.ts';
 import { matches } from './Search.ts';
+import { MachinePolicy, machinePolicyPath, permissionRules, type EffectiveRules } from '../machinePolicy.ts';
 import { readConfig, readLocalConfig, patchConfigFile, writeLocalConfig, resolveCodeRepo, resolveWorktreesRoot, schemaStatus, TOOL_VERSION, type SchemaStatus } from '../config.ts';
 
 /**
@@ -76,7 +77,11 @@ const SETTLES_QUESTIONS: Partial<Record<Status, string>> = { FINISHED: 'finished
 export interface ScheduleFields { title?: string; description?: string; cron?: string; tz?: string; enabled?: boolean; skip_if_open?: boolean; submit?: boolean; kind?: 'item' | 'epic'; category?: string | null; priority?: Priority | null }
 export interface ReleaseFields { version?: string; title?: string | null; status?: ReleaseStatus; date?: string | null; tag?: string | null; items?: string[] }
 
-export interface DataStoreOptions { emit?: (e: ServerEvent) => void; log?: (level: 'info' | 'warn' | 'error', message: string) => void; lock?: boolean }
+export interface DataStoreOptions {
+  emit?: (e: ServerEvent) => void; log?: (level: 'info' | 'warn' | 'error', message: string) => void; lock?: boolean;
+  /** The machine policy file (#229); `~/.planestro/policy.yml` (under `PLANESTRO_HOME`) when unset. */
+  policyPath?: string;
+}
 
 const REORDER_COMMIT_DELAY_MS = 5 * 60_000;
 const EDIT_COMMIT_DELAY_MS = 30_000;
@@ -99,12 +104,14 @@ export class DataStore {
   readonly git: GitCommitter;
   readonly ids: IdAllocator;
   readonly schema: SchemaStatus;
+  readonly machinePolicy: MachinePolicy;
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private locked = false;
 
   private constructor(readonly dataDir: string, private readonly opts: DataStoreOptions) {
     this.config = readConfig(dataDir);
     this.local = readLocalConfig(dataDir);
+    this.machinePolicy = new MachinePolicy(opts.policyPath ?? machinePolicyPath());
     this.schema = schemaStatus(this.config);
     this.journal = new Journal(join(dataDir, 'journal'), (entry) => this.emit({ type: 'journal.appended', entry }));
     this.git = new GitCommitter(dataDir, { autoCommit: this.config.git.auto_commit, autoPush: this.config.git.auto_push, toolVersion: TOOL_VERSION, log: opts.log });
@@ -129,6 +136,10 @@ export class DataStore {
   get questionsDir(): string { return join(this.dataDir, 'questions'); }
   get schedulesDir(): string { return join(this.dataDir, 'schedules'); }
   get attachmentsDir(): string { return join(this.dataDir, 'attachments'); }
+  /** The permission rules workers run under (#229): the machine policy's, the project's and this machine's, merged. */
+  permissionRules(): EffectiveRules {
+    return permissionRules({ machine: this.machinePolicy.current(), project: this.config.permissions, local: this.local.permissions });
+  }
   codeRepoPath(): string { return resolveCodeRepo(this.dataDir, this.config, this.local); }
   worktreesRoot(): string { return resolveWorktreesRoot(this.dataDir, this.config, this.local); }
 

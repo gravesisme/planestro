@@ -1,5 +1,5 @@
 import type { ItemFrontmatter, PromptFrontmatter, ReleaseFrontmatter, ReleaseStatus, Config, LocalConfig, BillingMode, ModelDef, Status, JournalEntry, UsageGuardState, QuestionFrontmatter, ThreadEntry, ScheduleFrontmatter } from '@planestro/shared';
-import type { BreakdownChild, Priority } from '@planestro/shared';
+import type { BreakdownChild, Priority, SourcedRule } from '@planestro/shared';
 
 export interface OrchestratorSpend {
   wakes: { at: string; events: string[]; items: string[]; cost: number; runner?: string; tokens?: number; token_cap?: number; context_tokens?: number; model?: string; session?: string; wake?: number; fresh: boolean; summary: string; failed: boolean }[];
@@ -68,6 +68,8 @@ export interface State {
   toolchain?: string[];
   /** planestro.local.yml without its secrets: the API key is never sent, only whether one is set (`api_key`). */
   local: LocalConfig;
+  /** Every allow / deny rule workers run under, with where it came from: ~/.planestro/policy.yml, planestro.yml, planestro.local.yml (#229). */
+  permissions?: { machine_path: string; machine_exists: boolean; machine_error?: string; rules: SourcedRule[] };
   /** Whether budget dollars are an API-price yardstick on a Claude plan or real charges to an API account (#83). */
   billing?: BillingMode; api_key?: 'local' | 'env' | 'none';
   items: ItemView[]; prompts: PromptView[]; releases?: ReleaseView[]; schedules?: ScheduleView[]; invalid: { path: string; error: string }[];

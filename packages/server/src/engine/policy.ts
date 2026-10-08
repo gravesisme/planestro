@@ -29,8 +29,27 @@ export const BASE_ALLOWED: Record<'plan' | 'implement' | 'fix', string[]> = {
   fix: [...READONLY_HELPERS, ...SCOPED_READERS, ...SCOPED_WRITERS, 'Bash(git status*)', 'Bash(git diff*)', 'Bash(git log*)', 'Bash(git show*)', 'Bash(git add *)', 'Bash(git commit *)', 'Bash(git stash*)', 'Bash(git fetch*)', 'Bash(git restore *)', 'Bash(git rebase*)', 'Bash(git mergetool*)'],
 };
 
-/** The rules the SDK's own allow-list can read: a scoped rule is planestro's to judge, never the SDK's. */
-export function sdkRules(rules: string[]): string[] { return rules.map((r) => r.trim()).filter((r) => !r.endsWith(SCOPE)); }
+/** Deny rules as the command prefixes they refuse: written as a rule (`Bash(rm -rf *)`, as Settings shows it) or as a bare prefix (`rm -rf`) (#109). */
+export function denyPrefixes(deny: string[]): string[] {
+  return deny.map((d) => d.trim()).filter(Boolean).map((d) => { const m = /^Bash\((.*)\)$/.exec(d); return m ? m[1].replace(/\s*\*$/, '').trim() : d; }).filter(Boolean);
+}
+
+/**
+ * The rules the SDK's own allow-list can read: a scoped rule is planestro's to judge, never the SDK's.
+ * Nor is a Bash rule a deny touches (#229): the SDK approves what its list matches without asking
+ * planestro, so a project's `Bash(npm *)` would let a machine policy's `npm publish` through. Such a
+ * rule still allows, through canUseTool, where the denials are judged first.
+ */
+export function sdkRules(rules: string[], deny: string[] = []): string[] {
+  const denied = denyPrefixes(deny);
+  return rules.map((r) => r.trim()).filter((r) => {
+    if (r.endsWith(SCOPE)) return false;
+    const m = /^Bash\((.*)\)$/.exec(r);
+    if (!m) return true;
+    const allow = m[1].replace(/\s*\*$/, '').trim();
+    return !denied.some((d) => allow.startsWith(d) || d.startsWith(allow));
+  });
+}
 
 export interface Policy { deny(req: PermissionRequest): string | null }
 
@@ -178,9 +197,10 @@ function leavesWorktree(command: string, worktree: string): boolean {
 /**
  * Hard denials with an explanation. Everything else that reaches `canUseTool` is parked for
  * the user (invariant 2). Branch names come from config — never literals (invariant 8).
- * The secret-file deny list (#227) is judged first, for every tool.
+ * The secret-file deny list (#227) is judged first, for every tool. `deny` is the merged
+ * deny list (`DataStore.permissionRules`); it defaults to the project's alone.
  */
-export function makePolicy(config: Config, baseBranch: string, worktree: string, secrets: SecretOptions = {}): Policy {
+export function makePolicy(config: Config, baseBranch: string, worktree: string, secrets: SecretOptions = {}, deny: string[] = config.permissions.deny): Policy {
   const protectedBranches = [baseBranch, config.code_repo.release_branch].filter((b): b is string => Boolean(b)).map(esc).join('|');
   const rules: { re: RegExp; why: string }[] = [
     { re: /^\s*git\b[^|;&]*?\bpush\b/, why: 'planestro pushes for you; commit on your worker branch and report_done.' },
@@ -196,8 +216,8 @@ export function makePolicy(config: Config, baseBranch: string, worktree: string,
     { re: /^\s*sed\b[^|;&]*?\s(-[nErsuz]*i|--in-place)/, why: 'edit files with the Edit or Write tool, not through the shell.' },
     { re: /^\s*perl\b[^|;&]*?\s-[pln0-9]*i/, why: 'edit files with the Edit or Write tool, not through the shell.' },
   ];
-  // Written as a rule (`Bash(rm -rf *)`, as Settings shows it) or as a bare prefix (`rm -rf`): both deny the prefix (#109).
-  const userDeny = config.permissions.deny.map((d) => d.trim()).filter(Boolean).map((d) => { const m = /^Bash\((.*)\)$/.exec(d); return m ? m[1].replace(/\s*\*$/, '').trim() : d; }).filter(Boolean);
+  // Every layer's denials (#229: the machine policy, the project, this machine's local file), each as the prefix it refuses.
+  const userDeny = denyPrefixes(deny);
   return {
     deny(req) {
       const secret = secretDenial(req, worktree, secrets);

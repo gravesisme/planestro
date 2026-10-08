@@ -1235,7 +1235,7 @@ export class LiveEngine implements Engine {
       if (native) {
         const model = this.store.config.models.find((m) => m.id === (phase === 'plan' ? fm.planner : fm.implementer));
         if (!fm.worktree || native.cwd !== this.absWorktree(fm.worktree) || !model || modelCapabilities(model).transport !== 'app-server') throw new Error('This command no longer matches the item worktree or app-server runner; request it again in the current session.');
-        const policy = makePolicy(this.store.config, this.store.derived(item).base_branch!, native.cwd);
+        const policy = makePolicy(this.store.config, this.store.derived(item).base_branch!, native.cwd, {}, this.store.permissionRules().deny);
         for (const command of commandForms(native.command)) {
           const why = policy.deny({ tool: 'Bash', input: { command } });
           if (why) throw new Error(why);
@@ -1423,7 +1423,9 @@ export class LiveEngine implements Engine {
       this.store.mutateItem(id, [{ activity: { actor: 'app', text: `no ${def.label} conversation to resume: starting a fresh one with the full ${phase} prompt` } }], 'engine');
     }
     const images = fm.attachments.map((a) => this.store.attachmentAbsPath(a)).filter((p) => /\.(png|jpe?g|webp|gif)$/i.test(p));
-    const policy = makePolicy(this.store.config, d.base_branch!, cwd);
+    // The machine policy, the project's rules and this machine's (#229), read once for the turn: a deny from any of them wins.
+    const rules = this.store.permissionRules();
+    const policy = makePolicy(this.store.config, d.base_branch!, cwd, {}, rules.deny);
     // Tools from outside (f5): the model row names MCP servers, the machine-local file holds them with
     // their keys. A name with no server on this machine is a stop, not a session without its tools.
     const mcpServers: Record<string, McpServerSpec> = {};
@@ -1504,7 +1506,7 @@ export class LiveEngine implements Engine {
         ...(pick.sdkFallback ? { fallbackModel: pick.sdkFallback } : {}),
         ...(Object.keys(mcpServers).length ? { mcpServers, operatorHosts: this.store.local.allowed_hosts } : {}),
         // Scoped rules (…@worktree) are planestro's to judge in onPermission; the SDK's allow-list never sees them.
-        allowedTools: sdkRules([...BASE_ALLOWED[phase], ...this.store.config.permissions.allow, ...extraAllowed]),
+        allowedTools: sdkRules([...BASE_ALLOWED[phase], ...rules.allow, ...extraAllowed], rules.deny),
         extraDirs: [this.store.dataDir], maxBudgetUsd: turnCap,
         tools: this.makeTools(id),
         onUndelivered: (r) => this.recordOutbox(id, r),
@@ -1528,7 +1530,7 @@ export class LiveEngine implements Engine {
           const why = policy.deny(req);
           if (why) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `denied ${req.tool}: ${why}` } }], 'engine'); return { action: 'deny', message: `Not allowed: ${why}` }; }
           if (req.tool === 'Bash' && oneShot.delete(String(req.input.command ?? '').trim())) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: 'one-shot approval consumed' } }], 'engine'); return { action: 'allow' }; }
-          if (allowedByRules(req, [...BASE_ALLOWED[phase], ...this.store.config.permissions.allow, ...extraAllowed], cwd, { readOnly: phase === 'plan' })) return { action: 'allow' };
+          if (allowedByRules(req, [...BASE_ALLOWED[phase], ...this.store.permissionRules().allow, ...extraAllowed], cwd, { readOnly: phase === 'plan' })) return { action: 'allow' };
           const ask = this.permissionsDelegated() && this.mayAskOrchestrator(this.store.requireItem(id).file.frontmatter);
           // The safety valve tripped: say so on the card, or the stream of requests reaching the user is a mystery (#95).
           const tripped = !ask && this.permissionsDelegated();
@@ -4724,8 +4726,9 @@ export class LiveEngine implements Engine {
       report_blocked: async (r) => { reported.blocked = String(r); return 'recorded. End your turn now.'; },
       get_item: async () => `${id} "${fm.title}" (epic) — integration branch ${branch}, base ${base}`,
     };
-    const allowed = [...BASE_ALLOWED.fix, 'Bash(git merge *)', ...this.store.config.permissions.allow];
-    const policy = makePolicy(this.store.config, base, cwd);
+    const rules = this.store.permissionRules();
+    const allowed = [...BASE_ALLOWED.fix, 'Bash(git merge *)', ...rules.allow];
+    const policy = makePolicy(this.store.config, base, cwd, {}, rules.deny);
     const abort = new AbortController();
     const waiting = ((fm.op_data?.pending_messages as string[] | undefined) ?? []).length;
     this.turns.set(id, { model: model ?? def.label, phase: 'fix', startedAt: this.now(), lastOutput: '', abort, oneShot: 'conflict session' });
@@ -4739,7 +4742,7 @@ export class LiveEngine implements Engine {
         itemId: id, phase: 'fix', cwd, model: model as string, transport: modelCapabilities(def).transport, ...runnerTurnSettings(def), maxTokens: remainingTokens, permissionMode: 'acceptEdits', prompt,
         systemAppend: `${this.store.renderPrompt(modelCapabilities(def).workerPrompt, item)}\n\n${this.hostNote}${runner === 'claude' ? cwdNote(cwd) : ''}`,
         ...(pick.sdkFallback ? { fallbackModel: pick.sdkFallback } : {}),
-        allowedTools: sdkRules(allowed), extraDirs: [this.store.dataDir], maxBudgetUsd: cap, tools,
+        allowedTools: sdkRules(allowed, rules.deny), extraDirs: [this.store.dataDir], maxBudgetUsd: cap, tools,
         // One shot, so nothing parks: what the rules do not allow is refused with a way forward.
         onPermission: async (req) => {
           const why = policy.deny(req);

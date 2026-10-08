@@ -137,6 +137,24 @@ dollar figures elsewhere carry a short hint.
 | `permissions.deny` | `[]` | Extra deny patterns, checked before anything else. |
 | `codex_env_passthrough` | `[]` | Environment variable names a Codex worker's commands may see (#228). A Codex process, `exec` or `app-server`, starts with `PATH`, `HOME`, `USER`, `SHELL`, `TMPDIR`, `LANG` and its `CODEX_HOME` only, so `GH_TOKEN`, `*_API_KEY`, `AWS_*` and the like never reach a command it runs. List what the project's tools need (`HTTPS_PROXY`). Codex signs in from its home (`codex login`); an `OPENAI_API_KEY` in planestro's environment reaches it only if listed here. Read at each turn. |
 
+**Rules for every project on this machine** (#229) go in an optional `~/.planestro/policy.yml`
+(under `$PLANESTRO_HOME` when set), with the same two lists, and this machine's own rules for one
+project in `permissions:` in `planestro.local.yml`:
+
+```yaml
+allow:
+  - Bash(npm test*)
+deny:
+  - Bash(npm publish *)
+```
+
+The lists are merged in that order, machine policy, project, local, and a deny from any of them
+wins over an allow from any of them: an allow rule a deny touches is left off the CLI's own
+allow-list, so the deny is judged before it. The secret-file list below comes first regardless.
+The file is read again when it changes; one that turns unreadable while planestro runs keeps
+the rules last read from it, and one unreadable at startup stops it. Settings → Workers &
+permissions shows every rule in effect and the file it came from; the machine file is edited by hand.
+
 Pushes, `gh pr`, protected branches, branch and worktree management and force operations
 are denied in code (`engine/policy.ts`) whatever these say, and so are in-place shell edits
 (`sed -i`, `perl -i`: the Edit and Write tools never need approval). Rules match what a command

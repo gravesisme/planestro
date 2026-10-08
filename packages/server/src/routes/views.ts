@@ -28,7 +28,7 @@ function parkHintOf(store: DataStore, item: StoredItem) {
   const permission = fm.awaiting === 'permission' || (fm.awaiting === 'orchestrator' && d?.kind === 'permission');
   if (!permission || d?.tool !== 'Bash') return null;
   const command = String((d.input as { command?: unknown } | undefined)?.command ?? '');
-  return parkHint(store.journal.read({ item: fm.id, type: 'permission.parked' }), command, store.config.permissions.allow) ?? null;
+  return parkHint(store.journal.read({ item: fm.id, type: 'permission.parked' }), command, store.permissionRules().allow) ?? null;
 }
 export type ItemView = ReturnType<typeof itemView>;
 
@@ -106,6 +106,12 @@ export function runnerStallsView(engine: { runnerStalls?(): { label: string; ite
   return stalls.length ? { runner_stalls: stalls } : {};
 }
 
+/** The rules workers run under, each with where it came from (#229); the machine policy file is shown, never written. */
+export function permissionsView(store: DataStore) {
+  const machine = store.machinePolicy.current();
+  return { machine_path: machine.path, machine_exists: machine.exists, ...(machine.error ? { machine_error: machine.error } : {}), rules: store.permissionRules().rules };
+}
+
 export function stateView(store: DataStore, engine: { mode: string; paused: boolean; ciQueue?: { queued: number; running: number }; runnerStalls?(): { label: string; items: string[]; since: string }[]; sessions(): unknown[]; restartReadiness?(): { draining: boolean; by?: 'user' | 'update'; idle: boolean; running: string[] } }, git: unknown, envApiKey = STARTUP_API_KEY) {
   const localKey = store.local.anthropic_api_key?.trim();
   return {
@@ -117,6 +123,7 @@ export function stateView(store: DataStore, engine: { mode: string; paused: bool
     toolchain: TOOLCHAINS.map((t) => t.marker).filter((m) => existsSync(join(store.codeRepoPath(), m))),
     config: store.config,
     local: publicLocal(store.local),
+    permissions: permissionsView(store),
     /** Whether the dollars planestro counts are an API-price yardstick on a Claude plan, or real charges to an API account (#83). */
     billing: billingMode(localKey, envApiKey),
     api_key: localKey ? 'local' as const : envApiKey?.trim() ? 'env' as const : 'none' as const,

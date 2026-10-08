@@ -394,6 +394,13 @@ export function runnerTurnSettings(m: Pick<ModelDef, 'runner' | 'codex_effort' |
 }
 export function canPlan(m: Pick<ModelDef, 'runner' | 'external' | 'codex_transport'>): boolean { return modelCapabilities(m).plan; }
 
+/** `allow` / `deny` permission rules: a project's `permissions`, this machine's in planestro.local.yml, and `~/.planestro/policy.yml` (#229). */
+export const PermissionRules = z.object({ allow: z.array(z.string()).default([]), deny: z.array(z.string()).default([]) });
+export type PermissionRules = z.infer<typeof PermissionRules>;
+/** Where an effective permission rule comes from (#229), in the order they are merged: a deny from any of them wins. */
+export type PermissionSource = 'machine' | 'project' | 'local';
+export interface SourcedRule { rule: string; list: 'allow' | 'deny'; sources: PermissionSource[] }
+
 export const Config = z.object({
   schema_version: z.number().int().positive(),
   tool_version: z.string(),
@@ -449,7 +456,7 @@ export const Config = z.object({
     /** A turn that failed transiently before it produced anything is retried once after this many seconds (#241). 0 turns it off. */
     transient_retry_after_s: z.number().min(0).default(30),
   }).default({ max_sessions: 3, max_local_jobs: 1, runner_limits: { codex: 1 }, stall_after_min: 10, transient_retry_after_s: 30 }),
-  permissions: z.object({ allow: z.array(z.string()).default([]), deny: z.array(z.string()).default([]) }).default({ allow: [], deny: [] }),
+  permissions: PermissionRules.default({ allow: [], deny: [] }),
   ci: z.object({
     mode: z.enum(['github', 'github-or-local']).default('github'),
     require_green_base: z.boolean().default(true),
@@ -553,8 +560,11 @@ export const UsageGuardState = z.object({
 export type UsageGuardState = z.infer<typeof UsageGuardState>;
 
 /** Machine-local overrides (gitignored planestro.local.yml). */
+
 export const LocalConfig = z.object({
   code_repo_path: z.string().optional(),
+  /** This machine's own allow / deny rules for this project, merged after the machine policy and the project's (#229). */
+  permissions: PermissionRules.optional(),
   worktrees_root: z.string().optional(),
   claude_bin: z.string().optional(),
   codex_bin: z.string().optional(),

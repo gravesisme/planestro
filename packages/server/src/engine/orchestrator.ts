@@ -606,7 +606,7 @@ export class Orchestrator {
       ...(() => {
         // #108: the second park on one kind of command is a pattern, and each park costs a resume.
         const id = (fm as { id?: string }).id;
-        const hint = id && data.tool === 'Bash' ? parkHint(this.store.journal.read({ item: id, type: 'permission.parked' }), what, this.store.config.permissions.allow) : undefined;
+        const hint = id && data.tool === 'Bash' ? parkHint(this.store.journal.read({ item: id, type: 'permission.parked' }), what, this.store.permissionRules().allow) : undefined;
         return hint ? [`This item has parked ${hint.parks} times on \`${hint.shape} …\`. The allow rule ${hint.rule} would let such commands run inside the worktree without a park. Only the user adds allow rules: if it fits this project, say so in your decision's reason (the user's card offers it).`] : [];
       })(),
       `The request, in full:\n\`\`\`\n${what}\n\`\`\``,
