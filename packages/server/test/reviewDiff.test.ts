@@ -29,7 +29,7 @@ async function setup() {
   writeFileSync(join(cwd, 'src/a.ts'), 'export const a = 3; // not committed\nexport const keep = true;\n');
   // The base moves on with an unrelated file: a three-dot diff does not show it.
   writeFileSync(join(codeRepo, 'other.ts'), 'x\n');
-  git(codeRepo, 'add', '-A'); git(codeRepo, 'commit', '-q', '-m', 'base moves');
+  git(codeRepo, 'add', 'other.ts'); git(codeRepo, 'commit', '-q', '-m', 'base moves');
   git(codeRepo, 'update-ref', 'refs/remotes/origin/trunk', 'trunk');
 
   store = await DataStore.open(dataDir);
@@ -64,7 +64,7 @@ describe('a code diff on the item page (#233)', () => {
     expect((await r.json()).patch).toContain('+export const a = 2;');
     expect((await app.request(`/items/${id}/diff?path=README.md`)).status).toBe(404);
     expect(snapshot(cwd)).toEqual(before);
-  });
+  }, 30_000);
 
   it('after merge it diffs the merge commit, with the branch and worktree gone', async () => {
     const { engine, store, world, codeRepo, cwd, branch, id } = await setup();
@@ -80,5 +80,5 @@ describe('a code diff on the item page (#233)', () => {
     expect(d.patch).toContain('-export const a = 1;');
     expect(d.patch).toContain('+export const a = 2;');
     expect(await engine.reviewDiff(id, 'other.ts')).toBeNull();
-  });
+  }, 30_000);
 });

@@ -35,6 +35,7 @@ export class MockEngine implements Engine {
   async approveBreakdown(): Promise<string[]> { throw new Error('no engine is running'); }
   async reviewImages(): Promise<[]> { return []; }
   async reviewImage(): Promise<null> { return null; }
+  async reviewDiff(): Promise<null> { return null; }
   async requestReviewChanges(): Promise<void> { throw new Error('no engine is running'); }
   async releaseHold(id: string): Promise<void> { this.store.mutateItem(id, [{ unset: ['review_hold', 'skip_merge'] }], 'user', { commit: `${id}: release hold` }); }
   async closeAsDone(id: string, reason?: string): Promise<void> {

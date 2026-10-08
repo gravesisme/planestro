@@ -5,7 +5,9 @@ import type { ServerEvent, BreakdownChild } from '@planestro/shared';
 export interface SessionView { item: string; session_id?: string; model?: string; op?: string; started_at?: string; busy: boolean; last_output?: string }
 
 /** An image a branch added, changed or removed — what a reviewer looks at. */
-export interface ReviewImage { path: string; change: 'added' | 'modified' | 'deleted'; bytes?: number; width?: number; height?: number; /** What it is reviewed as; images when absent (older engines). */ kind?: 'image' | 'audio' | 'model' }
+export interface ReviewImage { path: string; change: 'added' | 'modified' | 'deleted'; bytes?: number; width?: number; height?: number; /** What it is reviewed as; images when absent (older engines). */ kind?: 'image' | 'audio' | 'model' | 'text' }
+/** One changed file's unified diff against the base (#233): `patch` is git's, cut at `truncated`. */
+export interface ReviewDiff { path: string; change: ReviewImage['change']; patch: string; binary: boolean; truncated: boolean }
 
 export interface Engine {
   readonly mode: 'live' | 'dry-run';
@@ -34,6 +36,8 @@ export interface Engine {
   reviewImage(id: string, path: string, side: 'before' | 'after'): Promise<Buffer | null>;
   /** A take of the audition the item waits on (#207), and only while it waits; null for any other path. */
   auditionFile?(id: string, path: string): Promise<Buffer | null>;
+  /** A changed file's diff against the base, read from git alone (never the worktree); null for a path the branch did not change. */
+  reviewDiff(id: string, path: string): Promise<ReviewDiff | null>;
   requestReviewChanges(id: string, note: string): Promise<void>;
   /** Let a held pull request (a review hold, or skip_merge) back into the merge pipeline; before the pull request exists, drop the hold. */
   releaseHold(id: string, note?: string): Promise<void>;

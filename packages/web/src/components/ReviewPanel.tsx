@@ -2,13 +2,16 @@ import { useEffect, useState } from 'react';
 import { api, type ItemView, type ReviewImage } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { prepareUpload } from '../uploadImage.ts';
+import { usePhone } from '../usePhone.ts';
+import { FileDiff } from './FileDiff.tsx';
 
 const src = (id: string, path: string, side: 'before' | 'after', v: string) => `/api/items/${id}/image?path=${encodeURIComponent(path)}&side=${side}&v=${encodeURIComponent(v)}`;
 const kb = (n?: number) => n === undefined ? '' : n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
 
 /**
- * What a branch drew, as a person reviews it: every image it added or changed, before beside after
- * on a checkerboard (transparency is part of the art), at 1× and at the project's display scale.
+ * What a branch made, as a person reviews it: every image it added or changed, before beside after
+ * on a checkerboard (transparency is part of the art), at 1× and at the project's display scale;
+ * every other file opens to its diff against the base (#233), before a pull request and after the merge.
  * The list comes from git through the engine; nothing here asks a model what it made.
  */
 export function ReviewPanel({ item, compact = false }: { item: ItemView; compact?: boolean }) {
@@ -17,6 +20,9 @@ export function ReviewPanel({ item, compact = false }: { item: ItemView; compact
   const [images, setImages] = useState<ReviewImage[] | null>(null);
   const [scaled, setScaled] = useState(false);
   const [zoom, setZoom] = useState<string | null>(null);
+  const phone = usePhone();
+  const [split, setSplit] = useState<boolean | null>(null); // side by side where there is room, unless chosen
+  const sideBySide = split ?? !phone;
   const [note, setNote] = useState('');
   // An audition (f5): the candidates a sound or 3D worker made; the ones ticked go back to it as the note's first line.
   const [picks, setPicks] = useState<string[]>([]);
@@ -32,11 +38,16 @@ export function ReviewPanel({ item, compact = false }: { item: ItemView; compact
   if (!awaiting && images === null && fm.branch && ['IN_PROGRESS', 'IN_REVIEW'].includes(fm.status)) return (
     <div className="section review-loading" aria-busy="true">
       <h2 style={{ margin: '0 0 8px' }}><span>Files to review on this branch</span></h2>
-      <p className="small muted row"><span className="spinner" aria-hidden="true" /> Reading the branch for images, sounds and models to review…</p>
+      <p className="small muted row"><span className="spinner" aria-hidden="true" /> Reading the branch for the files it changed…</p>
     </div>
   );
   if (!awaiting && !images?.length) return null;
   const px = scaled ? scaleN : 1;
+  const merged = fm.status === 'MERGED' || fm.status === 'FINISHED';
+  const texts = images?.filter((f) => f.kind === 'text') ?? [];
+  const media = images?.filter((f) => f.kind !== 'text') ?? [];
+  // Picked lines join the note the Request changes button sends.
+  const quote = awaiting ? (q: string) => setNote((n) => `${n.trimEnd()}${n.trim() ? '\n\n' : ''}${q}\n`) : undefined;
   const candidate = (f: ReviewImage) => {
     const url = src(item.id, f.path, 'after', v);
     return (
@@ -62,19 +73,26 @@ export function ReviewPanel({ item, compact = false }: { item: ItemView; compact
   return (
     <div className={awaiting ? 'approval' : 'section'} id={awaiting ? 'review' : undefined} data-wait={awaiting || undefined}>
       <h2 style={{ margin: '0 0 8px' }}>
-        <span>{awaiting ? 'Waiting for your review before it merges' : `Files to review on this branch · ${images?.length ?? 0}`}</span>
-        {scaleN > 1 && <button className="small" onClick={() => setScaled(!scaled)}>{scaled ? `showing ${scaleN}× — show 1×` : `showing 1× — show ${scaleN}×`}</button>}
+        <span>{awaiting ? 'Waiting for your review before it merges' : merged ? `Files changed${fm.pr ? ` by PR #${fm.pr}` : ''} · ${images?.length ?? 0}` : `Files to review on this branch · ${images?.length ?? 0}`}</span>
+        {texts.length > 0 && <button className="small" onClick={() => setSplit(!sideBySide)}>{sideBySide ? 'side by side — show unified' : 'unified — show side by side'}</button>}
+        {scaleN > 1 && media.length > 0 && <button className="small" onClick={() => setScaled(!scaled)}>{scaled ? `showing ${scaleN}× — show 1×` : `showing 1× — show ${scaleN}×`}</button>}
       </h2>
       {awaiting && <p className="small" style={{ marginTop: 0 }}>Synced and CI is green{fm.pr ? ` (PR #${fm.pr})` : ''}. Everything a machine can check has passed; this part is yours.</p>}
-      {images === null ? <p className="small muted">Reading the branch…</p> : !images.length ? <p className="small muted">This branch changes no image, sound or model files{awaiting ? ' — review the pull request itself.' : '.'}</p> : (
+      {images === null ? <p className="small muted">Reading the branch…</p> : !images.length ? <p className="small muted">This branch changes no files{awaiting ? ' — review the pull request itself.' : '.'}</p> : media.length > 0 && (
         <div className={`review-grid ${compact ? 'compact' : ''}`}>
-          {images.filter((f) => f.kind && f.kind !== 'image').map(candidate)}
-          {images.filter((f) => !f.kind || f.kind === 'image').map((img) => (
+          {media.filter((f) => f.kind && f.kind !== 'image').map(candidate)}
+          {media.filter((f) => !f.kind || f.kind === 'image').map((img) => (
             <div key={img.path} className="review-card">
               <div className="small"><code>{img.path}</code> <span className={`tag ${img.change === 'added' ? 'ok' : img.change === 'deleted' ? 'hot' : ''}`}>{img.change}</span> <span className="muted">{img.width ? `${img.width}×${img.height} · ` : ''}{kb(img.bytes)}</span></div>
               <div className="review-pair">{img.change !== 'added' && picture(img, 'before')}{picture(img, 'after')}</div>
             </div>
           ))}
+        </div>
+      )}
+      {texts.length > 0 && (
+        <div className="diff-list">
+          {awaiting && <p className="small muted" style={{ margin: 0 }}>Open a file for its diff; pick line numbers (shift for a range) to quote them in your note.</p>}
+          {texts.map((f) => <FileDiff key={f.path} itemId={item.id} file={f} v={v} split={sideBySide} onQuote={quote} />)}
         </div>
       )}
       {awaiting && (

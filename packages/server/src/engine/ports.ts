@@ -72,6 +72,8 @@ export interface GitPort {
   mergeBase(cwd: string, a: string, b: string): Promise<string | null>;
   /** A file's bytes at a ref, or null when it does not exist there. */
   readBlob(cwd: string, ref: string, path: string): Promise<Buffer | null>;
+  /** One file's unified diff, `base...head` (against their merge base): read-only, never the worktree's uncommitted state (#233). */
+  fileDiff(cwd: string, base: string, head: string, path: string): Promise<string>;
 }
 
 /** `skipped`: every run for the head skipped all its jobs (a draft guard): no verdict, never red. */

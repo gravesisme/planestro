@@ -32,7 +32,9 @@ export interface ItemView {
   park_hint?: { shape: string; parks: number; rule: string } | null;
   derived: { lane: 'board' | 'icebox' | 'done'; needs_you: boolean; external: boolean; flavor: 'worker' | 'epic' | 'external'; base_branch?: string; base_branch_error?: string; deps_satisfied: boolean; children: string[] };
 }
-export interface ReviewImage { path: string; change: 'added' | 'modified' | 'deleted'; bytes?: number; width?: number; height?: number; kind?: 'image' | 'audio' | 'model' }
+export interface ReviewImage { path: string; change: 'added' | 'modified' | 'deleted'; bytes?: number; width?: number; height?: number; kind?: 'image' | 'audio' | 'model' | 'text' }
+/** One changed file's unified diff against the base (#233). */
+export interface ReviewDiff { path: string; change: ReviewImage['change']; patch: string; binary: boolean; truncated: boolean }
 export interface PromptView { name: string; path: string; frontmatter: PromptFrontmatter; body: string; text?: string }
 export interface ReleaseView { version: string; path: string; frontmatter: ReleaseFrontmatter; sections: { title: string; body: string }[]; candidates: string[] }
 /** An orchestrator question (#75). The list leaves out `details` and `thread`; the question page has them. */
@@ -81,6 +83,7 @@ export const api = {
   discardPreview: (id: string) => req<{ refusal: string | null; branch?: string; remote_sha: string | null; pr?: number }>('GET', `/api/items/${id}/discard`),
   discard: (id: string, reason: string, deleteBranch: boolean, expectSha?: string) => req<{ said: string; item: ItemView }>('POST', `/api/items/${id}/discard`, { reason, delete_branch: deleteBranch, ...(expectSha ? { expect_sha: expectSha } : {}) }),
   reviewImages: (id: string) => req<ReviewImage[]>('GET', `/api/items/${id}/images`),
+  reviewDiff: (id: string, path: string) => req<ReviewDiff>('GET', `/api/items/${id}/diff?path=${encodeURIComponent(path)}`),
   requestReviewChanges: (id: string, note: string) => req<ItemView>('POST', `/api/items/${id}/review/changes`, { note }),
   releaseHold: (id: string, note?: string) => req<ItemView>('POST', `/api/items/${id}/hold/release`, { note }),
   approveBreakdown: (id: string, children: BreakdownChild[], queue: boolean) => req<{ created: string[]; item: ItemView }>('POST', `/api/items/${id}/breakdown/approve`, { children, queue }),
