@@ -4,6 +4,8 @@ import { canPlan, unavailableEntry } from '@planestro/shared';
 import { api } from '../api.ts';
 import { useStore } from '../store.ts';
 import { ProviderSwitchBoard } from '../components/ProviderSwitchBoard.tsx';
+import { Sending } from '../components/Sending.tsx';
+import { useAction } from '../sending.ts';
 
 type Row = { id: string; title: string; eligible: boolean; summary: string; pr?: { number: number; url: string }; result?: string };
 type Preview = { items: Row[]; orchestrator?: string };
@@ -18,7 +20,9 @@ export function SwitchProviderPage() {
   const [selected, setSelected] = useState<string[]>(() => query.get('item') ? [query.get('item')!] : []);
   const [preview, setPreview] = useState<{ data: Preview; key: string; applied: boolean }>();
   const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
+  // One request at a time, shown at once on the button pressed (#304).
+  const { busy: going, run } = useAction();
+  const busy = going !== undefined;
   const [selection, setSelection] = useState<{ configured?: string; current?: string; pending?: boolean }>({});
   useEffect(() => {
     let cancelled = false;
@@ -37,11 +41,12 @@ export function SwitchProviderPage() {
   const requestKey = JSON.stringify(request);
   const visiblePreview = preview && (preview.applied || preview.key === requestKey) ? preview : undefined;
   const clear = () => { setPreview(undefined); setError(''); };
-  const execute = async (apply: boolean, resume = false) => {
-    setBusy(true); setError('');
+  const execute = (key: string, apply: boolean, resume = false) => run(key, async () => {
+    setError('');
     try { setPreview({ data: await (apply ? api.applyProviderSwitch({ ...request, resume }) : api.previewProviderSwitch(request)), key: requestKey, applied: apply }); }
-    catch (e) { setError((e as Error).message); } finally { setBusy(false); }
-  };
+    catch (e) { setError((e as Error).message); }
+  });
+  const label = (key: string, idle: string, working: string) => going === key ? <Sending label={working} /> : idle;
   if (!state) return <p>Loading…</p>;
   return <section className="provider-switch">
     <div className="provider-settings">
@@ -69,15 +74,15 @@ export function SwitchProviderPage() {
       <strong>{selectedIds.length} items selected</strong> · {selectedIds.length - backlogCount} queued or underway · {backlogCount} not yet submitted
       <p>{defaults ? 'New-item defaults will also change.' : 'Defaults for new items stay unchanged.'} Unselected items keep their current models.</p>
     </div>
-    <button disabled={busy || !chosen} onClick={() => void execute(false)}>Preview changes</button>
+    <button disabled={busy || !chosen} aria-busy={going === 'preview' || undefined} onClick={() => void execute('preview', false)}>{label('preview', 'Preview changes', 'Previewing…')}</button>
     {error && <p role="alert" className="banner error">{error}</p>}
     {visiblePreview && <div className="provider-preview" aria-live="polite">
       <h2>{visiblePreview.applied ? 'Switch results' : 'Review selected changes'}</h2>
       {visiblePreview.data.orchestrator && <p>{visiblePreview.data.orchestrator}</p>}
       <ul>{visiblePreview.data.items.map((i) => <li key={i.id}><strong>{i.id}{i.result ? ` · ${i.result}` : ''}:</strong> {i.summary} {i.pr && <a href={i.pr.url} target="_blank" rel="noreferrer">#{i.pr.number}</a>}</li>)}</ul>
       {!visiblePreview.applied && <div className="row">
-        <button disabled={busy} onClick={() => void execute(true)}>Save changes</button>
-        <button disabled={busy} onClick={() => void execute(true, true)}>Save and resume automation</button>
+        <button disabled={busy} aria-busy={going === 'save' || undefined} onClick={() => void execute('save', true)}>{label('save', 'Save changes', 'Saving…')}</button>
+        <button disabled={busy} aria-busy={going === 'resume' || undefined} onClick={() => void execute('resume', true, true)}>{label('resume', 'Save and resume automation', 'Saving…')}</button>
       </div>}
       <p>Resuming automation continues already queued work. Not yet submitted items stay unsubmitted. Provider usage pauses remain in place.</p>
     </div>}

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { validateBreakdown, canPlan, type BreakdownChild } from '@planestro/shared';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
+import { ActionButton, ActionGroup } from './ActionButton.tsx';
 
 /**
  * The planner proposed an epic's children; nothing exists yet. The user edits the list — retitle,
@@ -53,13 +54,13 @@ export function BreakdownPanel({ item }: { item: ItemView }) {
       </ol>
       <div className="row"><button className="small" onClick={() => { setChildren((cs) => [...cs, { title: 'New child', description: '', implementer: state.config.defaults.implementer, depends_on: [] }]); setOpen(children.length); }}>+ add a child</button>{JSON.stringify(children) !== JSON.stringify(proposed) && <button className="small" onClick={() => setChildren(proposed)}>reset to the proposal</button>}</div>
       {problem && <p className="small" style={{ color: 'var(--hot)' }}>Cannot create this yet: {problem}.</p>}
-      <div className="row" style={{ marginTop: 8 }}>
-        <button className="primary" disabled={!!problem} onClick={() => act(() => api.approveBreakdown(item.id, children, queue))}>Approve &amp; create {children.length} item{children.length === 1 ? '' : 's'}</button>
+      <div className="row" style={{ marginTop: 8 }}><ActionGroup>
+        <ActionButton className="primary" disabled={!!problem} working="Approving…" onAct={() => act(() => api.approveBreakdown(item.id, children, queue))}>Approve &amp; create {children.length} item{children.length === 1 ? '' : 's'}</ActionButton>
         <label className="small"><input type="checkbox" checked={queue} onChange={(e) => setQueue(e.target.checked)} /> queue them now</label>
         <span className="grow" />
         <input className="grow" placeholder="What should the planner change?" value={reject} onChange={(e) => setReject(e.target.value)} />
-        <button className="danger" disabled={!reject.trim()} onClick={() => act(() => api.rejectPlan(item.id, reject)).then((r) => { if (r) setReject(''); })}>Request changes</button>
-      </div>
+        <ActionButton className="danger" disabled={!reject.trim()} working="Sending…" onAct={() => act(() => api.rejectPlan(item.id, reject)).then((r) => { if (r) setReject(''); })}>Request changes</ActionButton>
+      </ActionGroup></div>
     </div>
   );
 }

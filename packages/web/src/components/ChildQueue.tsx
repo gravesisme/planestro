@@ -3,8 +3,7 @@ import { Link } from 'react-router';
 import { isDone, type ItemFrontmatter, type Status } from '@planestro/shared';
 import { api } from '../api.ts';
 import { act } from '../store.ts';
-import { useSending } from '../sending.ts';
-import { Sending } from './Sending.tsx';
+import { ActionButton } from './ActionButton.tsx';
 
 /** What an epic's not-yet-submitted child can do from the Children list (#284): be queued, or wait on these. */
 export type ChildQueueState = { kind: 'queue' } | { kind: 'waits'; on: { id: string; status?: Status }[] } | { kind: 'epic_closed' };
@@ -18,9 +17,8 @@ export function childQueueState(fm: Pick<ItemFrontmatter, 'status' | 'depends_on
 }
 
 export function ChildQueue({ id, state }: { id: string; state: ChildQueueState }) {
-  const { sending, send } = useSending(id);
   if (state.kind === 'epic_closed') return <span className="small muted">waits on the epic branch (Open epic branch above)</span>;
-  if (state.kind === 'queue') return <button className="small" disabled={sending !== undefined} aria-busy={sending !== undefined} onClick={() => void send('queue', () => act(() => api.transition(id, 'QUEUED')))}>{sending ? <Sending /> : 'Queue'}</button>;
+  if (state.kind === 'queue') return <ActionButton className="small" working="Queuing…" onAct={() => act(() => api.transition(id, 'QUEUED'))}>Queue</ActionButton>;
   return (
     <span className="small muted">waits on {state.on.map((d, i) => (
       <Fragment key={d.id}>{i > 0 && ', '}{d.status ? <Link to={`/items/${d.id}`}>{d.id}</Link> : d.id} ({d.status ? d.status.replace(/_/g, ' ').toLowerCase() : 'not found'})</Fragment>

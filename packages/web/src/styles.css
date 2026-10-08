@@ -287,6 +287,9 @@ html { -webkit-text-size-adjust: 100%; }
 /* The tapped answer (#282): marked at once, the others dimmed while it goes out. */
 .decision-option:disabled { opacity: .55; cursor: default; } .decision-option.chosen:disabled { opacity: 1; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
 .sending { display: inline-flex; align-items: center; gap: 6px; font-weight: normal; font-size: 13px; color: var(--muted); margin-left: 8px; }
+/* A pressed action button (#304): its label becomes what it is doing, at full strength (it is not merely disabled). */
+button[aria-busy=true]:disabled { opacity: 1; cursor: progress; } button > .sending { margin-left: 0; color: inherit; font-size: inherit; font-weight: inherit; }
+button > .sending .spinner { border-color: color-mix(in srgb, currentColor 30%, transparent); border-top-color: currentColor; }
 .decision-label { font-weight: 600; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .decision-badge { font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 999px; background: var(--accent); color: #0b0d10; }
 .decision-desc { font-size: 13px; color: var(--muted); } .decision-does { color: var(--text); } .decision-brief { white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0 0; }

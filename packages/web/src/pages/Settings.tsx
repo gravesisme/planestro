@@ -7,6 +7,7 @@ import {
 import { api, type McpImportCandidate, type McpServerBody, type State } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { DesktopNotifications } from '../components/DesktopNotifications.tsx';
+import { ActionButton } from '../components/ActionButton.tsx';
 
 /**
  * Settings (issue #83): tabs by what you are deciding, every row rendered from the shared registry
@@ -107,7 +108,7 @@ function StorageBlock({ state }: { state: State }) {
           <div className="meta"><span>schema {cfg.schema_version} ({state.schema}) · tool {cfg.tool_version}</span><span>{state.git.branch} @ {state.git.head ?? '—'} · {state.git.dirty.length} changed · {state.git.ahead ?? '?'} ahead</span></div>
           {state.invalid.length > 0 && <ul className="small settings-invalid">{state.invalid.map((i) => <li key={i.path}><code>{i.path}</code>: {i.error}</li>)}</ul>}
         </div>
-        <div className="ctl"><button onClick={() => act(() => api.gitCommit())}>Commit now</button><button onClick={() => act(() => api.gitPush())}>Push</button><button onClick={() => act(() => api.reload())} title="Read every file again: for edits made by hand while planestro runs">Reload from disk</button></div>
+        <div className="ctl"><ActionButton working="Committing…" onAct={() => act(() => api.gitCommit())}>Commit now</ActionButton><ActionButton working="Pushing…" onAct={() => act(() => api.gitPush())}>Push</ActionButton><ActionButton working="Reloading…" onAct={() => act(() => api.reload())} title="Read every file again: for edits made by hand while planestro runs">Reload from disk</ActionButton></div>
       </div>
     </div>
   );
@@ -234,7 +235,7 @@ function TextCtl({ def, value, placeholder }: { def: SettingDef; value: string |
   return (
     <div className="ctl">
       <input className={def.mono ? 'mono' : ''} key={value ?? ''} defaultValue={value ?? ''} placeholder={placeholder} aria-label={def.label} onBlur={(e) => commit(e.target)} onKeyDown={(e) => { if (e.key === 'Enter') commit(e.currentTarget); }} />
-      {notify && <button disabled={!value} title={value ? 'Run it now, the way the event would' : 'Save a command first'} onClick={() => void act(() => api.testNotification(notify)).then((r) => r && setOut(r.code === 0 ? `ran (exit 0)${r.output ? `: ${r.output}` : ''}` : `exit ${r.code}: ${r.output}`))}>Test</button>}
+      {notify && <ActionButton disabled={!value} title={value ? 'Run it now, the way the event would' : 'Save a command first'} working="Running…" onAct={() => act(() => api.testNotification(notify)).then((r) => r && setOut(r.code === 0 ? `ran (exit 0)${r.output ? `: ${r.output}` : ''}` : `exit ${r.code}: ${r.output}`))}>Test</ActionButton>}
       {out && <span className="small muted ctl-note">{out}</span>}
     </div>
   );
@@ -242,7 +243,7 @@ function TextCtl({ def, value, placeholder }: { def: SettingDef; value: string |
 
 function ListCtl({ def, value, suggested }: { def: SettingDef; value: string[]; suggested?: string[] }) {
   const [draft, setDraft] = useState('');
-  const add = () => { const v = draft.trim(); if (!v) return; if (value.includes(v)) { complain(`${def.label}: "${v}" is already there`); return; } void save(def, [...value, v]).then((r) => r && setDraft('')); };
+  const add = () => { const v = draft.trim(); if (!v) return; if (value.includes(v)) { complain(`${def.label}: "${v}" is already there`); return; } return save(def, [...value, v]).then((r) => r && setDraft('')); };
   return (
     <div className="setting-list">
       {value.map((v) => {
@@ -251,18 +252,18 @@ function ListCtl({ def, value, suggested }: { def: SettingDef; value: string[]; 
           <div key={v} className={`li ${oneOff ? 'bad' : ''}`}>
             <code>{v}</code>
             {oneOff && <span className="chip changed" title='Looks like a single command saved by "Always allow": it matches only that exact command'>one-off?</span>}
-            <button className="small" aria-label={`Remove ${v}`} title="Remove" onClick={() => void save(def, value.filter((x) => x !== v))}>×</button>
+            <ActionButton className="small" aria-label={`Remove ${v}`} title="Remove" working="" onAct={() => save(def, value.filter((x) => x !== v))}>×</ActionButton>
           </div>
         );
       })}
-      <form className="li add" onSubmit={(e) => { e.preventDefault(); add(); }}>
+      <form className="li add" onSubmit={(e) => e.preventDefault()}>
         <input className={def.mono ? 'mono' : ''} placeholder={def.placeholder ?? 'Add…'} aria-label={`Add to ${def.label}`} value={draft} onChange={(e) => setDraft(e.target.value)} data-dirty={draft.trim() ? 'true' : undefined} />
-        <button className="small" type="submit" disabled={!draft.trim()}>Add</button>
+        <ActionButton className="small" type="submit" disabled={!draft.trim()} working="Adding…" onAct={add}>Add</ActionButton>
       </form>
       {suggested && suggested.length > 0 && (
         <div className="li suggest" role="group" aria-label={`Suggested for ${def.label}`}>
           <span className="small muted">For this repository, inside the worktree only:</span>
-          {suggested.map((s) => <button key={s} className="small mono" title={`Add ${s}`} onClick={() => void save(def, [...value, s])}>+ {s.replace(/^Bash\((.*) \*\)@worktree$/, '$1')}</button>)}
+          {suggested.map((s) => <ActionButton key={s} className="small mono" title={`Add ${s}`} working="Adding…" onAct={() => save(def, [...value, s])}>+ {s.replace(/^Bash\((.*) \*\)@worktree$/, '$1')}</ActionButton>)}
         </div>
       )}
     </div>
@@ -276,18 +277,18 @@ function RecordCtl({ def, value }: { def: SettingDef; value: Record<string, numb
   const add = () => {
     const k = name.trim(); const n = Number(num);
     if (!k || !num.trim() || !Number.isFinite(n) || (def.min !== undefined && n < def.min)) { complain(`${def.label}: a name and a number of at least ${def.min ?? 0}`); return; }
-    void save(def, { ...value, [k]: wholeIfScaled(def, storedNumber(def, n)) }).then((r) => { if (r) { setName(''); setNum(''); } });
+    return save(def, { ...value, [k]: wholeIfScaled(def, storedNumber(def, n)) }).then((r) => { if (r) { setName(''); setNum(''); } });
   };
   return (
     <div className="setting-list">
       {Object.entries(value).map(([k, n]) => (
         <div key={k} className="li"><code>{k}</code><span className="muted">{shownNumber(def, n)} {def.unit}</span>
-          <button className="small" aria-label={`Remove ${k}`} title="Remove" onClick={() => { const { [k]: _gone, ...rest } = value; void save(def, rest); }}>×</button></div>
+          <ActionButton className="small" aria-label={`Remove ${k}`} title="Remove" working="" onAct={() => { const { [k]: _gone, ...rest } = value; return save(def, rest); }}>×</ActionButton></div>
       ))}
-      <form className="li add" onSubmit={(e) => { e.preventDefault(); add(); }}>
+      <form className="li add" onSubmit={(e) => e.preventDefault()}>
         <input className="mono" placeholder={def.placeholder} aria-label={`Name for ${def.label}`} value={name} onChange={(e) => setName(e.target.value)} />
         <input type="number" step="any" min={def.min} placeholder={def.unit} aria-label={`${def.unit ?? 'Number'} for ${def.label}`} value={num} onChange={(e) => setNum(e.target.value)} />
-        <button className="small" type="submit" disabled={!name.trim() || !num.trim()}>Add</button>
+        <ActionButton className="small" type="submit" disabled={!name.trim() || !num.trim()} working="Adding…" onAct={add}>Add</ActionButton>
       </form>
     </div>
   );
@@ -300,18 +301,18 @@ function CommandsCtl({ def, value }: { def: SettingDef; value: Record<string, st
   const add = () => {
     const k = name.trim(); const c = cmd.trim();
     if (!k || !c) { complain(`${def.label}: a file pattern and a command`); return; }
-    void save(def, { ...value, [k]: c }).then((r) => { if (r) { setName(''); setCmd(''); } });
+    return save(def, { ...value, [k]: c }).then((r) => { if (r) { setName(''); setCmd(''); } });
   };
   return (
     <div className="setting-list">
       {Object.entries(value).map(([k, c]) => (
         <div key={k} className="li"><span style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0, flex: 1 }}><code>{k}</code><code className="muted small" style={{ overflowWrap: 'anywhere' }}>{c}</code></span>
-          <button className="small" aria-label={`Remove ${k}`} title="Remove" onClick={() => { const { [k]: _gone, ...rest } = value; void save(def, rest); }}>×</button></div>
+          <ActionButton className="small" aria-label={`Remove ${k}`} title="Remove" working="" onAct={() => { const { [k]: _gone, ...rest } = value; return save(def, rest); }}>×</ActionButton></div>
       ))}
-      <form className="li add" style={{ flexWrap: 'wrap' }} onSubmit={(e) => { e.preventDefault(); add(); }}>
+      <form className="li add" style={{ flexWrap: 'wrap' }} onSubmit={(e) => e.preventDefault()}>
         <input className="mono" style={{ flex: '1 1 100%' }} placeholder={def.placeholder} aria-label={`File pattern for ${def.label}`} value={name} onChange={(e) => setName(e.target.value)} />
         <input className="mono" style={{ flex: '1 1 0' }} placeholder="command that regenerates it" aria-label={`Command for ${def.label}`} value={cmd} onChange={(e) => setCmd(e.target.value)} />
-        <button className="small" type="submit" disabled={!name.trim() || !cmd.trim()}>Add</button>
+        <ActionButton className="small" type="submit" disabled={!name.trim() || !cmd.trim()} working="Adding…" onAct={add}>Add</ActionButton>
       </form>
     </div>
   );
@@ -324,11 +325,11 @@ function SecretCtl({ def, state }: { def: SettingDef; state: State }) {
   return (
     <div className="ctl">
       <span className={`chip ${where === 'none' ? '' : 'ok'}`}>{where === 'local' ? 'set here' : where === 'env' ? 'set in the environment' : 'not set'}</span>
-      <form className="ctl-inline" onSubmit={(e) => { e.preventDefault(); if (draft.trim()) void save(def, draft.trim()).then((r) => r && setDraft('')); }}>
+      <form className="ctl-inline" onSubmit={(e) => e.preventDefault()}>
         <input type="password" autoComplete="off" placeholder={where === 'local' ? 'Replace with…' : def.placeholder} aria-label={def.label} value={draft} onChange={(e) => setDraft(e.target.value)} data-dirty={draft ? 'true' : undefined} />
-        <button className="small" type="submit" disabled={!draft.trim()}>Save</button>
+        <ActionButton className="small" type="submit" disabled={!draft.trim()} working="Saving…" onAct={() => save(def, draft.trim()).then((r) => r && setDraft(''))}>Save</ActionButton>
       </form>
-      {where === 'local' && <button className="small danger" onClick={() => { if (confirm('Remove the API key from planestro.local.yml? After a restart, sessions use your Claude login.')) void save(def, null); }}>Remove</button>}
+      {where === 'local' && <ActionButton className="small danger" working="Removing…" onAct={() => { if (confirm('Remove the API key from planestro.local.yml? After a restart, sessions use your Claude login.')) return save(def, null); }}>Remove</ActionButton>}
     </div>
   );
 }
@@ -340,14 +341,14 @@ function CategoriesCtl({ cfg }: { cfg: Config }) {
       {cfg.categories.map((c) => (
         <div className="li" key={c}>
           <span className="grow">{c}{cfg.defaults.category === c && <span className="chip ok" style={{ marginLeft: 6 }}>default</span>}</span>
-          {cfg.defaults.category !== c && <button className="small" onClick={() => act(() => api.categories({ op: 'default', name: c }))}>Make default</button>}
-          <button className="small" onClick={() => { const to = prompt(`Rename "${c}" to:`, c); if (to && to !== c) void act(() => api.categories({ op: 'rename', from: c, to })); }}>Rename</button>
-          <button className="small danger" aria-label={`Remove ${c}`} title="Remove" disabled={cfg.categories.length < 2} onClick={() => { const rest = cfg.categories.filter((x) => x !== c); const to = prompt(`Remove "${c}". Move its items to which category?\n${rest.join(', ')}`, rest[0]); if (to && rest.includes(to)) void act(() => api.categories({ op: 'remove', name: c, reassign_to: to })); }}>×</button>
+          {cfg.defaults.category !== c && <ActionButton className="small" working="Saving…" onAct={() => act(() => api.categories({ op: 'default', name: c }))}>Make default</ActionButton>}
+          <ActionButton className="small" working="Renaming…" onAct={() => { const to = prompt(`Rename "${c}" to:`, c); if (to && to !== c) return act(() => api.categories({ op: 'rename', from: c, to })); }}>Rename</ActionButton>
+          <ActionButton className="small danger" aria-label={`Remove ${c}`} title="Remove" disabled={cfg.categories.length < 2} working="" onAct={() => { const rest = cfg.categories.filter((x) => x !== c); const to = prompt(`Remove "${c}". Move its items to which category?\n${rest.join(', ')}`, rest[0]); if (to && rest.includes(to)) return act(() => api.categories({ op: 'remove', name: c, reassign_to: to })); }}>×</ActionButton>
         </div>
       ))}
-      <form className="li add" onSubmit={(e) => { e.preventDefault(); if (!newCat.trim()) return; void act(() => api.categories({ op: 'add', name: newCat.trim() })); setNewCat(''); }}>
+      <form className="li add" onSubmit={(e) => e.preventDefault()}>
         <input placeholder="New category" aria-label="New category" value={newCat} onChange={(e) => setNewCat(e.target.value)} />
-        <button className="small" type="submit" disabled={!newCat.trim()}>Add</button>
+        <ActionButton className="small" type="submit" disabled={!newCat.trim()} working="Adding…" onAct={() => act(() => api.categories({ op: 'add', name: newCat.trim() })).then((r) => { if (r) setNewCat(''); })}>Add</ActionButton>
       </form>
     </div>
   );
@@ -378,7 +379,7 @@ function SectionsCtl({ def, value }: { def: SettingDef; value: ReleaseSectionDef
         <button className="small" onClick={() => setDraft([...rows, { title: '', carry: false }])}>Add a section</button>
         <span className="grow" />
         {draft && <button className="small" onClick={() => setDraft(undefined)}>Discard</button>}
-        <button className="small primary" disabled={!draft || rows.some((s) => !s.title.trim())} onClick={() => void save(def, rows).then((r) => r && setDraft(undefined))}>Save sections</button>
+        <ActionButton className="small primary" disabled={!draft || rows.some((s) => !s.title.trim())} working="Saving…" onAct={() => save(def, rows).then((r) => r && setDraft(undefined))}>Save sections</ActionButton>
       </div>
     </div>
   );
@@ -419,14 +420,14 @@ function ModelsCtl({ state }: { state: State }) {
             <div className="acts">
               <button className="small" onClick={() => setEditing(m)}>Edit</button>
               {!m.external && (out
-                ? <button className="small" onClick={() => act(() => api.clearModelUnavailable(m.id))}>Available now</button>
-                : <button className="small" onClick={() => { const until = askUntil(m.label); if (until) void act(() => api.markModelUnavailable(m.id, until)); }}>Mark unavailable…</button>)}
+                ? <ActionButton className="small" working="Saving…" onAct={() => act(() => api.clearModelUnavailable(m.id))}>Available now</ActionButton>
+                : <ActionButton className="small" working="Saving…" onAct={() => { const until = askUntil(m.label); if (until) return act(() => api.markModelUnavailable(m.id, until)); }}>Mark unavailable…</ActionButton>)}
             </div>
             {m.description && <div className="desc">{m.description}</div>}
           </div>
         );
       })}
-      <div><button className="primary" onClick={() => setEditing('new')}>Add a model</button>{!state.config.models.some((m) => m.id === 'codex-gpt-6-astra') && <button onClick={() => void act(() => api.putModel('codex-gpt-6-astra', { id: 'codex-gpt-6-astra', label: 'Codex GPT-6 Astra', runner: 'codex', codex_model: 'gpt-6-astra', codex_transport: 'app-server', engine_commits: true }))}>Add Codex GPT-6 Astra preset</button>}</div>
+      <div><button className="primary" onClick={() => setEditing('new')}>Add a model</button>{!state.config.models.some((m) => m.id === 'codex-gpt-6-astra') && <ActionButton working="Adding…" onAct={() => act(() => api.putModel('codex-gpt-6-astra', { id: 'codex-gpt-6-astra', label: 'Codex GPT-6 Astra', runner: 'codex', codex_model: 'gpt-6-astra', codex_transport: 'app-server', engine_commits: true }))}>Add Codex GPT-6 Astra preset</ActionButton>}</div>
       {editing && <ModelDialog cfg={cfg} mcpNames={Object.keys(state.local.mcp_servers ?? {})} model={editing === 'new' ? undefined : editing} onClose={() => setEditing(undefined)} />}
     </div>
   );
@@ -448,7 +449,7 @@ function ModelDialog({ cfg, model, mcpNames, onClose }: { cfg: Config; model?: M
   };
   return (
     <div className="dialog" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <form className="model-form" onSubmit={(e) => { e.preventDefault(); void submit(); }} onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }} data-dirty="true">
+      <form className="model-form" onSubmit={(e) => e.preventDefault()} onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }} data-dirty="true">
         <h3 style={{ margin: 0 }}>{model ? `Edit ${model.label}` : 'Add a model'}</h3>
         <label>Label <input value={m.label ?? ''} onChange={(e) => set({ label: e.target.value })} placeholder="Opus 5.5" required /></label>
         <label>Id <input className="mono" value={m.id ?? ''} disabled={Boolean(model)} onChange={(e) => set({ id: e.target.value })} placeholder="opus-5-5" title={model ? 'Items store the id, so it cannot change' : 'What items store as their planner or implementer'} required /></label>
@@ -469,8 +470,8 @@ function ModelDialog({ cfg, model, mcpNames, onClose }: { cfg: Config; model?: M
           {(m.mcp ?? []).length > 0 && <label>Calls per item <input type="number" min={1} value={m.mcp_calls_per_item ?? ''} placeholder="no cap" onChange={(e) => set({ mcp_calls_per_item: e.target.value ? Number(e.target.value) : undefined })} /></label>}
         </fieldset>}
         <div className="row">
-          {model && <button type="button" className="danger" onClick={() => { if (confirm(`Remove ${model.label}? Only possible while no default, fallback or open item uses it.`)) void act(() => api.removeModel(model.id)).then((r) => r && onClose()); }}>Remove</button>}
-          <span className="grow" /><button type="button" onClick={onClose}>Cancel</button><button type="submit" className="primary">{model ? 'Save' : 'Add'}</button>
+          {model && <ActionButton type="button" className="danger" working="Removing…" onAct={() => { if (confirm(`Remove ${model.label}? Only possible while no default, fallback or open item uses it.`)) return act(() => api.removeModel(model.id)).then((r) => r && onClose()); }}>Remove</ActionButton>}
+          <span className="grow" /><button type="button" onClick={onClose}>Cancel</button><ActionButton type="submit" className="primary" working="Saving…" onAct={submit}>{model ? 'Save' : 'Add'}</ActionButton>
         </div>
       </form>
     </div>
@@ -512,10 +513,10 @@ function McpServersCtl({ state }: { state: State }) {
               </div>
             </div>
             <div className="acts">
-              <button className="small" onClick={() => void test(name)}>Test</button>
+              <ActionButton className="small" working="Testing…" onAct={() => test(name)}>Test</ActionButton>
               <button className="small" onClick={() => setEditing(name)}>Edit</button>
-              <button className="small" title={off ? '' : 'Models that list it stop as mcp_missing until it is on again'} onClick={() => act(() => api.putMcpServer(name, { enabled: off }))}>{off ? 'Turn on' : 'Turn off'}</button>
-              <button className="small danger" disabled={by.length > 0} title={by.length ? `Take it off ${by.join(', ')} first` : 'Remove'} onClick={() => { if (confirm(`Remove the MCP server ${name} and its keys from planestro.local.yml?${s.source ? ` It will not be imported from ${s.source} again.` : ''}`)) void act(() => api.removeMcpServer(name)); }}>Remove</button>
+              <ActionButton className="small" title={off ? '' : 'Models that list it stop as mcp_missing until it is on again'} working="Saving…" onAct={() => act(() => api.putMcpServer(name, { enabled: off }))}>{off ? 'Turn on' : 'Turn off'}</ActionButton>
+              <ActionButton className="small danger" disabled={by.length > 0} title={by.length ? `Take it off ${by.join(', ')} first` : 'Remove'} working="Removing…" onAct={() => { if (confirm(`Remove the MCP server ${name} and its keys from planestro.local.yml?${s.source ? ` It will not be imported from ${s.source} again.` : ''}`)) return act(() => api.removeMcpServer(name)); }}>Remove</ActionButton>
             </div>
             {tests[name] && <div className="desc" role="status" style={{ overflowWrap: 'anywhere' }}>{tests[name]}</div>}
           </div>
@@ -555,7 +556,7 @@ function McpDialog({ name, server, taken, onClose }: { name?: string; server?: S
   const setRows = kind === 'http' ? setHeaders : setEnv;
   return (
     <div className="dialog" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <form className="model-form" onSubmit={(e) => { e.preventDefault(); void submit(); }} onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }} data-dirty="true">
+      <form className="model-form" onSubmit={(e) => e.preventDefault()} onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }} data-dirty="true">
         <h3 style={{ margin: 0 }}>{name ? `Edit ${name}` : 'Add an MCP server'}</h3>
         <label>Name <input className="mono" value={id} disabled={Boolean(name)} onChange={(e) => setId(e.target.value)} placeholder="elevenlabs" title={name ? 'Models list it by name, so it cannot change' : 'What a model lists in its MCP servers'} required /></label>
         <label>Kind <select value={kind} onChange={(e) => setKind(e.target.value as 'stdio' | 'http')}><option value="stdio">stdio: a command planestro starts</option><option value="http">HTTP: a url</option></select></label>
@@ -573,7 +574,7 @@ function McpDialog({ name, server, taken, onClose }: { name?: string; server?: S
           ))}
           <div><button type="button" className="small" onClick={() => setRows([...rows, { key: '', value: '', kept: false }])}>{kind === 'http' ? 'Add a header' : 'Add a variable'}</button></div>
         </fieldset>
-        <div className="row"><span className="grow" /><button type="button" onClick={onClose}>Cancel</button><button type="submit" className="primary">{name ? 'Save' : 'Add'}</button></div>
+        <div className="row"><span className="grow" /><button type="button" onClick={onClose}>Cancel</button><ActionButton type="submit" className="primary" working="Saving…" onAct={submit}>{name ? 'Save' : 'Add'}</ActionButton></div>
       </form>
     </div>
   );
@@ -590,7 +591,7 @@ function McpImportDialog({ onClose }: { onClose: () => void }) {
   const submit = async () => { if (await act(() => api.importMcpServers([...pick]))) onClose(); };
   return (
     <div className="dialog" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <form className="model-form" onSubmit={(e) => { e.preventDefault(); void submit(); }} onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }}>
+      <form className="model-form" onSubmit={(e) => e.preventDefault()} onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }}>
         <h3 style={{ margin: 0 }}>Import MCP servers</h3>
         <p className="small muted" style={{ margin: 0 }}>From <code>~/.claude.json</code> (yours and this project's) and <code>~/.codex/config.toml</code> on this machine. Their keys are copied into planestro.local.yml and never shown here. No model gets one until you list it on the model.</p>
         {!found ? <p className="small muted">Reading…</p> : !found.length ? <p className="small muted">Neither file lists an MCP server.</p> : found.map((c) => (
@@ -602,7 +603,7 @@ function McpImportDialog({ onClose }: { onClose: () => void }) {
             </span>
           </label>
         ))}
-        <div className="row"><span className="grow" /><button type="button" onClick={onClose}>Cancel</button><button type="submit" className="primary" disabled={!pick.size}>Import {pick.size || ''}</button></div>
+        <div className="row"><span className="grow" /><button type="button" onClick={onClose}>Cancel</button><ActionButton type="submit" className="primary" disabled={!pick.size} working="Importing…" onAct={submit}>Import {pick.size || ''}</ActionButton></div>
       </form>
     </div>
   );

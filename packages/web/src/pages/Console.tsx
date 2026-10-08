@@ -8,6 +8,8 @@ import { api, type NoteView, type QuestionView, type ParkSummary, type AllowSugg
 import { act, useStore } from '../store.ts';
 import { usePhone } from '../usePhone.ts';
 import { noteWindow, isUnread } from '../noteWindow.ts';
+import { useAction } from '../sending.ts';
+import { ActionButton } from '../components/ActionButton.tsx';
 
 export function ConsolePage() {
   const state = useStore((s) => s.state);
@@ -50,7 +52,7 @@ export function ConsolePage() {
       <div className="section"><h2>Maintenance</h2>
         <RestartPrep />
         <UpdateLine />
-        <div className="row"><button onClick={async () => { const r = await act(() => api.reconcile()); if (r) setReconcileOut(r.corrections); }}>Reconcile now</button><span className="muted small">Cross-checks items against git, worktrees, GitHub and CI.</span></div>
+        <div className="row"><ActionButton working="Reconciling…" onAct={async () => { const r = await act(() => api.reconcile()); if (r) setReconcileOut(r.corrections); }}>Reconcile now</ActionButton><span className="muted small">Cross-checks items against git, worktrees, GitHub and CI.</span></div>
         {reconcileOut && <pre className="events">{reconcileOut.length ? reconcileOut.join('\n') : 'everything matches'}</pre>}
       </div>
       <div className="section"><h2>Journal <input placeholder="filter by item id" value={itemFilter} onChange={(e) => setItemFilter(e.target.value)} style={{ marginLeft: 10, fontWeight: 400 }} /></h2>
@@ -84,7 +86,7 @@ function Questions() {
   const checking = open.filter((q) => q.pending).length;
   return <>
     <h3 className="drawer-h q-head"><span>Its questions for you{open.length > 0 && <span className="badge-n">{open.length}</span>}</span>
-      {open.length > 1 && orchestrated && <button className="small" disabled={checking === open.length} title="The orchestrator looks at every open question against the backlog as it is now, and withdraws or refreshes the ones that moved on" onClick={() => act(() => api.reviewAllQuestions())}>Check all</button>}
+      {open.length > 1 && orchestrated && <ActionButton className="small" disabled={checking === open.length} title="The orchestrator looks at every open question against the backlog as it is now, and withdraws or refreshes the ones that moved on" working="Asking…" onAct={() => act(() => api.reviewAllQuestions())}>Check all</ActionButton>}
     </h3>
     {paused && checking > 0 && <p className="muted small">Automation is paused: the orchestrator looks at these when you resume.</p>}
     {!open.length && <p className="muted small">None open.</p>}
@@ -108,7 +110,7 @@ function QuestionRow({ q, canAsk }: { q: QuestionView; canAsk: boolean }) {
       </div>
       <div className="q-actions">
         <Link className="button small" to={`/questions/${q.id}`}>Discuss</Link>
-        {canAsk && <button className="small" disabled={q.pending} title="Have the orchestrator check it against the current state: it withdraws a moot question or refreshes one that moved on" onClick={() => act(() => api.reviewQuestion(q.id))}>{q.pending ? 'Checking…' : 'Still relevant?'}</button>}
+        {canAsk && <ActionButton className="small" disabled={q.pending} title="Have the orchestrator check it against the current state: it withdraws a moot question or refreshes one that moved on" working="Asking…" onAct={() => act(() => api.reviewQuestion(q.id))}>{q.pending ? 'Checking…' : 'Still relevant?'}</ActionButton>}
       </div>
     </div>
   );
@@ -148,8 +150,8 @@ function RestartPrep() {
     <div style={{ marginBottom: 10 }}>
       <div className="row">
         {restart.draining
-          ? <button onClick={() => act(() => api.undrain())}>Cancel restart preparation</button>
-          : <button onClick={() => act(() => api.drain())}>Prepare to restart</button>}
+          ? <ActionButton working="Cancelling…" onAct={() => act(() => api.undrain())}>Cancel restart preparation</ActionButton>
+          : <ActionButton working="Preparing…" onAct={() => act(() => api.drain())}>Prepare to restart</ActionButton>}
         <span className="muted small">{restart.draining
           ? (restart.idle ? <b style={{ color: 'var(--ok)' }}>Nothing is running: restart now and nothing is lost. planestro comes back running.</b> : `Waiting for ${restart.running.length} to finish; nothing new starts.`)
           : 'Lets running turns and steps finish while nothing new starts, then says when a restart loses nothing. Unlike PAUSE, planestro comes back running after the restart.'}</span>
@@ -176,7 +178,7 @@ function PlanestroNotes() {
       {!notes.length && <p className="muted small">None yet.</p>}
       <ul className="activity">{shown.map((n, i) => <li key={`${n.ts}-${i}`} className={isUnread(n, seen) ? 'unread' : ''}><span className="at">{n.ts.slice(5, 16).replace('T', ' ')}</span><span className="muted">{n.item && items.some((x) => x.id === n.item) ? <Link to={`/items/${n.item}`}>{n.item}</Link> : (n.item ?? 'planestro')}</span><span>{String(n.data?.text ?? '')}<NoteFiling note={n} repo={repo} /></span></li>)}</ul>
       {(unread > 0 || older > 0) && <div className="row">
-        {unread > 0 && <button className="small" onClick={() => void act(() => useStore.getState().markNotesRead(newestShown))}>Mark all read</button>}
+        {unread > 0 && <ActionButton className="small" working="Marking…" onAct={() => act(() => useStore.getState().markNotesRead(newestShown))}>Mark all read</ActionButton>}
         {older > 0 && <button className="small" onClick={() => setPages((p) => p + 1)}>Show older ({older})</button>}
         {older > 0 && <span className="muted small">{shown.length} of {notes.length} shown</span>}
       </div>}
@@ -191,7 +193,8 @@ function PlanestroNotes() {
  * filing, and **Mark handled**, for a note dealt with by hand (issue numbers, or none).
  */
 function NoteFiling({ note, repo }: { note: NoteView; repo?: string }) {
-  const [busy, setBusy] = useState(false);
+  const { busy: going, run: once } = useAction();
+  const busy = going !== undefined;
   const [candidates, setCandidates] = useState<{ number: number; title: string; url: string; state: string }[] | null>(null);
   const [marking, setMarking] = useState<string | null>(null);
   const links = note.links;
@@ -201,7 +204,7 @@ function NoteFiling({ note, repo }: { note: NoteView; repo?: string }) {
       {links.comments.length ? ` (${links.comments.join('; ')})` : ''}
     </span>;
   }
-  const run = (fn: () => Promise<unknown>) => { setBusy(true); void act(fn).finally(() => setBusy(false)); };
+  const run = (fn: () => Promise<unknown>) => void once('note', () => act(fn));
   const file = (force?: boolean) => run(async () => {
     const r = await api.fileNote(note.ts, force);
     setCandidates(r.outcome === 'candidates' ? r.candidates : null);
@@ -260,9 +263,10 @@ function ParkCosts() {
  */
 function AllowSuggestions() {
   const [report, setReport] = useState<AllowSuggestReport | null>(null);
-  const [busy, setBusy] = useState(false);
+  const { busy: reading, run } = useAction();
+  const busy = reading !== undefined;
   const [error, setError] = useState<string | null>(null);
-  const load = () => { setBusy(true); setError(null); void api.allowSuggest().then(setReport).catch((e: Error) => setError(e.message)).finally(() => setBusy(false)); };
+  const load = () => { setError(null); void run('load', () => api.allowSuggest().then(setReport).catch((e: Error) => setError(e.message))); };
   const pct = (n: number) => (report?.allowed ? `${Math.round((n / report.allowed) * 100)}%` : '0%');
   return (
     <div className="section"><h2>Suggested allow rules</h2>

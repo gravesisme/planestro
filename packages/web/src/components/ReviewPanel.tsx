@@ -4,6 +4,7 @@ import { act, useStore } from '../store.ts';
 import { prepareUpload } from '../uploadImage.ts';
 import { usePhone } from '../usePhone.ts';
 import { FileDiff } from './FileDiff.tsx';
+import { ActionButton, ActionGroup } from './ActionButton.tsx';
 
 const src = (id: string, path: string, side: 'before' | 'after', v: string) => `/api/items/${id}/image?path=${encodeURIComponent(path)}&side=${side}&v=${encodeURIComponent(v)}`;
 const kb = (n?: number) => n === undefined ? '' : n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
@@ -105,11 +106,11 @@ export function ReviewPanel({ item, compact = false }: { item: ItemView; compact
             <span className="tag">attach a photo…</span>
           </label>
           {pasted.length > 0 && <p className="small muted" style={{ margin: '4px 0' }}>attached for the agent: {pasted.join(', ')}</p>}
-          <div className="row">
-            <button className="primary" onClick={() => { const n = prompt(`Approve ${item.id} and let it merge? Optional note for the log:`); if (n !== null) void act(() => api.releaseHold(item.id, n || undefined)); }}>Approve &amp; merge</button>
+          <div className="row"><ActionGroup>
+            <ActionButton className="primary" working="Approving…" onAct={() => { const n = prompt(`Approve ${item.id} and let it merge? Optional note for the log:`); if (n !== null) return act(() => api.releaseHold(item.id, n || undefined)); }}>Approve &amp; merge</ActionButton>
             <span className="grow" />
-            <button className="danger" disabled={!note.trim() && !picks.length} onClick={() => void act(() => api.requestReviewChanges(item.id, `${picks.length ? `Picked: ${picks.join(', ')}.` : ''}${picks.length && note.trim() ? ' ' : ''}${note.trim()}`)).then((r) => { if (r) { setNote(''); setPasted([]); setPicks([]); } })}>{picks.length ? 'Send picks & changes' : 'Request changes'}</button>
-          </div>
+            <ActionButton className="danger" disabled={!note.trim() && !picks.length} working="Sending…" onAct={() => act(() => api.requestReviewChanges(item.id, `${picks.length ? `Picked: ${picks.join(', ')}.` : ''}${picks.length && note.trim() ? ' ' : ''}${note.trim()}`)).then((r) => { if (r) { setNote(''); setPasted([]); setPicks([]); } })}>{picks.length ? 'Send picks & changes' : 'Request changes'}</ActionButton>
+          </ActionGroup></div>
         </>
       )}
       {zoom && <div className="dialog" onClick={() => setZoom(null)}><div className="checker zoomed"><img src={zoom} alt="" /></div></div>}
