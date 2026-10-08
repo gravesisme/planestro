@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { NavLink, useSearchParams } from 'react-router';
-import { DndContext, PointerSensor, useSensor, useSensors, useDroppable, closestCenter, pointerWithin, type CollisionDetection, type DragEndEvent, type DragOverEvent } from '@dnd-kit/core';
+import { DndContext, MouseSensor, TouchSensor, useSensor, useSensors, useDroppable, closestCenter, pointerWithin, type CollisionDetection, type DragEndEvent, type DragOverEvent } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { findTransition, PRIORITIES, type Priority, type Status } from '@planestro/shared';
 import { api, type ItemView } from '../api.ts';
@@ -12,6 +12,8 @@ import { usePhone } from '../usePhone.ts';
 
 const BOARD_COLUMNS = ['NOT_YET_SUBMITTED', 'QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW', 'MERGED'];
 const COL = 'col:';
+/** A drop target's column: `col:<status>` is a column (or a phone stage), `col:<status>@strip` a cell of the phone's stage strip. */
+const colStatus = (id: string | number): string => String(id).slice(COL.length).split('@')[0]!;
 /** The phone's stage strip has seven cells across one screen: names that fit, in the order of the columns. */
 const STAGE_SHORT: Record<string, string> = { NOT_YET_SUBMITTED: 'Backlog', QUEUED: 'Queued', PLAN_IN_PROGRESS: 'Planning', PLAN_READY: 'Plan ready', IN_PROGRESS: 'Working', IN_REVIEW: 'Review', MERGED: 'Merged' };
 const LANES = [{ to: '/', lane: 'board', label: 'Board' }, { to: '/icebox', lane: 'icebox', label: 'Icebox' }, { to: '/done', lane: 'done', label: 'Done' }] as const;
@@ -34,9 +36,17 @@ function dropAction(item: ItemView, to: string): { run?: () => Promise<unknown>;
 /** Columns catch the pointer; inside the column under it the nearest card wins, so reordering still works. */
 const columnFirst: CollisionDetection = (args) => {
   const isCol = (c: { id: string | number }) => String(c.id).startsWith(COL);
-  const col = pointerWithin({ ...args, droppableContainers: args.droppableContainers.filter(isCol) })[0];
+  // The phone's stage strip sits over the stages it scrolls past: a cell under the pointer is the target. It is
+  // sticky, so it is hit-tested where it is now; dnd-kit's measured rects move with the page as it scrolls.
+  const p = args.pointerCoordinates;
+  const strip = p && args.droppableContainers.find((c) => {
+    const r = String(c.id).includes('@') ? c.node.current?.getBoundingClientRect() : undefined;
+    return r && p.x >= r.left && p.x <= r.right && p.y >= r.top && p.y <= r.bottom;
+  });
+  if (strip) return [{ id: strip.id, data: { droppableContainer: strip, value: 0 } }];
+  const col = pointerWithin({ ...args, droppableContainers: args.droppableContainers.filter((c) => isCol(c) && !String(c.id).includes('@')) })[0];
   if (!col) return closestCenter({ ...args, droppableContainers: args.droppableContainers.filter((c) => !isCol(c)) });
-  const cards = args.droppableContainers.filter((c) => !isCol(c) && c.data.current?.status === String(col.id).slice(COL.length));
+  const cards = args.droppableContainers.filter((c) => !isCol(c) && c.data.current?.status === colStatus(col.id));
   const near = cards.length ? closestCenter({ ...args, droppableContainers: cards }) : [];
   return near.length ? near : [col];
 };
@@ -52,7 +62,8 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
   const [dragTarget, setDragTarget] = useState<{ status: string; ok: boolean } | null>(null);
   const needsOnly = params.get('needs') === '1';
   const phone = usePhone();
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
+  // A mouse drags the whole card; touch drags only from the card's handle, which has `touch-action: none` (#215).
+  const sensors = useSensors(useSensor(MouseSensor, { activationConstraint: { distance: 6 } }), useSensor(TouchSensor, { activationConstraint: { distance: 4 } }));
 
   const items = useMemo(() => {
     const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
@@ -63,13 +74,16 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
       .filter((i) => terms.every((t) => `${i.id} ${i.frontmatter.title} ${i.sections.Description} ${i.sections.Notes}`.toLowerCase().includes(t)));
   }, [state, lane, q, category, priority, needsOnly]);
 
-  const statusAt = (overId: string | number): string | undefined => String(overId).startsWith(COL) ? String(overId).slice(COL.length) : items.find((i) => i.id === overId)?.frontmatter.status;
+  const statusAt = (overId: string | number): string | undefined => String(overId).startsWith(COL) ? colStatus(overId) : items.find((i) => i.id === overId)?.frontmatter.status;
+  // Over a cell of the phone's strip the page must hold still: scrolled to the top, the strip is no longer stuck and moves away.
+  const overStrip = useRef(false);
   const onDragOver = (e: DragOverEvent) => {
+    overStrip.current = String(e.over?.id ?? '').includes('@');
     const a = items.find((i) => i.id === e.active.id); const to = e.over ? statusAt(e.over.id) : undefined;
     setDragTarget(a && to && to !== a.frontmatter.status ? { status: to, ok: !!dropAction(a, to).run } : null);
   };
   const onDragEnd = (e: DragEndEvent) => {
-    setDragTarget(null);
+    setDragTarget(null); overStrip.current = false;
     const { active, over } = e;
     if (!over || active.id === over.id) return;
     const a = items.find((i) => i.id === active.id); const to = statusAt(over.id);
@@ -93,6 +107,8 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
     void act(() => api.move(a.id, before ? 'before' : 'after', o.id));
   };
 
+  const dropAt = (status: string): 'ok' | 'no' | undefined => dragTarget?.status === status ? (dragTarget.ok ? 'ok' : 'no') : undefined;
+
   if (!state) return <p className="muted">Loading…</p>;
   const columns = lane === 'board' ? BOARD_COLUMNS : [lane === 'icebox' ? 'ICEBOX' : 'FINISHED'];
   const done = lane === 'done' ? [...items].sort((a, b) => (b.frontmatter.finished_at ?? '').localeCompare(a.frontmatter.finished_at ?? '')) : items;
@@ -114,15 +130,17 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
       </div>
       {creating && <NewItemDialog onClose={() => setCreating(false)} icebox={lane === 'icebox'} />}
       {preview && <PreviewDrawer id={preview} onClose={() => setPreview(null)} />}
-      {phone && lane !== 'done' ? (
-        <PhoneBoard columns={columns} items={items} filtered={!!q || !!category || !!priority || needsOnly} onSelect={setPreview} />
-      ) : lane === 'done' ? (
+      {lane === 'done' ? (
         <div className="list card-list">{done.map((i) => <ItemCard key={i.id} item={i} sortable={false} onSelect={setPreview} />)}{!done.length && <p className="muted">Nothing finished yet.</p>}</div>
       ) : (
-        <DndContext sensors={sensors} collisionDetection={columnFirst} onDragOver={onDragOver} onDragEnd={onDragEnd} onDragCancel={() => setDragTarget(null)}>
-          <div className="board" style={lane === 'icebox' ? { gridAutoColumns: 'minmax(420px, 640px)' } : undefined}>
-            {columns.map((status) => { const col = items.filter((i) => i.frontmatter.status === status); return <Column key={status} status={status} items={col} onSelect={setPreview} drop={dragTarget?.status === status ? (dragTarget.ok ? 'ok' : 'no') : undefined} />; })}
-          </div>
+        <DndContext sensors={sensors} collisionDetection={columnFirst} autoScroll={{ canScroll: () => !overStrip.current }} onDragOver={onDragOver} onDragEnd={onDragEnd} onDragCancel={() => { setDragTarget(null); overStrip.current = false; }}>
+          {phone ? (
+            <PhoneBoard columns={columns} items={items} filtered={!!q || !!category || !!priority || needsOnly} onSelect={setPreview} dropAt={dropAt} />
+          ) : (
+            <div className="board" style={lane === 'icebox' ? { gridAutoColumns: 'minmax(420px, 640px)' } : undefined}>
+              {columns.map((status) => { const col = items.filter((i) => i.frontmatter.status === status); return <Column key={status} status={status} items={col} onSelect={setPreview} drop={dropAt(status)} />; })}
+            </div>
+          )}
         </DndContext>
       )}
     </div>
@@ -131,29 +149,42 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
 
 /**
  * The board on a phone: every stage in one scroll, stages with nothing in them left out, and the
- * strip above it showing all seven at once. Nothing drags here (a drag and a scroll are the same
- * gesture on glass): moves are the preview's buttons and the long-press menu.
+ * strip above it showing all seven at once. A card drags by its handle (#215): within its stage to
+ * reorder, or onto another stage, or onto that stage's cell in the strip when it is empty or off screen.
  */
-function PhoneBoard({ columns, items, filtered, onSelect }: { columns: string[]; items: ItemView[]; filtered: boolean; onSelect: (id: string) => void }) {
+function PhoneBoard({ columns, items, filtered, onSelect, dropAt }: { columns: string[]; items: ItemView[]; filtered: boolean; onSelect: (id: string) => void; dropAt: (status: string) => 'ok' | 'no' | undefined }) {
   const stages = columns.map((status) => ({ status, items: items.filter((i) => i.frontmatter.status === status) }));
   return (
     <div className="list">
       {columns.length > 1 && (
         <div className="pipeline">
-          {stages.map((s) => (
-            <button key={s.status} disabled={!s.items.length} className={s.items.some((i) => i.frontmatter.blocked && !i.frontmatter.triage) ? 'has hot' : s.items.some((i) => i.derived.needs_you) ? 'has wait' : s.items.length ? 'has' : ''} title={statusLabel(s.status)}
-              onClick={() => document.getElementById(`stage-${s.status}`)?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' })}><b>{s.items.length}</b><span>{STAGE_SHORT[s.status] ?? statusLabel(s.status)}</span></button>
-          ))}
+          {stages.map((s) => <StripCell key={s.status} status={s.status} items={s.items} drop={dropAt(s.status)} />)}
         </div>
       )}
-      {stages.filter((s) => s.items.length).map((s) => (
-        <section key={s.status} id={`stage-${s.status}`} className="stage">
-          <h3><span>{statusLabel(s.status)}</span><span>{s.items.length}</span></h3>
-          {s.items.map((i) => <ItemCard key={i.id} item={i} sortable={false} onSelect={onSelect} />)}
-        </section>
-      ))}
+      {stages.filter((s) => s.items.length).map((s) => <Stage key={s.status} status={s.status} items={s.items} onSelect={onSelect} drop={dropAt(s.status)} />)}
       {!items.length && <p className="muted">{filtered ? 'No item matches.' : 'Nothing here yet. Add an item with + New item.'}</p>}
     </div>
+  );
+}
+
+function StripCell({ status, items, drop }: { status: string; items: ItemView[]; drop?: 'ok' | 'no' }) {
+  const { setNodeRef } = useDroppable({ id: `${COL}${status}@strip` });
+  const tone = items.some((i) => i.frontmatter.blocked && !i.frontmatter.triage) ? 'has hot' : items.some((i) => i.derived.needs_you) ? 'has wait' : items.length ? 'has' : '';
+  return (
+    <button ref={setNodeRef} disabled={!items.length} className={`${tone} ${drop ? `drop-${drop}` : ''}`} title={statusLabel(status)}
+      onClick={() => document.getElementById(`stage-${status}`)?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' })}><b>{items.length}</b><span>{STAGE_SHORT[status] ?? statusLabel(status)}</span></button>
+  );
+}
+
+function Stage({ status, items, onSelect, drop }: { status: string; items: ItemView[]; onSelect: (id: string) => void; drop?: 'ok' | 'no' }) {
+  const { setNodeRef } = useDroppable({ id: `${COL}${status}` });
+  return (
+    <section ref={setNodeRef} id={`stage-${status}`} className={`stage ${drop ? `drop-${drop}` : ''}`}>
+      <h3><span>{statusLabel(status)}</span><span>{items.length}</span></h3>
+      <SortableContext items={items.map((i) => i.id)} strategy={verticalListSortingStrategy}>
+        {items.map((i) => <ItemCard key={i.id} item={i} onSelect={onSelect} />)}
+      </SortableContext>
+    </section>
   );
 }
 

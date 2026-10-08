@@ -1,4 +1,5 @@
 import * as ContextMenu from '@radix-ui/react-context-menu';
+import { useState, type MouseEventHandler, type TouchEventHandler } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { useNavigate } from 'react-router';
@@ -6,6 +7,7 @@ import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { pendingTurnWait } from '../pendingTurn.ts';
 import { confirmMove } from './QuickActions.tsx';
+import { afterChoices, columnOf, stepMove } from '../reorder.ts';
 import { connectionDropOf, decisionOf, heldReasonOf, previewOf, waitsFor } from '@planestro/shared';
 
 export function statusLabel(s: string): string { return s.replace(/_/g, ' '); }
@@ -15,12 +17,16 @@ export function ItemCard({ item, sortable = true, onSelect, selection }: {
   selection?: { checked: boolean; onChange: (checked: boolean) => void };
 }) {
   const nav = useNavigate();
+  // Move after… swaps the menu for its list of places in the same spot: a submenu beside it has no room on a phone.
+  const [pickingAfter, setPickingAfter] = useState(false);
   const state = useStore((s) => s.state);
   const fm = item.frontmatter;
   const d = item.derived;
   const pendingWait = pendingTurnWait(fm, state);
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id, disabled: !sortable || !!selection, data: { status: fm.status } });
   const style = { transform: CSS.Transform.toString(transform), transition };
+  // The mouse drags the whole card, touch only its handle: each takes its own sensor's activator.
+  const drag = (listeners ?? {}) as { onMouseDown?: MouseEventHandler; onTouchStart?: TouchEventHandler };
   const lane = d.lane;
   const modelLabel = (id?: string) => state?.config.models.find((m) => m.id === id)?.label ?? id;
   const children = d.children.map((c) => state?.items.find((i) => i.id === c)).filter(Boolean) as ItemView[];
@@ -57,14 +63,17 @@ export function ItemCard({ item, sortable = true, onSelect, selection }: {
   // Selection cards have no navigation, drag/drop, or lifecycle context menu.
   if (selection) return <div className={`${cardClass} provider-select-card ${selection.checked ? 'selected' : ''}`}>{content}</div>;
   return (
-    <ContextMenu.Root>
+    <ContextMenu.Root onOpenChange={(open) => { if (!open) setPickingAfter(false); }}>
       <ContextMenu.Trigger asChild>
-        <div ref={setNodeRef} style={style} {...attributes} {...listeners} className={`${cardClass} ${isDragging ? 'dragging' : ''}`} onClick={() => onSelect?.(item.id)} onDoubleClick={() => nav(`/items/${item.id}`)}>
+        <div ref={setNodeRef} style={style} {...attributes} onMouseDown={drag.onMouseDown} className={`${cardClass} ${isDragging ? 'dragging' : ''}`} onClick={() => onSelect?.(item.id)} onDoubleClick={() => nav(`/items/${item.id}`)}>
           {content}
+          {/* On glass a drag starts only from the handle, so the rest of the card scrolls and its long-press opens this menu (#215). */}
+          {sortable && <span className="drag-handle" aria-label={`Drag ${item.id} to reorder`} onTouchStart={drag.onTouchStart} onPointerDown={(e) => { if (e.pointerType !== 'mouse') e.stopPropagation(); }} onClick={(e) => e.stopPropagation()}>⠿</span>}
         </div>
       </ContextMenu.Trigger>
       <ContextMenu.Portal>
-        <ContextMenu.Content className="menu">
+        <ContextMenu.Content className="menu menu-scroll" collisionPadding={8}>
+          {pickingAfter && state ? <MoveAfterItems item={item} items={state.items} onBack={() => setPickingAfter(false)} /> : <>
           <ContextMenu.Item className="menu-item" onSelect={() => nav(`/items/${item.id}`)}>Open</ContextMenu.Item>
           {fm.status === 'NOT_YET_SUBMITTED' && !d.external && fm.kind === 'item' && <ContextMenu.Item className="menu-item" onSelect={() => act(() => api.transition(item.id, 'QUEUED'))}>Queue for planning</ContextMenu.Item>}
           {fm.status === 'NOT_YET_SUBMITTED' && (d.external || fm.kind === 'epic') && <ContextMenu.Item className="menu-item" onSelect={() => act(() => api.transition(item.id, 'IN_PROGRESS'))}>{fm.kind === 'epic' ? 'Open epic' : 'Mark started'}</ContextMenu.Item>}
@@ -72,6 +81,7 @@ export function ItemCard({ item, sortable = true, onSelect, selection }: {
           <ContextMenu.Separator className="menu-sep" />
           {lane !== 'done' && <ContextMenu.Item className="menu-item" onSelect={() => act(() => api.move(item.id, 'top'))}>Move to top</ContextMenu.Item>}
           {lane !== 'done' && <ContextMenu.Item className="menu-item" onSelect={() => act(() => api.move(item.id, 'bottom'))}>Move to bottom</ContextMenu.Item>}
+          {lane !== 'done' && state && <ReorderItems item={item} items={state.items} onPickAfter={() => setPickingAfter(true)} />}
           {lane === 'board' && ['NOT_YET_SUBMITTED', 'QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS'].includes(fm.status) && <ContextMenu.Item className="menu-item" onSelect={() => { if (confirmMove(item, 'ICEBOX', 'Move to ICEBOX')) void act(() => api.move(item.id, 'icebox')); }}>Move to ICEBOX</ContextMenu.Item>}
           {lane === 'icebox' && <ContextMenu.Item className="menu-item" onSelect={() => { if (confirmMove(item, 'NOT_YET_SUBMITTED', 'Move to BACKLOG')) void act(() => api.move(item.id, 'backlog')); }}>Move to BACKLOG</ContextMenu.Item>}
           {lane === 'done' && <ContextMenu.Item className="menu-item" onSelect={() => { if (confirmMove(item, 'NOT_YET_SUBMITTED', 'Reopen')) void act(() => api.transition(item.id, 'NOT_YET_SUBMITTED')); }}>Reopen</ContextMenu.Item>}
@@ -79,8 +89,29 @@ export function ItemCard({ item, sortable = true, onSelect, selection }: {
           <ContextMenu.Item className="menu-item" onSelect={() => void navigator.clipboard.writeText(item.id)}>Copy id</ContextMenu.Item>
           <ContextMenu.Item className="menu-item" onSelect={() => void navigator.clipboard.writeText(item.path)}>Copy file path</ContextMenu.Item>
           <ContextMenu.Item className="menu-item" onSelect={() => { if (confirm(`Delete ${item.id} "${fm.title}"?`)) void act(() => api.deleteItem(item.id)); }}>Delete…</ContextMenu.Item>
+          </>}
         </ContextMenu.Content>
       </ContextMenu.Portal>
     </ContextMenu.Root>
   );
+}
+
+/** Move up one, down one, or after a chosen item: places within the item's column and priority band (#194, #215). */
+function ReorderItems({ item, items, onPickAfter }: { item: ItemView; items: ItemView[]; onPickAfter: () => void }) {
+  const column = columnOf(items, item);
+  const up = stepMove(column, item.id, 'up');
+  const down = stepMove(column, item.id, 'down');
+  return <>
+    <ContextMenu.Item className="menu-item" disabled={!up} onSelect={() => { if (up) void act(() => api.move(item.id, up.op, up.ref)); }}>Move up one</ContextMenu.Item>
+    <ContextMenu.Item className="menu-item" disabled={!down} onSelect={() => { if (down) void act(() => api.move(item.id, down.op, down.ref)); }}>Move down one</ContextMenu.Item>
+    <ContextMenu.Item className="menu-item menu-sub" disabled={!afterChoices(column, item.id).length} onSelect={(e) => { e.preventDefault(); onPickAfter(); }}>Move after…</ContextMenu.Item>
+  </>;
+}
+
+function MoveAfterItems({ item, items, onBack }: { item: ItemView; items: ItemView[]; onBack: () => void }) {
+  return <>
+    <ContextMenu.Item className="menu-item" onSelect={(e) => { e.preventDefault(); onBack(); }}>‹ Move {item.id} after…</ContextMenu.Item>
+    <ContextMenu.Separator className="menu-sep" />
+    {afterChoices(columnOf(items, item), item.id).map((c) => <ContextMenu.Item key={c.id} className="menu-item menu-pick" title={`${c.id} ${c.frontmatter.title}`} onSelect={() => act(() => api.move(item.id, 'after', c.id))}><span className="id">{c.id}</span> {c.frontmatter.title}</ContextMenu.Item>)}
+  </>;
 }
