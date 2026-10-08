@@ -4,6 +4,8 @@ import { decisionOf, describeAction, dollarHint } from '@planestro/shared';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { reloadText, useResumeEstimate } from '../resumeCost.ts';
+import { useSending } from '../sending.ts';
+import { Sending } from './Sending.tsx';
 
 /**
  * The orchestrator's question for you, when a stopped item needs a call that is yours: the
@@ -21,15 +23,11 @@ export function DecisionCard({ item }: { item: ItemView }) {
   const billing = useStore((s) => s.state?.billing);
   const items = useStore((s) => s.state?.items);
   const [text, setText] = useState('');
-  const [sending, setSending] = useState(false);
+  // One answer at a time, shown at once (#282); the card stays locked until it goes.
+  const { sending, send: once } = useSending(`${item.id}:${decision?.requested_at ?? ''}`);
   const estimate = useResumeEstimate(item);
   if (!decision) return null;
-  const send = async (body: { choice?: string; text?: string }) => {
-    setSending(true);
-    const ok = await act(() => api.decide(item.id, body));
-    setSending(false);
-    if (ok) setText('');
-  };
+  const send = (key: string, body: { choice?: string; text?: string }) => once(key, () => act(() => api.decide(item.id, body)));
   const lookup = (id: string) => { const it = items?.find((i) => i.id === id)?.frontmatter; return it && { title: it.title, kind: it.kind }; };
   const reason = fm.blocked_reason ?? decision.reason;
   const said = reason ? [...item.activity].reverse().find((a) => a.text.startsWith(`BLOCKED (${reason}): `))?.text.replace(/^BLOCKED \([a-z_]+\): /, '') : undefined;
@@ -41,9 +39,9 @@ export function DecisionCard({ item }: { item: ItemView }) {
       <p className="decision-why">{decision.why}</p>
       <UsageProviderSwitch item={item} />
       <div className="decision-options">
-        {decision.options.map((o) => (
-          <button key={o.label} className={`decision-option ${o.recommended ? 'recommended' : ''}`} disabled={sending} onClick={() => void send({ choice: o.label, ...(text.trim() ? { text: text.trim() } : {}) })}>
-            <span className="decision-label">{o.label}{o.recommended && <span className="decision-badge">Recommended</span>}</span>
+        {decision.options.map((o, i) => (
+          <button key={o.label} className={`decision-option ${o.recommended ? 'recommended' : ''} ${sending === `option-${i}` ? 'chosen' : ''}`} disabled={sending !== undefined} aria-busy={sending === `option-${i}`} onClick={() => void send(`option-${i}`, { choice: o.label, ...(text.trim() ? { text: text.trim() } : {}) })}>
+            <span className="decision-label">{o.label}{o.recommended && <span className="decision-badge">Recommended</span>}{sending === `option-${i}` && <Sending />}</span>
             {o.description && <span className="decision-desc">{o.description}</span>}
             {o.raise_budget_usd !== undefined && <span className="decision-desc">Tapping this sets the item's budget to ${(Math.max(fm.budget_usd ?? projectBudget ?? 0, fm.cost_usd ?? 0) + o.raise_budget_usd).toFixed(0)} (+${o.raise_budget_usd}) and {o.fresh ? 'finishes it in a fresh session' : 'resumes it'}. <span className="muted">Dollars here: {dollarHint(billing)}.</span></span>}
             {o.raise_budget_turns !== undefined && <span className="decision-desc">Adds {o.raise_budget_turns} turns, setting this item's limit to {Math.max(fm.budget_turns ?? projectTurns ?? 0, fm.agent_turns ?? 0) + o.raise_budget_turns} turns.</span>}
@@ -63,8 +61,8 @@ export function DecisionCard({ item }: { item: ItemView }) {
       ))}
       {decision.allow_free_text && (
         <div className="decision-free">
-          <textarea data-dirty={text.trim() ? 'true' : undefined} placeholder="Or answer in your own words (sent with an option, or on its own)" value={text} onChange={(e) => setText(e.target.value)} />
-          <button disabled={sending || !text.trim()} onClick={() => void send({ text: text.trim() })}>Send</button>
+          <textarea disabled={sending !== undefined} data-dirty={text.trim() ? 'true' : undefined} placeholder="Or answer in your own words (sent with an option, or on its own)" value={text} onChange={(e) => setText(e.target.value)} />
+          <button disabled={sending !== undefined || !text.trim()} aria-busy={sending === ':text'} onClick={() => void send(':text', { text: text.trim() })}>{sending === ':text' ? <Sending /> : 'Send'}</button>
         </div>
       )}
       <details className="decision-details">

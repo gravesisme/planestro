@@ -3,6 +3,8 @@ import { api, type ItemView } from '../api.ts';
 import { act } from '../store.ts';
 import { decisionOf, auditionPicksProblem, type Audition, type AuditionPick } from '@planestro/shared';
 import { TriageNote } from './DecisionCard.tsx';
+import { useSending } from '../sending.ts';
+import { Sending } from './Sending.tsx';
 
 type Question = { question: string; header?: string; options: { label: string; description?: string }[]; multiSelect?: boolean };
 
@@ -14,16 +16,19 @@ export function AwaitingPanels({ item }: { item: ItemView }) {
   const fm = item.frontmatter;
   const data = fm.awaiting_data as { kind?: string; questions?: Question[]; tool?: string; input?: Record<string, unknown>; grantable?: boolean; handed_back?: boolean; escalated?: string } | undefined;
   const orchestrating = fm.awaiting === 'orchestrator' && data?.kind === 'permission';
+  // One answer at a time, shown at once (#282): keyed by the request, so the next one starts unlocked.
+  const { sending, send } = useSending(`${item.id}:${String(fm.awaiting_data?.requested_at ?? '')}`);
+  const respond = (key: string, payload: Record<string, unknown>) => send(key, () => act(() => api.respond(item.id, payload)));
   // The orchestrator's plain-words card replaces whatever it was made from (a block, the worker's questions).
   if (decisionOf(fm)) return null; // shown by DecisionCard, at the top of the page and the preview
   if (fm.awaiting === 'question' && data?.questions) return (
     <div className="approval" id="question" data-wait>
       {fm.triage && <TriageNote item={item} />}
       <h2 style={{ margin: '0 0 8px' }}>The agent asked</h2>
-      <QuestionForm questions={data.questions} onSubmit={(answers) => act(() => api.respond(item.id, { kind: 'question', answers }))} />
+      <QuestionForm questions={data.questions} sending={sending !== undefined} onSubmit={(answers) => void respond('answers', { kind: 'question', answers })} />
     </div>
   );
-  if (fm.awaiting === 'audition' && (fm.awaiting_data as { audition?: Audition } | undefined)?.audition) return <AuditionPanel item={item} audition={(fm.awaiting_data as { audition: Audition }).audition} />;
+  if (fm.awaiting === 'audition' && (fm.awaiting_data as { audition?: Audition } | undefined)?.audition) return <AuditionPanel item={item} audition={(fm.awaiting_data as { audition: Audition }).audition} sending={sending} respond={respond} />;
   if ((fm.awaiting === 'permission' || orchestrating) && data) {
     const nativeCodex = data.tool === 'CodexApproval';
     const cannotGrant = data.grantable === false || (nativeCodex && data.grantable !== true);
@@ -41,9 +46,9 @@ export function AwaitingPanels({ item }: { item: ItemView }) {
         {cannotGrant && <p>This permission cannot be carried into a new turn. Take over to perform the action yourself, then hand back, or deny it and ask for another approach.</p>}
         {item.park_hint && <ParkHint hint={item.park_hint} />}
         <div className="row">
-          {!cannotGrant && <button className="primary" onClick={() => act(() => api.respond(item.id, { kind: 'permission', decision: 'allow' }))}>Allow once</button>}
-          {!cannotGrant && !nativeCodex && <button title="Adds this exact command to permissions.allow" onClick={() => act(() => api.respond(item.id, { kind: 'permission', decision: 'always' }))}>Always allow</button>}
-          <button className="danger" onClick={() => { const reason = prompt('Reason for denying?'); if (reason !== null) void act(() => api.respond(item.id, { kind: 'permission', decision: 'deny', reason })); }}>Deny</button>
+          {!cannotGrant && <button className="primary" disabled={sending !== undefined} aria-busy={sending === 'allow'} onClick={() => void respond('allow', { kind: 'permission', decision: 'allow' })}>{sending === 'allow' ? <Sending /> : 'Allow once'}</button>}
+          {!cannotGrant && !nativeCodex && <button title="Adds this exact command to permissions.allow" disabled={sending !== undefined} aria-busy={sending === 'always'} onClick={() => void respond('always', { kind: 'permission', decision: 'always' })}>{sending === 'always' ? <Sending /> : 'Always allow'}</button>}
+          <button className="danger" disabled={sending !== undefined} aria-busy={sending === 'deny'} onClick={() => { const reason = prompt('Reason for denying?'); if (reason !== null) void respond('deny', { kind: 'permission', decision: 'deny', reason }); }}>{sending === 'deny' ? <Sending /> : 'Deny'}</button>
         </div>
       </div>
     );
@@ -58,7 +63,7 @@ const takeName = (path: string) => path.split('/').pop() ?? path;
  * A mid-build audition (#207): every take the worker made, playable here (a phone included), one pick per role or,
  * when the worker offered it, none of them with what to change. The picks resume the worker.
  */
-function AuditionPanel({ item, audition }: { item: ItemView; audition: Audition }) {
+function AuditionPanel({ item, audition, sending, respond }: { item: ItemView; audition: Audition; sending?: string; respond: (key: string, payload: Record<string, unknown>) => Promise<boolean> }) {
   const v = String(item.frontmatter.awaiting_data?.requested_at ?? item.frontmatter.updated_at);
   const [picks, setPicks] = useState<Record<string, AuditionPick>>({});
   const missing = auditionPicksProblem(audition, picks);
@@ -90,7 +95,7 @@ function AuditionPanel({ item, audition }: { item: ItemView; audition: Audition 
         );
       })}
       <div className="row">
-        <button className="primary" disabled={!!missing} title={missing} onClick={() => act(() => api.respond(item.id, { kind: 'audition', picks }))}>Send picks</button>
+        <button className="primary" disabled={!!missing || sending !== undefined} aria-busy={sending === 'picks'} title={missing} onClick={() => void respond('picks', { kind: 'audition', picks })}>{sending === 'picks' ? <Sending /> : 'Send picks'}</button>
       </div>
     </div>
   );
@@ -102,7 +107,7 @@ function Take({ url, path }: { url: string; path: string }) {
   return <a href={url} download={takeName(path)} className="small">Download {takeName(path)}</a>;
 }
 
-function QuestionForm({ questions, onSubmit }: { questions: Question[]; onSubmit: (answers: Record<string, string>) => void }) {
+function QuestionForm({ questions, onSubmit, sending }: { questions: Question[]; onSubmit: (answers: Record<string, string>) => void; sending: boolean }) {
   const [answers, setAnswers] = useState<Record<string, string>>({});
   return (
     <div>
@@ -113,7 +118,7 @@ function QuestionForm({ questions, onSubmit }: { questions: Question[]; onSubmit
           <input className="grow" style={{ width: '100%' }} placeholder={q.options.length ? 'Or type your own answer' : 'Your answer'} onChange={(e) => setAnswers((a) => ({ ...a, [q.question]: e.target.value }))} />
         </div>
       ))}
-      <button className="primary" disabled={questions.some((q) => !answers[q.question])} onClick={() => onSubmit(answers)}>Send answers</button>
+      <button className="primary" disabled={sending || questions.some((q) => !answers[q.question])} aria-busy={sending} onClick={() => onSubmit(answers)}>{sending ? <Sending /> : 'Send answers'}</button>
     </div>
   );
 }
