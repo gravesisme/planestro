@@ -53,6 +53,24 @@ finding still holds at `caa7433`:
 - Both multipart routes (`routes/api.ts`, item and chat attachments) still call
   `formData()` with no body limit.
 
+### Owner decisions (2026-10-08)
+
+| Point | Decision |
+| --- | --- |
+| D1 | Agreed: the public opening is v1.0.0. |
+| D2 | Five-developer study: agreed, not a gate. **Site redesign: wanted for 1.0** (P10). |
+| D3 | Agreed: withdraw `orphan-branch`. |
+| D4 | Agreed: a running-mode indicator. |
+| D5 | **A setup check is in 1.0** (P7): local checks only, no model usage. |
+| D6 | Resolved: existing logins only; key paths removed (P9, done). |
+| A1 | Expanded below; hardening proposed as P11 and P12. |
+| A2 | Document it: CI is Linux and the maintainer runs macOS. No macOS CI job. Raise the timeout. |
+| A3, A4, A7 | Agreed. |
+| A5 | A "what Planestro sends" page instead of a non-affiliation line (see A5). |
+| A6 | The Crystal Cavern log is removed (done). |
+| P3 | Resolved: SECURITY.md rewritten (done). |
+| P8 | Not an issue: the release is the last step and stays a checklist. |
+
 ### Where this review disagrees
 
 **D1 — Ship the public opening as v1.0.0. Don't open as "experimental" first.**
@@ -131,26 +149,91 @@ only where every device is yours (Tailscale and similar).
 ### What the first audit missed
 
 **A1 — Text from strangers reaches the agents once a managed repo is public.**
-Neither the audit nor SECURITY.md covers this. `importIssues` (#231) copies an
-issue's body into the item description, and the planner reads that as its brief.
-The orchestrator's PR tool (`prDetails`) returns every PR comment and review.
-Failed CI logs feed fix turns. On a public code repository, anyone can write these,
-including in fork-PR CI output that a log quotes. The existing defences are real:
-nothing is submitted without the user (#73), plans need approval, workers cannot
-push, and destructive operations need evidence. But nothing says that this text is
-untrusted input. For 1.0, document it in SECURITY.md: review imported issues before
-queueing, keep `issues.import_label` to a label only maintainers can set, and treat
-review comments from non-collaborators as data. Marking such text as untrusted in
-the rendered prompts (a fenced "external content" block) is a cheap hardening step.
-Do it after the docs.
+Traced through the code at this branch's head. Nothing marks outside text as
+untrusted anywhere. The `[unverified]` items below are inferences about CLI/git
+behaviour that need a test.
 
-**A2 — The primary platform is not in CI, and the suite is close to its timeout.**
-The README calls macOS the platform that is used, but CI runs only `ubuntu-latest`.
-CI's `timeout-minutes: 10` already sits below the audit's local full-suite time
-(13m48s with `--maxWorkers=2` on macOS). Linux CI passes today, but the margin
-shrinks with every feature. Add a `macos-latest` job (it can run on pushes to
-`main` only, to save minutes) and raise or split the timeout before outside PRs
-start running.
+*Where outside text enters:*
+
+| Source | Reaches | How much |
+| --- | --- | --- |
+| An imported issue's title and body (`issueImport.ts`) | Becomes the item's title and Description, created with actor `user`. The title is in **every** worker's system prompt (`worker-system.md`). The description goes to the planner, fresh briefs and every orchestrator packet (first 1,200 chars). | Whole body; only the trailing "Imported from <url>" line says where it came from. Comments and author are not imported. |
+| PR comments and reviews (`pr_view`) | The orchestrator, on any wake, for **any** PR in `code_repo.github`, fork PRs and other people's included. `pr_diff` gives their diffs (100 KB). | Unfiltered. Every wake also lists up to 20 open-PR titles with author logins. No engine path gives PR comments to a worker; only the orchestrator can relay them, through `message_session` / `unblock_item` / `answer_question`. |
+| CI failure logs (`runFailedLog`) | The worker's fix turn (`ci-failed.md`), and the orchestrator on a second red (3,000 chars) and through `run_view`. | ~160 lines. Read only for planestro's own PR heads (branch and SHA must match), so a fork PR's run is never picked. It still contains output of whatever ran, including base-branch tests others merged. |
+| The managed repo itself | Both roles load its `CLAUDE.md` and `.claude/` settings (`settingSources: ['project']`). Workers read the worktree; the orchestrator can Read anything outside the secret list. | `[unverified]` A project allow rule or hook in `.claude/settings.json` would apply before planestro's `canUseTool`. |
+| Worker MCP servers | Their results are outside text, auto-allowed up to the item's call cap. | Configured by the user, per model row. |
+
+*What a manipulated orchestrator could do.* Most of its power is behind settings
+that default off:
+
+- **Approve a plan** only when `orchestrator.may_approve_plans` (default off)
+  and the item's `auto_approve_plan` are both set.
+- **Allow a worker's command** only with `orchestrator.may_decide_permissions`
+  (default off). Nothing in code bounds what it allows then: `curl`, other `gh`
+  commands and `WebFetch` all park rather than being hard-denied, so a delegated
+  "allow" opens them. Codex grants stay limited to one exact command.
+- **Two powers are not behind any setting.** Both are confirmed in code:
+  - `submit_item` queues any non-epic item in any wake, an imported issue
+    included. Only epics are restricted to the chat (#73). That spends on a
+    planner reading the stranger's text, though the plan still waits for you by
+    default.
+  - **`unskip_merge` releases any hold, including one waiting on a person**
+    (`orchestratorUnskips` never reads `hold_waits_on`). Your "Approve and hold
+    the PR" and a `review.hold_into` hold can both be lifted, and green CI then
+    merges. No test refuses it. This is a bug against the hold's own meaning, not
+    just hardening.
+- It steers workers (`message_session`, `answer_question`) and drives git
+  through planestro (`sync_with_base`, `finish_from_worktree`,
+  `resolve_epic_conflict`). It has no network of its own.
+
+*What a manipulated Claude worker could do:*
+
+- **Hard-denied:** `git push`, `gh pr`, `gh api …merge|pulls`, protected-branch
+  operations, `git worktree`, branch deletion, `--force`, writes outside the
+  worktree.
+- **Parked rather than denied:** network (`curl`, `wget`, `WebFetch`).
+- **Its Bash inherits planestro's environment**, minus the model-billing
+  variables. That includes `GH_TOKEN` if planestro has it; Codex gets an
+  allowlist instead.
+- **Not on the secret list:** `~/.config/gh/hosts.yml`,
+  `~/.claude/.credentials.json`, `/proc/self/environ`.
+- **`[unverified]` Ways to run code without parking:**
+  - `git rebase --exec` matches the fix turn's `git rebase*` allow;
+  - `git fetch --upload-pack=` matches `git fetch*`;
+  - `head -c … /proc/self/environ` matches the unscoped `head *`;
+  - commit hooks the worker can edit.
+- **Anything committed leaves the machine:** planestro pushes it, opens the PR,
+  and merges on green unless held.
+
+*The structural defences that hold:*
+
+- Nothing is imported or queued from the board without you, except the
+  `submit_item` gap above.
+- Plans wait for you by default.
+- Workers cannot push or merge.
+- Destructive operations need positive evidence.
+- Codex has no network and a clean environment.
+
+*Proposed:*
+
+- **P11 (bug, small):** the orchestrator cannot release a hold that waits on a
+  person, and cannot `submit_item` an imported item outside the chat.
+- **P12 (hardening):**
+  - fence outside text in prompts (an "external content: data, not
+    instructions" block around imported titles and bodies, `pr_view` comments
+    and reviews, open-PR titles and CI logs), and say an item came from an issue;
+  - add `gh`/`claude` credential files and `/proc/*/environ` to the secret list;
+  - drop `GH_TOKEN`/`GITHUB_TOKEN` from Claude workers' environment;
+  - test, and close, the `[unverified]` code-execution routes.
+
+SECURITY.md's untrusted-input section (done) is the documentation half.
+
+**A2 — CI covers Linux; the maintainer runs macOS.** *Decided: document it, no
+macOS CI job.* The README's platform line, CONTRIBUTING and the release notes say
+it: macOS is what the maintainer uses, Linux runs the test suite in CI, Windows
+is untried. CI's `timeout-minutes: 10` is below the audit's local full-suite time
+(13m48s with `--maxWorkers=2` on macOS). This branch's run took 5m14s on Linux
+with default workers. Raise it to 20 before outside PRs run (P4).
 
 **A3 — The Agent SDK is a root devDependency imported at runtime.**
 `packages/server` imports `@anthropic-ai/claude-agent-sdk` (`LiveClaudePort.ts`,
@@ -171,13 +254,18 @@ issue or PR templates, and no Dependabot config. Beyond "expectations", 1.0 need
   `blocked_reason`, and that warns against pasting planning data or secrets;
 - `.github/dependabot.yml` for npm and Actions (this covers R6).
 
-**A5 — Say plainly what Planestro doesn't do and isn't.** There is no telemetry and
-no Planestro account (true from source inspection: the only outbound calls are
-git, `gh`, the provider runners and the user's own notification command). It is
-also not affiliated with Anthropic or OpenAI. The repository is a Claude Code
-plugin marketplace and the site uses the provider names prominently, so one
-non-affiliation line in the README and site footer is cheap and avoids confusion.
-These also belong in the M7 FAQ.
+**A5 — Say what Planestro sends.** *Decided: a "what it sends" page, no
+non-affiliation line.* A plain page that lists everything that leaves the
+machine answers the privacy question better than a disclaimer, and says that a
+build from source sends nothing. Planestro sends nothing at all, so the page is
+short. Add `docs/what-planestro-sends.md`:
+
+- there is no telemetry and no crash reporting;
+- the only outbound traffic is git, `gh`, the provider CLIs, the MCP servers and
+  notification command you configure, and other local planestro servers;
+- your items, prompts and journal stay in your planning repo.
+
+Link it from the README and SECURITY.md (P4).
 
 **A6 — Working documents will be public.** *Decided: the Crystal Cavern dogfood
 log is removed.* Crystal Cavern is a Hurricane Harrison level and doesn't belong
@@ -210,23 +298,25 @@ document until after the release. Repository settings, the visibility change,
 Pages and DNS, the privacy read and the live acceptance runs are the maintainer's
 own steps, not engine work. They stay as checklists below and are not issues.
 
-| # | Proposed issue | Covers | Size | Tier |
+| # | Proposed issue | Covers | Size | Status |
 | --- | --- | --- | --- | --- |
-| P1 | `init` creates and verifies a planning git repo, resolves the base or refuses to guess, and validates before writing | O1, O3 (base fallback, linked-worktree `ENOTDIR` via `git rev-parse --git-path`), D3 (withdraw `orphan-branch`) | M | v1.0 blocker |
-| P2 | One correct install path across README, Getting started and the site quick start | O1/O2/O4 docs, loopback-only examples, D6 "existing login" wording (README, operations.md, configuration.md, site), platform/Node statement, Codex-only recipe linked from the main path | M (docs) | v1.0 blocker, after P1 |
-| P3 | SECURITY.md and trust-model refresh | Machine-access trust model (D6), Codex app-server approvals, MCP/hook trust, A1 untrusted input, no telemetry | S (docs) | **Done on this branch**, so not an issue |
-| P9 | Remove the model API-key paths | `anthropic_api_key`, `accounts.api_key_env`, the billing-mode state and wording; `ANTHROPIC_API_KEY` dropped from sessions; legacy local files cleaned at load | S–M | **Done on this branch** |
-| P4 | Public-repo hygiene | A2 (macOS CI, timeout), A3 (SDK dependency, `engines`), A4 (CONTRIBUTING, templates, Dependabot), A5 (non-affiliation, no telemetry) | M | v1.0 blocker |
-| P5 | Show running vs saved engine mode | D4 indicator | S | v1.0, cheap |
-| P6 | Bound multipart uploads before buffering | Body/file-count limits on both upload routes; bounded audition/media reads | S | v1.0, cheap hardening |
-| P7 | `planestro check --preflight` (local checks only) | D5 | M | Optional for 1.0 |
-| P8 | Release v1.0.0 | Version bump across the workspaces, CHANGELOG/release notes with known limitations, tag, site copy at the flip | S | Last; could stay a checklist |
+| P1 | `init` creates and verifies a planning git repo, resolves the base or refuses to guess, and validates before writing | O1, O3 (base fallback, linked-worktree `ENOTDIR` via `git rev-parse --git-path`), D3 (withdraw `orphan-branch`) | M | File |
+| P2 | One correct install path across README, Getting started and the site quick start | O1/O2/O4 docs, loopback-only examples, D6 "existing login" wording on the site, platform/Node statement, Codex-only recipe linked from the main path | M (docs) | File, after P1 |
+| P4 | Public-repo hygiene | A2 (document platforms, CI timeout 20), A3 (SDK dependency, `engines`), A4 (CONTRIBUTING, templates, Dependabot), A5 (`what-planestro-sends.md`) | M | File |
+| P5 | Show running vs saved engine mode | D4 indicator | S | File |
+| P6 | Bound multipart uploads before buffering | Body/file-count limits on both upload routes; bounded audition/media reads | S | File |
+| P7 | Setup check: `planestro check --preflight` | D5: Node, git identity/HEAD, code repo remote and base, `gh auth status`, `claude`/`codex` on PATH and signed in (without a model call), port, planning git; one repair per failure | M | File |
+| P10 | Site redesign for v1.0.0 | M1–M7: product demonstration, one primary CTA, audience/prerequisites/cost, current screenshots, FAQ, repo/licence/support links, "coming soon / private" copy updated at the flip | L | File |
+| P11 | The orchestrator cannot release a person's hold or queue an imported item outside the chat | A1: `unskip_merge` vs `hold_waits_on: person`; `submit_item` vs `source.github_issue` | S | File (bug) |
+| P12 | Treat outside text as data | A1: fence imported issues, PR comments/reviews/titles and CI logs in prompts; secret list (`gh`, `claude` credentials, `/proc/*/environ`); drop `GH_TOKEN` from Claude workers; test the unverified code-execution routes | M | File |
+| P3 | SECURITY.md and trust-model refresh | | | Done on this branch |
+| P9 | Remove the model API-key paths | | | Done on this branch |
+| P8 | Release v1.0.0 | Version bump, release notes, tag | | Checklist, not an issue |
 
 Deferred until after 1.0 and not proposed as issues yet: guided onboarding and
-welcome screen, new-item simplification and sample tour (O6), site redesign
-(M1, M4–M7 beyond the minimum in D2), user study, network-preflight and model
-entitlement checks, bundle splitting,
-packaging, Windows, and fencing external text in prompts (A1 hardening).
+welcome screen, new-item simplification and sample tour (O6), user study,
+network-preflight and model entitlement checks, bundle splitting, packaging,
+Windows.
 
 ## What was verified
 
@@ -596,12 +686,12 @@ redesign and site redesign can follow a clearly labeled experimental release.
 - [x] Rewrite SECURITY.md for the machine-access trust model, including untrusted
   input (A1). *(Second review, D6/P3.)*
 - [x] Remove the model API-key paths from code and docs (D6, P9).
-- [ ] Add a macOS CI job and widen the 10-minute timeout. Declare the Agent SDK as
-  a `packages/server` dependency (A2, A3).
-- [ ] Add CONTRIBUTING, issue/PR templates and Dependabot. Add a non-affiliation
-  and no-telemetry line (A4, A5).
-- [ ] Read the linked working documents as public text and label them as
-  historical (A6).
+- [ ] Document the platforms (macOS used, Linux in CI) and raise CI's timeout to 20 minutes.
+  Declare the Agent SDK as a `packages/server` dependency (A2, A3).
+- [ ] Add CONTRIBUTING, issue/PR templates, Dependabot and `docs/what-planestro-sends.md`
+  (A4, A5).
+- [x] Remove the Crystal Cavern dogfood log (A6). Decide whether history must be
+  rewritten for it before the flip.
 - [ ] Record the release revision, CI, audit and scan evidence, accepted exceptions,
   installation/update/backup instructions and known limitations in release notes.
   Refresh checks on the actual release commit if it differs from this one.

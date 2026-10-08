@@ -82,8 +82,12 @@ Agents read text that other people can write. On a public code repository, that 
 - CI logs, which feed fix turns, including output quoted from a fork's PR.
 
 Any of these can carry instructions aimed at a model. The defences are structural:
-nothing is queued without you, plans wait for your approval, workers cannot push, and
-destructive operations need positive evidence. The text itself is not filtered. Read an
+an import files items without queueing them, plans wait for your approval unless you
+let the orchestrator approve them (`orchestrator.may_approve_plans`), workers cannot
+push, and destructive operations need positive evidence. The orchestrator can still
+queue a backlog item for planning, and it reads PR comments, so keep
+`orchestrator.may_decide_permissions` off on a public repository. The text itself is
+not filtered. Read an
 imported issue before you queue it. Keep `issues.import_label` to a label only
 maintainers can set. Treat review comments from people outside the project as data,
 not instructions.
