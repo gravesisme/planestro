@@ -1,10 +1,10 @@
 import { Link } from 'react-router';
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import {
   SETTINGS, SETTINGS_TABS, canPlan, fallbackChain, fallbackProblems, findModel, getPath, looksOneOff, settingChanged, settingDefault, shownNumber, storedNumber, suggestedAllowRules, unavailableEntry,
   RUNNERS, type Config, type ModelDef, type ReleaseSectionDef, type SettingDef, type SettingsTabId,
 } from '@planestro/shared';
-import { api, type State } from '../api.ts';
+import { api, type McpImportCandidate, type McpServerBody, type State } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { DesktopNotifications } from '../components/DesktopNotifications.tsx';
 
@@ -115,7 +115,7 @@ function StorageBlock({ state }: { state: State }) {
 
 function SettingRow({ def, value, changed, state }: { def: SettingDef; value: unknown; changed: boolean; state: State }) {
   const [more, setMore] = useState(false);
-  const wide = def.control === 'models' || def.control === 'sections';
+  const wide = def.control === 'models' || def.control === 'sections' || def.control === 'mcp';
   const dflt = defaultText(def);
   const flag = rowFlag(def, state);
   return (
@@ -148,7 +148,7 @@ function rowFlag(def: SettingDef, state: State): string | undefined {
 }
 
 function defaultText(def: SettingDef): string | undefined {
-  if (def.control === 'models' || def.control === 'categories' || def.control === 'secret' || def.control === 'readonly') return undefined;
+  if (def.control === 'models' || def.control === 'categories' || def.control === 'secret' || def.control === 'mcp') return undefined;
   const d = settingDefault(def.file, def.key);
   if (!d) return undefined;
   if ('none' in d) return 'none';
@@ -202,10 +202,7 @@ function Control({ def, value, state }: { def: SettingDef; value: unknown; state
     case 'record': return <RecordCtl def={def} value={(value as Record<string, number> | undefined) ?? {}} />;
     case 'commands': return <CommandsCtl def={def} value={(value as Record<string, string> | undefined) ?? {}} />;
     case 'secret': return <SecretCtl def={def} state={state} />;
-    case 'readonly': {
-      const names = Object.keys((value as Record<string, unknown> | undefined) ?? {});
-      return <div className="ro">{names.length ? names.join(', ') : 'none'}</div>;
-    }
+    case 'mcp': return <McpServersCtl state={state} />;
     case 'categories': return <CategoriesCtl cfg={state.config} />;
     case 'sections': return <SectionsCtl def={def} value={(value as ReleaseSectionDef[] | undefined) ?? []} />;
     case 'models': return <ModelsCtl state={state} />;
@@ -463,7 +460,7 @@ function ModelDialog({ cfg, model, mcpNames, onClose }: { cfg: Config; model?: M
         <label className="check"><input type="checkbox" checked={m.hold_for_review ?? false} onChange={(e) => set({ hold_for_review: e.target.checked })} /> Hold its pull requests for your review</label>
         <label className="check"><input type="checkbox" checked={m.engine_commits ?? false} onChange={(e) => set({ engine_commits: e.target.checked })} /> planestro commits for it (a sandbox that cannot write git's files)</label>
         <label className="check"><input type="checkbox" checked={m.external ?? false} onChange={(e) => set({ external: e.target.checked })} /> External: not run by planestro, its items are only watched</label>
-        {(runner === 'claude' || m.codex_transport === 'app-server') && <fieldset><legend className="small muted">MCP servers its sessions get {servers.length ? '' : '(none in planestro.local.yml)'}</legend>
+        {(runner === 'claude' || m.codex_transport === 'app-server') && <fieldset><legend className="small muted">MCP servers its sessions get {servers.length ? '' : '(none on this machine: add one under Access → MCP servers)'}</legend>
           {servers.map((s) => <label key={s} className="check"><input type="checkbox" checked={(m.mcp ?? []).includes(s)} onChange={(e) => set({ mcp: e.target.checked ? [...(m.mcp ?? []), s] : (m.mcp ?? []).filter((x) => x !== s) })} /> {s}</label>)}
           {(m.mcp ?? []).length > 0 && <label>Calls per item <input type="number" min={1} value={m.mcp_calls_per_item ?? ''} placeholder="no cap" onChange={(e) => set({ mcp_calls_per_item: e.target.value ? Number(e.target.value) : undefined })} /></label>}
         </fieldset>}
@@ -471,6 +468,137 @@ function ModelDialog({ cfg, model, mcpNames, onClose }: { cfg: Config; model?: M
           {model && <button type="button" className="danger" onClick={() => { if (confirm(`Remove ${model.label}? Only possible while no default, fallback or open item uses it.`)) void act(() => api.removeModel(model.id)).then((r) => r && onClose()); }}>Remove</button>}
           <span className="grow" /><button type="button" onClick={onClose}>Cancel</button><button type="submit" className="primary">{model ? 'Save' : 'Add'}</button>
         </div>
+      </form>
+    </div>
+  );
+}
+
+// ---- MCP servers (#237)
+
+/** Worker MCP servers on this machine: their keys are write-only, so the page shows names and "(set)", never a value. */
+function McpServersCtl({ state }: { state: State }) {
+  const servers = state.local.mcp_servers ?? {};
+  const [editing, setEditing] = useState<string>();
+  const [importing, setImporting] = useState(false);
+  const [tests, setTests] = useState<Record<string, string>>({});
+  const users = (name: string) => state.config.models.filter((m) => m.mcp.includes(name)).map((m) => m.label);
+  const test = async (name: string) => {
+    setTests((t) => ({ ...t, [name]: 'Connecting…' }));
+    const r = await act(() => api.testMcpServer(name));
+    setTests((t) => ({ ...t, [name]: !r ? 'Could not run the test' : r.ok ? `Connected: ${r.tools.length} tool${r.tools.length === 1 ? '' : 's'}${r.tools.length ? ` (${r.tools.slice(0, 8).join(', ')}${r.tools.length > 8 ? ', …' : ''})` : ''}` : `Failed: ${r.error}` }));
+  };
+  return (
+    <div className="models">
+      {Object.entries(servers).map(([name, s]) => {
+        const off = s.enabled === false;
+        const by = users(name);
+        const keys = Object.keys(s.url ? s.headers ?? {} : s.env ?? {});
+        return (
+          <div className="model" key={name}>
+            <div>
+              <h4>{name}
+                {off ? <span className="chip warn">off</span> : <span className="chip ok">on</span>}
+                <span className="chip">{s.url ? 'HTTP' : 'stdio'}</span>
+                {s.source && <span className="chip">from {s.source}</span>}
+              </h4>
+              <div className="facts">
+                <span className="mono" style={{ overflowWrap: 'anywhere' }}>{s.url ?? [s.command, ...(s.args ?? [])].join(' ')}</span>
+                {keys.length > 0 && <span>{s.url ? 'headers' : 'env'} <b className="mono">{keys.join(', ')}</b></span>}
+                <span>{by.length ? `used by ${by.join(', ')}` : 'no model lists it'}</span>
+              </div>
+            </div>
+            <div className="acts">
+              <button className="small" onClick={() => void test(name)}>Test</button>
+              <button className="small" onClick={() => setEditing(name)}>Edit</button>
+              <button className="small" title={off ? '' : 'Models that list it stop as mcp_missing until it is on again'} onClick={() => act(() => api.putMcpServer(name, { enabled: off }))}>{off ? 'Turn on' : 'Turn off'}</button>
+              <button className="small danger" disabled={by.length > 0} title={by.length ? `Take it off ${by.join(', ')} first` : 'Remove'} onClick={() => { if (confirm(`Remove the MCP server ${name} and its keys from planestro.local.yml?${s.source ? ` It will not be imported from ${s.source} again.` : ''}`)) void act(() => api.removeMcpServer(name)); }}>Remove</button>
+            </div>
+            {tests[name] && <div className="desc" role="status" style={{ overflowWrap: 'anywhere' }}>{tests[name]}</div>}
+          </div>
+        );
+      })}
+      {!Object.keys(servers).length && <p className="small muted" style={{ margin: 0 }}>None on this machine yet.</p>}
+      <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}><button className="primary" onClick={() => setEditing('')}>Add a server</button><button onClick={() => setImporting(true)}>Import from Claude Code or Codex…</button></div>
+      {editing !== undefined && <McpDialog name={editing || undefined} server={editing ? servers[editing] : undefined} taken={Object.keys(servers)} onClose={() => setEditing(undefined)} />}
+      {importing && <McpImportDialog onClose={() => setImporting(false)} />}
+    </div>
+  );
+}
+
+type KeyRow = { key: string; value: string; kept: boolean };
+const rowsOf = (m: Record<string, string> | undefined): KeyRow[] => Object.keys(m ?? {}).map((key) => ({ key, value: '', kept: true }));
+
+function McpDialog({ name, server, taken, onClose }: { name?: string; server?: State['local']['mcp_servers'][string]; taken: string[]; onClose: () => void }) {
+  const [id, setId] = useState(name ?? '');
+  const [kind, setKind] = useState<'stdio' | 'http'>(server?.url ? 'http' : 'stdio');
+  const [command, setCommand] = useState(server?.command ?? '');
+  const [args, setArgs] = useState((server?.args ?? []).join('\n'));
+  const [url, setUrl] = useState(server?.url ?? '');
+  const [env, setEnv] = useState<KeyRow[]>(server?.url ? [] : rowsOf(server?.env));
+  const [headers, setHeaders] = useState<KeyRow[]>(server?.url ? rowsOf(server?.headers) : []);
+  const was = kind === 'http' ? (server?.url ? Object.keys(server.headers ?? {}) : []) : (server?.url ? [] : Object.keys(server?.env ?? {}));
+  const submit = async () => {
+    const n = id.trim();
+    if (!n) { complain('A server needs a name'); return; }
+    if (!name && taken.includes(n)) { complain(`There is already a server ${n}`); return; }
+    const rows = kind === 'http' ? headers : env;
+    const patch: Record<string, string | null> = Object.fromEntries(was.filter((k) => !rows.some((r) => r.kept && r.key === k)).map((k) => [k, null]));
+    for (const r of rows) if (r.key.trim()) patch[r.key.trim()] = r.value;
+    const body: McpServerBody = kind === 'http' ? { url: url.trim(), headers: patch } : { command: command.trim(), args: args.split('\n').map((a) => a.trim()).filter(Boolean), env: patch };
+    if (await act(() => api.putMcpServer(n, body))) onClose();
+  };
+  const rows = kind === 'http' ? headers : env;
+  const setRows = kind === 'http' ? setHeaders : setEnv;
+  return (
+    <div className="dialog" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <form className="model-form" onSubmit={(e) => { e.preventDefault(); void submit(); }} onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }} data-dirty="true">
+        <h3 style={{ margin: 0 }}>{name ? `Edit ${name}` : 'Add an MCP server'}</h3>
+        <label>Name <input className="mono" value={id} disabled={Boolean(name)} onChange={(e) => setId(e.target.value)} placeholder="elevenlabs" title={name ? 'Models list it by name, so it cannot change' : 'What a model lists in its MCP servers'} required /></label>
+        <label>Kind <select value={kind} onChange={(e) => setKind(e.target.value as 'stdio' | 'http')}><option value="stdio">stdio: a command planestro starts</option><option value="http">HTTP: a url</option></select></label>
+        {kind === 'stdio' ? <>
+          <label>Command <input className="mono" value={command} onChange={(e) => setCommand(e.target.value)} placeholder="uvx" required /></label>
+          <label>Arguments, one per line <textarea className="mono" rows={3} value={args} onChange={(e) => setArgs(e.target.value)} placeholder="elevenlabs-mcp" /></label>
+        </> : <label>Url <input className="mono" type="url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.com/mcp" required /></label>}
+        <fieldset><legend className="small muted">{kind === 'http' ? 'Headers' : 'Environment'}: values are stored in planestro.local.yml and never shown back</legend>
+          {rows.map((r, i) => (
+            <div key={i} className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+              <input className="mono" style={{ flex: '1 1 120px', minWidth: 0 }} aria-label="Name" value={r.key} disabled={r.kept} placeholder={kind === 'http' ? 'Authorization' : 'API_KEY'} onChange={(e) => setRows(rows.map((x, j) => (j === i ? { ...x, key: e.target.value } : x)))} />
+              <input type="password" autoComplete="off" style={{ flex: '2 1 160px', minWidth: 0 }} aria-label={`Value of ${r.key || 'the new entry'}`} value={r.value} placeholder={r.kept ? 'set: leave empty to keep' : 'value'} onChange={(e) => setRows(rows.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)))} />
+              <button type="button" className="small danger" aria-label={`Remove ${r.key || 'this entry'}`} onClick={() => setRows(rows.filter((_, j) => j !== i))}>×</button>
+            </div>
+          ))}
+          <div><button type="button" className="small" onClick={() => setRows([...rows, { key: '', value: '', kept: false }])}>{kind === 'http' ? 'Add a header' : 'Add a variable'}</button></div>
+        </fieldset>
+        <div className="row"><span className="grow" /><button type="button" onClick={onClose}>Cancel</button><button type="submit" className="primary">{name ? 'Save' : 'Add'}</button></div>
+      </form>
+    </div>
+  );
+}
+
+const IMPORT_WHY: Record<McpImportCandidate['status'], string> = { new: '', present: 'this machine already has one by that name', duplicate: 'the same name is listed earlier', removed: 'you removed it after importing it', unsupported: 'planestro cannot run it' };
+
+/** Import from ~/.claude.json and ~/.codex/config.toml: the server reads them; the page sees names, never a key. */
+function McpImportDialog({ onClose }: { onClose: () => void }) {
+  const [found, setFound] = useState<McpImportCandidate[]>();
+  const [pick, setPick] = useState<Set<string>>(new Set());
+  const keyOf = (c: McpImportCandidate) => `${c.source}:${c.name}`;
+  useEffect(() => { void act(() => api.mcpImportCandidates()).then((r) => { if (!r) { onClose(); return; } setFound(r.candidates); setPick(new Set(r.candidates.filter((c) => c.status === 'new').map(keyOf))); }); }, []);
+  const submit = async () => { if (await act(() => api.importMcpServers([...pick]))) onClose(); };
+  return (
+    <div className="dialog" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <form className="model-form" onSubmit={(e) => { e.preventDefault(); void submit(); }} onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }}>
+        <h3 style={{ margin: 0 }}>Import MCP servers</h3>
+        <p className="small muted" style={{ margin: 0 }}>From <code>~/.claude.json</code> (yours and this project's) and <code>~/.codex/config.toml</code> on this machine. Their keys are copied into planestro.local.yml and never shown here. No model gets one until you list it on the model.</p>
+        {!found ? <p className="small muted">Reading…</p> : !found.length ? <p className="small muted">Neither file lists an MCP server.</p> : found.map((c) => (
+          <label key={keyOf(c)} className="check" style={{ alignItems: 'start' }}>
+            <input type="checkbox" disabled={c.status !== 'new'} checked={pick.has(keyOf(c))} onChange={(e) => { const next = new Set(pick); if (e.target.checked) next.add(keyOf(c)); else next.delete(keyOf(c)); setPick(next); }} />
+            <span style={{ minWidth: 0, overflowWrap: 'anywhere' }}><b>{c.name}</b> <span className="small muted">{c.kind} · {c.source}</span><br />
+              <span className="small mono muted">{c.url ?? c.command}{(c.env.length || c.headers.length) ? ` · ${[...c.env, ...c.headers].join(', ')}` : ''}</span>
+              {(c.status !== 'new' || c.note) && <><br /><span className="small muted">{[c.note && c.status === 'unsupported' ? '' : IMPORT_WHY[c.status], c.note].filter(Boolean).join('; ')}</span></>}
+            </span>
+          </label>
+        ))}
+        <div className="row"><span className="grow" /><button type="button" onClick={onClose}>Cancel</button><button type="submit" className="primary" disabled={!pick.size}>Import {pick.size || ''}</button></div>
       </form>
     </div>
   );

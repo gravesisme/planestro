@@ -210,7 +210,8 @@ counts against `max_iterations`, a budget of its own beside the turn and dollar 
 
 A worker that makes sounds or models is a Claude session with that service's tools. A model row
 names MCP servers in `mcp` (`elevenlabs`, `meshy`, …); the servers themselves, with their keys,
-live in `planestro.local.yml` under `mcp_servers`, machine-local like the API key. Every call to
+live in `planestro.local.yml` under `mcp_servers`, machine-local like the API key (Settings → MCP
+servers adds, tests and imports them from Claude Code or Codex; their keys are never shown back). Every call to
 those tools passes through planestro and counts against `mcp_calls_per_item`, the one spend cap
 planestro can meter itself; past it the calls are refused and the worker is told to finish or say
 what it still needs. For paid generation, `user_approves_plans` on the model makes the budget a
