@@ -10,6 +10,7 @@ import type { AgentPort, TurnOptions, CustomTurnOptions, CustomToolDef, TurnResu
 import { workerTools } from './workerTools.ts';
 import { externalTools } from './externalTools.ts';
 import { gitWritableRoots } from './gitWritableRoots.ts';
+import { commandGrant } from './nativeApproval.ts';
 
 export const CODEX_TOOL_CONTRACT = 'app-server-v1';
 const REPORTS = new Set(['submit_plan', 'submit_breakdown', 'report_done', 'report_blocked']);
@@ -200,16 +201,22 @@ export class CodexAppServerPort implements AgentPort {
             await respond(m, { contentItems: [{ type: 'inputText', text: message }], success: false }).catch(() => drop(message, p.tool));
           }
         } else if (m.method?.endsWith('/requestApproval')) {
+          let allowed = false;
           try {
             if (stopped || p.threadId !== thread || p.turnId !== turn) throw new Error('Rejected: stale or foreign approval');
-            const req = { tool: 'CodexApproval', input: { method: m.method, ...p } };
-            if (o.onApproval) await o.onApproval(req);
+            const req = { tool: 'CodexApproval', input: { ...p, method: m.method } };
+            if (o.onApproval) {
+              const decision = await o.onApproval(req);
+              allowed = worker && decision === 'allow' && !!commandGrant(req) && !stopped && !o.signal?.aborted;
+            }
             else if (worker) await o.onPermission(req);
             else throw new Error('Approval could not be recorded');
-            result.parked = 'permission';
+            if (!allowed) result.parked = 'permission';
           } finally {
-            // No promise is held for a human. Persist, decline in this cycle, then end the process.
-            await respond(m, m.method === 'item/permissions/requestApproval' ? { permissions: {}, scope: 'turn' } : { decision: 'decline' }); interrupt();
+            // No promise is held for a human. Only a previously persisted exact grant accepts;
+            // everything else is recorded, declined in this cycle, and ends the process.
+            await respond(m, m.method === 'item/permissions/requestApproval' ? { permissions: {}, scope: 'turn' } : { decision: allowed ? 'accept' : 'decline' });
+            if (!allowed) interrupt();
           }
         } else if (m.method === 'item/tool/requestUserInput') {
           if (!stopped && p.threadId === thread && p.turnId === turn) {

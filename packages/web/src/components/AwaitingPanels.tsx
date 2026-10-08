@@ -24,21 +24,24 @@ export function AwaitingPanels({ item }: { item: ItemView }) {
     </div>
   );
   if ((fm.awaiting === 'permission' || orchestrating) && data) {
-    const nativeCodex = data.grantable === false || data.tool === 'CodexApproval';
-    const command = data.tool === 'Bash' && typeof data.input?.command === 'string' ? data.input.command : undefined;
-    const why = typeof data.input?.description === 'string' ? data.input.description : undefined;
+    const nativeCodex = data.tool === 'CodexApproval';
+    const cannotGrant = data.grantable === false || (nativeCodex && data.grantable !== true);
+    const command = (data.tool === 'Bash' || nativeCodex) && typeof data.input?.command === 'string' ? data.input.command : undefined;
+    const why = typeof data.input?.description === 'string' ? data.input.description : nativeCodex && typeof data.input?.reason === 'string' ? data.input.reason : undefined;
     return (
       <div className="approval">
         <h2 style={{ margin: '0 0 8px' }}>{orchestrating ? `The orchestrator is deciding a permission: ${data.tool}` : `Permission requested: ${data.tool}`}</h2>
         {orchestrating && <p className="small" style={{ marginTop: 0 }}>You asked it to decide these. It allows ordinary work in the worktree, denies what is wrong for the item, and leaves the rest to you. You can still decide yourself below.</p>}
         {!orchestrating && data.escalated === 'orchestrator_denials' && <p className="small" style={{ marginTop: 0 }}>This comes to you because the orchestrator denied this item's last three requests. Allowing it hands the item's next requests back to the orchestrator.</p>}
         {why && <p className="small" style={{ margin: '0 0 6px' }}>{why}</p>}
-        <pre className="events">{command ?? JSON.stringify(data.input, null, 2)}</pre>
-        {nativeCodex && <p>Codex cannot carry this sandbox permission into a new turn. Take over to perform the action yourself, then hand back, or deny it and ask for another approach.</p>}
+        <pre className="events">{!cannotGrant && command ? command : JSON.stringify(data.input, null, 2)}</pre>
+        {nativeCodex && !cannotGrant && <p>Allow once resumes the agent and approves this exact command in this working directory once. Other commands still need their own permission.</p>}
+        {nativeCodex && typeof data.input?.cwd === 'string' && <p className="small">Working directory: <code>{data.input.cwd}</code></p>}
+        {cannotGrant && <p>This permission cannot be carried into a new turn. Take over to perform the action yourself, then hand back, or deny it and ask for another approach.</p>}
         {item.park_hint && <ParkHint hint={item.park_hint} />}
         <div className="row">
-          {!nativeCodex && <><button className="primary" onClick={() => act(() => api.respond(item.id, { kind: 'permission', decision: 'allow' }))}>Allow once</button>
-          <button title="Adds this exact command to permissions.allow" onClick={() => act(() => api.respond(item.id, { kind: 'permission', decision: 'always' }))}>Always allow</button></>}
+          {!cannotGrant && <button className="primary" onClick={() => act(() => api.respond(item.id, { kind: 'permission', decision: 'allow' }))}>Allow once</button>}
+          {!cannotGrant && !nativeCodex && <button title="Adds this exact command to permissions.allow" onClick={() => act(() => api.respond(item.id, { kind: 'permission', decision: 'always' }))}>Always allow</button>}
           <button className="danger" onClick={() => { const reason = prompt('Reason for denying?'); if (reason !== null) void act(() => api.respond(item.id, { kind: 'permission', decision: 'deny', reason })); }}>Deny</button>
         </div>
       </div>

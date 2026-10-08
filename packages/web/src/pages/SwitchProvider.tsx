@@ -13,9 +13,9 @@ export function SwitchProviderPage() {
   const [query] = useSearchParams();
   const [provider, setProvider] = useState(query.get('provider') === 'claude' ? 'claude' : 'codex');
   const [model, setModel] = useState('');
-  const [orchestrator, setOrchestrator] = useState(true);
+  const [orchestrator, setOrchestrator] = useState(() => !query.get('item'));
   const [defaults, setDefaults] = useState(false);
-  const [selected, setSelected] = useState<string[]>([]);
+  const [selected, setSelected] = useState<string[]>(() => query.get('item') ? [query.get('item')!] : []);
   const [preview, setPreview] = useState<{ data: Preview; key: string; applied: boolean }>();
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);

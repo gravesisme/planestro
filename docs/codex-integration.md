@@ -2,6 +2,14 @@
 
 General planning, coding, and orchestration use app-server over stdio when a model row sets `codex_transport: app-server`. See [Switching providers](switching-providers.md) for setup and continuation in either direction. The transport sections below describe the legacy `exec` path, which remains the default for existing Codex rows and art workers.
 
+App-server command requests offer **Allow once**. planestro ends the requesting
+turn, saves your decision with the next turn, and accepts the exact same local
+command and working directory once when the worker retries. The grant is consumed
+on disk before acceptance, including across restarts. Other commands keep the
+normal sandbox; permanent rules and broader network/filesystem grants are not
+supported. A changed command asks again. This uses the protocol's per-command
+[`accept` decision](https://learn.chatgpt.com/docs/app-server#command-execution-approvals).
+
 planestro runs implement and fix turns on the Codex CLI for any model with
 `runner: codex` (see [Agents](agents.md)). The port is
 `packages/server/src/engine/sessions/LiveCodexPort.ts`; everything it does was established

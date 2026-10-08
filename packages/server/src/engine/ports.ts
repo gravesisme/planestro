@@ -158,7 +158,8 @@ export interface AgentTurnOptions {
   images?: string[];
   transport?: 'exec' | 'app-server';
   maxTokens?: number;
-  onApproval?(req: PermissionRequest): Promise<void>;
+  /** Persist and park, or consume an exact saved command grant before returning allow. */
+  onApproval?(req: PermissionRequest): Promise<'allow' | void>;
   tools: TurnTools;
   onQuestion(questions: unknown[]): Promise<void>;
   onOutput(text: string): void;

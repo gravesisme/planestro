@@ -1,3 +1,4 @@
+import { nativeApprovalGuidance } from './sessions/nativeApproval.ts';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import YAML from 'yaml';
@@ -558,8 +559,9 @@ export class Orchestrator {
         const hint = id && data.tool === 'Bash' ? parkHint(this.store.journal.read({ item: id, type: 'permission.parked' }), what, this.store.config.permissions.allow) : undefined;
         return hint ? [`This item has parked ${hint.parks} times on \`${hint.shape} …\`. The allow rule ${hint.rule} would let such commands run inside the worktree without a park. Only the user adds allow rules: if it fits this project, say so in your decision's reason (the user's card offers it).`] : [];
       })(),
-      `The request, in full:\n\`\`\`\n${what.slice(0, 6000)}\n\`\`\``,
-      'planestro has already refused the things no worker may do (git push, gh pr, touching protected branches, force flags, rm -rf of / or ~). Read the whole request, then call decide_permission with exactly one of:',
+      `The request, in full:\n\`\`\`\n${what}\n\`\`\``,
+      nativeApprovalGuidance(data.tool) ?? 'planestro has already refused the things no worker may do (git push, gh pr, touching protected branches, force flags, rm -rf of / or ~).',
+      'Read the whole request, then call decide_permission with exactly one of:',
       '- allow — ordinary development work for this item: reading and searching, building, running the project\'s tests and checks, generating or editing files inside its worktree, scratch files under a temp dir, git on its own branch. It is allowed this once and the session resumes.',
       '- deny — not needed for this item or plainly the wrong way to do it. Say why and what to do instead; the worker continues without it.',
       '- ask_user — anything that writes or deletes outside the worktree and temp dirs, installs or downloads software, talks to the network beyond the project\'s own tooling, reads or writes credentials, keys or env files, uses sudo, changes git config or history, or that you cannot fully read and understand. When in doubt, ask_user: the user sees the request exactly as you did.',

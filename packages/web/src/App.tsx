@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router';
 import { useStore, act } from './store.ts';
 import { api } from './api.ts';
-import { canPlan, unavailableEntry, usageWindowLabel, usagePercent, localClock, type UsageGuardState } from '@planestro/shared';
+import { findModel, usageWindowLabel, usagePercent, localClock, type UsageGuardState } from '@planestro/shared';
 import { OrchestratorChat } from './components/OrchestratorChat.tsx';
 import { setTitle, setNeeds } from './tabBadge.ts';
 
@@ -37,17 +37,21 @@ export function App() {
   const inReview = state?.items.filter((i) => i.frontmatter.status === 'IN_REVIEW') ?? [];
   const paused = state?.engine.paused ?? false;
   const guards = Object.entries(state?.engine.provider_guards ?? {});
-  const availableProvider = (provider: string) => !state?.engine.provider_guards?.[provider] && state?.config.models.some((m) => m.runner === provider && canPlan(m) && !unavailableEntry(state.local.model_unavailable, m.id, new Date()));
-  const unavailableProviders = ['claude', 'codex'].filter((p) => state?.engine.provider_guards?.[p] || state?.config.models.some((m) => m.runner === p && unavailableEntry(state.local.model_unavailable, m.id, new Date())));
+  const provider = state && findModel(state.config, state.config.orchestrator.model)?.runner;
+  const providerLabel = provider === 'codex' ? 'Codex' : provider === 'claude' ? 'Claude' : 'Not set';
+  const switchProviderPath = provider ? `/switch-provider?provider=${provider === 'codex' ? 'claude' : 'codex'}` : '/switch-provider';
   // A turn queued for its runner's slot is not an agent running yet.
   const running = state?.engine.sessions.filter((s) => s.busy).length ?? 0;
+  const restart = state?.engine.restart;
+  const engineLabel = !connected ? 'Reconnecting' : paused ? 'Paused' : restart?.draining ? restart.by === 'update' ? 'Updating' : 'Draining' : state?.engine.mode === 'live' ? 'Live' : 'Dry-run';
+  const statusWarning = paused || restart?.draining || guards.length > 0 || (state?.engine.ci_queue?.queued ?? 0) > 0;
   const notes = useStore((s) => s.notes); const notesSeen = useStore((s) => s.notesSeen);
   const unreadNotes = notes.filter((n) => n.ts > notesSeen).length;
   return (
     <div className="app">
       {updateReady && <button className="banner warn" style={{ border: 0, borderRadius: 0, textAlign: 'left' }} onClick={() => location.reload()}>planestro was updated — click to reload (held back so nothing you were typing is lost)</button>}
       <header className="topbar">
-        <Link className="brand" to="/" title="Board"><img className="logo" src="/favicon.svg" alt="" width={22} height={22} /> <span className="wordmark">planestro</span> <span className="project">{state?.config.project.name ?? '…'}</span>
+        <Link className="brand" to="/" title={`${state?.config.project.name ?? 'planestro'} · Board`}><img className="logo" src="/favicon.svg" alt="" width={22} height={22} /> <span className="wordmark">planestro</span> <span className="project">{state?.config.project.name ?? '…'}</span>
           <span className="engine phone-only">{paused ? 'paused' : state?.engine.restart?.draining && state.engine.restart.by === 'update' ? 'updating' : state?.engine.mode === 'live' ? 'live' : 'dry-run'} · {running} agent{running === 1 ? '' : 's'} running</span></Link>
         <nav>
           <NavLink to="/" end>Board</NavLink>
@@ -60,20 +64,19 @@ export function App() {
           <NavLink to="/settings">Settings</NavLink>
         </nav>
         <div className="status">
-          <button className={`needs ${needsHot ? 'hot' : needs.length ? 'wait' : ''}`} onClick={() => nav('/?needs=1')} title="Items waiting on you (red: one of them is blocked)"><span className="dot" /> <span className="desk-only">NEEDS YOU · </span>{needs.length}</button>
-          {state?.engine.restart?.draining
-            // Getting ready to restart takes the summary's place: it is the one thing that matters until the restart.
-            ? state.engine.restart.by === 'update'
-              // serve --watch restarting onto new planestro code (#90): it resumes by itself, so there is nothing to press.
-              ? <button className="needs wait" onClick={() => nav('/console')} title={`Updating planestro: ${state.engine.restart.idle ? 'restarting now' : `waiting for ${state.engine.restart.running.join(', ')} to finish`}. Nothing new starts meanwhile; automation carries on by itself after the restart.`}>↻ <span className="desk-only">UPDATING{state.engine.restart.running.length ? ' · waiting for ' : ''}</span>{state.engine.restart.running.length ? <><span className="desk-only">{state.engine.restart.running[0]}{state.engine.restart.running.length > 1 ? ` +${state.engine.restart.running.length - 1}` : ''}</span><span className="phone-only">{state.engine.restart.running.length}</span></> : null}</button>
-              : <button className={`needs ${state.engine.restart.idle ? 'safe' : 'wait'}`} onClick={() => nav('/console')} title={state.engine.restart.idle ? 'Nothing is running: restarting planestro loses nothing' : `Still running: ${state.engine.restart.running.join(', ')}`}>{state.engine.restart.idle ? <>↻ <span className="desk-only">SAFE TO RESTART</span><span className="phone-only">OK</span></> : <>↻ <span className="desk-only">DRAINING · </span>{state.engine.restart.running.length}</>}</button>
-            : <span className="summary">{paused ? '⏸ PAUSED' : `● ${state?.engine.mode === 'live' ? 'LIVE' : 'DRY-RUN'}`} · {running} agents active · {active.length} active items · {inReview.length} PR{inReview.length === 1 ? '' : 's'} in review</span>}
-          {paused && state?.engine.paused_by === 'disk' && state.engine.disk_guard && <span className="usage-pill" title={`The disk guard paused automation at ${new Date(state.engine.disk_guard.tripped_at).toLocaleString()}: ${state.engine.disk_guard.free_gib} GiB free on ${state.engine.disk_guard.path}. Running turns finish, nothing new starts; it resumes by itself once there is ${state.config.disk_guard.resume_free_gib} GiB free.`}>disk nearly full · {state.engine.disk_guard.free_gib} GiB free</span>}
-          {state?.engine.ci_queue && state.engine.ci_queue.queued > 0 && <span className="usage-pill" title={`CI runners: ${state.engine.ci_queue.queued} runs waiting for a runner, ${state.engine.ci_queue.running} running. Time queued does not count toward a run's timeout.${state.config.ci.max_queued_runs > 0 ? ` New items wait to start while ${state.config.ci.max_queued_runs} or more are queued.` : ''}`}>CI queue · {state.engine.ci_queue.queued} waiting{state.config.ci.max_queued_runs > 0 && state.engine.ci_queue.queued >= state.config.ci.max_queued_runs ? ' · starts held' : ''}</span>}
-          {guards.map(([provider, guard]) => <span key={provider} className="usage-pill">{provider}: {guardPill(guard)} <button onClick={() => act(() => api.retryProvider(provider))}>Retry {provider}</button></span>)}
-          {unavailableProviders.map((provider) => { const other = provider === 'claude' ? 'codex' : 'claude'; return availableProvider(other) ? <Link key={provider} to={`/switch-provider?provider=${other}`}>{provider} paused for usage; switch to {other === 'codex' ? 'Codex' : 'Claude'}</Link> : null; })}
-          <button className={`lever ${paused ? 'paused' : ''}`} onClick={() => act(() => (paused ? api.resume() : api.pause()))}>{paused ? 'RESUME' : 'PAUSE'}<span className="desk-only"> AUTOMATION</span></button>
-          <span className={`dot ${connected ? 'on' : 'off'}`} title={connected ? 'connected' : 'reconnecting'} />
+          <button className={`status-trigger ${statusWarning ? 'warn' : ''}`} popoverTarget="engine-status" aria-label={`Automation status: ${engineLabel}. View details`} title="Activity, connection and usage details"><span className={`dot ${!connected ? 'off' : statusWarning ? 'warn' : state?.engine.mode === 'live' ? 'on' : ''}`} /><span className="status-label">{engineLabel}</span><span className="status-count">· {running} agent{running === 1 ? '' : 's'}</span></button>
+          <div id="engine-status" popover="auto" className="status-popover" onClick={(e) => { if ((e.target as HTMLElement).closest('a')) e.currentTarget.hidePopover(); }}>
+            <div className="status-popover-heading"><strong>Automation · {engineLabel}</strong><button popoverTarget="engine-status" popoverTargetAction="hide" aria-label="Close automation status">×</button></div>
+            <dl><dt>Agents running</dt><dd>{running}</dd><dt>Active items</dt><dd>{active.length}</dd><dt>PRs in review</dt><dd>{inReview.length}</dd><dt>Connection</dt><dd>{connected ? 'Connected' : 'Reconnecting'}</dd></dl>
+            {restart?.draining && <p>{restart.by === 'update' ? `Updating planestro: ${restart.idle ? 'restarting now' : `waiting for ${restart.running.join(', ')} to finish`}. Automation resumes after the restart.` : restart.idle ? 'Safe to restart: nothing is running.' : `Draining: waiting for ${restart.running.join(', ')} to finish. Nothing new starts meanwhile.`}</p>}
+            {paused && state?.engine.paused_by === 'disk' && state.engine.disk_guard && <p className="status-notice">Disk nearly full · {state.engine.disk_guard.free_gib} GiB free on {state.engine.disk_guard.path}. Automation resumes once there is {state.config.disk_guard.resume_free_gib} GiB free.</p>}
+            {state?.engine.ci_queue && state.engine.ci_queue.queued > 0 && <p className="status-notice">CI queue · {state.engine.ci_queue.queued} waiting · {state.engine.ci_queue.running} running.{state.config.ci.max_queued_runs > 0 && state.engine.ci_queue.queued >= state.config.ci.max_queued_runs ? ' New items are waiting for capacity.' : ''}</p>}
+            {guards.map(([provider, guard]) => <div key={provider} className="status-notice"><p>{provider === 'codex' ? 'Codex' : 'Claude'}: {guardPill(guard)}</p><button onClick={() => act(() => api.retryProvider(provider))}>Retry {provider === 'codex' ? 'Codex' : 'Claude'}</button></div>)}
+            <Link to="/console">Open Console →</Link>
+          </div>
+          <button className={`needs ${needsHot ? 'hot' : needs.length ? 'wait' : ''}`} onClick={() => nav('/?needs=1')} aria-label={`${needs.length} items need you`} title="Items waiting on you (red: one of them is blocked)"><span className="dot" /> <span className="desk-only">Needs you</span><span>{needs.length}</span></button>
+          {state && <Link className="button provider-switch-button" to={switchProviderPath} aria-label={`Provider: ${providerLabel}. Switch provider`} title={`Orchestrator provider: ${providerLabel}. Open provider switching. Individual items may use another provider.`}><span className="desk-only">Provider: </span>{providerLabel}</Link>}
+          <button className={`lever ${paused ? 'paused' : ''}`} aria-label={`${paused ? 'Resume' : 'Pause'} automation`} title={`${paused ? 'Resume' : 'Pause'} automation`} onClick={() => act(() => (paused ? api.resume() : api.pause()))}>{paused ? 'Resume' : 'Pause'}</button>
         </div>
       </header>
       {error && <div className="banner error">{error}</div>}
