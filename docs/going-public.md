@@ -112,8 +112,9 @@ on this branch:
 - `anthropic_api_key` is gone, along with its Settings row and the `secret`
   control. So are `accounts.api_key_env` (an account is now a `home`) and the
   `billing` / `api_key` state with its API-key wording.
-- `ANTHROPIC_API_KEY` is dropped from every Claude session's environment, so a
-  stray key can't bill the API instead of the login.
+- `ANTHROPIC_API_KEY`, `CLAUDE_CODE_USE_BEDROCK` and `CLAUDE_CODE_USE_VERTEX`
+  are dropped from every Claude session's environment, so a stray key or cloud
+  switch can't bill anything but the login.
 - An older `planestro.local.yml` loses its key, and any key-only account, at
   load, with one warning line each.
 - The README, configuration, operations, concepts, troubleshooting and CLI docs
