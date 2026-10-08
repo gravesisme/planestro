@@ -9,6 +9,7 @@ import { FakeWorld, DryRunGitPort, DryRunGhPort, DryRunProcPort, DryRunClaudePor
 import type { Ports, TurnOptions, TurnResult } from '../src/engine/ports.ts';
 import { getSection } from '@planestro/shared';
 import { makeFixture, git, sleep } from './helpers.ts';
+import { apiRoutes } from '../src/routes/api.ts';
 
 /**
  * Per-turn checkpoints and "Undo last turn" (#234). Each worker turn is bracketed by two checkpoints of the
@@ -127,7 +128,11 @@ describe('undo last turn (#234)', () => {
     expect(preview.commits).toContain('the turn commits');
     await expect(s.engine.undoTurn(s.id, 'f'.repeat(40))).rejects.toThrow(/changed since you looked/);   // the user confirms what they saw
 
-    const said = await s.engine.undoTurn(s.id, preview.expect!);
+    const app = apiRoutes(store!, s.engine);
+    expect(await (await app.request(`/items/${s.id}/undo-turn`)).json()).toEqual(preview);
+    const r = await app.request(`/items/${s.id}/undo-turn`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ expect: preview.expect }) });
+    expect(r.status).toBe(200);
+    const said = (await r.json()).said;
     expect(said).toMatch(/undid turn 1/);
     expect(git(s.cwd, 'rev-parse', 'HEAD').trim()).toBe(headBefore);
     expect(readFileSync(join(s.cwd, 'README.md'), 'utf8')).toBe('hi\n');

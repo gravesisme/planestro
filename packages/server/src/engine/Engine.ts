@@ -9,6 +9,12 @@ export interface ReviewImage { path: string; change: 'added' | 'modified' | 'del
 /** One changed file's unified diff against the base (#233): `patch` is git's, cut at `truncated`. */
 export interface ReviewDiff { path: string; change: ReviewImage['change']; patch: string; binary: boolean; truncated: boolean }
 
+/**
+ * What Undo last turn would discard (#234): the turn, where it goes back to, the files and patch from its start to its end,
+ * the commits it made, and `expect` (its end checkpoint) to confirm with. `refusal` when it cannot be undone, and why.
+ */
+export interface UndoTurnPreview { refusal: string | null; turn?: number; at?: string; head?: string; files?: { path: string; change: 'added' | 'modified' | 'deleted' }[]; patch?: string; truncated?: boolean; commits?: string; expect?: string }
+
 export interface Engine {
   readonly mode: 'live' | 'dry-run';
   readonly paused: boolean;
@@ -55,6 +61,10 @@ export interface Engine {
   discardPreview(id: string): Promise<{ refusal: string | null; branch?: string; remote_sha: string | null; pr?: number }>;
   /** Drop work in progress (#135): close its PR, take it off its epic, icebox it; its remote branch goes only with deleteBranch, leased to expectSha. User-only. Returns what happened. */
   discard(id: string, reason: string, opts?: { deleteBranch?: boolean; expectSha?: string }): Promise<string>;
+  /** What undoing the item's last turn would discard, or why it cannot be (#234). */
+  undoTurnPreview(id: string): Promise<UndoTurnPreview>;
+  /** Put the worktree back as it was before the last turn, confirmed against the preview's `expect`. User-only. Returns what happened. */
+  undoTurn(id: string, expect: string): Promise<string>;
   /** A person finishes the item by hand: its live turn is stopped, what was queued for it is dropped, and nothing automatic drives it until handBack. User-only. */
   takeOver(id: string, note?: string): Promise<void>;
   /** The person is done with it: planestro carries on from the item's persisted state. */

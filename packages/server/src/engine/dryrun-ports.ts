@@ -1,6 +1,6 @@
 import { placeholderPng } from './placeholderPng.ts';
 import { matchesPathPattern } from './ports.ts';
-import type { GitPort, GhPort, ProcPort, ClaudePort, AgentPort, AgentTurnOptions, WorktreeEntry, RebaseResult, CiStatus, PrInfo, PrClosure, IssueInfo, RunnerReport, TurnOptions, TurnResult, CustomTurnOptions } from './ports.ts';
+import type { GitPort, GhPort, ProcPort, ClaudePort, AgentPort, AgentTurnOptions, WorktreeEntry, WorktreeSnapshot, Checkpoint, RebaseResult, CiStatus, PrInfo, PrClosure, IssueInfo, RunnerReport, TurnOptions, TurnResult, CustomTurnOptions } from './ports.ts';
 
 /**
  * An in-memory world so a dry run advances end to end: worktrees, branches, PRs whose CI
@@ -77,6 +77,8 @@ export class FakeWorld {
   runnerReport: RunnerReport = { runners: [], jobs: [] };
   /** ready_for_review events sent (`gh pr ready`). */
   readyEvents = 0;
+  /** Checkpoint refs (#234), by name: a worktree's state is its head plus whether it is dirty. */
+  refs = new Map<string, Checkpoint>();
   constructor(readonly log: (msg: string) => void, readonly baseBranches: Record<string, string> = {}) {}
   sha(): string { return (0x100000 + ++this.seq).toString(16).padEnd(40, '0'); }  // unique in its first seven characters, as short shas in Activity lines are
 }
@@ -93,6 +95,28 @@ export class DryRunGitPort implements GitPort {
     if (buf.includes(0)) return `diff --git a/${path} b/${path}\nnew file mode 100644\nBinary files /dev/null and b/${path} differ\n`;
     const lines = buf.toString('utf8').replace(/\n$/, '').split('\n');
     return `diff --git a/${path} b/${path}\nnew file mode 100644\n--- /dev/null\n+++ b/${path}\n@@ -0,0 +1,${lines.length} @@\n${lines.map((l) => `+${l}\n`).join('')}`;
+  }
+  /** A dry-run worktree is its head and whether it is dirty: its trees are named after those. */
+  async snapshot(cwd: string): Promise<WorktreeSnapshot> {
+    const head = this.w.worktrees.get(cwd)?.head ?? null;
+    const dirt = [...(this.w.dirty.has(cwd) ? ['src/fake.ts'] : []), ...(this.w.untracked.get(cwd) ?? [])].join(',');
+    return { head, index: `index:${head}`, tree: `tree:${head}:${dirt}` };
+  }
+  async checkpoint(cwd: string, ref: string): Promise<Checkpoint> {
+    if (this.w.refs.has(ref)) throw new Error(`${ref} exists`);
+    this.say(`record checkpoint ${ref} of ${cwd}`);
+    const cp = { ...await this.snapshot(cwd), ref, sha: this.w.sha(), at: new Date().toISOString() };
+    this.w.refs.set(ref, cp); return cp;
+  }
+  async checkpoints(_repo: string, prefix: string) { return [...this.w.refs.values()].filter((c) => c.ref.startsWith(prefix)); }
+  async treeDiff() { return { files: [], patch: '' }; }
+  async restoreSnapshot(cwd: string, _from: WorktreeSnapshot, to: WorktreeSnapshot) {
+    this.say(`restore ${cwd} to ${to.head?.slice(0, 7)}`);
+    const wt = this.w.worktrees.get(cwd); if (wt && to.head) wt.head = to.head;
+  }
+  async deleteRef(_repo: string, ref: string, expected: string) {
+    if (this.w.refs.get(ref)?.sha !== expected) return false;
+    this.say(`delete ref ${ref}`); this.w.refs.delete(ref); return true;
   }
   private say(m: string) { this.w.log(`Would ${m}`); }
   async fetch(repo: string) { this.say(`git fetch origin (in ${repo})`); }

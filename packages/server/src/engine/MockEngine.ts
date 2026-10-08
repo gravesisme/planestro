@@ -44,6 +44,8 @@ export class MockEngine implements Engine {
   }
   async discardPreview(id: string) { return { refusal: 'no engine is running', ...(this.store.requireItem(id).file.frontmatter.branch ? { branch: this.store.requireItem(id).file.frontmatter.branch } : {}), remote_sha: null }; }
   async discard(): Promise<string> { throw new Error('no engine is running'); }
+  async undoTurnPreview() { return { refusal: 'no engine is running' }; }
+  async undoTurn(): Promise<string> { throw new Error('no engine is running'); }
   async rerunCi(): Promise<string> { return 'not possible: no engine is running'; }
   async reopenPr(): Promise<string> { return 'not possible: no engine is running'; }
   reviewPlanAgain(): string { return 'not possible: no engine is running'; }

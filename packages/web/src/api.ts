@@ -48,6 +48,8 @@ export interface ItemView {
 export interface ReviewImage { path: string; change: 'added' | 'modified' | 'deleted'; bytes?: number; width?: number; height?: number; kind?: 'image' | 'audio' | 'model' | 'text' }
 /** One changed file's unified diff against the base (#233). */
 export interface ReviewDiff { path: string; change: ReviewImage['change']; patch: string; binary: boolean; truncated: boolean }
+/** What Undo last turn would discard (#234), or why it cannot be undone (`refusal`). */
+export interface UndoTurnPreview { refusal: string | null; turn?: number; at?: string; head?: string; files?: { path: string; change: ReviewImage['change'] }[]; patch?: string; truncated?: boolean; commits?: string; expect?: string }
 export interface PromptView { name: string; path: string; frontmatter: PromptFrontmatter; body: string; text?: string }
 export interface ReleaseView { version: string; path: string; frontmatter: ReleaseFrontmatter; sections: { title: string; body: string }[]; candidates: string[] }
 /** An orchestrator question (#75). The list leaves out `details` and `thread`; the question page has them. */
@@ -108,6 +110,8 @@ export const api = {
   reopenPr: (id: string) => req<{ said: string }>('POST', `/api/items/${id}/reopen-pr`),
   discardPreview: (id: string) => req<{ refusal: string | null; branch?: string; remote_sha: string | null; pr?: number }>('GET', `/api/items/${id}/discard`),
   discard: (id: string, reason: string, deleteBranch: boolean, expectSha?: string) => req<{ said: string; item: ItemView }>('POST', `/api/items/${id}/discard`, { reason, delete_branch: deleteBranch, ...(expectSha ? { expect_sha: expectSha } : {}) }),
+  undoTurnPreview: (id: string) => req<UndoTurnPreview>('GET', `/api/items/${id}/undo-turn`),
+  undoTurn: (id: string, expect: string) => req<{ said: string; item: ItemView }>('POST', `/api/items/${id}/undo-turn`, { expect }),
   reviewImages: (id: string) => req<ReviewImage[]>('GET', `/api/items/${id}/images`),
   reviewDiff: (id: string, path: string) => req<ReviewDiff>('GET', `/api/items/${id}/diff?path=${encodeURIComponent(path)}`),
   requestReviewChanges: (id: string, note: string) => req<ItemView>('POST', `/api/items/${id}/review/changes`, { note }),

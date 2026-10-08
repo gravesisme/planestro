@@ -115,6 +115,12 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   branch is deleted only when the user ticks it, leased to the tip they were shown, with the tips
   logged first; otherwise local cleanup needs a clean tree whose HEAD the remote holds. An iceboxed
   child still holds its epic open, and the epic says so. IN_REVIEW → ICEBOX goes only through it.
+- **Undo last turn** (#234): each worker implement/fix turn is bracketed by checkpoints of its worktree, read through a
+  temporary index (the index's tree, every file git does not ignore, HEAD and the index kept as parents) under
+  `refs/planestro/checkpoints/<item>/<n>/{before,after}`; refs are only added. The user's Undo (never an orchestrator tool)
+  shows the files, patch and commits it discards, then restores `before` only on positive evidence: nothing live on the item,
+  the worktree exactly `after`, and a fresh fetch showing nothing of the turn's on the remote. `<n>/undone` records what it
+  discards first, and the next turn is told (`op_data.turn_undone`). The refs go at FINISHED in `cleanup`, tips logged first.
 - `kind` (item | epic) changes only through `Engine.convertKind` (the page's **Convert to
   epic / to item**, the orchestrator's `convert_item`), while nothing has run for
   implementation (`kindConversionRefusal`): the plan moves to Notes, the planning worktree

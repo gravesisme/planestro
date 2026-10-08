@@ -19,6 +19,11 @@ export function matchesPathPattern(path: string, pattern: string): boolean {
 
 export interface ChangedFile { path: string; change: 'added' | 'modified' | 'deleted'; bytes?: number }
 
+/** A worktree as it stands (#234): its HEAD, the tree of its index, and the tree of every file git does not ignore. */
+export interface WorktreeSnapshot { head: string | null; index: string; tree: string }
+/** A snapshot recorded under `ref`, as a commit (`sha`) that keeps HEAD and the index reachable. */
+export interface Checkpoint extends WorktreeSnapshot { ref: string; sha: string; at?: string }
+
 export interface GitPort {
   fetch(repo: string): Promise<void>;
   revParse(cwd: string, ref: string): Promise<string>;
@@ -74,6 +79,18 @@ export interface GitPort {
   readBlob(cwd: string, ref: string, path: string): Promise<Buffer | null>;
   /** One file's unified diff, `base...head` (against their merge base): read-only, never the worktree's uncommitted state (#233). */
   fileDiff(cwd: string, base: string, head: string, path: string): Promise<string>;
+  /** The worktree's state, read through a temporary index: its real index and files are never touched (#234). */
+  snapshot(cwd: string): Promise<WorktreeSnapshot>;
+  /** Record the snapshot under `ref`, which must not exist yet: checkpoints are only ever added (#234). */
+  checkpoint(cwd: string, ref: string): Promise<Checkpoint>;
+  /** Every checkpoint under the ref prefix. */
+  checkpoints(repo: string, prefix: string): Promise<Checkpoint[]>;
+  /** What changed from one tree to another: the files, and the patch (cut at `maxBytes`). */
+  treeDiff(cwd: string, from: string, to: string, maxBytes?: number): Promise<{ files: ChangedFile[]; patch: string; truncated?: boolean }>;
+  /** Put a worktree that is exactly `from` back to `to`: branch tip, index and files. Ignored files are never touched. */
+  restoreSnapshot(cwd: string, from: WorktreeSnapshot, to: WorktreeSnapshot): Promise<void>;
+  /** Delete a ref only while it still points at `expected`; false (kept) when it does not. */
+  deleteRef(repo: string, ref: string, expected: string): Promise<boolean>;
 }
 
 /** `skipped`: every run for the head skipped all its jobs (a draft guard): no verdict, never red. */

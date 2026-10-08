@@ -488,6 +488,8 @@ input.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 
 /* Discard (#135): the dialog under the item's header */
 .discard-panel { display: flex; flex-direction: column; gap: 8px; margin: 8px 0; padding: 10px 12px; border: 1px solid var(--hot); border-radius: var(--radius); background: color-mix(in srgb, var(--hot) 8%, var(--panel)); }
+.undo-panel { min-width: 0; } .undo-panel .diff-card { min-width: 0; }
+.undo-commits { margin: 0; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; overflow-x: auto; white-space: pre; }
 .discard-panel p { margin: 0; } .discard-panel label { display: flex; gap: 8px; align-items: flex-start; } .discard-panel label input { margin-top: 3px; flex: none; } .discard-panel code { overflow-wrap: anywhere; }
 /* Desktop notifications on this device (#70), on the Notifications tab */
 .desk-notify { background: #16232e; border: 1px solid #2b4a63; border-radius: var(--radius); padding: 12px 14px; max-width: 78ch; display: flex; flex-direction: column; gap: 6px; }
