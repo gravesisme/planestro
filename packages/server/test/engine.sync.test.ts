@@ -26,11 +26,11 @@ async function setup(opts: { orchestrate?: (tools: Tool) => Promise<void>; hold?
   store = await DataStore.open(dataDir);
   const log: string[] = [];
   const world = new FakeWorld((m) => log.push(m), { 'origin/trunk': 'f'.repeat(40) });
-  const prompts: { phase: string; prompt: string }[] = [];
+  const prompts: { phase: string; prompt: string; behind?: number }[] = [];
   const inner = new DryRunClaudePort(world);
   const claude: Ports['agents']['claude'] = {
     async runTurn(o: TurnOptions): Promise<TurnResult> {
-      prompts.push({ phase: o.phase, prompt: o.prompt });
+      prompts.push({ phase: o.phase, prompt: o.prompt, behind: world.behind.get(o.cwd) ?? 1 });
       if (opts.conflictSession && o.prompt.startsWith('You are resolving one merge conflict')) return { sessionId: 'conflict', subtype: 'success', isError: false, costUsd: 1.25, numTurns: 3, text: '', ...(await opts.conflictSession(o)) };
       if (opts.hold) await opts.hold; return inner.runTurn(o);
     },
@@ -487,5 +487,99 @@ describe('sync with base (p29)', () => {
     const no = await app.request(`/items/${id}/sync`, { method: 'POST' });
     expect(no.status).toBe(400);
     expect((await no.json()).error).toMatch(/^refused: .* uncommitted changes/);
+  });
+
+  describe('approving a plan syncs the branch with its base before implementation starts (#217)', () => {
+    /** A worker item whose plan is ready, its planning worktree cut on trunk; the base moves on unless `behind` is 0. */
+    async function planReady(opts: Parameters<typeof setup>[0] & { behind?: number; delegated?: boolean } = {}) {
+      const ctx = await setup(opts);
+      const w = worker(ctx, { status: 'PLAN_READY' });
+      ctx.store.mutateItem(w.id, [{ set: { started_at: '2026-01-01T00:00:00+00:00', ...(opts.delegated ? { auto_approve_plan: true } : {}) } }], 'engine');
+      if (opts.behind !== undefined) ctx.world.behind.set(w.cwd, opts.behind);
+      await ctx.engine.start();
+      return { ...ctx, ...w };
+    }
+
+    it('a base that moved after planning: the branch is rebased first, and the implement turn starts on the new tip, told so', async () => {
+      const ctx = await planReady();
+      await ctx.engine.approvePlan(ctx.id, undefined, 'user', { syncFirst: true });
+      await waitFor(() => ctx.prompts.length >= 1);
+      expect(ctx.log).toContain(`Would git rebase origin/trunk in ${ctx.cwd}`);
+      expect(ctx.prompts[0].phase).toBe('implement');
+      expect(ctx.prompts[0].behind).toBe(0);
+      expect(ctx.prompts[0].prompt).toContain('planestro rebased your branch onto origin/trunk');
+      expect(activityOf(ctx.store, ctx.id)).toContain('rebased onto origin/trunk before implementation starts');
+      expect(ctx.store.getItem(ctx.id)!.file.frontmatter.op).toBeUndefined();
+    });
+
+    it('a base that has not moved: no sync, and the implement turn starts as it always did', async () => {
+      const ctx = await planReady({ behind: 0 });
+      await ctx.engine.approvePlan(ctx.id, undefined, 'user', { syncFirst: true });
+      await waitFor(() => ctx.prompts.length >= 1);
+      expect(ctx.log.some((l) => l.includes('git rebase'))).toBe(false);
+      expect(ctx.prompts[0].phase).toBe('implement');
+      expect(ctx.prompts[0].prompt).not.toContain('rebased your branch');
+    });
+
+    it('it is the default; sync_first: false approves without it', async () => {
+      const on = await planReady();
+      await on.engine.approvePlan(on.id);
+      await waitFor(() => on.prompts.length >= 1);
+      expect(on.prompts[0].behind).toBe(0);
+      await on.engine.stop(); on.store.close();
+      const off = await planReady();
+      store = off.store; engine = off.engine;
+      await off.engine.approvePlan(off.id, undefined, 'user', { syncFirst: false });
+      await waitFor(() => off.prompts.length >= 1);
+      expect(off.log.some((l) => l.includes('git rebase'))).toBe(false);
+      expect(off.prompts[0].behind).toBe(1);
+    });
+
+    it('a conflict goes to the session as the first thing it sees, with the plan to implement after', async () => {
+      const ctx = await planReady();
+      ctx.world.conflictArmed = true;
+      await ctx.engine.approvePlan(ctx.id, undefined, 'user', { syncFirst: true });
+      await waitFor(() => ctx.prompts.length >= 1);
+      expect(ctx.prompts[0].phase).toBe('implement');
+      expect(ctx.prompts[0].prompt.indexOf('src/conflicted.ts')).toBeGreaterThanOrEqual(0);
+      expect(ctx.prompts[0].prompt.indexOf('src/conflicted.ts')).toBeLessThan(ctx.prompts[0].prompt.indexOf('implement'));
+      expect(ctx.store.getItem(ctx.id)!.file.frontmatter.blocked).toBeUndefined();
+    });
+
+    it('the orchestrator approves with sync_first, and the API takes it from the user', async () => {
+      let said = '';
+      let id = '';
+      const ctx = await planReady({
+        delegated: true,
+        orchestrate: async (t) => { said ||= await t('approve_plan').handler({ id, sync_first: true }); await t('done_with_wake').handler({ summary: 'approved' }); },
+      });
+      id = ctx.id;
+      ctx.store.updateConfig((doc) => { doc.setIn(['orchestrator', 'may_approve_plans'], true); }, 'config: delegate');
+      ctx.engine.orchestrator.wake({ type: 'plan_review', item: id });
+      await waitFor(() => ctx.prompts.some((p) => p.phase === 'implement'));
+      expect(said).toBe('approved');
+      expect(ctx.prompts.find((p) => p.phase === 'implement')!.behind).toBe(0);
+      const other = worker(ctx, { status: 'PLAN_READY' });
+      const app = apiRoutes(ctx.store, ctx.engine);
+      const res = await app.request(`/items/${other.id}/plan/approve`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sync_first: false }) });
+      expect(res.status).toBe(200);
+      await waitFor(() => ctx.prompts.filter((p) => p.phase === 'implement').length === 2);
+      expect(ctx.log.some((l) => l.includes(`git rebase origin/trunk in ${other.cwd}`))).toBe(false);
+    });
+
+    it('the plan says what has merged into its base since it was planned', async () => {
+      const ctx = await setup();
+      const w = worker(ctx, { status: 'PLAN_READY' });
+      ctx.store.mutateItem(w.id, [{ set: { started_at: '2026-01-01T00:00:00+00:00' } }], 'engine');
+      const before = ctx.store.createItem({ title: 'Earlier', description: 'x' });
+      const after = ctx.store.createItem({ title: 'Later', description: 'x' });
+      ctx.store.mutateItem(before.id, [{ set: { status: 'FINISHED', merged_at: '2025-12-31T00:00:00+00:00' } }], 'engine');
+      ctx.store.mutateItem(after.id, [{ set: { status: 'FINISHED', merged_at: '2026-01-02T00:00:00+00:00' } }], 'engine');
+      expect(ctx.store.mergedSinceCut(ctx.store.getItem(w.id)!)).toEqual([after.id]);
+      const res = await apiRoutes(ctx.store, ctx.engine).request(`/items/${w.id}`);
+      expect((await res.json()).merged_since_cut).toEqual([after.id]);
+      const packet: string = (ctx.engine.orchestrator as any).renderPacket({ type: 'plan_review', item: w.id });
+      expect(packet).toContain(`Merged into trunk since it was planned: ${after.id}`);
+    });
   });
 });
