@@ -1,4 +1,4 @@
-import type { ItemFrontmatter, PromptFrontmatter, ReleaseFrontmatter, ReleaseStatus, Config, LocalConfig, BillingMode, ModelDef, Status, JournalEntry, UsageGuardState, QuestionFrontmatter, ThreadEntry, ScheduleFrontmatter, UsageReport } from '@planestro/shared';
+import type { ConcurrencyAdvice, ConcurrencyChange, ConcurrencyGuard, ConcurrencyLimits, HostLoad, ItemFrontmatter, PromptFrontmatter, ReleaseFrontmatter, ReleaseStatus, Config, LocalConfig, BillingMode, ModelDef, Status, JournalEntry, UsageGuardState, QuestionFrontmatter, ThreadEntry, ScheduleFrontmatter, UsageReport } from '@planestro/shared';
 import type { BreakdownChild, Priority, SourcedRule } from '@planestro/shared';
 
 export interface OrchestratorSpend {
@@ -67,6 +67,19 @@ export interface ProjectRow {
   url?: string; host?: string; port?: number; error?: string;
   summary?: { needs_you: number; blocked: number; in_review: number; running: number; mode?: string; paused: boolean; paused_by?: string; read_only: boolean; guards: { provider: string; window: string; status: string; resume_at?: string; resets_at?: string }[] };
 }
+/** "N of M" agents and what waits for a session slot (#330); `stepped_down` while the engine's auto-step-down is the last change. */
+export interface SlotsView { max: number; running: number; waiting: number; stepped_down?: ConcurrencyChange }
+/** The concurrency control's reading (#330): the limits, this machine, recent CI and the recommendation. */
+export interface ConcurrencyView {
+  limits: ConcurrencyLimits & { max_local_jobs: number };
+  slots: { max: number; running: number; waiting: number; runners: Record<string, { running: number; waiting: number }> };
+  host: HostLoad | null;
+  ci_runner: { state: 'busy' | 'idle' | 'unknown'; labels: string[]; detail: string[] };
+  advice: ConcurrencyAdvice;
+  guard: ConcurrencyGuard;
+  last_change: ConcurrencyChange | null;
+  rollback: ConcurrencyLimits | null;
+}
 export interface SessionView { item: string; session_id?: string; model?: string; op?: string; started_at?: string; busy: boolean; last_output?: string }
 export interface State {
   schema: string; readOnly: boolean; dataDir: string; codeRepo: string; config: Config;
@@ -80,7 +93,7 @@ export interface State {
   billing?: BillingMode; api_key?: 'local' | 'env' | 'none';
   items: ItemView[]; prompts: PromptView[]; releases?: ReleaseView[]; schedules?: ScheduleView[]; invalid: { path: string; error: string }[];
   update: { channel: string; running: string; checked_at: string; state: string; detail: string; target?: string } | null;
-  engine: { mode: string; paused: boolean; paused_by?: 'user' | 'disk'; provider_guards?: Record<string, UsageGuardState>; disk_guard?: { free_gib: number; path: string; tripped_at: string }; ci_queue?: { queued: number; running: number }; runner_stalls?: { label: string; items: string[]; since: string }[]; sessions: SessionView[]; restart?: { draining: boolean; by?: 'user' | 'update'; idle: boolean; running: string[] } };
+  engine: { mode: string; paused: boolean; paused_by?: 'user' | 'disk'; provider_guards?: Record<string, UsageGuardState>; disk_guard?: { free_gib: number; path: string; tripped_at: string }; ci_queue?: { queued: number; running: number }; runner_stalls?: { label: string; items: string[]; since: string }[]; sessions: SessionView[]; slots?: SlotsView; restart?: { draining: boolean; by?: 'user' | 'update'; idle: boolean; running: string[] } };
   git: { dirty: string[]; branch: string; head?: string; ahead?: number };
   statuses: Status[];
 }
@@ -147,6 +160,9 @@ export const api = {
   patchSchedule: (name: string, fields: ScheduleFields) => req<ScheduleView>('PATCH', `/api/schedules/${encodeURIComponent(name)}`, fields),
   deleteSchedule: (name: string) => req<{ ok: true }>('DELETE', `/api/schedules/${encodeURIComponent(name)}`),
   putConfig: (body: Record<string, unknown>) => req<{ config: Config }>('PUT', '/api/config', body),
+  concurrency: () => req<ConcurrencyView>('GET', '/api/concurrency'),
+  putConcurrency: (body: { max_sessions?: number; runner_limits?: Record<string, number>; reason?: string; confirm?: boolean }) => req<ConcurrencyView>('PUT', '/api/concurrency', body),
+  rollbackConcurrency: (body: { reason?: string; confirm?: boolean }) => req<ConcurrencyView>('POST', '/api/concurrency/rollback', body),
   putLocal: (body: Record<string, unknown>) => req<{ local: LocalConfig }>('PUT', '/api/config/local', body),
   putModel: (id: string, model: Partial<ModelDef>) => req<{ config: Config }>('PUT', `/api/config/models/${encodeURIComponent(id)}`, model),
   removeModel: (id: string) => req<{ config: Config }>('DELETE', `/api/config/models/${encodeURIComponent(id)}`),

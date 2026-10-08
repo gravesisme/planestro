@@ -1,8 +1,8 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router';
 import { useStore, act } from './store.ts';
 import { api } from './api.ts';
-import { findModel, usageWindowLabel, usagePercent, localClock, type UsageGuardState } from '@planestro/shared';
+import { findModel, usageWindowLabel, usagePercent, localClock, limitsLabel, type UsageGuardState } from '@planestro/shared';
 import { OrchestratorChat } from './components/OrchestratorChat.tsx';
 import { setTitle, setNeeds } from './tabBadge.ts';
 import { setNotificationNavigate } from './desktopNotify.ts';
@@ -10,6 +10,7 @@ import { TO_WAIT } from './deepLink.ts';
 import { runningItems, runningLabel } from './agentState.ts';
 import { isUnread } from './noteWindow.ts';
 import { ActionButton } from './components/ActionButton.tsx';
+import { ConcurrencyControl } from './components/ConcurrencyControl.tsx';
 
 /** The phone's tab bar. Board, Icebox and Done are one tab: the board page switches between them itself. */
 const TABS: { to: string; label: string; icon: string }[] = [
@@ -52,6 +53,10 @@ export function App() {
   // A turn queued for its runner's slot is not an agent running yet.
   const runningNow = state ? runningItems(state) : [];
   const running = runningNow.length;
+  // "2 of 3": the agents running against max_sessions, and what waits for a slot (#330).
+  const slots = state?.engine.slots;
+  const max = slots?.max ?? state?.config.concurrency.max_sessions;
+  const [statusOpen, setStatusOpen] = useState(false);
   const restart = state?.engine.restart;
   const engineLabel = !connected ? 'Reconnecting' : paused ? 'Paused' : restart?.draining ? restart.by === 'update' ? 'Updating' : 'Draining' : state?.engine.mode === 'live' ? 'Live' : 'Dry-run';
   const runnerStalls = state?.engine.runner_stalls ?? [];
@@ -63,7 +68,7 @@ export function App() {
       {updateReady && <button className="banner warn" style={{ border: 0, borderRadius: 0, textAlign: 'left' }} onClick={() => location.reload()}>planestro was updated — click to reload (held back so nothing you were typing is lost)</button>}
       <header className="topbar">
         <Link className="brand" to="/" title={`${state?.config.project.name ?? 'planestro'} · Board`}><img className="logo" src="/favicon.svg" alt="" width={22} height={22} /> <span className="wordmark">planestro</span> <span className="project">{state?.config.project.name ?? '…'}</span>
-          <span className="engine phone-only">{paused ? 'paused' : state?.engine.restart?.draining && state.engine.restart.by === 'update' ? 'updating' : state?.engine.mode === 'live' ? 'live' : 'dry-run'} · {running} agent{running === 1 ? '' : 's'} running</span></Link>
+          <span className="engine phone-only">{paused ? 'paused' : state?.engine.restart?.draining && state.engine.restart.by === 'update' ? 'updating' : state?.engine.mode === 'live' ? 'live' : 'dry-run'} · {running}{max !== undefined ? ` of ${max}` : ''} agent{(max ?? running) === 1 ? '' : 's'} running</span></Link>
         <nav>
           <NavLink to="/" end>Board</NavLink>
           <NavLink to="/icebox">Icebox</NavLink>
@@ -76,9 +81,10 @@ export function App() {
           <NavLink to="/settings">Settings</NavLink>
         </nav>
         <div className="status">
-          <button className={`status-trigger ${statusWarning ? 'warn' : ''}`} popoverTarget="engine-status" aria-label={`Automation status: ${engineLabel}. View details`} title="Activity, connection and usage details"><span className={`dot ${!connected ? 'off' : statusWarning ? 'warn' : state?.engine.mode === 'live' ? 'on' : ''}`} /><span className="status-label">{engineLabel}</span><span className="status-count">· {running} agent{running === 1 ? '' : 's'}</span></button>
-          <div id="engine-status" popover="auto" className="status-popover" onClick={(e) => { if ((e.target as HTMLElement).closest('a')) e.currentTarget.hidePopover(); }}>
+          <button className={`status-trigger ${statusWarning ? 'warn' : ''}`} popoverTarget="engine-status" aria-label={`Automation status: ${engineLabel}. View details`} title="Activity, connection and usage details"><span className={`dot ${!connected ? 'off' : statusWarning ? 'warn' : state?.engine.mode === 'live' ? 'on' : ''}`} /><span className="status-label">{engineLabel}</span><span className="status-count">· {running}{max !== undefined ? ` of ${max}` : ''} agent{(max ?? running) === 1 ? '' : 's'}{slots?.waiting ? ` · ${slots.waiting} waiting` : ''}</span></button>
+          <div id="engine-status" popover="auto" className="status-popover" onToggle={(e) => setStatusOpen((e as unknown as ToggleEvent).newState === 'open')} onClick={(e) => { if ((e.target as HTMLElement).closest('a')) e.currentTarget.hidePopover(); }}>
             <div className="status-popover-heading"><strong>Automation · {engineLabel}</strong><button popoverTarget="engine-status" popoverTargetAction="hide" aria-label="Close automation status">×</button></div>
+            {state && <ConcurrencyControl slots={slots} open={statusOpen} />}
             {running > 0 && <div className="status-running"><div className="status-running-head"><span>Running now</span><Link to="/?running=1">Show on the board</Link></div>
               <ul>{runningNow.map(({ session, item }) => <li key={session.item}><Link to={`/items/${session.item}`}><span className="id">{session.item}</span> {item?.frontmatter.title ?? ''}</Link><span className="small muted"> · {runningLabel(session.op)}</span>{session.last_output && <div className="small muted run-line" title={session.last_output}>{session.last_output}</div>}</li>)}</ul></div>}
             <dl><dt>Agents running</dt><dd>{running}</dd><dt>Active items</dt><dd>{active.length}</dd><dt>PRs in review</dt><dd>{inReview.length}</dd><dt>Connection</dt><dd>{connected ? 'Connected' : 'Reconnecting'}</dd></dl>
@@ -94,6 +100,7 @@ export function App() {
         </div>
       </header>
       {error && <div className="banner error">{error}</div>}
+      {slots?.stepped_down && <div className="banner warn">planestro stepped concurrency down to {limitsLabel(slots.stepped_down.to)}{slots.stepped_down.reason ? `: ${slots.stepped_down.reason.replace(/^stepped down: /, '')}` : ''}. Raise it again from the status menu once the machine is healthy.</div>}
       {runnerStalls.map((r) => <div key={r.label} className="banner warn">Runner {r.label} looks stalled or offline: {r.items.join(', ')} {r.items.length === 1 ? 'is' : 'are'} waiting on it. They wait for CI again once a runner takes a job.</div>)}
       {state?.readOnly && <div className="banner warn">Data dir schema is {state.config.schema_version} ({state.schema}) — read-only until migrated.</div>}
       {state?.invalid.length ? <div className="banner warn">{state.invalid.length} invalid file(s): {state.invalid.map((i) => `${i.path.split('/').pop()} — ${i.error}`).join('; ')}</div> : null}

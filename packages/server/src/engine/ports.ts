@@ -102,7 +102,8 @@ export interface GitPort {
 export type CiState = 'none' | 'pending' | 'success' | 'failure' | 'cancelled' | 'skipped';
 /** `attempt` is the run's attempt number: a re-run keeps its run id and counts up. */
 /** `queued` (pending only): the run is waiting for a runner and no job has started, so it is not using its time yet (#170). */
-export interface CiStatus { state: CiState; runId?: number; url?: string; sha?: string; startedAt?: string; attempt?: number; queued?: boolean }
+/** `timedOut` (cancelled only): GitHub called the run a failure though its jobs only ended cancelled, as a job past its `timeout-minutes` does (#330). */
+export interface CiStatus { state: CiState; runId?: number; url?: string; sha?: string; startedAt?: string; attempt?: number; queued?: boolean; timedOut?: boolean }
 /** Runs of the CI workflow across the repository that are waiting for a runner, and running (#170). */
 export interface CiQueue { queued: number; running: number }
 /** A self-hosted runner as GitHub lists it for the repository, or its organization (#216). */

@@ -469,7 +469,20 @@ export const Config = z.object({
     stall_after_min: z.number().min(0).default(10),
     /** A turn that failed transiently before it produced anything is retried once after this many seconds (#241). 0 turns it off. */
     transient_retry_after_s: z.number().min(0).default(30),
-  }).default({ max_sessions: 3, max_local_jobs: 1, runner_limits: { codex: 1 }, stall_after_min: 10, transient_retry_after_s: 30 }),
+    /**
+     * Guard rails for the concurrency control (#330, concurrency.ts): a raise is recommended one step at a time while
+     * none of the last `ci_window` CI results was killed at a timeout and the 5-minute load per core is under
+     * `max_load_per_cpu`, and not within `settle_min` of the last raise; above that it needs a confirm. `auto_step_down`
+     * (off by default) rolls a raise back on the tick once a check is killed or the 15-minute load per core reaches `step_down_load_per_cpu`.
+     */
+    guard: z.object({
+      ci_window: z.number().int().positive().default(10),
+      max_load_per_cpu: z.number().positive().default(1),
+      settle_min: z.number().min(0).default(30),
+      auto_step_down: z.boolean().default(false),
+      step_down_load_per_cpu: z.number().positive().default(2),
+    }).default({ ci_window: 10, max_load_per_cpu: 1, settle_min: 30, auto_step_down: false, step_down_load_per_cpu: 2 }),
+  }).default({ max_sessions: 3, max_local_jobs: 1, runner_limits: { codex: 1 }, stall_after_min: 10, transient_retry_after_s: 30, guard: { ci_window: 10, max_load_per_cpu: 1, settle_min: 30, auto_step_down: false, step_down_load_per_cpu: 2 } }),
   permissions: PermissionRules.default({ allow: [], deny: [], redirect: [] }),
   /**
    * Heavy local runs (#218): a worker's `run_heavy` runs one at a time across the data dir, and before each batch waits

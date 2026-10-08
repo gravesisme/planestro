@@ -4,6 +4,8 @@ import { getSection, parseActivity, serializePromptFile, releaseCandidates, getQ
 import { readUpdateStatus } from '../autoUpdate.ts';
 import { parkHint, permissionGrantRefusal } from '../engine/parks.ts';
 import type { DataStore, StoredItem, StoredPrompt, StoredRelease, StoredQuestion, StoredSchedule } from '../store/DataStore.ts';
+import type { Engine, SessionView } from '../engine/Engine.ts';
+import { lastConcurrencyChange, slotUsageOf } from '../concurrency.ts';
 
 /** JSON shape of an item as the UI sees it: frontmatter + sections + derived values. */
 export function itemView(store: DataStore, item: StoredItem) {
@@ -118,7 +120,15 @@ export function permissionsView(store: DataStore) {
   return { machine_path: machine.path, machine_exists: machine.exists, ...(machine.error ? { machine_error: machine.error } : {}), rules: store.permissionRules().rules };
 }
 
-export function stateView(store: DataStore, engine: { mode: string; paused: boolean; ciQueue?: { queued: number; running: number }; runnerStalls?(): { label: string; items: string[]; since: string }[]; sessions(): unknown[]; restartReadiness?(): { draining: boolean; by?: 'user' | 'update'; idle: boolean; running: string[] } }, git: unknown, envApiKey = STARTUP_API_KEY) {
+/** "N of M" and how many wait for a slot (#330), with the engine's step-down while it is the last change (a day at most). */
+export function slotsView(store: DataStore, engine: Pick<Engine, 'sessions' | 'slotUsage'>) {
+  const { running, waiting } = slotUsageOf(engine as Engine);
+  const last = lastConcurrencyChange(store);
+  const stepped = last?.auto && Date.now() - Date.parse(last.at) < 24 * 3_600_000 ? last : undefined;
+  return { max: store.config.concurrency.max_sessions, running, waiting, ...(stepped ? { stepped_down: stepped } : {}) };
+}
+
+export function stateView(store: DataStore, engine: { mode: string; paused: boolean; ciQueue?: { queued: number; running: number }; runnerStalls?(): { label: string; items: string[]; since: string }[]; sessions(): SessionView[]; slotUsage?: Engine['slotUsage']; restartReadiness?(): { draining: boolean; by?: 'user' | 'update'; idle: boolean; running: string[] } }, git: unknown, envApiKey = STARTUP_API_KEY) {
   const localKey = store.local.anthropic_api_key?.trim();
   return {
     schema: store.schema,
@@ -140,7 +150,7 @@ export function stateView(store: DataStore, engine: { mode: string; paused: bool
     invalid: store.invalid,
     /** What serve --watch last found when it looked for a newer planestro (#103); absent when it never has. */
     update: readUpdateStatus(store.dataDir) ?? null,
-    engine: { mode: engine.mode, paused: engine.paused, ...guardView(store, engine.paused), sessions: engine.sessions(), ...(engine.ciQueue ? { ci_queue: engine.ciQueue } : {}), ...runnerStallsView(engine), ...(engine.restartReadiness ? { restart: engine.restartReadiness() } : {}) },
+    engine: { mode: engine.mode, paused: engine.paused, ...guardView(store, engine.paused), sessions: engine.sessions(), slots: slotsView(store, engine), ...(engine.ciQueue ? { ci_queue: engine.ciQueue } : {}), ...runnerStallsView(engine), ...(engine.restartReadiness ? { restart: engine.restartReadiness() } : {}) },
     git,
     statuses: ['NOT_YET_SUBMITTED', 'QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW', 'MERGED', 'FINISHED', 'ICEBOX'] satisfies Status[],
   };

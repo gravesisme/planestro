@@ -194,6 +194,12 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   runs `retryOp` from the tick; a wake is queued again with `retry.not_before`. A second failure stops as before.
   A `usage_exhausted` stop waits out its recorded reset the same way (#296: the orchestrator's `retry_at_reset`, the
   card's **Wait for the reset**): `op_data.usage_retry.due_at` (reset + 60 s, not needs-you), retried once; a second stops as before.
+- The concurrency control (#330, `concurrency.ts`) changes `max_sessions` / `runner_limits` through the Settings write
+  path, journaled `concurrency.changed` (who, why, from → to), so the last change rolls back in one step. Its guard,
+  `concurrencyAdvice`, reads the `ci.result` entries the engine journals once per run attempt (a check killed at its
+  timeout: rc=137, a job past its limit) and host load; a raise above it needs a confirm. Runner limits share the
+  session slots and never do. `concurrency.guard.auto_step_down` (opt-in) rolls a raise back on the tick. A raised
+  limit wakes the turns waiting for a slot.
 - `priority` (#194: `high | medium | low`, optional, authoritative) orders before `rank` wherever items are
   listed (`sortByRank` → `DataStore.listItems`): each column, admission, the orchestrator's lists. A rank orders
   an item within its band; a move beside another band snaps to its own band's edge. Unset sorts last, as before.

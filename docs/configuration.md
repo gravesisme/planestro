@@ -130,6 +130,11 @@ dollar figures elsewhere carry a short hint.
 | `budget_usd_per_plan_turn` | `15` | What one planning turn may spend. Past it the turn ends and the planner is asked once, cheaply, for the plan it has (HH-162 spent $97 researching without handing one in); a second miss blocks as `no_plan`. |
 | `concurrency.max_local_jobs` | `1` | Setup hooks and local check commands running at once. |
 | `concurrency.runner_limits` | `{ codex: 1 }` | Simultaneous turns per runner. Unlisted runners are not limited here. |
+| `concurrency.guard.ci_window` | `10` | The concurrency control (the header's status popover, #330) raises and lowers `max_sessions` and `runner_limits` live, each change journaled (`concurrency.changed`, who and why) with one-click rollback to the values before the last change. A raise of `max_sessions` is recommended one step at a time while none of the last this-many CI results planestro saw (`ci.result` in the journal) was a check killed at its timeout (rc=137, exit code 137, a job past its time limit) and the load is under `concurrency.guard.max_load_per_cpu`; above the recommendation it needs a confirm. Runner limits share the session slots, so they never add agents and need no confirm. |
+| `concurrency.guard.max_load_per_cpu` | `1` | The 5-minute load average per CPU core at or over which a raise is not recommended (and one step down is). |
+| `concurrency.guard.settle_min` | `30` | After a raise of `max_sessions`, the next one is recommended only once this many minutes have passed. |
+| `concurrency.guard.auto_step_down` | `false` | Opt-in. When the last change raised something and since then a check was killed at its timeout, or the 15-minute load per core reached `concurrency.guard.step_down_load_per_cpu`, the engine rolls it back to the values before it on its next pass, journals it as the engine with the reason and shows a banner. A step-down is never stepped down again. |
+| `concurrency.guard.step_down_load_per_cpu` | `2` | The 15-minute load average per core that counts as a sustained spike for `auto_step_down`. |
 
 ### What Claude workers may do
 

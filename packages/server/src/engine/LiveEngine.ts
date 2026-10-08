@@ -4,7 +4,7 @@ import { join, relative, isAbsolute, extname, basename, matchesGlob } from 'node
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { DEBUG_MARKER, debugMarkerRefusal, Audition, AuditionPicks, auditionProblem, takePathProblem, auditionPicksProblem, auditionPickLines, auditionNote, auditionComplete, auditionTakes, runnerTurnSettings, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem, usageTurnData, USAGE_TURN, type UsageRole, type ModelDef, resolveAccount, accountList, guardKey, unavailableKey, unavailableView, sameSessionStore, DEFAULT_ACCOUNT, type Account } from '@planestro/shared';
+import { DEBUG_MARKER, debugMarkerRefusal, Audition, AuditionPicks, auditionProblem, takePathProblem, auditionPicksProblem, auditionPickLines, auditionNote, auditionComplete, auditionTakes, runnerTurnSettings, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem, usageTurnData, USAGE_TURN, stepDownDue, timeoutKilledIn, limitsLabel, type HostLoad, type UsageRole, type ModelDef, resolveAccount, accountList, guardKey, unavailableKey, unavailableView, sameSessionStore, DEFAULT_ACCOUNT, type Account } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import { matchesPathPattern, type Checkpoint, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote, type CiQueue, type RunnerReport, type UndeliveredReport, type ConnectionDrop, type AccountCredentials } from './ports.ts';
@@ -22,6 +22,7 @@ import { findWorkflow, infraPatternIn, namedInLog, prSkippedByPaths } from './ci
 import { quietTransientFailure } from './transient.ts';
 import { driveSchedules } from './schedules.ts';
 import { runnerStatusText, stallOf, recovered, type RunnerStall } from './runners.ts';
+import { recordCiResult, recentCi, lastConcurrencyChange, rollbackConcurrency, hostLoad, limitsOf } from '../concurrency.ts';
 import { HeavyLock, ciOnSharedHost, heavyRedirects, heavyAllowRules, took } from './heavyRuns.ts';
 import type { ReviewImage, ReviewDiff, UndoTurnPreview } from './Engine.ts';
 
@@ -33,7 +34,7 @@ const reviewKind = (path: string): 'image' | 'audio' | 'model' | undefined => IM
 
 /** `schedule` runs `fn` after `ms` and returns a cancel (tests capture it instead of waiting). */
 /** `listenUrl`: where the server answers (`http://127.0.0.1:4300`), the start of notification links unless notifications.base_url says otherwise. */
-export interface EngineOptions { sleep?: (ms: number) => Promise<void>; tickMs?: number; now?: () => string; ciWorkflow?: string; schedule?: (fn: () => void, ms: number) => () => void; listenUrl?: string }
+export interface EngineOptions { sleep?: (ms: number) => Promise<void>; tickMs?: number; now?: () => string; ciWorkflow?: string; schedule?: (fn: () => void, ms: number) => () => void; listenUrl?: string; /** This machine's load, for the concurrency guard (#330); tests pin it. */ hostLoad?: () => HostLoad | undefined }
 
 const RESUMABLE_TURN_OPS = new Set(['planning_turn', 'implement_turn']);
 /** How many of one item's permission requests the orchestrator may refuse before they go to the user instead. */
@@ -357,7 +358,7 @@ export class LiveEngine implements Engine {
     return `${(this.store.config.notifications.base_url ?? this.opts.listenUrl ?? 'http://127.0.0.1:4300').replace(/\/+$/, '')}${path}`;
   }
   /** A store event: whether an item now needs you, or a question opened (NeedsYouWatch). */
-  observe(e: ServerEvent): void { this.needsYou.observe(e); if (e.type === 'config.updated') this.armModelResume(); }
+  observe(e: ServerEvent): void { this.needsYou.observe(e); if (e.type === 'config.updated') { this.armModelResume(); this.wakeSlotWaiters(); } }
   /** A client's heartbeat: someone is at a planestro tab, so a wait can be answered there before it is announced. */
   clientActive(): void { this.needsYou.clientActive(); }
 
@@ -494,6 +495,30 @@ export class LiveEngine implements Engine {
   sessions(): SessionView[] {
     return [...this.turns.entries()].map(([item, t]) => ({ item, session_id: this.store.getItem(item)?.file.frontmatter.session_id, model: t.model, op: t.waiting ? `${t.phase}: waiting for a ${t.waiting} slot` : t.phase, started_at: t.startedAt, busy: !t.waiting, last_output: t.lastOutput }));
   }
+  /**
+   * What the concurrency control shows (#330): agents running, and what waits for a session slot: turns queued for one,
+   * and QUEUED items admission would start (deps merged, not blocked or taken over). Each limited runner's turns beside.
+   */
+  slotUsage(): { running: number; waiting: number; runners: Record<string, { running: number; waiting: number }> } {
+    const turns = [...this.turns.values()];
+    const ready = this.store.listItems().filter((i) => {
+      const fm = i.file.frontmatter;
+      if (fm.status !== 'QUEUED' || fm.kind === 'epic' || fm.taken_over || fm.blocked || this.jobs.has(i.id) || this.turns.has(i.id)) return false;
+      const d = this.store.derived(i);
+      return d.flavor === 'worker' && d.deps_satisfied;
+    }).length;
+    const runners = Object.fromEntries(Object.keys(this.store.config.concurrency.runner_limits ?? {}).map((r) => [r, { running: this.runnerTurns.get(r) ?? 0, waiting: turns.filter((t) => t.waiting === r).length }]));
+    return { running: turns.filter((t) => !t.waiting).length, waiting: turns.filter((t) => t.waiting === 'session').length + ready, runners };
+  }
+  /** A self-hosted runner on this machine (`heavy_runs.shared_labels`, #218) running or about to run a CI job (#330). */
+  async localRunners(): Promise<{ state: 'busy' | 'idle' | 'unknown'; labels: string[]; detail: string[] }> {
+    const labels = this.store.config.heavy_runs.shared_labels;
+    if (!labels.length) return { state: 'unknown', labels, detail: ['which runners share this machine is not set (heavy_runs.shared_labels)'] };
+    const r = await this.readRunners(60_000);
+    if (!r) return { state: 'unknown', labels, detail: ['this planestro cannot read runners'] };
+    const busy = ciOnSharedHost(r.report, labels);
+    return { state: busy.length ? 'busy' : 'idle', labels, detail: busy };
+  }
 
   /** Run one scheduling pass. Idempotent; safe to call often. */
   async tick(): Promise<void> {
@@ -532,6 +557,7 @@ export class LiveEngine implements Engine {
       void this.driveRunnerStalls().catch((e) => this.note('error', `runner stalls: ${(e as Error).message}`));
       this.driveReviewStalls();
       this.driveResumeAfter();
+      this.driveStepDown();
     } catch (e) { this.note('error', `tick: ${(e as Error).message}`); }
   }
 
@@ -940,6 +966,7 @@ export class LiveEngine implements Engine {
     if (!remote) return;
     await this.readPreview(id, remote);
     const ci = await this.ports.gh.ciForSha(this.github, fm.branch!, remote, this.ciWorkflow);
+    this.sawCi(id, ci);
     const cur = this.store.requireItem(id).file.frontmatter;
     const seen = cur.op_data?.ci as { runId?: number; attempt?: number } | undefined;
     if (ci.runId && (seen?.runId !== ci.runId || seen?.attempt !== ci.attempt)) this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), ci: { runId: ci.runId, url: ci.url, ...(ci.attempt ? { attempt: ci.attempt } : {}) } } } }], 'engine');
@@ -2466,6 +2493,7 @@ export class LiveEngine implements Engine {
     const ci = fm.op_data?.ci as { runId?: number; attempt?: number } | undefined;
     if (!patterns.length || !ci?.runId || (fm.op_data?.flake_rerun as { sha?: string } | undefined)?.sha === headSha) return undefined;
     const log = await this.ports.gh.runFailedLog(this.github, ci.runId, 120);
+    this.sawCi(id, { state: 'failure', ...ci, sha: headSha }, log);
     const known = patterns.find((c) => log.includes(c));
     if (!known) return undefined;
     try { await this.ports.gh.rerunFailed(this.github, ci.runId); }
@@ -2491,6 +2519,7 @@ export class LiveEngine implements Engine {
     const ci = fm.op_data?.ci as { runId?: number; url?: string; attempt?: number } | undefined;
     if (!ci?.runId) return undefined;
     const log = await this.ports.gh.runFailedLog(this.github, ci.runId, 120);
+    this.sawCi(id, { state: 'failure', ...ci, sha: headSha }, log);
     const hit = infraPatternIn(log, this.store.config.ci.infra_patterns);
     if (!hit) return undefined;
     const named = `${hit.pattern}, ${hit.source}`;
@@ -2634,6 +2663,7 @@ export class LiveEngine implements Engine {
     }
     const count = (fm.ci_failed_count ?? 0) + 1;
     const log = logText ?? (ci?.runId ? await this.ports.gh.runFailedLog(this.github, ci.runId, 120) : '(no run id)');
+    if (source === 'github' && ci?.runId) this.sawCi(id, { state: 'failure', ...ci, sha: headSha }, log);
     this.store.mutateItem(id, [
       { unset: ['op', 'op_started_at'] },
       { set: { ci_result: 'red', ci_failed_count: count, op_data: { ...(fm.op_data ?? {}), last_red: { runId: ci?.runId, sha: headSha, ...(ci?.attempt ? { attempt: ci.attempt } : {}) } } } },
@@ -2961,6 +2991,7 @@ export class LiveEngine implements Engine {
       }
       const ci = await this.ports.gh.ciForSha(this.github, branch, sha, this.ciWorkflow);
       this.ciSeen.set(id, { state: ci.state, at: Date.now() });
+      this.sawCi(id, ci);
       const elapsedMin = (this.ciNow() - started) / 60_000;
       if (ci.runId && ci.state !== 'skipped') { sawRun = true; const cur = this.store.requireItem(id).file.frontmatter; const seen = cur.op_data?.ci as { runId?: number; attempt?: number } | undefined; if (seen?.runId !== ci.runId || seen?.attempt !== ci.attempt) this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), ci: { runId: ci.runId, url: ci.url, ...(ci.attempt ? { attempt: ci.attempt } : {}) } } } }], 'engine'); }
       if (ci.state === 'success') return 'green';
@@ -6044,6 +6075,39 @@ export class LiveEngine implements Engine {
       await this.ports.git.deleteRemoteBranch(this.repo, branch, remote);
     } catch (e) { return `removing the unused worktree ${cwd} / branch ${branch} stopped partway (${brief(e)}); finish it by hand`; }
     return `removed unused worktree and branch ${branch} (clean, nothing ahead of origin/${base})${kept ? `; ${kept}` : ''}`;
+  }
+
+  /** A limit raised in place (#330): every turn waiting for a session or runner slot looks again, and those that now fit start. */
+  private wakeSlotWaiters(): void {
+    for (const w of this.sessionWaiters.splice(0)) w();
+    for (const q of this.runnerWaiters.values()) for (const w of q.splice(0)) w();
+  }
+
+  /** A CI verdict, remembered once per run attempt for the concurrency guard (#330); a red's log says whether a check was killed at its timeout. */
+  private sawCi(id: string, ci: { state: string; runId?: number; attempt?: number; sha?: string; timedOut?: boolean }, log?: string): void {
+    if (ci.state === 'success') recordCiResult(this.store, id, { run_id: ci.runId, attempt: ci.attempt, sha: ci.sha, outcome: 'success', timeout_killed: false });
+    else if (ci.state === 'cancelled' && ci.timedOut) recordCiResult(this.store, id, { run_id: ci.runId, attempt: ci.attempt, sha: ci.sha, outcome: 'cancelled', timeout_killed: true });
+    else if (ci.state === 'failure' && log !== undefined) recordCiResult(this.store, id, { run_id: ci.runId, attempt: ci.attempt, sha: ci.sha, outcome: 'failure', timeout_killed: timeoutKilledIn(log) });
+  }
+
+  /**
+   * Auto-step-down (#330, `concurrency.guard.auto_step_down`, off by default): the last change raised a limit, and a
+   * check was killed at its timeout since, or the load stayed high. It is rolled back to the values before it, as the
+   * engine, once: the step-down is the last change now. Read from the journal and config on each tick; no timer.
+   */
+  private driveStepDown(): void {
+    const guard = this.store.config.concurrency.guard;
+    if (!guard.auto_step_down) return;
+    const last = lastConcurrencyChange(this.store);
+    const why = stepDownDue({ last_change: last, ci: recentCi(this.store), host: (this.opts.hostLoad ?? hostLoad)(), now: Date.now() }, guard);
+    if (!why || !last) return;
+    const now = limitsLabel(limitsOf(this.store.config));
+    if (now === limitsLabel(last.from)) return;   // already there (the file was edited back by hand)
+    try { rollbackConcurrency(this.store, { reason: `stepped down: ${why}` }, 'engine', { auto: true }); }
+    catch (e) { this.note('error', `concurrency step-down: ${(e as Error).message}`); return; }
+    // Auto: never stepped down twice, and the banner names it.
+    this.note('warn', `stepped concurrency down from ${now} to ${limitsLabel(last.from)}: ${why} (concurrency.guard.auto_step_down)`);
+    this.wakeSlotWaiters();
   }
 
   /**
