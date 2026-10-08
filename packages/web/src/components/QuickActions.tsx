@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { isValidElement, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { Link } from 'react-router';
 import { DISCARD, epicFlagOf, holdShapeOf, type Status } from '@planestro/shared';
 import { api, type ItemView } from '../api.ts';
@@ -61,8 +61,10 @@ export function promptCloseAsDone(id: string): Promise<unknown> | undefined {
 /**
  * The user's next steps for an item as one row of buttons, so the board's preview can act without
  * opening the full page. Plan approval is included because it is the most common "needs you".
+ * `overflow` (the quick view of an active item, #314) keeps only the step the state calls for in the row
+ * and puts the rest behind a `⋯` menu; every button stays in one `ActionGroup`, so they lock together.
  */
-export function QuickActions({ item, onActed }: { item: ItemView; onActed?: () => void }) {
+export function QuickActions({ item, onActed, overflow }: { item: ItemView; onActed?: () => void; overflow?: boolean }) {
   const fm = item.frontmatter; const d = item.derived;
   const [transitions, setTransitions] = useState<{ to: Status; label: string }[]>([]);
   useEffect(() => { let live = true; api.transitions(item.id).then((t) => { if (live) setTransitions(t); }).catch(() => {}); return () => { live = false; }; }, [item.id, fm.status]);
@@ -75,20 +77,57 @@ export function QuickActions({ item, onActed }: { item: ItemView; onActed?: () =
   // Approve / request-changes have their own endpoints (they start a session turn); the bare transition would not.
   const plain = transitions.filter((t) => t.label !== DISCARD && !(fm.status === 'PLAN_READY' && (t.to === 'IN_PROGRESS' || t.to === 'PLAN_IN_PROGRESS')));
   if (!plain.length && !planReady && !fm.blocked && !sync && fm.status !== 'IN_PROGRESS' && !canTakeOver(item) && !(fm.status === 'IN_REVIEW' && (fm.awaiting === 'review' || fm.skip_merge))) return null;
+  // Each button with whether it is the step the state calls for (kept in the row under `overflow`), in the row's order.
+  const buttons: [ReactNode, boolean][] = [
+    [planReady && !epicFlagOf(fm) && !statedHold && <ActionButton key="approve" className="primary" working="Approving…" onAct={() => run(() => api.approvePlan(item.id))}>Approve &amp; implement</ActionButton>, true],
+    [planReady && !epicFlagOf(fm) && statedHold && <Link key="hold" className="button primary" to={`/items/${item.id}`} title={`Its plan says: "${statedHold.quote}"`}>States a merge hold: decide…</Link>, true],
+    [planReady && epicFlagOf(fm) && <Link key="epic" className="button primary" to={`/items/${item.id}`} title={epicFlagOf(fm)!.reason}>An epic: convert it…</Link>, true],
+    [fm.status === 'IN_REVIEW' && (fm.awaiting === 'review' || fm.skip_merge) && <ActionButton key="release" className="primary" working="Releasing…" onAct={() => { const n = prompt(`Let ${item.id} merge? Optional note for the log:`); if (n !== null) return run(() => api.releaseHold(item.id, n || undefined)); }}>{fm.awaiting === 'review' ? 'Approve & merge' : 'Release hold'}</ActionButton>, true],
+    [planReady && <ActionButton key="changes" working="Sending…" onAct={() => { const m = prompt(`What should change in the plan for ${item.id}?`); if (m?.trim()) return run(() => api.rejectPlan(item.id, m.trim())); }}>Request changes…</ActionButton>, true],
+    ...plain.map((t): [ReactNode, boolean] => [t.to === 'FINISHED'
+      ? <ActionButton key={t.to} title={CLOSE_HINT} working="Closing…" onAct={() => promptCloseAsDone(item.id)}>{t.label}…</ActionButton>
+      : <ActionButton key={t.to} className={t.to === 'QUEUED' ? 'primary' : ''} disabled={t.to === 'QUEUED' && (!d.deps_satisfied || !!d.base_branch_error)} title={d.base_branch_error ?? (t.to === 'QUEUED' && !d.deps_satisfied ? 'dependencies not merged' : '')} working={movingLabel(t.to)} onAct={() => { if (confirmMove(item, t.to, t.label)) return run(() => api.transition(item.id, t.to)); }}>{t.label}</ActionButton>, t.to === 'QUEUED']),
+    [fm.blocked && <ActionButton key="unblock" className="danger" working="Unblocking…" onAct={() => { const m = prompt(`Unblock ${item.id} (${fm.blocked_reason}). Optional message for the session:`); if (m !== null) return run(() => api.unblock(item.id, m || undefined)); }}>unblock…</ActionButton>, true],
+    [fm.status === 'IN_PROGRESS' && !d.external && fm.kind !== 'epic' && fm.worktree && !fm.taken_over && <ActionButton key="finish" title={FINISH_HINT} working="Opening the PR…" onAct={() => promptFinishFromWorktree(item.id)?.then(() => onActed?.())}>finish from here…</ActionButton>, false],
+    [<TakeOverButton key="takeover" item={item} onActed={onActed} />, false],
+    [sync && <ActionButton key="sync" title={SYNC_HINT} working="Syncing…" onAct={() => promptSyncWithBase(item)?.then(() => onActed?.())}>sync with base…</ActionButton>, false],
+  ];
+  if (!overflow) return <div className="row quick-actions"><ActionGroup>{buttons.map(([b]) => b)}</ActionGroup></div>;
+  const shown = (b: ReactNode) => b !== false && b !== null && b !== undefined && b !== '' && b !== 0 && !(isValidElement(b) && b.type === TakeOverButton && !canTakeOver(item));
+  const primary = buttons.filter(([b, p]) => p && shown(b)).map(([b]) => b);
+  const rest = buttons.filter(([b, p]) => !p && shown(b)).map(([b]) => b);
+  if (!primary.length && !rest.length) return null;
+  return <div className="row quick-actions"><ActionGroup>{primary}{rest.length > 0 && <MoreMenu>{rest}</MoreMenu>}</ActionGroup></div>;
+}
+
+/**
+ * The `⋯` menu (#314): opened by a tap or a click, or Enter/Space from the keyboard; focus goes to its first entry, the
+ * arrow keys move between entries and Escape closes it (and only it). It stays open while one of its actions works.
+ */
+export function MoreMenu({ children, label = 'More actions' }: { children: ReactNode; label?: string }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const toggle = useRef<HTMLButtonElement>(null);
+  const entries = () => [...(ref.current?.querySelectorAll<HTMLElement>('.more-menu-list button:not(:disabled), .more-menu-list a') ?? [])];
+  useEffect(() => {
+    if (!open) return;
+    entries()[0]?.focus();
+    const away = (e: PointerEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('pointerdown', away);
+    return () => document.removeEventListener('pointerdown', away);
+  }, [open]);
+  const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (!open) return;
+    if (e.key === 'Escape') { e.stopPropagation(); setOpen(false); toggle.current?.focus(); return; }
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    e.preventDefault();
+    const all = entries(); const at = all.indexOf(document.activeElement as HTMLElement);
+    all[(at + (e.key === 'ArrowDown' ? 1 : all.length - 1)) % all.length]?.focus();
+  };
   return (
-    <div className="row quick-actions"><ActionGroup>
-      {planReady && !epicFlagOf(fm) && !statedHold && <ActionButton className="primary" working="Approving…" onAct={() => run(() => api.approvePlan(item.id))}>Approve &amp; implement</ActionButton>}
-      {planReady && !epicFlagOf(fm) && statedHold && <Link className="button primary" to={`/items/${item.id}`} title={`Its plan says: "${statedHold.quote}"`}>States a merge hold: decide…</Link>}
-      {planReady && epicFlagOf(fm) && <Link className="button primary" to={`/items/${item.id}`} title={epicFlagOf(fm)!.reason}>An epic: convert it…</Link>}
-      {fm.status === 'IN_REVIEW' && (fm.awaiting === 'review' || fm.skip_merge) && <ActionButton className="primary" working="Releasing…" onAct={() => { const n = prompt(`Let ${item.id} merge? Optional note for the log:`); if (n !== null) return run(() => api.releaseHold(item.id, n || undefined)); }}>{fm.awaiting === 'review' ? 'Approve & merge' : 'Release hold'}</ActionButton>}
-      {planReady && <ActionButton working="Sending…" onAct={() => { const m = prompt(`What should change in the plan for ${item.id}?`); if (m?.trim()) return run(() => api.rejectPlan(item.id, m.trim())); }}>Request changes…</ActionButton>}
-      {plain.map((t) => t.to === 'FINISHED'
-        ? <ActionButton key={t.to} title={CLOSE_HINT} working="Closing…" onAct={() => promptCloseAsDone(item.id)}>{t.label}…</ActionButton>
-        : <ActionButton key={t.to} className={t.to === 'QUEUED' ? 'primary' : ''} disabled={t.to === 'QUEUED' && (!d.deps_satisfied || !!d.base_branch_error)} title={d.base_branch_error ?? (t.to === 'QUEUED' && !d.deps_satisfied ? 'dependencies not merged' : '')} working={movingLabel(t.to)} onAct={() => { if (confirmMove(item, t.to, t.label)) return run(() => api.transition(item.id, t.to)); }}>{t.label}</ActionButton>)}
-      {fm.blocked && <ActionButton className="danger" working="Unblocking…" onAct={() => { const m = prompt(`Unblock ${item.id} (${fm.blocked_reason}). Optional message for the session:`); if (m !== null) return run(() => api.unblock(item.id, m || undefined)); }}>unblock…</ActionButton>}
-      {fm.status === 'IN_PROGRESS' && !d.external && fm.kind !== 'epic' && fm.worktree && !fm.taken_over && <ActionButton title={FINISH_HINT} working="Opening the PR…" onAct={() => promptFinishFromWorktree(item.id)?.then(() => onActed?.())}>finish from here…</ActionButton>}
-      <TakeOverButton item={item} onActed={onActed} />
-      {sync && <ActionButton title={SYNC_HINT} working="Syncing…" onAct={() => promptSyncWithBase(item)?.then(() => onActed?.())}>sync with base…</ActionButton>}
-    </ActionGroup></div>
+    <div className="more-menu" ref={ref} onKeyDown={onKey}>
+      <button ref={toggle} type="button" className="more-menu-toggle" aria-haspopup="true" aria-expanded={open} aria-label={label} title={label} onClick={() => setOpen(!open)}>⋯</button>
+      {open && <div className="more-menu-list" role="group" aria-label={label}>{children}</div>}
+    </div>
   );
 }

@@ -97,6 +97,30 @@ main { padding: 16px; flex: 1; }
 .drawer-desc-folded { padding: 8px 12px; cursor: pointer; overflow-wrap: anywhere; } .drawer-desc-folded:hover { border-color: var(--accent); }
 .drawer-console { max-height: 200px; }
 .drawer a button { cursor: pointer; }
+/* #314: an active item's quick view opens on what is happening now: one sentence in its state's colour (#299's green
+   and pulse while an agent runs), where it is in its lifecycle, one line of facts, and the step the state calls for */
+.drawer-now { margin: 10px 0 8px; padding: 8px 10px; background: var(--panel2); border: 1px solid var(--line); border-left: 3px solid var(--muted); border-radius: var(--radius); }
+.drawer-now-line { display: flex; align-items: center; gap: 8px; font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.drawer-now .pulse { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); animation: run-pulse 1.4s ease-in-out infinite; }
+.drawer-now-out { margin-top: 4px; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+.drawer-now.tone-running { border-left-color: var(--ok); } .tone-running .drawer-now-line { color: var(--ok); }
+.drawer-now.tone-you, .drawer-now.tone-wait, .drawer-now.tone-held { border-left-color: var(--warn); } .tone-you .drawer-now-line, .tone-wait .drawer-now-line { color: var(--warn); }
+.drawer-now.tone-blocked { border-left-color: var(--hot); } .tone-blocked .drawer-now-line { color: var(--hot); }
+.drawer-now.tone-triage, .drawer-now.tone-ci { border-left-color: var(--accent); } .tone-triage .drawer-now-line { color: var(--accent); }
+.drawer-now.tone-yours { border-left-color: var(--mine); } .tone-yours .drawer-now-line { color: var(--mine); }
+@media (prefers-reduced-motion: reduce) { .drawer-now .pulse { animation: none; } }
+.phase-track { display: flex; flex-wrap: wrap; gap: 4px 0; margin: 6px 0; padding: 0; list-style: none; font-size: 12px; color: var(--muted); }
+.phase-track li { white-space: nowrap; } .phase-track li + li::before { content: "›"; margin: 0 6px; color: var(--line); }
+.phase-track li.done { color: var(--muted); } .phase-track li.todo { opacity: .55; } .phase-track .spent { opacity: .8; }
+.phase-track li.current { color: var(--text); font-weight: 600; } .phase-track li.current::after { content: ""; display: inline-block; width: 6px; height: 6px; margin-left: 5px; vertical-align: middle; border-radius: 50%; background: var(--accent); }
+.drawer-facts { margin: 4px 0 8px; overflow-wrap: anywhere; } .drawer-facts .tag { font-size: 11px; }
+button.drawer-brief { display: block; width: 100%; text-align: left; white-space: normal; font-size: 13px; color: var(--text); }
+.activity-group summary { cursor: pointer; } .activity-group ul { margin: 4px 0 0; padding-left: 14px; list-style: none; } .activity .activity-group li { display: block; border: 0; padding: 1px 0; }
+.drawer .activity details { display: inline; } .drawer .activity details[open] { display: block; }
+.more-menu { position: relative; display: inline-block; } .quick-actions .more-menu { margin-left: auto; }
+.more-menu-toggle { min-width: 36px; font-weight: 700; letter-spacing: 1px; }
+.more-menu-list { position: absolute; right: 0; top: calc(100% + 4px); z-index: 3; display: flex; flex-direction: column; gap: 4px; min-width: 190px; padding: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 10px 28px #0008; }
+.more-menu-list button { text-align: left; width: 100%; }
 
 /* dark form controls and scrollbars (the board's horizontal scrollbar rendered white) */
 :root { color-scheme: dark; }

@@ -20,6 +20,7 @@ import { AwaitingPanels } from '../components/AwaitingPanels.tsx';
 import { PartsStrip } from '../components/PartsStrip.tsx';
 import { DecisionCard } from '../components/DecisionCard.tsx';
 import { ChildrenTable } from '../components/EpicChildren.tsx';
+import { ActivityList } from '../components/ActivityList.tsx';
 import { prepareUpload } from '../uploadImage.ts';
 import { setTitle as setTabTitle } from '../tabBadge.ts';
 import { useLandOnWait } from '../deepLink.ts';
@@ -256,7 +257,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           </div>
           <form className="row" onSubmit={(e) => e.preventDefault()}><input className="grow" placeholder="Reference a path (absolute, or relative to the code repo) — never copied" value={refPath} onChange={(e) => setRefPath(e.target.value)} /><ActionButton type="submit" disabled={!refPath.trim()} working="Adding…" onAct={() => act(() => api.referenceAttachment(item.id, refPath.trim())).then((r) => { if (r) setRefPath(''); })}>Add reference</ActionButton></form>
         </div>
-        <div className="section"><h2>Activity</h2><ul className="activity">{item.activity.map((a, i) => <li key={i}><span className="at">{a.at.slice(0, 19).replace('T', ' ')}</span><span className="muted">{a.actor}</span><span>{a.text}</span></li>)}</ul></div>
+        <div className="section"><h2>Activity <span className="small muted">· newest first</span></h2><ActivityList entries={item.activity} /></div>
       </div>
       <aside className="sidebar section">
         <dl>
