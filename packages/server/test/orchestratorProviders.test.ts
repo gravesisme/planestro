@@ -1,5 +1,5 @@
 import { it, expect, afterEach, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { ModelDef } from '@planestro/shared';
 import { DataStore } from '../src/store/DataStore.ts';
@@ -84,6 +84,49 @@ it('a busy wake finishes on its snapshot; the next provider starts fresh and swi
   store.updateConfig((d) => d.setIn(['orchestrator', 'model'], 'fable-5'), 'config: switch back');
   orchestrator.wake({ type: 'user_message', data: { text: 'fourth' } }); await settled();
   expect(calls[3].resume).toBeUndefined();
+});
+// #246: a resumed Codex thread keeps the developer instructions it started with (live, codex-cli 0.154.0),
+// so an edit to the standing rules reaches it only through a fresh conversation.
+function editStandingDecisions(rule: string) {
+  const p = store.getPrompt('standing-decisions')!;
+  store.putPrompt({ ...p.file, body: `${p.file.body}\n- ${rule}\n` });
+}
+it('a standing-decisions edit between two Codex wakes starts the second one fresh, carrying the edit', async () => {
+  const calls: CustomTurnOptions[] = [];
+  const { go } = await setup(async (o) => { calls.push(o); return { ...result, sessionId: 's' + calls.length }; });
+  store.updateConfig((d) => d.setIn(['orchestrator', 'model'], 'general-codex'), 'config: codex');
+  orchestrator.wake({ type: 'user_message', data: { text: 'first' } }); go(); await settled();
+  orchestrator.wake({ type: 'user_message', data: { text: 'second' } }); await settled();
+  expect(calls[1].resume).toBe('s1');
+  editStandingDecisions('Label every PR with its lane.');
+  orchestrator.wake({ type: 'user_message', data: { text: 'third' } }); await settled();
+  expect(calls[2].resume).toBeUndefined();
+  expect(calls[2].maxTokens).toBe(200000);
+  expect(calls[2].systemAppend).toContain('Label every PR with its lane.');
+  expect(calls[2].prompt).toContain('Label every PR with its lane.');
+  orchestrator.wake({ type: 'user_message', data: { text: 'fourth' } }); await settled();
+  expect(calls[3].resume).toBe('s3');
+});
+it('a Claude orchestrator resumes across a standing-decisions edit: its resume takes the new instructions', async () => {
+  const calls: CustomTurnOptions[] = [];
+  const { go } = await setup(async (o) => { calls.push(o); return { ...result, sessionId: 's' + calls.length }; });
+  orchestrator.wake({ type: 'user_message', data: { text: 'first' } }); go(); await settled();
+  editStandingDecisions('Label every PR with its lane.');
+  orchestrator.wake({ type: 'user_message', data: { text: 'second' } }); await settled();
+  expect(calls[1].resume).toBe('s1');
+  expect(calls[1].systemAppend).toContain('Label every PR with its lane.');
+});
+it('a Codex conversation from before the instructions were tracked resumes and starts tracking them', async () => {
+  const calls: CustomTurnOptions[] = [];
+  const { dataDir, go } = await setup(async (o) => { calls.push(o); return { ...result, sessionId: o.resume ?? 'fresh' }; });
+  store.updateConfig((d) => d.setIn(['orchestrator', 'model'], 'general-codex'), 'config: codex');
+  mkdirSync(join(dataDir, '.planestro'), { recursive: true });
+  writeFileSync(join(dataDir, '.planestro/orchestrator.yml'), `runner: codex\nmodel: test-model\nsession_id: old\nstarted_at: ${new Date().toISOString()}\nwakes_served: 1\n`);
+  orchestrator.wake({ type: 'user_message', data: { text: 'first' } }); go(); await settled();
+  expect(calls[0].resume).toBe('old');
+  editStandingDecisions('Label every PR with its lane.');
+  orchestrator.wake({ type: 'user_message', data: { text: 'second' } }); await settled();
+  expect(calls[1].resume).toBeUndefined();
 });
 it('inspects item and outside PRs through project-scoped GitHub ports', async () => {
   const { ports, hooks, go } = await setup(async (o) => {

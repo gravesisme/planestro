@@ -324,7 +324,9 @@ export function modelCapabilities(m: Pick<ModelDef, 'runner' | 'external' | 'cod
   return { workerPrompt: !claude && (m.codex_transport ?? 'exec') === 'exec' ? 'worker-system-codex' : 'worker-system',
     toolContract: claude ? 'claude-v1' : m.codex_transport === 'app-server' ? 'app-server-v1' : 'exec-v1', transport: claude ? undefined : m.codex_transport ?? 'exec', roleBound: !claude && m.codex_transport === 'app-server',
     plan: !m.external && tools, orchestrate: !m.external && tools,
-    implement: !m.external, permissions: tools, accounting: claude ? 'dollars' as const : 'tokens' as const };
+    implement: !m.external, permissions: tools, accounting: claude ? 'dollars' as const : 'tokens' as const,
+    /** A resumed Codex thread keeps the developer instructions it started with (#246, verified live): new ones need a fresh conversation. */
+    resumeKeepsInstructions: !claude };
 }
 export function canPlan(m: Pick<ModelDef, 'runner' | 'external' | 'codex_transport'>): boolean { return modelCapabilities(m).plan; }
 

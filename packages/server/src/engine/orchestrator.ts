@@ -1,5 +1,6 @@
 import { nativeApprovalGuidance } from './sessions/nativeApproval.ts';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
@@ -151,7 +152,7 @@ export interface OrchestratorHooks {
 }
 
 /** `total_usd`: the running total the conversation last reported; a resumed wake's cost is what it rose by (#64). */
-interface OrchState { runner?: Runner; model?: string; tool_contract?: string; session_id?: string; started_at?: string; wakes_served: number; total_usd?: number }
+interface OrchState { runner?: Runner; model?: string; tool_contract?: string; intro_hash?: string; session_id?: string; started_at?: string; wakes_served: number; total_usd?: number }
 
 /**
  * The judgment layer: one resumable Fable session, woken with a compact structured
@@ -309,8 +310,17 @@ export class Orchestrator {
     if (!retried) this.activeAbort = new AbortController();
     const pick = this.modelForWake();
     let state = this.readState();
-    const contract = modelCapabilities(findModel(this.store.config, pick.model) ?? { runner: pick.runner, external: false }).toolContract;
+    const caps = modelCapabilities(findModel(this.store.config, pick.model) ?? { runner: pick.runner, external: false });
+    const contract = caps.toolContract;
     if ((state.runner ?? 'claude') !== pick.runner || (state.tool_contract && state.tool_contract !== contract)) state = { wakes_served: 0 };
+    // Some runners keep the instructions a conversation started with when it is resumed (#246, verified live), so an edit
+    // to the standing rules reaches them only in a fresh conversation. A state from before the hash resumes and records it.
+    const intro = this.systemIntro();
+    const introHash = createHash('sha256').update(intro).digest('hex').slice(0, 16);
+    if (caps.resumeKeepsInstructions && state.session_id && state.intro_hash && state.intro_hash !== introHash) {
+      this.log('info', 'orchestrator: its instructions changed; starting a fresh conversation (a resumed one would keep the old ones)');
+      state = { wakes_served: 0 };
+    }
     const tooOld = state.started_at && (Date.now() - Date.parse(state.started_at)) / 86_400_000 > cfg.rotate_after_days;
     if (state.session_id && (state.wakes_served >= cfg.rotate_after_wakes || tooOld)) {
       this.log('info', `orchestrator: rotating session after ${state.wakes_served} wakes (the files are its memory)`);
@@ -318,7 +328,7 @@ export class Orchestrator {
     }
     const packet = [...events.map((e) => this.renderPacket(e)), ...(await this.inFlightSection(events))].join('\n\n---\n\n');
     const carried = state.session_id ? '' : this.recentChat();
-    const prompt = `${state.session_id ? '' : this.systemIntro() + '\n\n'}${carried ? carried + '\n\n' : ''}# Wake: ${events.map((e) => e.type).join(', ')} — ${isoLocal()}\n\n${packet}\n\nHandle what needs judgment using the planestro tools, then call done_with_wake with a one-line summary. Everything mechanical is already handled by the app; do not attempt git or gh operations.`;
+    const prompt = `${state.session_id ? '' : intro + '\n\n'}${carried ? carried + '\n\n' : ''}# Wake: ${events.map((e) => e.type).join(', ')} — ${isoLocal()}\n\n${packet}\n\nHandle what needs judgment using the planestro tools, then call done_with_wake with a one-line summary. Everything mechanical is already handled by the app; do not attempt git or gh operations.`;
     let doneSummary = '';
     if (pick.fellBackFrom) this.log('info', `orchestrator: ${pick.fellBackFrom} is out of usage; waking on ${pick.label}`);
     const model = pick.model;
@@ -331,7 +341,7 @@ export class Orchestrator {
       maxTokens: state.session_id ? cfg.budget_tokens_per_wake : cfg.budget_tokens_per_fresh_wake,
       onApproval: async (req) => { this.store.journal.append({ type: 'orchestrator.permission_declined', actor: 'orchestrator', data: { ...req } }); },
       ...(state.session_id && state.total_usd !== undefined ? { resumeTotalUsd: state.total_usd } : {}),
-      systemAppend: this.systemIntro(),
+      systemAppend: intro,
       allowedTools: ['Read', 'Grep', 'Glob', 'Bash(git log*)', 'Bash(git diff*)', 'Bash(git show*)'],
       mcpTools: this.tools((s) => { doneSummary = s; }, events.some((e) => e.type === 'user_message' || e.type === 'question_message')),
       onOutput: (t) => this.emit({ type: 'engine.log', level: 'info', message: `[orchestrator] ${t.slice(0, 300)}` }),
@@ -369,7 +379,7 @@ export class Orchestrator {
     this.lastOutcome = doneSummary ? `it ended with: ${doneSummary}` : result.isError ? `the wake failed: ${result.subtype}${result.error ? ` ${result.error}` : ''}` : '';
     const session = result.sessionId ?? state.session_id;
     const total = result.sessionTotalUsd ?? (session === state.session_id ? state.total_usd : undefined);
-    this.writeState({ runner: pick.runner, model, tool_contract: contract, session_id: session, started_at: state.started_at ?? isoLocal(), wakes_served: state.wakes_served + 1, ...(total !== undefined ? { total_usd: total } : {}) });
+    this.writeState({ runner: pick.runner, model, tool_contract: contract, intro_hash: introHash, session_id: session, started_at: state.started_at ?? isoLocal(), wakes_served: state.wakes_served + 1, ...(total !== undefined ? { total_usd: total } : {}) });
     // What the Console's spend panel reads (#49): which items, which conversation (it resets on rotation), how big it has grown.
     const items = [...new Set(events.map((e) => e.item).filter((i): i is string => Boolean(i)))];
     this.store.journal.append({ type: 'orchestrator.done', actor: 'orchestrator', data: {
