@@ -209,6 +209,8 @@ export class Orchestrator {
   /** Whether a wake about this item is queued or running — so the engine re-wakes only what a restart dropped. */
   reviewing(id: string): boolean { return this.inFlight.has(id) || this.queue.some((e) => e.item === id); }
   /** Whether a wake about this question is queued or running: its page shows it is being looked at. */
+  /** The gh port, for filing its notes about planestro as issues (#231, `feedback.ts`). */
+  get gh(): Ports['gh'] { return this.ports.gh; }
   questionPending(id: string): boolean { return this.questionsInFlight.has(id) || this.queue.some((e) => questionOf(e) === id); }
 
   /**

@@ -36,8 +36,7 @@ describe('filing orchestrator notes as issues (#231)', () => {
     const { call, note } = await setup();
     const n = note('The budget card should carry the raise itself.', 'TP-1');
     const list = await call('GET', '/orchestrator/notes');
-    expect(list.body.issue_repo).toBeNull();
-    expect(list.body.notes[0]).toMatchObject({ ts: n.ts, links: { issues: [], handled: false } });
+    expect(list.body[0]).toMatchObject({ ts: n.ts, links: { issues: [], handled: false } });
     const r = await call('POST', '/orchestrator/notes/file', { note: n.ts });
     expect(r.status).toBe(400);
     expect(r.body.error).toMatch(/feedback\.issue_repo/);
@@ -56,8 +55,7 @@ describe('filing orchestrator notes as issues (#231)', () => {
     expect(issue.body).toContain(noteMarker(n.ts));
     expect(store.journal.read({ type: NOTE_LINK_TYPE })).toHaveLength(1);
     const list = await call('GET', '/orchestrator/notes');
-    expect(list.body.issue_repo).toBe('acme/tool');
-    expect(list.body.notes[0].links.issues).toEqual([{ number: issue.number, url: issue.url }]);
+    expect(list.body[0].links.issues).toEqual([{ number: issue.number, url: issue.url }]);
     // A linked note offers no second filing.
     const again = await call('POST', '/orchestrator/notes/file', { note: n.ts });
     expect(again.status).toBe(409);
@@ -71,7 +69,7 @@ describe('filing orchestrator notes as issues (#231)', () => {
     const r = await call('POST', '/orchestrator/notes/file', { note: n.ts });
     expect(r.body).toMatchObject({ outcome: 'linked', issue: { number: 42 } });
     expect(world.issues).toHaveLength(1);
-    expect((await call('GET', '/orchestrator/notes')).body.notes[0].links.issues).toEqual([{ number: 42, url: 'https://github.com/acme/tool/issues/42' }]);
+    expect((await call('GET', '/orchestrator/notes')).body[0].links.issues).toEqual([{ number: 42, url: 'https://github.com/acme/tool/issues/42' }]);
   });
 
   it('offers a likely match first, and files only when told to file anyway', async () => {
@@ -82,7 +80,7 @@ describe('filing orchestrator notes as issues (#231)', () => {
     expect(r.body.outcome).toBe('candidates');
     expect(r.body.candidates.map((c: { number: number }) => c.number)).toEqual([7]);
     expect(world.issues).toHaveLength(1);
-    expect((await call('GET', '/orchestrator/notes')).body.notes[0].links.issues).toEqual([]);
+    expect((await call('GET', '/orchestrator/notes')).body[0].links.issues).toEqual([]);
     const forced = await call('POST', '/orchestrator/notes/file', { note: n.ts, force: true });
     expect(forced.body.outcome).toBe('filed');
     expect(world.issues).toHaveLength(2);
@@ -95,7 +93,7 @@ describe('filing orchestrator notes as issues (#231)', () => {
     const r = await call('POST', '/orchestrator/notes/mark', { links: [{ note: a.ts, issues: [55, 133] }, { note: b.ts, handled: true, comment: 'declined' }] });
     expect(r.status).toBe(200);
     expect(world.issues).toHaveLength(0);
-    const notes = (await call('GET', '/orchestrator/notes')).body.notes;
+    const notes = (await call('GET', '/orchestrator/notes')).body;
     const byTs = Object.fromEntries(notes.map((x: any) => [x.ts, x.links]));
     expect(byTs[a.ts].issues.map((i: { number: number }) => i.number)).toEqual([55, 133]);
     expect(byTs[a.ts].issues[0].url).toBe('https://github.com/acme/tool/issues/55');
@@ -104,7 +102,7 @@ describe('filing orchestrator notes as issues (#231)', () => {
     const bad = await call('POST', '/orchestrator/notes/mark', { links: [{ note: a.ts, issues: [9] }, { note: '2020-01-01T00:00:00+00:00', issues: [1] }] });
     expect(bad.status).toBe(400);
     expect(byTs[a.ts].issues).toHaveLength(2);
-    expect((await call('GET', '/orchestrator/notes')).body.notes.find((x: any) => x.ts === a.ts).links.issues).toHaveLength(2);
+    expect((await call('GET', '/orchestrator/notes')).body.find((x: any) => x.ts === a.ts).links.issues).toHaveLength(2);
     // Filing a note that is already marked handled is refused.
     expect((await call('POST', '/orchestrator/notes/file', { note: b.ts })).status).toBe(409);
   });

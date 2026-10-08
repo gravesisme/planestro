@@ -16,6 +16,12 @@ export interface AllowSuggestReport {
   current_false_allows: { item: string; at: string; command: string }[];
 }
 
+/** An orchestrator note about planestro and what became of it (#231): the issues it was filed as, or handled by hand. */
+export type NoteView = JournalEntry & { links?: { issues: { number: number; url?: string }[]; handled: boolean; comments: string[] } };
+export type FileNoteOutcome =
+  | { outcome: 'filed' | 'linked'; issue: { number: number; url?: string } }
+  | { outcome: 'candidates'; candidates: { number: number; title: string; url: string; state: string }[] };
+
 export interface ParkSummary { item: string; parks: number; waited_ms: number; resume_cost: number; open: number; shapes: { shape: string; parks: number; rule?: string }[] }
 
 export interface ItemView {
@@ -134,7 +140,9 @@ export const api = {
   reviewAllQuestions: () => req<{ reviewing: string[] }>('POST', '/api/questions/review-all'),
   resolveQuestion: (id: string, status: 'resolved' | 'withdrawn' = 'resolved', resolution?: string) => req<QuestionView>('POST', `/api/questions/${encodeURIComponent(id)}/resolve`, { status, resolution }),
   reopenQuestion: (id: string) => req<QuestionView>('POST', `/api/questions/${encodeURIComponent(id)}/reopen`),
-  orchestratorNotes: () => req<JournalEntry[]>('GET', '/api/orchestrator/notes'),
+  orchestratorNotes: () => req<NoteView[]>('GET', '/api/orchestrator/notes'),
+  fileNote: (note: string, force?: boolean) => req<FileNoteOutcome>('POST', '/api/orchestrator/notes/file', { note, ...(force ? { force: true } : {}) }),
+  markNotes: (links: { note: string; issues?: number[]; handled?: boolean; comment?: string }[]) => req<{ ok: true }>('POST', '/api/orchestrator/notes/mark', { links }),
   gitCommit: () => req<{ committed: boolean }>('POST', '/api/git/commit'),
   gitPush: () => req<{ pushed: boolean }>('POST', '/api/git/push'),
 };

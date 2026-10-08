@@ -4,7 +4,7 @@ import { statfs } from 'node:fs/promises';
 import { existsSync, mkdirSync, renameSync, copyFileSync, unlinkSync, lstatSync, readdirSync, readFileSync, statSync, constants as fsConstants } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { matchesPathPattern } from './ports.ts';
-import type { GitPort, GhPort, ProcPort, WorktreeEntry, RebaseResult, CiStatus, CiQueue, PrInfo, ChangedFile } from './ports.ts';
+import type { GitPort, GhPort, ProcPort, WorktreeEntry, RebaseResult, CiStatus, CiQueue, PrInfo, ChangedFile, IssueInfo } from './ports.ts';
 
 const execFileP = promisify(execFile);
 
@@ -376,6 +376,14 @@ export class LiveGhPort implements GhPort {
       if (ok) return ok.environment_url || ok.target_url || null;
     }
     return null;
+  }
+  async issueList(repo: string, opts: { limit: number }): Promise<IssueInfo[]> {
+    return (JSON.parse(await ghRead(['issue', 'list', '--repo', repo, '--state', 'all', '--limit', String(opts.limit), '--json', 'number,title,body,url,state'])) as any[])
+      .map((i) => ({ number: i.number, title: i.title ?? '', body: i.body ?? '', url: i.url, state: i.state }));
+  }
+  async issueCreate(repo: string, a: { title: string; body: string }) {
+    const url = (await gh(['issue', 'create', '--repo', repo, '--title', a.title, '--body', a.body])).trim().split('\n').pop()!;
+    return { number: Number(url.split('/').pop()), url };
   }
   async closePr(repo: string, number: number, comment: string) { await gh(['pr', 'close', String(number), '--repo', repo, '--comment', comment]); }
   async mergePr(repo: string, number: number, opts: { headSha: string }): Promise<'merged' | 'head_moved'> {

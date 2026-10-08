@@ -4,7 +4,7 @@ import { heldReasonOf, type JournalEntry } from '@planestro/shared';
 import { DndContext, MouseSensor, TouchSensor, useSensor, useSensors, closestCenter, type DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { api, type QuestionView, type ParkSummary, type AllowSuggestReport, type OrchestratorSpend } from '../api.ts';
+import { api, type NoteView, type QuestionView, type ParkSummary, type AllowSuggestReport, type OrchestratorSpend } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { usePhone } from '../usePhone.ts';
 
@@ -163,17 +163,61 @@ function RestartPrep() {
 function PlanestroNotes() {
   const notes = useStore((s) => s.notes); const seen = useStore((s) => s.notesSeen);
   const items = useStore((s) => s.state?.items ?? []);
+  const repo = useStore((s) => s.state?.config.feedback?.issue_repo);
   const unread = notes.filter((n) => n.ts > seen).length;
   return (
     <div className="section"><h2>planestro feedback{unread > 0 && <span className="badge-n">{unread}</span>}</h2>
       <p className="muted small">The orchestrator's suggestions about planestro itself: a tool it lacked, a rule that misfired, a card that could not do what it asked. They are for you, not for the items.</p>
       {!notes.length && <p className="muted small">None yet.</p>}
-      <ul className="activity">{[...notes].reverse().slice(0, 30).map((n, i) => <li key={`${n.ts}-${i}`} className={n.ts > seen ? 'unread' : ''}><span className="at">{n.ts.slice(5, 16).replace('T', ' ')}</span><span className="muted">{n.item && items.some((x) => x.id === n.item) ? <Link to={`/items/${n.item}`}>{n.item}</Link> : (n.item ?? 'planestro')}</span><span>{String(n.data?.text ?? '')}</span></li>)}</ul>
+      <ul className="activity">{[...notes].reverse().slice(0, 30).map((n, i) => <li key={`${n.ts}-${i}`} className={n.ts > seen ? 'unread' : ''}><span className="at">{n.ts.slice(5, 16).replace('T', ' ')}</span><span className="muted">{n.item && items.some((x) => x.id === n.item) ? <Link to={`/items/${n.item}`}>{n.item}</Link> : (n.item ?? 'planestro')}</span><span>{String(n.data?.text ?? '')}<NoteFiling note={n} repo={repo} /></span></li>)}</ul>
       {unread > 0 && <div className="row"><button className="small" onClick={() => useStore.getState().markNotesRead()}>Mark all read</button></div>}
     </div>
   );
 }
 
+
+/**
+ * What became of one note (#231): the issues it was filed as, or handled; else **File as issue** (only with
+ * `feedback.issue_repo` set), which links an issue already carrying the note's marker and offers a likely match before
+ * filing, and **Mark handled**, for a note dealt with by hand (issue numbers, or none).
+ */
+function NoteFiling({ note, repo }: { note: NoteView; repo?: string }) {
+  const [busy, setBusy] = useState(false);
+  const [candidates, setCandidates] = useState<{ number: number; title: string; url: string; state: string }[] | null>(null);
+  const [marking, setMarking] = useState<string | null>(null);
+  const links = note.links;
+  if (links && (links.issues.length || links.handled)) {
+    return <span className="muted small" style={{ display: 'block' }}>
+      {links.issues.length ? <>Filed as {links.issues.map((x, i) => <span key={x.number}>{i ? ', ' : ''}{x.url ? <a href={x.url} target="_blank" rel="noreferrer">#{x.number}</a> : `#${x.number}`}</span>)}</> : 'Handled, no issue'}
+      {links.comments.length ? ` (${links.comments.join('; ')})` : ''}
+    </span>;
+  }
+  const run = (fn: () => Promise<unknown>) => { setBusy(true); void act(fn).finally(() => setBusy(false)); };
+  const file = (force?: boolean) => run(async () => {
+    const r = await api.fileNote(note.ts, force);
+    setCandidates(r.outcome === 'candidates' ? r.candidates : null);
+    if (r.outcome !== 'candidates') await useStore.getState().loadNotes();
+  });
+  const mark = (issues: number[]) => run(async () => { await api.markNotes([{ note: note.ts, ...(issues.length ? { issues } : { handled: true }) }]); setMarking(null); setCandidates(null); await useStore.getState().loadNotes(); });
+  const typed = (marking ?? '').split(/[\s,#]+/).filter(Boolean).map(Number);
+  const typedOk = typed.every((x) => Number.isInteger(x) && x > 0);
+  return <span style={{ display: 'block' }}>
+    {candidates && <span className="small" style={{ display: 'block' }}>Likely filed already:{' '}
+      {candidates.map((c) => <span key={c.number} style={{ display: 'block' }}><a href={c.url} target="_blank" rel="noreferrer">#{c.number}</a> {c.title} <span className="muted">({c.state.toLowerCase()})</span> <button className="small" disabled={busy} onClick={() => mark([c.number])}>Link to #{c.number}</button></span>)}
+      <button className="small" disabled={busy} onClick={() => file(true)}>File anyway</button>
+    </span>}
+    {marking !== null
+      ? <span className="row small" style={{ flexWrap: 'wrap' }}>
+          <input value={marking} onChange={(e) => setMarking(e.target.value)} placeholder="issue numbers, e.g. 72, 133; blank for none" style={{ minWidth: 0, flex: '1 1 12em' }} />
+          <button className="small" disabled={busy || !typedOk} onClick={() => mark(typed)}>{typed.length ? 'Save' : 'Handled, no issue'}</button>
+          <button className="small" onClick={() => setMarking(null)}>Cancel</button>
+        </span>
+      : !candidates && <span className="row small" style={{ flexWrap: 'wrap' }}>
+          {repo && <button className="small" disabled={busy} title={`Opens an issue in ${repo}, unless one is already filed`} onClick={() => file()}>{busy ? 'Filing…' : 'File as issue'}</button>}
+          <button className="small" disabled={busy} onClick={() => setMarking('')}>Mark handled</button>
+        </span>}
+  </span>;
+}
 
 /** What waiting on a person cost, per item (#108): parks, how long they waited, what their resumes cost, and what parked most. */
 function ParkCosts() {
