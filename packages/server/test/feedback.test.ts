@@ -108,6 +108,16 @@ describe('filing orchestrator notes as issues (#231)', () => {
   });
 });
 
+describe('the notes list (#220)', () => {
+  it('returns every note, so none the badge counts is out of the Console\'s reach', async () => {
+    const { call, note } = await setup();
+    for (let i = 0; i < 250; i++) note(`Note ${i}.`, undefined, new Date(Date.UTC(2026, 8, 1, 0, i)).toISOString());
+    const list = (await call('GET', '/orchestrator/notes')).body;
+    expect(list).toHaveLength(250);
+    expect(list[0].data.text).toBe('Note 0.');
+  });
+});
+
 describe('likelyMatches', () => {
   const issue = (number: number, title: string, body = '') => ({ number, title, body, url: `u/${number}`, state: 'OPEN' });
   it('finds an issue naming the item with words from the note, and ignores unrelated ones', () => {

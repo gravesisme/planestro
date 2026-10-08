@@ -25,8 +25,8 @@ export type FileOutcome =
 export const noteMarker = (ts: string): string => `<!-- planestro-note: ${ts} -->`;
 const issueUrl = (repo: string | undefined, n: number): string | undefined => (repo ? `https://github.com/${repo}/issues/${n}` : undefined);
 
-/** Every note with what became of it, oldest first; `limit` keeps the newest. */
-export function notesWithLinks(store: DataStore, limit?: number): NoteView[] {
+/** Every note with what became of it, oldest first: all of them, so the Console can reach every one it counts (#220). */
+export function notesWithLinks(store: DataStore): NoteView[] {
   const all = store.journal.read().filter((e) => e.type === NOTE_TYPE || e.type === NOTE_LINK_TYPE);
   const links = new Map<string, NoteLinks>();
   for (const e of all) {
@@ -39,7 +39,7 @@ export function notesWithLinks(store: DataStore, limit?: number): NoteView[] {
     links.set(key, cur);
   }
   const notes = all.filter((e) => e.type === NOTE_TYPE).map((e) => ({ ...e, links: links.get(e.ts) ?? { issues: [], handled: false, comments: [] } }));
-  return limit ? notes.slice(-limit) : notes;
+  return notes;
 }
 
 const isDone = (l: NoteLinks): boolean => l.handled || l.issues.length > 0;

@@ -22,7 +22,9 @@ interface Store {
   openChat(opts?: { item?: string; draft?: string }): void; closeChat(): void; loadChat(): Promise<void>;
   /** The orchestrator's suggestions about planestro (f8), newest last, and the timestamp this viewer last marked read. */
   notes: NoteView[]; notesSeen: string;
-  loadNotes(): Promise<void>; markNotesRead(): void;
+  loadNotes(): Promise<void>;
+  /** Marks read every note up to `upTo` (the newest one shown), else the newest held. */
+  markNotesRead(upTo?: string): void;
   /** The orchestrator's questions (#75), newest first, kept live by `question.updated`; `questionRev` bumps per id so an open question page refetches. */
   questions?: QuestionView[]; questionRev: Record<string, number>;
   loadQuestions(): Promise<void>;
@@ -60,7 +62,7 @@ export const useStore = create<Store>((set, get) => ({
   closeChat() { set({ chat: { ...get().chat, open: false } }); },
   async loadChat() { try { const r = await api.orchestratorChat(); set({ chat: { ...get().chat, entries: r.entries, enabled: r.enabled } }); } catch { /* the panel says it could not load */ } },
   async loadNotes() { try { set({ notes: await api.orchestratorNotes() }); } catch { /* the Console says so when it loads */ } },
-  markNotesRead() { const last = get().notes.at(-1)?.ts ?? ''; try { localStorage.setItem(NOTES_SEEN, last); } catch { /* private window: the badge comes back */ } set({ notesSeen: last }); },
+  markNotesRead(upTo) { const last = upTo ?? get().notes.at(-1)?.ts ?? ''; try { localStorage.setItem(NOTES_SEEN, last); } catch { /* private window: the badge comes back */ } set({ notesSeen: last }); },
   // Only the newest request's answer is kept: an older one that returns late would bring back a stale list.
   async loadQuestions() { const n = ++questionsSeq; try { const questions = await api.questions(); if (n === questionsSeq) set({ questions }); } catch { /* the Console keeps what it had */ } },
   seedConsole(id, lines) { set({ consoles: { ...get().consoles, [id]: lines } }); },
@@ -89,7 +91,7 @@ export const useStore = create<Store>((set, get) => ({
       }
       if (e.type === 'journal.appended') {
         showIfNotification(e.entry);
-        if (e.entry?.type === 'orchestrator.planestro_note') set({ notes: [...get().notes.slice(-199), e.entry] });
+        if (e.entry?.type === 'orchestrator.planestro_note') set({ notes: [...get().notes, e.entry] });
         if (e.entry?.type === 'orchestrator.planestro_note_link') void get().loadNotes();
         const c = get().chat; if (c.entries && isChatEntry(e.entry) && !c.entries.some((x) => x.ts === e.entry.ts && x.type === e.entry.type)) set({ chat: { ...c, entries: [...c.entries.slice(-199), e.entry] } });
         return;
