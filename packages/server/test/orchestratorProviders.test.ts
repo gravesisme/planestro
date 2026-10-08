@@ -163,3 +163,22 @@ it('a wake carries its own row\'s reasoning effort and service tier, even beside
   expect(seen).toHaveLength(1);
   expect(seen[0]).toMatchObject({ model: 'shared-model', effort: 'low', serviceTier: 'priority' });
 });
+
+it('a permission packet for an ungrantable Codex request says allow is not possible and why; a grantable one offers allow (#297)', async () => {
+  const calls: CustomTurnOptions[] = [];
+  const { go } = await setup(async (o) => { calls.push(o); return result; });
+  const command = { method: 'item/commandExecution/requestApproval', command: 'curl https://example.test', cwd: '/repo/wt', environmentId: 'local' };
+  const ungrantable = store.createItem({ title: 'Needs network' });
+  store.mutateItem(ungrantable.id, [{ set: { awaiting: 'orchestrator', awaiting_data: { kind: 'permission', tool: 'CodexApproval', input: { ...command, networkApprovalContext: { host: 'example.test' } } } } }], 'engine');
+  orchestrator.wake({ type: 'permission_request', item: ungrantable.id });
+  go(); await settled();
+  expect(calls[0].prompt).toContain('allow is NOT possible for this request. These Codex sandbox permissions cannot be granted here: the request also asks for network access.');
+  expect(calls[0].prompt).not.toContain('- allow —');
+  expect(calls[0].prompt).toContain('- deny — say what the worker should do instead');
+  const grantable = store.createItem({ title: 'Plain command' });
+  store.mutateItem(grantable.id, [{ set: { awaiting: 'orchestrator', awaiting_data: { kind: 'permission', tool: 'CodexApproval', input: command } } }], 'engine');
+  orchestrator.wake({ type: 'permission_request', item: grantable.id });
+  orchestrator.kick(); await settled();
+  expect(calls[1].prompt).toContain('- allow —');
+  expect(calls[1].prompt).not.toContain('NOT possible');
+});

@@ -129,6 +129,18 @@ it('refuses unusable native Codex grants without persisting a fake allow rule; d
   expect(ctx.calls[0].prompt).toContain('Use the project inspection tool');
 });
 
+it('an orchestrator allow of an ungrantable Codex request is refused in words, and the request stays with it (#297)', async () => {
+  const ctx = await setup();
+  store.updateConfig((d) => d.setIn(['orchestrator', 'may_decide_permissions'], true), 'config: delegate');
+  Object.defineProperty((engine as any).orchestrator, 'enabled', { value: true });
+  const id = ctx.item({ implementer: 'codex-general', awaiting: 'orchestrator', awaiting_data: { kind: 'permission', tool: 'CodexApproval', input: { method: 'item/commandExecution/requestApproval', command: 'curl https://example.test', cwd: ctx.codeRepo, networkApprovalContext: { host: 'example.test' } } } });
+  const answer = await (engine as any).orchestratorDecidesPermission(id, 'allow', 'looks fine');
+  expect(answer).toMatch(/^not possible: These Codex sandbox permissions cannot be granted here: the request also asks for network access\..* Decide again with deny \(and what to do instead\) or ask_user\.$/);
+  expect(store.requireItem(id).file.frontmatter.awaiting).toBe('orchestrator');
+  expect(itemView(store, store.requireItem(id)).frontmatter.awaiting_data?.grant_refusal).toContain('the request also asks for network access');
+  expect(ctx.calls).toHaveLength(0);
+});
+
 it('persists an exact Codex approval through pause/restart and consumes it once before accepting', async () => {
   const seen: unknown[] = [];
   let req: { tool: string; input: Record<string, unknown> };

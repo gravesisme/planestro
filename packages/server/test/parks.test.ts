@@ -40,7 +40,9 @@ describe('what parks cost (#108)', () => {
   it('states a ruling outright, and refuses report_blocked only while a permission is parked (#168)', () => {
     const bash = { tool: 'Bash', input: { command: 'npm run check' } };
     expect(rulingText(bash, 'allow', 'The orchestrator')).toBe('APPROVED: The orchestrator approved your command `npm run check`. Run it now, as it was; it is allowed. Then continue.');
-    expect(rulingText(bash, 'deny', 'The user', 'not on main')).toMatch(/^DENIED: The user denied your command `npm run check`: not on main\. Do not retry it in another form/);
+    // #297: a plain denial forbids any rewrite; a denial that says what to do instead authorizes that, and only that
+    expect(rulingText(bash, 'deny', 'The user')).toBe('DENIED: The user denied your command `npm run check`. Do not retry it in another form (a rewritten command, a script, another tool to the same effect). Continue without it, or call report_blocked if you cannot.');
+    expect(rulingText(bash, 'deny', 'The orchestrator', 'submit a safer command that only reads the log')).toBe('DENIED: The orchestrator denied your command `npm run check`: submit a safer command that only reads the log. This exact command is denied: do not run it again, reworded or by another route (a script, another tool to the same effect). That does not forbid what the ruling asks for: where it says what to do instead, a safer or different command included, do that. You are authorized to propose it, and it is judged on its own. Continue, or call report_blocked if you cannot.');
     expect(rulingText({ tool: 'WebFetch', input: { url: 'https://x' } }, 'always', 'The user')).toContain('approved your WebFetch {"url":"https://x"} call');
     expect(parkedRefusal({ awaiting: 'permission', awaiting_data: { tool: 'Bash', input: { command: 'ls' } } })).toMatch(/^Not recorded: you are parked on `ls`; wait\./);
     expect(parkedRefusal({ awaiting: 'orchestrator', awaiting_data: { kind: 'permission', tool: 'Bash', input: { command: 'ls' } } })).toBeDefined();
