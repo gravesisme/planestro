@@ -76,10 +76,9 @@ export function PreviewDrawer({ id, onClose }: { id: string; onClose: () => void
       <ol className="phase-track" aria-label="Lifecycle">
         {phaseTrack(fm).map((p) => <li key={p.label} className={p.state} aria-current={p.state === 'current' ? 'step' : undefined}>{p.state === 'done' && <span aria-hidden>✓ </span>}{p.label}{p.spent && <span className="spent"> {p.spent}</span>}</li>)}
       </ol>
-      <Facts item={item} state={state} />
+      {fm.awaiting === 'review' ? <><Facts item={item} state={state} /><ReviewPanel item={item} compact /></> : <QuickActions item={item} overflow lead={<Facts item={item} state={state} />} />}
       {['QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY'].includes(fm.status) && autoApprove}
       {panels}
-      {fm.awaiting === 'review' ? <ReviewPanel item={item} compact /> : <QuickActions item={item} overflow />}
       {plan}
       {consoleOf(10)}
       <h3 className="drawer-h">Latest activity</h3>

@@ -62,9 +62,10 @@ export function promptCloseAsDone(id: string): Promise<unknown> | undefined {
  * The user's next steps for an item as one row of buttons, so the board's preview can act without
  * opening the full page. Plan approval is included because it is the most common "needs you".
  * `overflow` (the quick view of an active item, #314) keeps only the step the state calls for in the row
- * and puts the rest behind a `⋯` menu; every button stays in one `ActionGroup`, so they lock together.
+ * and puts the rest behind a `⋯` menu; every button stays in one `ActionGroup`, so they lock together. `lead` opens
+ * the row (the drawer's facts line), so a row with only the menu costs no line of its own.
  */
-export function QuickActions({ item, onActed, overflow }: { item: ItemView; onActed?: () => void; overflow?: boolean }) {
+export function QuickActions({ item, onActed, overflow, lead }: { item: ItemView; onActed?: () => void; overflow?: boolean; lead?: ReactNode }) {
   const fm = item.frontmatter; const d = item.derived;
   const [transitions, setTransitions] = useState<{ to: Status; label: string }[]>([]);
   useEffect(() => { let live = true; api.transitions(item.id).then((t) => { if (live) setTransitions(t); }).catch(() => {}); return () => { live = false; }; }, [item.id, fm.status]);
@@ -76,7 +77,7 @@ export function QuickActions({ item, onActed, overflow }: { item: ItemView; onAc
   const statedHold = planReady ? holdShapeOf(item.sections.Plan ?? '') : null;
   // Approve / request-changes have their own endpoints (they start a session turn); the bare transition would not.
   const plain = transitions.filter((t) => t.label !== DISCARD && !(fm.status === 'PLAN_READY' && (t.to === 'IN_PROGRESS' || t.to === 'PLAN_IN_PROGRESS')));
-  if (!plain.length && !planReady && !fm.blocked && !sync && fm.status !== 'IN_PROGRESS' && !canTakeOver(item) && !(fm.status === 'IN_REVIEW' && (fm.awaiting === 'review' || fm.skip_merge))) return null;
+  if (!plain.length && !planReady && !fm.blocked && !sync && fm.status !== 'IN_PROGRESS' && !canTakeOver(item) && !(fm.status === 'IN_REVIEW' && (fm.awaiting === 'review' || fm.skip_merge))) return lead ? <div className="row quick-actions">{lead}</div> : null;
   // Each button with whether it is the step the state calls for (kept in the row under `overflow`), in the row's order.
   const buttons: [ReactNode, boolean][] = [
     [planReady && !epicFlagOf(fm) && !statedHold && <ActionButton key="approve" className="primary" working="Approving…" onAct={() => run(() => api.approvePlan(item.id))}>Approve &amp; implement</ActionButton>, true],
@@ -96,8 +97,8 @@ export function QuickActions({ item, onActed, overflow }: { item: ItemView; onAc
   const shown = (b: ReactNode) => b !== false && b !== null && b !== undefined && b !== '' && b !== 0 && !(isValidElement(b) && b.type === TakeOverButton && !canTakeOver(item));
   const primary = buttons.filter(([b, p]) => p && shown(b)).map(([b]) => b);
   const rest = buttons.filter(([b, p]) => !p && shown(b)).map(([b]) => b);
-  if (!primary.length && !rest.length) return null;
-  return <div className="row quick-actions"><ActionGroup>{primary}{rest.length > 0 && <MoreMenu>{rest}</MoreMenu>}</ActionGroup></div>;
+  if (!primary.length && !rest.length && !lead) return null;
+  return <div className="row quick-actions">{lead}<ActionGroup>{primary}{rest.length > 0 && <MoreMenu>{rest}</MoreMenu>}</ActionGroup></div>;
 }
 
 /**
