@@ -60,7 +60,7 @@ export function ReviewPanel({ item, compact = false }: { item: ItemView; compact
     );
   };
   return (
-    <div className={awaiting ? 'approval' : 'section'}>
+    <div className={awaiting ? 'approval' : 'section'} id={awaiting ? 'review' : undefined} data-wait={awaiting || undefined}>
       <h2 style={{ margin: '0 0 8px' }}>
         <span>{awaiting ? 'Waiting for your review before it merges' : `Files to review on this branch · ${images?.length ?? 0}`}</span>
         {scaleN > 1 && <button className="small" onClick={() => setScaled(!scaled)}>{scaled ? `showing ${scaleN}× — show 1×` : `showing 1× — show ${scaleN}×`}</button>}

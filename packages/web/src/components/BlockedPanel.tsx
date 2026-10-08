@@ -31,14 +31,14 @@ export function BlockedPanel({ item, compact = false }: { item: ItemView; compac
   const rerun = fm.status === 'IN_REVIEW' && reason === 'ci_cancelled' && !!fm.op_data?.last_cancelled ? <button title="Re-runs this head's cancelled CI run, once what cancelled it (a job time limit, a concurrency group) is fixed. The new attempt's verdict is the one that counts." onClick={() => void act(() => api.rerunCi(item.id))}>Re-run cancelled CI</button>
     : fm.status === 'IN_REVIEW' && /^ci_red/.test(reason) && !!fm.op_data?.last_red && <button title="Re-runs the failed jobs of this head's red CI run: for a flake, when nothing in the branch needs fixing. The new attempt's verdict is the one that counts." onClick={() => void act(() => api.rerunCi(item.id))}>Re-run failed CI jobs</button>;
   if (fm.triage) return (
-    <div className="blocked-panel triaging">
+    <div className="blocked-panel triaging" id="blocked">
       <TriageNote item={item} />
       {detail && <details className="decision-details"><summary>details</summary><p className="blocked-said">{detail}</p></details>}
       {!compact && <div className="row">{rerun}<UsageProviderSwitch item={item} /><button onClick={unblock}>Unblock it myself…</button>{fresh}</div>}
     </div>
   );
   return (
-    <div className="blocked-panel">
+    <div className="blocked-panel" id="blocked" data-wait>
       <h2>Blocked: {reason.replace(/_/g, ' ')}{said && <span className="small muted"> since {said.at.slice(0, 16).replace('T', ' ')}</span>}</h2>
       {detail && <p className="blocked-said">{detail}</p>}
       {help && <div className="small"><Markdown text={`**What it means.** ${help.meaning}\n\n**What to do.** ${help.todo}`} /></div>}

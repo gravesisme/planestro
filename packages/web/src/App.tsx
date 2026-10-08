@@ -5,6 +5,8 @@ import { api } from './api.ts';
 import { findModel, usageWindowLabel, usagePercent, localClock, type UsageGuardState } from '@planestro/shared';
 import { OrchestratorChat } from './components/OrchestratorChat.tsx';
 import { setTitle, setNeeds } from './tabBadge.ts';
+import { setNotificationNavigate } from './desktopNotify.ts';
+import { TO_WAIT } from './deepLink.ts';
 
 /** The phone's tab bar. Board, Icebox and Done are one tab: the board page switches between them itself. */
 const TABS: { to: string; label: string; icon: string }[] = [
@@ -29,6 +31,8 @@ export function App() {
   const { pathname } = useLocation();
   useEffect(() => { if (!pathname.startsWith('/items/') && !pathname.startsWith('/questions/')) setTitle(`${TABS.find((t) => t.to !== '/' && pathname.startsWith(t.to))?.label ?? (pathname === '/icebox' ? 'Icebox' : pathname === '/done' ? 'Done' : 'Board')} · ${state?.config.project.name ?? 'planestro'}`); }, [pathname, state?.config.project.name]);
   useEffect(() => { connect(); }, [connect]);
+  // A clicked desktop notification opens its link here, on the panel it is about (#226).
+  useEffect(() => { setNotificationNavigate((path) => nav(path)); }, [nav]);
   const needs = state?.items.filter((i) => i.derived.needs_you && i.derived.lane === 'board') ?? [];
   const needsHot = needs.some((i) => i.frontmatter.blocked);
   // A background tab shows it too: "(2) …" in its title and a dot on its icon.
@@ -74,7 +78,7 @@ export function App() {
             {guards.map(([provider, guard]) => <div key={provider} className="status-notice"><p>{provider === 'codex' ? 'Codex' : 'Claude'}: {guardPill(guard)}</p><button onClick={() => act(() => api.retryProvider(provider))}>Retry {provider === 'codex' ? 'Codex' : 'Claude'}</button></div>)}
             <Link to="/console">Open Console →</Link>
           </div>
-          <button className={`needs ${needsHot ? 'hot' : needs.length ? 'wait' : ''}`} onClick={() => nav('/?needs=1')} aria-label={`${needs.length} items need you`} title="Items waiting on you (red: one of them is blocked)"><span className="dot" /> <span className="desk-only">Needs you</span><span>{needs.length}</span></button>
+          <button className={`needs ${needsHot ? 'hot' : needs.length ? 'wait' : ''}`} onClick={() => (needs.length === 1 ? nav(`/items/${needs[0].id}`, { state: TO_WAIT }) : nav('/?needs=1'))} aria-label={`${needs.length} items need you`} title={needs.length === 1 ? `${needs[0].id} is waiting on you: open it on what it waits for` : 'Items waiting on you (red: one of them is blocked)'}><span className="dot" /> <span className="desk-only">Needs you</span><span>{needs.length}</span></button>
           {state && <Link className="button provider-switch-button" to={switchProviderPath} aria-label={`Provider: ${providerLabel}. Switch provider`} title={`Orchestrator provider: ${providerLabel}. Open provider switching. Individual items may use another provider.`}><span className="desk-only">Provider: </span>{providerLabel}</Link>}
           <button className={`lever ${paused ? 'paused' : ''}`} aria-label={`${paused ? 'Resume' : 'Pause'} automation`} title={`${paused ? 'Resume' : 'Pause'} automation`} onClick={() => act(() => (paused ? api.resume() : api.pause()))}>{paused ? 'Resume' : 'Pause'}</button>
         </div>

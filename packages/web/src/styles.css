@@ -450,3 +450,6 @@ input.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   .provider-switch .column h3 label, .provider-switch .check, .provider-card-check { min-height: 44px; }
   .provider-settings select { max-width: 100%; }
 }
+/* A deep link's target (#226): clear of the sticky top bar, and marked while it holds the focus. */
+.item-page [id] { scroll-margin-top: 72px; }
+.item-page [id][tabindex="-1"]:focus { outline: 2px solid var(--accent); outline-offset: 3px; }

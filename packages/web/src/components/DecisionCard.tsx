@@ -35,7 +35,7 @@ export function DecisionCard({ item }: { item: ItemView }) {
   const said = reason ? [...item.activity].reverse().find((a) => a.text.startsWith(`BLOCKED (${reason}): `))?.text.replace(/^BLOCKED \([a-z_]+\): /, '') : undefined;
   const questions = (fm.awaiting_data?.questions as { question: string }[] | undefined) ?? [];
   return (
-    <div className="decision-card">
+    <div className="decision-card" id="decision" data-wait>
       <div className="decision-kicker">Your decision · {item.id}</div>
       <h2 className="decision-question">{decision.question}</h2>
       <p className="decision-why">{decision.why}</p>
