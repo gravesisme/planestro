@@ -531,6 +531,8 @@ export interface RulingSource {
   codeRepoPath(): string;
   worktreesRoot(): string;
   config: { permissions: { allow: string[] }; code_repo?: { default_branch: string } };
+  /** The machine policy's, the project's and this machine's rules merged (#229); the project's alone when absent. */
+  permissionRules?(): { allow: string[]; deny: string[] };
 }
 
 /** Every ruling the data dir holds. */
@@ -542,13 +544,17 @@ export function rulingsOf(store: RulingSource): Ruling[] {
   return mergeRulings(fromActivity, rulingsFromJournal(store.journal.read({ type: 'permission.answered' }), find));
 }
 
-/** The report for a data dir, against its current `permissions.allow`. */
+/**
+ * The report for a data dir, against the allow rules workers run under: the machine policy's, the project's and this
+ * machine's (#229), so a rule one of them already has is never suggested. Every layer's denials are replayed.
+ */
 export function suggestForStore(store: RulingSource, opts: SuggestOptions = {}): SuggestReport {
   const items = store.listItems();
   const recorded = new Map(items.map((s) => [s.id, typeof s.file.frontmatter.worktree === 'string' ? s.file.frontmatter.worktree : undefined]));
   const find = worktreeFinder(store.worktreesRoot(), store.codeRepoPath(), (id) => recorded.get(id));
-  const policy = store.config.code_repo ? (r: Ruling) => makePolicy(store.config as Config, store.config.code_repo!.default_branch, r.worktree).deny({ tool: 'Bash', input: { command: r.command ?? '' } }) !== null : undefined;
-  return suggestAllowRules(rulingsOf(store), store.config.permissions.allow, { runs: runsFromJournal(store.journal.read({ type: 'tools.ran' }), find), ...(policy ? { policyDenies: policy } : {}), ...opts });
+  const rules = store.permissionRules?.();
+  const policy = store.config.code_repo ? (r: Ruling) => makePolicy(store.config as Config, store.config.code_repo!.default_branch, r.worktree, {}, rules?.deny).deny({ tool: 'Bash', input: { command: r.command ?? '' } }) !== null : undefined;
+  return suggestAllowRules(rulingsOf(store), rules?.allow ?? store.config.permissions.allow, { runs: runsFromJournal(store.journal.read({ type: 'tools.ran' }), find), ...(policy ? { policyDenies: policy } : {}), ...opts });
 }
 
 /** The report as the CLI prints it. */
