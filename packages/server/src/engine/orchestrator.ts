@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
-import { modelCapabilities, type Runner, getSection, planToolsMissing, epicFlagOf, holdShapeOf, heldReasonOf, previewOf, type HoldFlag, partsSummary, serializeItemFile, serializeQuestionFile, parseThread, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent, parseActivity } from '@planestro/shared';
+import { modelCapabilities, codexTurnSettings, type ModelDef, type Runner, getSection, planToolsMissing, epicFlagOf, holdShapeOf, heldReasonOf, previewOf, type HoldFlag, partsSummary, serializeItemFile, serializeQuestionFile, parseThread, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent, parseActivity } from '@planestro/shared';
 import { parkHint } from './parks.ts';
 import { hostNote, keptPathsNote } from './hostNote.ts';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
@@ -294,13 +294,13 @@ export class Orchestrator {
    * Claude model string) or is a raw model string; with `allow_model_fallback`, a row that is out of
    * usage on this machine yields to its fallback chain, as a worker's turn does.
    */
-  modelForWake(now = new Date(Date.now())): { runner: Runner; model: string; label: string; fellBackFrom?: string; sdkFallback?: string; exhaustedUntil?: string } {
+  modelForWake(now = new Date(Date.now())): { runner: Runner; model: string; label: string; def?: ModelDef; fellBackFrom?: string; sdkFallback?: string; exhaustedUntil?: string } {
     const cfg = this.store.config.orchestrator;
     const def = findModel(this.store.config, cfg.model);
     if (!def) return { runner: 'claude', model: cfg.model, label: cfg.model };
     const pick = resolveTurnModel(this.store.config, def, { allow: cfg.allow_model_fallback, unavailable: this.store.local.model_unavailable, now });
     return {
-      runner: pick.def.runner ?? 'claude', model: pick.model ?? cfg.model, label: pick.def.label,
+      runner: pick.def.runner ?? 'claude', model: pick.model ?? cfg.model, label: pick.def.label, def: pick.def,
       ...(pick.fellBackFrom ? { fellBackFrom: pick.fellBackFrom.label } : {}),
       ...(pick.sdkFallback ? { sdkFallback: pick.sdkFallback } : {}),
       ...(pick.exhaustedUntil ? { exhaustedUntil: pick.exhaustedUntil } : {}),
@@ -337,7 +337,7 @@ export class Orchestrator {
     this.activeModel = model;
     const result: TurnResult = await this.ports.agents[pick.runner]!.runCustomTurn!({
       signal: this.activeAbort?.signal,
-      label: events.map((e) => e.type).join(','), cwd: this.store.codeRepoPath(), model,
+      label: events.map((e) => e.type).join(','), cwd: this.store.codeRepoPath(), model, ...codexTurnSettings(pick.def),
       ...(pick.sdkFallback ? { fallbackModel: pick.sdkFallback } : {}),
       permissionMode: 'dontAsk', prompt, resume: state.session_id, maxTurns: 30,
       maxTokens: state.session_id ? cfg.budget_tokens_per_wake : cfg.budget_tokens_per_fresh_wake,

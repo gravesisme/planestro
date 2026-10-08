@@ -2,7 +2,7 @@ import { Link } from 'react-router';
 import { useState, type ReactNode } from 'react';
 import {
   SETTINGS, SETTINGS_TABS, canPlan, fallbackChain, fallbackProblems, findModel, getPath, looksOneOff, settingChanged, settingDefault, shownNumber, storedNumber, suggestedAllowRules, unavailableEntry,
-  RUNNERS, type Config, type ModelDef, type ReleaseSectionDef, type SettingDef, type SettingsTabId,
+  RUNNERS, CODEX_EFFORTS, type Config, type ModelDef, type ReleaseSectionDef, type SettingDef, type SettingsTabId,
 } from '@planestro/shared';
 import { api, type State } from '../api.ts';
 import { act, useStore } from '../store.ts';
@@ -413,6 +413,7 @@ function ModelsCtl({ state }: { state: State }) {
               <div className="facts">
                 <span>runner <b>{runner === 'claude' ? 'Claude' : 'Codex'}</b></span>
                 <span>model <b className="mono">{runner === 'claude' ? m.claude_model ?? '—' : m.codex_model ?? 'CLI default'}</b></span>
+                {runner === 'codex' && <span>effort <b>{m.codex_effort ?? 'model default'}</b> · tier <b>{m.codex_tier ?? 'Codex default'}</b></span>}
                 <span>{canPlan(m) ? 'plans and implements' : m.external ? 'not run by planestro' : 'implements only'}{roles(m) ? ` · ${roles(m)}` : ''}</span>
                 {chain.length > 1 && <span>out of usage → <b>{chain.slice(1).map((x) => x.label).join(' → ')}</b></span>}
                 <span className="mono dim">id {m.id}</span>
@@ -444,7 +445,8 @@ function ModelDialog({ cfg, model, mcpNames, onClose }: { cfg: Config; model?: M
     const id = (m.id ?? '').trim();
     if (!id || !m.label?.trim()) { complain('A model needs an id and a label'); return; }
     if (!model && cfg.models.some((x) => x.id === id)) { complain(`There is already a model ${id}`); return; }
-    const body: Partial<ModelDef> = { ...m, id, claude_model: runner === 'claude' ? m.claude_model : undefined, codex_model: runner === 'codex' ? m.codex_model : undefined };
+    const codex = runner === 'codex';
+    const body: Partial<ModelDef> = { ...m, id, claude_model: codex ? undefined : m.claude_model, codex_model: codex ? m.codex_model : undefined, codex_effort: codex ? m.codex_effort : undefined, codex_tier: codex ? m.codex_tier : undefined };
     if (await act(() => api.putModel(id, body))) onClose();
   };
   return (
@@ -458,6 +460,8 @@ function ModelDialog({ cfg, model, mcpNames, onClose }: { cfg: Config; model?: M
           ? <label>Claude model <input className="mono" value={m.claude_model ?? ''} onChange={(e) => set({ claude_model: e.target.value })} placeholder="claude-opus-5-5" /></label>
           : <label>Codex model <input className="mono" value={m.codex_model ?? ''} onChange={(e) => set({ codex_model: e.target.value })} placeholder="Codex's own default" /></label>}
         {runner === 'codex' && <label>Transport <select value={m.codex_transport ?? 'exec'} onChange={(e) => set({ codex_transport: e.target.value as 'exec' | 'app-server' })}><option value="exec">exec — existing art workers</option><option value="app-server">app-server — planning, coding, orchestrator</option></select></label>}
+        {runner === 'codex' && <label>Reasoning effort <select value={m.codex_effort ?? ''} onChange={(e) => set({ codex_effort: (e.target.value || undefined) as ModelDef['codex_effort'] })}><option value="">The model's default</option>{CODEX_EFFORTS.map((x) => <option key={x} value={x}>{x}</option>)}</select></label>}
+        {runner === 'codex' && <label>Service tier <select value={m.codex_tier ?? ''} onChange={(e) => set({ codex_tier: (e.target.value || undefined) as ModelDef['codex_tier'] })}><option value="">Codex's default</option><option value="default">default — standard speed</option><option value="priority">priority — faster, drains usage faster</option></select></label>}
         <label>What it is for <input value={m.description ?? ''} onChange={(e) => set({ description: e.target.value })} placeholder="One line; the epic planner routes children by it" /></label>
         <label>When out of usage <select value={m.fallback ?? ''} onChange={(e) => set({ fallback: e.target.value || undefined })}><option value="">Block (no fallback)</option>{fallbacks.map((x) => <option key={x.id} value={x.id}>Fall back to {x.label}</option>)}</select></label>
         <label className="check"><input type="checkbox" checked={m.hold_for_review ?? false} onChange={(e) => set({ hold_for_review: e.target.checked })} /> Hold its pull requests for your review</label>

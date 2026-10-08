@@ -13,6 +13,9 @@ const rollouts = (dir: string): string[] => readdirSync(dir, { withFileTypes: tr
 try {
   const run = async (resume?: string) => port.runCustomTurn({
     label: 'validation', cwd: root, model,
+    // #245: the port refuses a start or resume whose thread does not report these back.
+    ...(process.env.PLANESTRO_CODEX_EFFORT ? { effort: process.env.PLANESTRO_CODEX_EFFORT as 'low' } : {}),
+    ...(process.env.PLANESTRO_CODEX_TIER ? { serviceTier: process.env.PLANESTRO_CODEX_TIER as 'priority' } : {}),
     permissionMode: 'dontAsk', allowedTools: [], maxTokens: 30000, signal: AbortSignal.timeout(60000),
     systemAppend: 'You are validating a Planestro tool connection. Call validation_ping exactly once with message hello, then finish. Do not read files or run commands.',
     prompt: 'Call validation_ping with message hello, then finish.', resume,

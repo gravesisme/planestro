@@ -115,6 +115,7 @@ export function putModel(store: DataStore, id: string, body: unknown): Config {
   if (!parsed.success) throw new Error(parsed.error.issues.map((i) => `${i.path.join('.') || 'model'}: ${i.message}`).join('; '));
   const def = parsed.data;
   if (def.runner === 'claude' && !def.external && !def.claude_model) throw new Error('a claude model needs its Claude model id (claude_model)');
+  if (def.runner !== 'codex' && (def.codex_effort || def.codex_tier)) throw new Error('only a Codex model takes a reasoning effort (codex_effort) or a service tier (codex_tier)');
   if (def.mcp.some((m, i) => def.mcp.indexOf(m) !== i)) throw new Error('an MCP server is listed twice');
   const exists = store.config.models.findIndex((m) => m.id === id);
   const models = exists >= 0 ? store.config.models.map((m) => (m.id === id ? def : m)) : [...store.config.models, def];

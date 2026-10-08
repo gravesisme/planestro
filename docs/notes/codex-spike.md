@@ -132,10 +132,39 @@ journals its outcome and tokens. Its batch is discarded. The wake queue stays in
 memory; restart derives needed wakes from persisted item/question state. Shutdown
 interruptions skip those end hooks, leaving that persisted ownership intact.
 
+### Reasoning effort and service tier (#245) — 2026-10-08
+
+Validated with **codex-cli 0.154.0** against `codex app-server generate-json-schema`
+and live calls (a disposable home; `model/list` and turnless `thread/start` cost nothing;
+the validation spike below spent 11,134 + 548 tokens).
+
+- **Fields.** `thread/start` and `thread/resume` take `serviceTier` but no effort field;
+  effort goes in their `config` as `model_reasoning_effort`. `turn/start` takes both
+  `effort` and `serviceTier` ("this turn and subsequent turns"). Both thread responses
+  report `reasoningEffort` and `serviceTier`, which the adapter checks like the model.
+  The same config keys (`model_reasoning_effort`, `service_tier`) are what exec gets as `-c`.
+- **Catalog.** `model/list` gives each model's `supportedReasoningEfforts` and
+  `serviceTiers`. Every listed model offered `low`, `medium`, `high`, `xhigh` (some also
+  `max`, `ultra`) and the one tier `priority` ("Fast", 1.5–2x speed, increased usage);
+  `defaultServiceTier` was null. `serviceTier: "default"` is accepted and reported back
+  as `default`; config `service_tier: "fast"` is reported as `priority`.
+- **No server-side checks.** An effort the model does not list (`bogus`, or `ultra` on
+  gpt-5.5) is accepted and echoed back unchanged. A tier the model does not offer
+  (`flex`) is **dropped silently**: the thread reports `serviceTier: null`. Planestro
+  therefore limits effort to the four values every model lists, refuses any other tier at
+  save, and refuses a turn whose thread does not report the requested tier.
+- **Resume.** `PLANESTRO_CODEX_EFFORT=low PLANESTRO_CODEX_TIER=priority npx tsx
+  spikes/app-server-validation.ts` passed both stages: the fresh thread and its resume
+  each reported `low` / `priority` (the adapter would have refused either otherwise).
+  A thread with no turn yet cannot be resumed (`no rollout found`).
+- **Not validated live:** an exec turn with the `-c` overrides (exec reports neither value
+  back), and whether an unoffered effort changes behaviour at all.
+
 Reproduce manually (these are authenticated, never CI commands):
 
 - `npx tsx spikes/app-server-validation.ts`: dynamic tools and resume, and whether resume
-  takes new developer instructions (#246).
+  takes new developer instructions (#246); set `PLANESTRO_CODEX_EFFORT` /
+  `PLANESTRO_CODEX_TIER` to check the requested values come back (#245).
 - `npx tsx spikes/app-server-representative.ts`: fresh-context measurements and isolated auth.
 - `npx tsx spikes/app-server-capabilities.ts`: writable resume, open stream and isolation;
   add `--images` for the optional raw-protocol art validation.

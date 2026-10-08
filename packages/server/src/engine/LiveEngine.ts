@@ -3,7 +3,7 @@ import { join, relative, isAbsolute, extname, basename, matchesGlob } from 'node
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { Audition, auditionProblem, takePathProblem, auditionPicksProblem, auditionPickLines, auditionNote, type AuditionPick, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem } from '@planestro/shared';
+import { Audition, auditionProblem, takePathProblem, auditionPicksProblem, auditionPickLines, auditionNote, type AuditionPick, runnerTurnSettings, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote, type CiQueue, type UndeliveredReport, type ConnectionDrop } from './ports.ts';
@@ -1431,7 +1431,7 @@ export class LiveEngine implements Engine {
       result = await this.withRunnerSlot(runner, () => this.withSessionSlot(id, () => { if (abort.signal.aborted && !this.stopping) return Promise.resolve<TurnResult>({ subtype: 'killed', isError: false, costUsd: 0, numTurns: 0, text: '' });
         if (this.stopping || this._paused || this.draining || this.store.local.engine.provider_guards?.[runner]) return Promise.resolve<TurnResult>({ subtype: 'deferred', isError: false, costUsd: 0, numTurns: 0, text: '' }); admitted(); return agent.runTurn({
         itemId: id, phase, cwd, model: model as string,
-        transport: modelCapabilities(def).transport,
+        transport: modelCapabilities(def).transport, ...codexTurnSettings(def),
         maxTokens: metered ? undefined : Math.min(budget.tokens - (fm.tokens ?? 0), phase === 'plan' ? fm.op_data?.plan_retry_turns ? 10_000 : this.store.config.budget_tokens_per_plan_turn : Infinity),
         onApproval: async (req) => {
           if (abort.signal.aborted || this.store.requireItem(id).file.frontmatter.taken_over) return;
@@ -4520,7 +4520,7 @@ export class LiveEngine implements Engine {
         if (this._paused || this.draining || this.stopping || abort.signal.aborted || this.store.local.engine.provider_guards?.[runner])
           return { subtype: 'killed', isError: false, costUsd: 0, numTurns: 0, text: '' };
         return agent.runTurn({
-        itemId: id, phase: 'fix', cwd, model: model as string, transport: modelCapabilities(def).transport, maxTokens: remainingTokens, permissionMode: 'acceptEdits', prompt,
+        itemId: id, phase: 'fix', cwd, model: model as string, transport: modelCapabilities(def).transport, ...codexTurnSettings(def), maxTokens: remainingTokens, permissionMode: 'acceptEdits', prompt,
         systemAppend: `${this.store.renderPrompt(modelCapabilities(def).workerPrompt, item)}\n\n${this.hostNote}${runner === 'claude' ? cwdNote(cwd) : ''}`,
         ...(pick.sdkFallback ? { fallbackModel: pick.sdkFallback } : {}),
         allowedTools: sdkRules(allowed), extraDirs: [this.store.dataDir], maxBudgetUsd: cap, tools,
