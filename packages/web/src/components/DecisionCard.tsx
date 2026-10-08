@@ -1,6 +1,6 @@
 import { UsageProviderSwitch } from './UsageProviderSwitch.tsx';
 import { useState } from 'react';
-import { decisionOf, describeAction, dollarHint } from '@planestro/shared';
+import { decisionOf, describeAction, DOLLAR_HINT } from '@planestro/shared';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { reloadText, useResumeEstimate } from '../resumeCost.ts';
@@ -20,7 +20,6 @@ export function DecisionCard({ item }: { item: ItemView }) {
   const projectBudget = useStore((s) => s.state?.config.budget_usd_per_item);
   const projectTurns = useStore((s) => s.state?.config.budget_turns_per_item);
   const projectTokens = useStore((s) => s.state?.config.budget_tokens_per_item);
-  const billing = useStore((s) => s.state?.billing);
   const items = useStore((s) => s.state?.items);
   const [text, setText] = useState('');
   // One answer at a time, shown at once (#282); the card stays locked until it goes.
@@ -43,7 +42,7 @@ export function DecisionCard({ item }: { item: ItemView }) {
           <button key={o.label} className={`decision-option ${o.recommended ? 'recommended' : ''} ${sending === `option-${i}` ? 'chosen' : ''}`} disabled={sending !== undefined} aria-busy={sending === `option-${i}`} onClick={() => void send(`option-${i}`, { choice: o.label, ...(text.trim() ? { text: text.trim() } : {}) })}>
             <span className="decision-label">{o.label}{o.recommended && <span className="decision-badge">Recommended</span>}{sending === `option-${i}` && <Sending />}</span>
             {o.description && <span className="decision-desc">{o.description}</span>}
-            {o.raise_budget_usd !== undefined && <span className="decision-desc">Tapping this sets the item's budget to ${(Math.max(fm.budget_usd ?? projectBudget ?? 0, fm.cost_usd ?? 0) + o.raise_budget_usd).toFixed(0)} (+${o.raise_budget_usd}) and {o.fresh ? 'finishes it in a fresh session' : 'resumes it'}. <span className="muted">Dollars here: {dollarHint(billing)}.</span></span>}
+            {o.raise_budget_usd !== undefined && <span className="decision-desc">Tapping this sets the item's budget to ${(Math.max(fm.budget_usd ?? projectBudget ?? 0, fm.cost_usd ?? 0) + o.raise_budget_usd).toFixed(0)} (+${o.raise_budget_usd}) and {o.fresh ? 'finishes it in a fresh session' : 'resumes it'}. <span className="muted">Dollars here: {DOLLAR_HINT}.</span></span>}
             {o.raise_budget_turns !== undefined && <span className="decision-desc">Adds {o.raise_budget_turns} turns, setting this item's limit to {Math.max(fm.budget_turns ?? projectTurns ?? 0, fm.agent_turns ?? 0) + o.raise_budget_turns} turns.</span>}
             {o.raise_budget_tokens !== undefined && <span className="decision-desc">Adds {o.raise_budget_tokens.toLocaleString()} tokens, setting this item's limit to {(Math.max(fm.budget_tokens ?? projectTokens ?? 0, fm.tokens ?? 0) + o.raise_budget_tokens).toLocaleString()} tokens.</span>}
             {o.fresh ? <span className="decision-desc">A fresh session gets a brief instead of the old conversation, so nothing is spent reloading it.</span>

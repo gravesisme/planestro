@@ -106,15 +106,22 @@ Network, model-entitlement and CI checks stay post-1.0.
 already on the machine. Model API keys are dropped. It is a local developer
 workstation tool, so access to the machine is the access control. There is no
 Planestro login or access token, and none is planned. SECURITY.md has been
-rewritten for this model (P3, done on this branch). Two things remain:
+rewritten for this model (P3), and the key paths are removed (P9). Both are done
+on this branch:
 
-- The README's *Authentication and billing* section, operations.md and the site
-  still steer people to an Anthropic Console key. They move to "your existing
-  login" (P2).
-- The code still carries the key paths: the `anthropic_api_key` setting and its
-  Settings row, `accounts.api_key_env`, and the `subscription | api_key` billing
-  note. Removing them is P9. Until then, SECURITY.md describes the setting as
-  legacy and says to leave it unset.
+- `anthropic_api_key` is gone, along with its Settings row and the `secret`
+  control. So are `accounts.api_key_env` (an account is now a `home`) and the
+  `billing` / `api_key` state with its API-key wording.
+- `ANTHROPIC_API_KEY` is dropped from every Claude session's environment, so a
+  stray key can't bill the API instead of the login.
+- An older `planestro.local.yml` loses its key, and any key-only account, at
+  load, with one warning line each.
+- The README, configuration, operations, concepts, troubleshooting and CLI docs
+  say "your existing login".
+
+Codex is unchanged. Its processes already get only an allowlisted environment,
+and `OPENAI_API_KEY` reaches them only if a project lists it in
+`codex_env_passthrough`.
 
 `--host 0.0.0.0` and `lan_access` stay, documented as moving the boundary from
 "this machine" to "every device on this network". SECURITY.md says to use them
@@ -201,7 +208,7 @@ own steps, not engine work. They stay as checklists below and are not issues.
 | P1 | `init` creates and verifies a planning git repo, resolves the base or refuses to guess, and validates before writing | O1, O3 (base fallback, linked-worktree `ENOTDIR` via `git rev-parse --git-path`), D3 (withdraw `orphan-branch`) | M | v1.0 blocker |
 | P2 | One correct install path across README, Getting started and the site quick start | O1/O2/O4 docs, loopback-only examples, D6 "existing login" wording (README, operations.md, configuration.md, site), platform/Node statement, Codex-only recipe linked from the main path | M (docs) | v1.0 blocker, after P1 |
 | P3 | SECURITY.md and trust-model refresh | Machine-access trust model (D6), Codex app-server approvals, MCP/hook trust, A1 untrusted input, no telemetry | S (docs) | **Done on this branch**, so not an issue |
-| P9 | Remove the model API-key paths | `anthropic_api_key` (setting, Settings row, `LiveClaudePort` env), `accounts.api_key_env` (keep `home`), the `subscription \| api_key` billing note and its Budgets wording; decide whether an inherited `ANTHROPIC_API_KEY` is scrubbed from worker environments so the login is what bills | S–M | v1.0 blocker (D6) |
+| P9 | Remove the model API-key paths | `anthropic_api_key`, `accounts.api_key_env`, the billing-mode state and wording; `ANTHROPIC_API_KEY` dropped from sessions; legacy local files cleaned at load | S–M | **Done on this branch** |
 | P4 | Public-repo hygiene | A2 (macOS CI, timeout), A3 (SDK dependency, `engines`), A4 (CONTRIBUTING, templates, Dependabot), A5 (non-affiliation, no telemetry) | M | v1.0 blocker |
 | P5 | Show running vs saved engine mode | D4 indicator | S | v1.0, cheap |
 | P6 | Bound multipart uploads before buffering | Body/file-count limits on both upload routes; bounded audition/media reads | S | v1.0, cheap hardening |
@@ -581,7 +588,7 @@ redesign and site redesign can follow a clearly labeled experimental release.
   D1: the opening is v1.0.0, with a written support contract.)*
 - [x] Rewrite SECURITY.md for the machine-access trust model, including untrusted
   input (A1). *(Second review, D6/P3.)*
-- [ ] Remove the model API-key paths from code and docs (D6, P9).
+- [x] Remove the model API-key paths from code and docs (D6, P9).
 - [ ] Add a macOS CI job and widen the 10-minute timeout. Declare the Agent SDK as
   a `packages/server` dependency (A2, A3).
 - [ ] Add CONTRIBUTING, issue/PR templates and Dependabot. Add a non-affiliation

@@ -15,7 +15,7 @@ describe('machine-local planning files never enter automatic Git operations', ()
   it('repairs existing ignores without losing custom rules, including earlier negations', () => {
     const { dataDir, codeRepo } = makeFixture();
     writeFileSync(join(dataDir, '.gitignore'), 'custom-output/\n!planestro.local.yml\n');
-    writeFileSync(join(dataDir, 'planestro.local.yml'), `anthropic_api_key: ${dummy}\n`);
+    writeFileSync(join(dataDir, 'planestro.local.yml'), `mcp_servers:\n  x:\n    command: c\n    env:\n      TOKEN: ${dummy}\n`);
     initDataDir({ dataDir, codeRepo, register: false });
     expect(readFileSync(join(dataDir, '.gitignore'), 'utf8')).toContain('custom-output/');
     expect(git(dataDir, 'check-ignore', 'planestro.local.yml').trim()).toBe('planestro.local.yml');
@@ -27,7 +27,7 @@ describe('machine-local planning files never enter automatic Git operations', ()
 
   it('refuses init and startup if local settings are staged or committed, without deleting files', async () => {
     const { dataDir, codeRepo } = makeFixture();
-    writeFileSync(join(dataDir, 'planestro.local.yml'), `anthropic_api_key: ${dummy}\n`);
+    writeFileSync(join(dataDir, 'planestro.local.yml'), `mcp_servers:\n  x:\n    command: c\n    env:\n      TOKEN: ${dummy}\n`);
     git(dataDir, 'add', '-f', 'planestro.local.yml');
     expect(() => initDataDir({ dataDir, codeRepo, register: false })).toThrow(/machine-local.*tracked/);
     await expect(DataStore.open(dataDir)).rejects.toThrow(/machine-local.*tracked/);
@@ -41,7 +41,7 @@ describe('machine-local planning files never enter automatic Git operations', ()
     const { dataDir } = makeFixture();
     store = await DataStore.open(dataDir);
     writeFileSync(join(dataDir, '.gitignore'), '# no ignores\n');
-    store.updateLocal({ anthropic_api_key: dummy });
+    store.updateLocal({ mcp_servers: { x: { command: 'c', args: [], env: { TOKEN: dummy }, headers: {} } } });
     mkdirSync(join(dataDir, 'logs')); writeFileSync(join(dataDir, 'logs', 'private.txt'), dummy);
     expect(store.git.checkpoint()).toBe(true);
     expect(git(dataDir, 'ls-files', 'planestro.local.yml', 'logs', '.planestro')).toBe('');
@@ -67,7 +67,7 @@ describe('machine-local planning files never enter automatic Git operations', ()
     const remote = join(root, 'remote.git'); mkdirSync(remote); git(remote, 'init', '--bare', '-q');
     git(dataDir, 'remote', 'add', 'origin', remote); git(dataDir, 'push', '-u', 'origin', 'HEAD');
     const before = git(remote, 'rev-parse', 'refs/heads/planning');
-    writeFileSync(join(dataDir, 'planestro.local.yml'), `anthropic_api_key: ${dummy}\n`);
+    writeFileSync(join(dataDir, 'planestro.local.yml'), `mcp_servers:\n  x:\n    command: c\n    env:\n      TOKEN: ${dummy}\n`);
     git(dataDir, 'add', '-f', 'planestro.local.yml'); git(dataDir, 'commit', '-qm', 'fixture secret');
     git(dataDir, 'rm', '--cached', 'planestro.local.yml'); git(dataDir, 'commit', '-qm', 'fixture removal');
     store = await DataStore.open(dataDir);
@@ -80,7 +80,7 @@ describe('machine-local planning files never enter automatic Git operations', ()
     const { dataDir } = makeFixture();
     const path = join(dataDir, 'planestro.local.yml');
     writeFileSync(path, '{}', { mode: 0o644 });
-    writeLocalConfig(dataDir, LocalConfig.parse({ anthropic_api_key: dummy }));
+    writeLocalConfig(dataDir, LocalConfig.parse({ mcp_servers: { x: { command: 'c', env: { TOKEN: dummy } } } }));
     if (process.platform !== 'win32') expect(statSync(path).mode & 0o777).toBe(0o600);
     expect(readFileSync(path, 'utf8')).toContain(dummy);
   });

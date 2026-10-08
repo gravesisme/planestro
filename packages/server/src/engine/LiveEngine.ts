@@ -1421,7 +1421,6 @@ export class LiveEngine implements Engine {
     const acct = this.accountFor(fm, requested);
     if ('missing' in acct) { this.block(id, 'account_missing', `${requested.label}: ${acct.why}`); return undefined; }
     const account = acct.account;
-    if (account.api_key_env && !process.env[account.api_key_env]) { this.block(id, 'account_missing', `${requested.label} runs on account "${account.name}", whose key is read from ${account.api_key_env}, which is not set in planestro's environment`); return undefined; }
     const pick = resolveTurnModel(this.store.config, requested, { allow: allowFallback, unavailable: unavailableView(this.store.local.model_unavailable, account.name), now: new Date(Date.now()) });
     if (pick.exhaustedUntil) {
       this.blockExhausted(id, requested, account, `${fallbackChain(this.store.config, requested).map((m) => m.label).join(', ')} ${fallbackChain(this.store.config, requested).length > 1 ? 'are all' : 'is'} out of usage${account.name !== DEFAULT_ACCOUNT ? ` on account ${account.label}` : ''} until ${pick.exhaustedUntil}`);
@@ -3997,20 +3996,20 @@ export class LiveEngine implements Engine {
     const acct = this.accountFor(fm, def);
     return 'account' in acct && this.guarded(def.runner ?? 'claude', acct.account.name);
   }
-  /** What a turn on `account` is given: its credential source, and the other accounts' folders as secrets. */
+  /** What a turn on `account` is given: its login's config folder, and the other accounts' folders as secrets. */
   private accountTurnOptions(account: Account): { account?: AccountCredentials; secretDirs?: string[] } {
     const dirs = Object.values(this.store.local.accounts ?? {}).flatMap((a) => (a.home ? [a.home] : []));
     return {
-      ...(account.name !== DEFAULT_ACCOUNT ? { account: { name: account.name, ...(account.home ? { home: account.home } : {}), ...(account.api_key_env ? { apiKeyEnv: account.api_key_env } : {}) } } : {}),
+      ...(account.name !== DEFAULT_ACCOUNT ? { account: { name: account.name, ...(account.home ? { home: account.home } : {}) } } : {}),
       ...(dirs.length ? { secretDirs: dirs } : {}),
     };
   }
-  /** The accounts that could take this item's turn now: same runner, not guarded, key present, and its model (or a fallback it allows) not out there. */
+  /** The accounts that could take this item's turn now: same runner, not guarded, and its model (or a fallback it allows) not out there. */
   private accountsFree(fm: ItemFrontmatter, requested: ModelDef, except: string): Account[] {
     const runner = requested.runner ?? 'claude';
     const chain = fm.allow_model_fallback === true ? fallbackChain(this.store.config, requested) : [requested];
     const now = new Date(Date.now());
-    return accountList(this.store.local, runner).filter((a) => a.name !== except && !this.guarded(runner, a.name) && (!a.api_key_env || Boolean(process.env[a.api_key_env]))
+    return accountList(this.store.local, runner).filter((a) => a.name !== except && !this.guarded(runner, a.name)
       && chain.some((m) => !unavailableEntry(unavailableView(this.store.local.model_unavailable, a.name), m.id, now)));
   }
   /**

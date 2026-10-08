@@ -68,7 +68,7 @@ export function SettingsPage() {
           {searching
             ? <div className="settings-intro"><h2>{rows.length} setting{rows.length === 1 ? '' : 's'} {needle ? <>match “{q.trim()}”</> : 'changed from the defaults'}</h2><p>From every tab. Clear the search to go back to {current.name}.</p></div>
             : <div className="settings-intro"><h2>{current.name}</h2><p>{current.intro}</p><span className="file">{current.file}</span></div>}
-          {!searching && tab === 'budgets' && <BillingCallout state={state} />}
+          {!searching && tab === 'budgets' && <BillingCallout />}
           {!searching && tab === 'data' && <StorageBlock state={state} />}
           {!searching && tab === 'notifications' && <DesktopNotifications />}
           {[...groups].map(([g, list]) => (
@@ -86,15 +86,10 @@ export function SettingsPage() {
   );
 }
 
-/** Budgets opens by saying what the dollars are: a yardstick on a Claude plan, real money with an API key. */
-function BillingCallout({ state }: { state: State }) {
-  return state.billing === 'api_key'
-    ? <div className="billing" role="note"><span className="mode">API key</span>
-        <p><b>These dollar amounts are real charges.</b> Sessions run on an Anthropic API key{state.api_key === 'env' ? ' (ANTHROPIC_API_KEY in the environment planestro started in)' : ' (This machine → Anthropic API key)'}, so every dollar counted here is billed to your API account. The budgets are what stop one item from spending more than you meant.</p>
-        <p className="alt">Without a key, sessions use your Claude login instead: the same numbers become what the work would cost at API prices, and your plan's usage limits are what is spent.</p></div>
-    : <div className="billing" role="note"><span className="mode">Claude plan</span>
-        <p><b>These dollar amounts are not charges.</b> Sessions run on your Claude login, so the work comes out of your plan's usage limits, not your card. The dollars are what the same work would cost at API prices. planestro uses them as a yardstick, so one item can't use up a week of your plan.</p>
-        <p className="alt">With an Anthropic API key set (This machine → Anthropic API key), the same numbers are real money, billed to your API account, and this note says so.</p></div>;
+/** Budgets opens by saying what the dollars are: sessions run on your logins, so they are a yardstick, not charges. */
+function BillingCallout() {
+  return <div className="billing" role="note"><span className="mode">Your login</span>
+    <p><b>These dollar amounts are not charges.</b> Sessions run on your Claude and Codex logins, so the work comes out of your plans' usage limits, not your card. The dollars are what the same work would cost at API prices. planestro uses them as a yardstick, so one item can't use up a week of your plan.</p></div>;
 }
 
 function StorageBlock({ state }: { state: State }) {
@@ -170,12 +165,11 @@ function rowFlag(def: SettingDef, state: State): string | undefined {
     const m = findModel(cfg, cfg.orchestrator.model);
     if (!m || fallbackChain(cfg, m).length < 2) return 'no effect: its model has no fallback';
   }
-  if (def.key === 'usage_guard.enabled' && state.billing === 'api_key') return 'idle with an API key';
   return undefined;
 }
 
 function defaultText(def: SettingDef): string | undefined {
-  if (def.control === 'models' || def.control === 'categories' || def.control === 'secret' || def.control === 'mcp') return undefined;
+  if (def.control === 'models' || def.control === 'categories' || def.control === 'mcp') return undefined;
   const d = settingDefault(def.file, def.key);
   if (!d) return undefined;
   if ('none' in d) return 'none';
@@ -228,7 +222,6 @@ function Control({ def, value, state }: { def: SettingDef; value: unknown; state
     case 'list': return <ListCtl def={def} value={(value as string[] | undefined) ?? []} suggested={def.key === 'permissions.allow' ? suggestedAllowRules(state.toolchain ?? [], (value as string[] | undefined) ?? []) : undefined} />;
     case 'record': return <RecordCtl def={def} value={(value as Record<string, number> | undefined) ?? {}} />;
     case 'commands': return <CommandsCtl def={def} value={(value as Record<string, string> | undefined) ?? {}} />;
-    case 'secret': return <SecretCtl def={def} state={state} />;
     case 'mcp': return <McpServersCtl state={state} />;
     case 'categories': return <CategoriesCtl cfg={state.config} />;
     case 'sections': return <SectionsCtl def={def} value={(value as ReleaseSectionDef[] | undefined) ?? []} />;
@@ -340,22 +333,6 @@ function CommandsCtl({ def, value }: { def: SettingDef; value: Record<string, st
         <input className="mono" style={{ flex: '1 1 0' }} placeholder="command that regenerates it" aria-label={`Command for ${def.label}`} value={cmd} onChange={(e) => setCmd(e.target.value)} />
         <ActionButton className="small" type="submit" disabled={!name.trim() || !cmd.trim()} working="Adding…" onAct={add}>Add</ActionButton>
       </form>
-    </div>
-  );
-}
-
-/** The API key is never sent to the page: it shows whether one is set, and takes a replacement. */
-function SecretCtl({ def, state }: { def: SettingDef; state: State }) {
-  const [draft, setDraft] = useState('');
-  const where = state.api_key ?? 'none';
-  return (
-    <div className="ctl">
-      <span className={`chip ${where === 'none' ? '' : 'ok'}`}>{where === 'local' ? 'set here' : where === 'env' ? 'set in the environment' : 'not set'}</span>
-      <form className="ctl-inline" onSubmit={(e) => e.preventDefault()}>
-        <input type="password" autoComplete="off" placeholder={where === 'local' ? 'Replace with…' : def.placeholder} aria-label={def.label} value={draft} onChange={(e) => setDraft(e.target.value)} data-dirty={draft ? 'true' : undefined} />
-        <ActionButton className="small" type="submit" disabled={!draft.trim()} working="Saving…" onAct={() => save(def, draft.trim()).then((r) => r && setDraft(''))}>Save</ActionButton>
-      </form>
-      {where === 'local' && <ActionButton className="small danger" working="Removing…" onAct={() => { if (confirm('Remove the API key from planestro.local.yml? After a restart, sessions use your Claude login.')) return save(def, null); }}>Remove</ActionButton>}
     </div>
   );
 }

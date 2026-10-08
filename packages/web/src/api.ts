@@ -1,4 +1,4 @@
-import type { ConcurrencyAdvice, ConcurrencyChange, ConcurrencyGuard, ConcurrencyLimits, HostLoad, ItemFrontmatter, PromptFrontmatter, ReleaseFrontmatter, ReleaseStatus, Config, LocalConfig, BillingMode, ModelDef, Status, JournalEntry, UsageGuardState, QuestionFrontmatter, ThreadEntry, ScheduleFrontmatter, UsageReport } from '@planestro/shared';
+import type { ConcurrencyAdvice, ConcurrencyChange, ConcurrencyGuard, ConcurrencyLimits, HostLoad, ItemFrontmatter, PromptFrontmatter, ReleaseFrontmatter, ReleaseStatus, Config, LocalConfig, ModelDef, Status, JournalEntry, UsageGuardState, QuestionFrontmatter, ThreadEntry, ScheduleFrontmatter, UsageReport } from '@planestro/shared';
 import type { BreakdownChild, Priority, SourcedRule } from '@planestro/shared';
 
 export interface OrchestratorSpend {
@@ -85,12 +85,10 @@ export interface State {
   schema: string; readOnly: boolean; dataDir: string; codeRepo: string; config: Config;
   /** Toolchain files found in the code repository's root (package.json, Cargo.toml, …). */
   toolchain?: string[];
-  /** planestro.local.yml without its secrets: the API key is never sent, only whether one is set (`api_key`). */
+  /** planestro.local.yml without its secrets: MCP servers' keys are never sent, only that they are set. */
   local: LocalConfig;
   /** Every allow / deny rule workers run under, with where it came from: ~/.planestro/policy.yml, planestro.yml, planestro.local.yml (#229). */
   permissions?: { machine_path: string; machine_exists: boolean; machine_error?: string; rules: SourcedRule[] };
-  /** Whether budget dollars are an API-price yardstick on a Claude plan or real charges to an API account (#83). */
-  billing?: BillingMode; api_key?: 'local' | 'env' | 'none';
   items: ItemView[]; prompts: PromptView[]; releases?: ReleaseView[]; schedules?: ScheduleView[]; invalid: { path: string; error: string }[];
   update: { channel: string; running: string; checked_at: string; state: string; detail: string; target?: string } | null;
   engine: { mode: string; paused: boolean; paused_by?: 'user' | 'disk'; provider_guards?: Record<string, UsageGuardState>; disk_guard?: { free_gib: number; path: string; tripped_at: string }; ci_queue?: { queued: number; running: number }; runner_stalls?: { label: string; items: string[]; since: string }[]; sessions: SessionView[]; slots?: SlotsView; restart?: { draining: boolean; by?: 'user' | 'update'; idle: boolean; running: string[] } };

@@ -311,7 +311,7 @@ export class Orchestrator {
    * Claude model string) or is a raw model string; with `allow_model_fallback`, a row that is out of
    * usage on this machine yields to its fallback chain, as a worker's turn does.
    */
-  modelForWake(now = new Date(Date.now())): { runner: Runner; model: string; label: string; def?: ModelDef; account?: string; accountMissing?: string; accountHome?: string; apiKeyEnv?: string; fellBackFrom?: string; sdkFallback?: string; exhaustedUntil?: string } {
+  modelForWake(now = new Date(Date.now())): { runner: Runner; model: string; label: string; def?: ModelDef; account?: string; accountMissing?: string; accountHome?: string; fellBackFrom?: string; sdkFallback?: string; exhaustedUntil?: string } {
     const cfg = this.store.config.orchestrator;
     const def = findModel(this.store.config, cfg.model);
     if (!def) return { runner: 'claude', model: cfg.model, label: cfg.model };
@@ -321,8 +321,8 @@ export class Orchestrator {
     const pick = resolveTurnModel(this.store.config, def, { allow: cfg.allow_model_fallback, unavailable: unavailableView(this.store.local.model_unavailable, account?.name), now });
     return {
       runner: pick.def.runner ?? 'claude', model: pick.model ?? cfg.model, label: pick.def.label, def: pick.def,
-      ...(account && account.name !== DEFAULT_ACCOUNT ? { account: account.name, ...(account.home ? { accountHome: account.home } : {}), ...(account.api_key_env ? { apiKeyEnv: account.api_key_env } : {}) } : {}),
-      ...('missing' in acct ? { accountMissing: acct.why } : account?.api_key_env && !process.env[account.api_key_env] ? { accountMissing: `account ${account.name}'s key variable ${account.api_key_env} is not set` } : {}),
+      ...(account && account.name !== DEFAULT_ACCOUNT ? { account: account.name, ...(account.home ? { accountHome: account.home } : {}) } : {}),
+      ...('missing' in acct ? { accountMissing: acct.why } : {}),
       ...(pick.fellBackFrom ? { fellBackFrom: pick.fellBackFrom.label } : {}),
       ...(pick.sdkFallback ? { sdkFallback: pick.sdkFallback } : {}),
       ...(pick.exhaustedUntil ? { exhaustedUntil: pick.exhaustedUntil } : {}),
@@ -361,7 +361,7 @@ export class Orchestrator {
     const result: TurnResult = await this.ports.agents[pick.runner]!.runCustomTurn!({
       signal: this.activeAbort?.signal,
       label: events.map((e) => e.type).join(','), cwd: this.store.codeRepoPath(), model, ...runnerTurnSettings(pick.def),
-      ...(pick.account ? { account: { name: pick.account, ...(pick.accountHome ? { home: pick.accountHome } : {}), ...(pick.apiKeyEnv ? { apiKeyEnv: pick.apiKeyEnv } : {}) } } : {}),
+      ...(pick.account ? { account: { name: pick.account, ...(pick.accountHome ? { home: pick.accountHome } : {}) } } : {}),
       ...(pick.sdkFallback ? { fallbackModel: pick.sdkFallback } : {}),
       permissionMode: 'dontAsk', prompt, resume: state.session_id, maxTurns: 30, ...(images.length ? { images } : {}),
       maxTokens: state.session_id ? cfg.budget_tokens_per_wake : cfg.budget_tokens_per_fresh_wake,

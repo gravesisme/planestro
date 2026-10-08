@@ -32,12 +32,11 @@ orchestrator or an open item cannot be removed.
 
 What stays read-only: `project.id_prefix` once items exist, and the stamps and runtime state (`schema_version`,
 `tool_version`, `engine.paused`, `engine.provider_guards`, `model_unavailable`, which the model
-cards write). The Anthropic API key is never sent to the page: it shows *set here*, *set in the
-environment* or *not set*, and takes a replacement.
+cards write).
 
 **MCP servers** (Access, #237) are cards with **Test** (connects the way a session would and lists
 the server's tools), **Edit**, **Turn off** and **Remove**, plus **Add a server** and **Import from
-Claude Code or Codex**. Their env values and headers are keys, write-only like the API key: the
+Claude Code or Codex**. Their env values and headers are keys, write-only: the
 page shows their names, an empty value keeps the one stored, and nothing is returned or logged.
 **Import** reads `~/.claude.json` (your servers and this project's) and `~/.codex/config.toml` on
 this machine, lists what it found by name, and copies the ones you tick, recording `source`; a
@@ -47,13 +46,14 @@ name this machine already has is never overwritten. Removing an imported server 
 when you tick it on the model card. All of it is one write to `planestro.local.yml`, which is
 gitignored, so nothing is committed.
 
-**Budget dollars.** With a Claude login, the dollars planestro counts (budgets, an item's cost,
-a decision card's "+$15 and resume") are what the same work would cost at API prices, the SDK's
-`total_cost_usd`: a yardstick, not a charge; your plan's usage limits are what is spent. With an
-API key (`anthropic_api_key` below, or `ANTHROPIC_API_KEY` in the environment planestro started
-in) they are real charges to the API account. The server reports which (`billing:
-subscription | api_key` in `/api/state`); the Budgets tab opens with a note worded for it, and
-dollar figures elsewhere carry a short hint.
+**Budget dollars.** Sessions run on your `claude` and `codex` logins, never a model API key, so
+the dollars planestro counts (budgets, an item's cost, a decision card's "+$15 and resume") are
+what the same work would cost at API prices, the SDK's `total_cost_usd`: a yardstick, not a
+charge; your plan's usage limits are what is spent. `ANTHROPIC_API_KEY` in the environment
+planestro started in is dropped from every Claude session, so it cannot bill the API instead of
+your login. A `planestro.local.yml` that still has `anthropic_api_key`, or an account's
+`api_key_env`, loses them at startup, with one `[warn]` line each (an account with nothing but
+`api_key_env` goes too, and an item on it blocks `account_missing`).
 
 ## planestro.yml
 
@@ -352,8 +352,7 @@ Default: **Release notes** and **Notes**.
 | `lan_access` | `true`: the server listens on every interface (`0.0.0.0`) unless `--host` says otherwise, at every start (`serve`, `serve --watch` restarts, `start`), so a phone on the same Wi-Fi can open planestro. It answers only the local network: loopback, `10/8`, `172.16/12`, `192.168/16`, `169.254/16`, `fe80::/10` and `fc00::/7` (IPv4-mapped IPv6 included); any other remote address gets a 403, logged. There is no login, so anyone on that network can use planestro while it is on: fine at home, not on shared Wi-Fi. See [Notify when something needs you](#notify-when-something-needs-you). |
 | `allowed_hosts` | Extra names this machine is reached by — a Tailscale or DNS name for the phone. The server answers only requests addressed to `localhost`, `127.0.0.1`, the `--host` it is bound to (with `0.0.0.0`: this machine's hostname and interface addresses) and these; anything else, and any request from another website, gets a 403. |
 | `codex_bin` | Path to `codex`, if not on `PATH`. Only used by models with `runner: codex`. |
-| `anthropic_api_key` | Bills Claude sessions to the API under the Commercial Terms instead of a claude.ai login. `ANTHROPIC_API_KEY` in the environment does the same. |
-| `accounts` | Other logins or keys for the same runner ([second accounts](#a-second-account-for-the-same-provider)), by name: `{ runner, label?, home?, api_key_env? }`. Hand-edited here; the default login is `default`. |
+| `accounts` | Other logins for the same runner ([second accounts](#a-second-account-for-the-same-provider)), by name: `{ runner, label?, home }`. Hand-edited here; the default login is `default`. |
 | `model_unavailable` | Models this machine's account cannot use right now, by model id (`<id>@<account>` for a named account): `{ until, reason, since, manual }`. Written when a turn fails on a usage limit and by **mark unavailable** in Settings; cleared there or when `until` passes. Per machine because usage belongs to the account logged in here. |
 | `engine.paused` | The PAUSE AUTOMATION lever, persisted. |
 | `engine.paused_by` | `user` (the lever) or `disk`. Provider guards are independent. Only a disk pause can automatically release this global lever; a user pause never does. |
@@ -461,8 +460,8 @@ the orchestrator may not park it again (the user may). This works with `usage_gu
 
 ## A second account for the same provider
 
-Two Claude subscriptions, or a subscription and an API key, or two Codex logins (#242). Name each extra one in
-`planestro.local.yml`; the runner's own login is `default`. An account says where its credential is, never what it is:
+Two Claude subscriptions, or two Codex logins (#242). Name each extra one in `planestro.local.yml`; the runner's own
+login is `default`. An account says which config folder it is signed in from, never a credential:
 
 ```yaml
 accounts:
@@ -470,23 +469,19 @@ accounts:
     runner: claude
     label: Work Max
     home: ~/.claude-work        # its CLAUDE_CONFIG_DIR: sign in once with `CLAUDE_CONFIG_DIR=~/.claude-work claude`, then /login
-  api:                          # a Console key, read from planestro's environment
-    runner: claude
-    api_key_env: ANTHROPIC_API_KEY_2
   codex-2:
     runner: codex
-    home: ~/.codex-2            # its CODEX_HOME: `CODEX_HOME=~/.codex-2 codex login` (or `codex login --with-api-key`)
+    home: ~/.codex-2            # its CODEX_HOME: `CODEX_HOME=~/.codex-2 codex login`
 ```
 
 A model row may name one (`account: work`); its turns, and the orchestrator's on that row, run there. A name this machine
-does not define, or an `api_key_env` that is not set, stops the item as `account_missing` instead of billing the default
-login. A named account replaces `anthropic_api_key` / `ANTHROPIC_API_KEY` for its sessions. Each account has its own usage
+does not define stops the item as `account_missing` instead of billing the default login. Each account has its own usage
 guard (`engine.provider_guards.claude:work`) and its own remembered outages (`model_unavailable: fable-5@work`). The other
 accounts' `home` folders are on the workers' secret-file deny list.
 
-When a turn runs out of usage and another account on the same runner can take it (not paused, its key set, the model, or a
+When a turn runs out of usage and another account on the same runner can take it (not paused, the model, or a
 fallback the item allows, not out there too), the item blocks `usage_exhausted` with a card of its own, not triaged:
 **Continue on <account>** for each (up to three) and **Wait for the reset**. Continuing moves the item onto that account
 (its `account` field) and carries on from where it stopped: the conversation resumes when the new account keeps it in the
-same place (an account with only a key shares the default login's folder), and otherwise a fresh conversation starts from
+same place (two accounts on the same `home`), and otherwise a fresh conversation starts from
 a brief (a Claude transcript lives under its `CLAUDE_CONFIG_DIR`, a Codex thread under its `CODEX_HOME`).

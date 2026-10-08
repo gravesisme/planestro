@@ -23,7 +23,7 @@ async function setup(config?: (yml: string) => string) {
     return { status: r.status, text: await r.text() };
   };
   const local = () => YAML.parse(readFileSync(join(dataDir, 'planestro.local.yml'), 'utf8'));
-  const state = () => JSON.stringify(stateView(store!, new MockEngine(store!, () => {}), {}, undefined));
+  const state = () => JSON.stringify(stateView(store!, new MockEngine(store!, () => {}), {}));
   return { store, dataDir, send, local, state };
 }
 

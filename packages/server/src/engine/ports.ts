@@ -194,11 +194,8 @@ export interface TurnTools {
 export interface PermissionRequest { tool: string; input: Record<string, unknown> }
 export type McpServerSpec = { type?: 'stdio'; command: string; args?: string[]; env?: Record<string, string> } | { type: 'http'; url: string; headers?: Record<string, string> };
 /** What every runner needs for a worker turn. */
-/**
- * Where a named account's credential is (#242): `home` is its config folder (CLAUDE_CONFIG_DIR / CODEX_HOME, `~/` allowed),
- * `apiKeyEnv` the variable in planestro's environment holding a Claude Console key. The key itself is read only by the port.
- */
-export interface AccountCredentials { name: string; home?: string; apiKeyEnv?: string }
+/** Where a named account's login is (#242): `home` is its config folder (CLAUDE_CONFIG_DIR / CODEX_HOME, `~/` allowed). */
+export interface AccountCredentials { name: string; home?: string }
 
 export interface AgentTurnOptions {
   itemId: string;
