@@ -48,10 +48,10 @@ describe('accounts (#242)', () => {
   });
 
   it('resumes across accounts only where the conversation is stored in the same place', () => {
-    expect(sameSessionStore(local, 'claude', undefined, 'api')).toBe(true);       // a key on the default login's folder
-    expect(sameSessionStore(local, 'claude', 'default', 'work')).toBe(false);     // another CLAUDE_CONFIG_DIR has its own transcripts
-    expect(sameSessionStore(local, 'claude', 'work', 'work')).toBe(true);
-    expect(sameSessionStore(local, 'codex', 'default', 'spare')).toBe(false);
-    expect(sameSessionStore(local, 'claude', 'gone', 'gone')).toBe(false);        // unknown here: never assumed
+    expect(sameSessionStore(local, undefined, 'api')).toBe(true);       // a key on the default login's folder
+    expect(sameSessionStore(local, 'default', 'work')).toBe(false);     // another CLAUDE_CONFIG_DIR has its own transcripts
+    expect(sameSessionStore(local, 'work', 'work')).toBe(true);
+    expect(sameSessionStore(local, 'default', 'spare')).toBe(false);
+    expect(sameSessionStore(local, 'gone', 'gone')).toBe(false);        // unknown here: never assumed
   });
 });

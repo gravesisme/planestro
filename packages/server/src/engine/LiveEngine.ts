@@ -4,10 +4,10 @@ import { join, relative, isAbsolute, extname, basename, matchesGlob } from 'node
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { DEBUG_MARKER, debugMarkerRefusal, Audition, AuditionPicks, auditionProblem, takePathProblem, auditionPicksProblem, auditionPickLines, auditionNote, auditionComplete, auditionTakes, runnerTurnSettings, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem, usageTurnData, USAGE_TURN, type UsageRole, type ModelDef } from '@planestro/shared';
+import { DEBUG_MARKER, debugMarkerRefusal, Audition, AuditionPicks, auditionProblem, takePathProblem, auditionPicksProblem, auditionPickLines, auditionNote, auditionComplete, auditionTakes, runnerTurnSettings, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem, usageTurnData, USAGE_TURN, type UsageRole, type ModelDef, resolveAccount, accountList, guardKey, unavailableKey, unavailableView, sameSessionStore, DEFAULT_ACCOUNT, type Account } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
-import { matchesPathPattern, type Checkpoint, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote, type CiQueue, type RunnerReport, type UndeliveredReport, type ConnectionDrop } from './ports.ts';
+import { matchesPathPattern, type Checkpoint, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote, type CiQueue, type RunnerReport, type UndeliveredReport, type ConnectionDrop, type AccountCredentials } from './ports.ts';
 import { operatorMcpUrl } from '../routes/mcp.ts';
 import { listInstances } from '../instances.ts';
 import { makePolicy, ruleFor, allowedByRules, sdkRules, BASE_ALLOWED } from './policy.ts';
@@ -387,7 +387,8 @@ export class LiveEngine implements Engine {
     for (const item of this.store.listItems()) {
       const fm = item.file.frontmatter;
       const def = findModel(this.store.config, fm.status === 'PLAN_IN_PROGRESS' ? fm.planner : fm.implementer);
-      if (fm.blocked_reason === 'provider_usage' && (def?.runner ?? 'claude') === runner)
+      const acct = def ? this.accountFor(fm, def) : undefined;
+      if (fm.blocked_reason === 'provider_usage' && def && acct && 'account' in acct && guardKey(def.runner ?? 'claude', acct.account.name) === runner)
         this.store.mutateItem(item.id, clearUsageStopOps(fm), 'engine');
     }
     this.store.journal.append({ type: 'usage.guard_resumed', actor: 'engine', data: { provider: runner } });
@@ -437,7 +438,11 @@ export class LiveEngine implements Engine {
    * (planner while planning, otherwise implementer) is that model, or, when they allow a fallback, has it in its chain.
    * Items blocked for anything else, held, or taken over are left alone; they re-enter through ordinary admission.
    */
-  private unblockModel(modelId: string): void {
+  private unblockModel(key: string): void {
+    // A named account's outage is keyed `<model>@<account>` (#242): only items on that account were held by it.
+    const at = key.lastIndexOf('@');
+    const modelId = at > 0 ? key.slice(0, at) : key;
+    const account = at > 0 ? key.slice(at + 1) : DEFAULT_ACCOUNT;
     const label = findModel(this.store.config, modelId)?.label ?? modelId;
     for (const item of this.store.listItems()) {
       const fm = item.file.frontmatter;
@@ -446,7 +451,9 @@ export class LiveEngine implements Engine {
       if (!requested) continue;
       const chain = fm.allow_model_fallback === true ? fallbackChain(this.store.config, requested) : [requested];
       if (!chain.some((m) => m.id === modelId)) continue;
-      this.store.mutateItem(item.id, [...clearUsageStopOps(fm), { activity: { actor: 'app', text: `unblocked: ${label} usage window reset` } }], 'engine', { commit: `${item.id}: unblock (${modelId} usage window reset)` });
+      const acct = this.accountFor(fm, requested);
+      if (!('account' in acct) || acct.account.name !== account) continue;
+      this.store.mutateItem(item.id, [...clearUsageStopOps(fm), { activity: { actor: 'app', text: `unblocked: ${label} usage window reset${account !== DEFAULT_ACCOUNT ? ` on account ${account}` : ''}` } }], 'engine', { commit: `${item.id}: unblock (${key} usage window reset)` });
     }
   }
   /**
@@ -566,7 +573,7 @@ export class LiveEngine implements Engine {
       const fm = item.file.frontmatter;
       if (fm.status !== 'QUEUED' || this.jobs.has(item.id) || fm.taken_over) continue;
       const planner = findModel(this.store.config, fm.planner);
-      if (planner && this.store.local.engine.provider_guards?.[planner.runner]) continue;
+      if (planner && this.guardedFor(fm, planner)) continue;
       let d = this.store.derived(item);
       if (d.flavor !== 'worker' || !d.deps_satisfied) continue;
       if (fm.parent) {
@@ -1056,8 +1063,10 @@ export class LiveEngine implements Engine {
       const model = findModel(this.store.config, turn.phase === 'plan' ? fm.planner : fm.implementer);
       if (!model || model.external) continue;
       const now = new Date();
-      const pick = resolveTurnModel(this.store.config, model, { allow: fm.allow_model_fallback === true, unavailable: this.store.local.model_unavailable, now });
-      if (this.store.local.engine.provider_guards?.[pick.def.runner] || unavailableEntry(this.store.local.model_unavailable, pick.def.id, now)) continue;
+      const acct = this.accountFor(fm, model);
+      const unavailable = 'account' in acct ? unavailableView(this.store.local.model_unavailable, acct.account.name) : undefined;
+      const pick = resolveTurnModel(this.store.config, model, { allow: fm.allow_model_fallback === true, unavailable, now });
+      if ('account' in acct && (this.guarded(pick.def.runner ?? 'claude', acct.account.name) || unavailableEntry(unavailable, pick.def.id, now))) continue;
       this.runJob(item.id, () => this.runPendingTurn(item.id, turn));
     }
   }
@@ -1374,9 +1383,14 @@ export class LiveEngine implements Engine {
     const requested = this.store.config.models.find((m) => m.id === modelId);
     if (!requested) throw new Error(`unknown model ${modelId}`);
     const allowFallback = fm.allow_model_fallback === true;
-    const pick = resolveTurnModel(this.store.config, requested, { allow: allowFallback, unavailable: this.store.local.model_unavailable, now: new Date(Date.now()) });
+    // The account the turn runs on (#242): the item's, its model row's, or the runner's own login; its outages are its own.
+    const acct = this.accountFor(fm, requested);
+    if ('missing' in acct) { this.block(id, 'account_missing', `${requested.label}: ${acct.why}`); return undefined; }
+    const account = acct.account;
+    if (account.api_key_env && !process.env[account.api_key_env]) { this.block(id, 'account_missing', `${requested.label} runs on account "${account.name}", whose key is read from ${account.api_key_env}, which is not set in planestro's environment`); return undefined; }
+    const pick = resolveTurnModel(this.store.config, requested, { allow: allowFallback, unavailable: unavailableView(this.store.local.model_unavailable, account.name), now: new Date(Date.now()) });
     if (pick.exhaustedUntil) {
-      this.block(id, 'usage_exhausted', `${fallbackChain(this.store.config, requested).map((m) => m.label).join(', ')} ${fallbackChain(this.store.config, requested).length > 1 ? 'are all' : 'is'} out of usage until ${pick.exhaustedUntil}`);
+      this.blockExhausted(id, requested, account, `${fallbackChain(this.store.config, requested).map((m) => m.label).join(', ')} ${fallbackChain(this.store.config, requested).length > 1 ? 'are all' : 'is'} out of usage${account.name !== DEFAULT_ACCOUNT ? ` on account ${account.label}` : ''} until ${pick.exhaustedUntil}`);
       return undefined;
     }
     const def = pick.def;
@@ -1389,7 +1403,7 @@ export class LiveEngine implements Engine {
     if (runner === 'claude' && !model) throw new Error(`model ${def.id} has no claude_model`);
     // Runners that report tokens instead of dollars are budgeted in worker turns.
     const metered = modelCapabilities(def).accounting === 'dollars';
-    if (this.store.local.engine.provider_guards?.[runner]) return defer();
+    if (this.guarded(runner, account.name)) return defer();
     const budget = this.budgetOf(fm);
     if (!metered && (fm.agent_turns ?? 0) >= budget.turns) { this.block(id, 'turn_budget', `${def.label} has used ${fm.agent_turns} of ${budget.turns} turns on this item (${budget.turnsKey}); raise it on the item and unblock, or take the item over by hand`); return undefined; }
     if (!metered && (fm.tokens ?? 0) >= budget.tokens) { this.block(id, 'token_budget', `${def.label} has used ${(fm.tokens ?? 0).toLocaleString()} of ${budget.tokens.toLocaleString()} tokens on this item (${budget.tokensKey}); raise it on the item and unblock, or take the item over by hand`); return undefined; }
@@ -1398,7 +1412,8 @@ export class LiveEngine implements Engine {
     const usdLeft = budget.usd - (fm.cost_usd ?? 0);
     const contract = modelCapabilities(def).toolContract;
     const saved = fm.agent_sessions?.[runner];
-    const incompatible = saved && (saved.tool_contract !== contract || (modelCapabilities(def).roleBound && (saved.role === 'plan') !== (phase === 'plan')));
+    // A conversation kept in another account's store (its own config folder, #242) is not there to resume.
+    const incompatible = saved && (saved.tool_contract !== contract || (modelCapabilities(def).roleBound && (saved.role === 'plan') !== (phase === 'plan')) || !sameSessionStore(this.store.local, saved.account, account.name));
     let resumeId = incompatible ? undefined : metered ? fm.session_id : saved?.session_id;
     // What the turn costs before it does anything (#64): a resume sends the whole conversation again.
     // One the item cannot pay for, or whose reload is above budget_usd_fresh_above, becomes a fresh
@@ -1491,9 +1506,9 @@ export class LiveEngine implements Engine {
     };
     try {
       result = await this.withRunnerSlot(runner, () => this.withSessionSlot(id, () => { if (abort.signal.aborted && !this.stopping) return Promise.resolve<TurnResult>({ subtype: 'killed', isError: false, costUsd: 0, numTurns: 0, text: '' });
-        if (this.stopping || this._paused || this.draining || this.store.local.engine.provider_guards?.[runner]) return Promise.resolve<TurnResult>({ subtype: 'deferred', isError: false, costUsd: 0, numTurns: 0, text: '' }); admitted(); return beforeRun().then(() => agent.runTurn({
+        if (this.stopping || this._paused || this.draining || this.guarded(runner, account.name)) return Promise.resolve<TurnResult>({ subtype: 'deferred', isError: false, costUsd: 0, numTurns: 0, text: '' }); admitted(); return beforeRun().then(() => agent.runTurn({
         itemId: id, phase, cwd, model: model as string,
-        transport: modelCapabilities(def).transport, ...runnerTurnSettings(def),
+        transport: modelCapabilities(def).transport, ...runnerTurnSettings(def), ...this.accountTurnOptions(account),
         maxTokens: metered ? undefined : Math.min(budget.tokens - (fm.tokens ?? 0), phase === 'plan' ? fm.op_data?.plan_retry_turns ? 10_000 : this.store.config.budget_tokens_per_plan_turn : Infinity),
         onApproval: async (req) => {
           if (abort.signal.aborted || this.store.requireItem(id).file.frontmatter.taken_over) return;
@@ -1605,7 +1620,7 @@ export class LiveEngine implements Engine {
     this.store.mutateItem(id, [
       { set: {
         ...(metered ? { session_id: sessionNow } : {}),
-        ...(result.sessionId ? { agent_sessions: { ...(after.agent_sessions ?? {}), [runner]: { session_id: result.sessionId, model: def.id, role: phase, tool_contract: contract, ...(modelCapabilities(def).transport ? { transport: modelCapabilities(def).transport } : {}) } } } : {}),
+        ...(result.sessionId ? { agent_sessions: { ...(after.agent_sessions ?? {}), [runner]: { session_id: result.sessionId, model: def.id, role: phase, tool_contract: contract, ...(modelCapabilities(def).transport ? { transport: modelCapabilities(def).transport } : {}), ...(account.name !== DEFAULT_ACCOUNT ? { account: account.name } : {}) } } } : {}),
         ...(context ? { session_context: context } : {}),
         ...(started && (after.op_data?.fresh_brief || freshPlan) ? { op_data: opDataAfter } : {}),
         cost_usd: Math.round(((after.cost_usd ?? 0) + result.costUsd) * 10000) / 10000, turns: (after.turns ?? 0) + result.numTurns,
@@ -1621,7 +1636,7 @@ export class LiveEngine implements Engine {
     // The quote beside what the turn really cost, so an estimate that drifts from the bill is seen (HH-247's resume was quoted nowhere).
     this.store.journal.end(opId, id, result.isError ? 'failed' : 'ok', { subtype: result.subtype, cost: result.costUsd, parked: result.parked, ...(result.sessionTotalUsd !== undefined ? { session_total: result.sessionTotalUsd } : {}), ...(result.contextTokens ? { context_tokens: result.contextTokens } : {}), ...(result.resumeQuote ? { quoted_reload_usd: result.resumeQuote.cacheWriteUsd, quoted_tokens: result.resumeQuote.contextTokens, quoted_cache_expired: result.resumeQuote.cacheExpired } : {}), ...(replaced !== undefined ? { fresh: true, replaced_session: replaced } : {}) });
     if (started) this.store.journal.append({ type: 'session.replaced', item: id, actor: 'engine', data: { from: replaced, to: result.sessionId, why: path.path === 'fresh' ? path.why : 'fresh' } });
-    this.usageSeen(result.rateLimit, runner);
+    this.usageSeen(result.rateLimit, guardKey(runner, account.name));
     this.emit({ type: 'session.ended', id, subtype: result.subtype });
     for (const f of result.toolFailures ?? []) this.store.mutateItem(id, [{ activity: { actor: 'app', text: `planestro tool ${f.tool} failed before reaching planestro (nothing was recorded): ${f.error}` } }], 'engine');
     // A report lost on its way here is applied now (#167); a turn the engine's stop killed keeps it for the restart, one a person stopped drops it.
@@ -1639,12 +1654,12 @@ export class LiveEngine implements Engine {
     if (result.subtype === 'usage_exhausted') {
       // Remember the outage for every item on this machine, then run the same turn again: with
       // fallback allowed it resolves to the next model in the chain; without, it blocks.
-      const until = this.recordUnavailable(def, result.usageLimit);
-      if (allowFallback && !this.stopping && fallbackChain(this.store.config, requested).some((m) => m.id !== def.id && !unavailableEntry(this.store.local.model_unavailable, m.id, new Date(Date.now())))) {
+      const until = this.recordUnavailable(def, result.usageLimit, false, account.name);
+      if (allowFallback && !this.stopping && fallbackChain(this.store.config, requested).some((m) => m.id !== def.id && !unavailableEntry(unavailableView(this.store.local.model_unavailable, account.name), m.id, new Date(Date.now())))) {
         this.store.mutateItem(id, [{ activity: { actor: 'app', text: `${def.label} is out of usage until ${until}; retrying this ${phase} turn on its fallback` } }], 'engine');
         return this.runTurnFor(id, phase, prompt, extraAllowed, oneShotCommands, { ...opts, final: true, ...(replaced !== undefined ? { fresh: true as const } : {}) });
       }
-      this.block(id, 'usage_exhausted', `${def.label} is out of usage until ${until}${allowFallback ? ' and has no available fallback' : ' (this item does not allow a fallback model)'}: ${result.usageLimit?.message ?? ''}`);
+      this.blockExhausted(id, requested, account, `${def.label} is out of usage${account.name !== DEFAULT_ACCOUNT ? ` on account ${account.label}` : ''} until ${until}${allowFallback ? ' and has no available fallback' : ' (this item does not allow a fallback model)'}: ${result.usageLimit?.message ?? ''}`);
       return result;
     }
     if (result.isError && phase !== 'plan' && result.subtype !== 'session_lost' && !result.blocked) {
@@ -3921,19 +3936,95 @@ export class LiveEngine implements Engine {
     return `Delivered to ${to}: ${copied.length} file${copied.length === 1 ? '' : 's'} attached; ${told}.`;
   }
 
+  // ---- accounts (#242): a second login or key for the same runner ----
+  /** The account a turn on `def` runs on for this item: the item's for that runner, its model row's, or the default login. */
+  private accountFor(fm: { account?: string }, def: ModelDef): { account: Account } | { missing: string; why: string } {
+    return resolveAccount(this.store.local, def.runner ?? 'claude', { item: fm.account, model: def.account });
+  }
+  /** Whether that account's usage guard holds its new turns. */
+  private guarded(runner: string, account?: string): boolean { return Boolean(this.store.local.engine.provider_guards?.[guardKey(runner, account)]); }
+  private guardedFor(fm: { account?: string }, def: ModelDef): boolean {
+    const acct = this.accountFor(fm, def);
+    return 'account' in acct && this.guarded(def.runner ?? 'claude', acct.account.name);
+  }
+  /** What a turn on `account` is given: its credential source, and the other accounts' folders as secrets. */
+  private accountTurnOptions(account: Account): { account?: AccountCredentials; secretDirs?: string[] } {
+    const dirs = Object.values(this.store.local.accounts ?? {}).flatMap((a) => (a.home ? [a.home] : []));
+    return {
+      ...(account.name !== DEFAULT_ACCOUNT ? { account: { name: account.name, ...(account.home ? { home: account.home } : {}), ...(account.api_key_env ? { apiKeyEnv: account.api_key_env } : {}) } } : {}),
+      ...(dirs.length ? { secretDirs: dirs } : {}),
+    };
+  }
+  /** The accounts that could take this item's turn now: same runner, not guarded, key present, and its model (or a fallback it allows) not out there. */
+  private accountsFree(fm: ItemFrontmatter, requested: ModelDef, except: string): Account[] {
+    const runner = requested.runner ?? 'claude';
+    const chain = fm.allow_model_fallback === true ? fallbackChain(this.store.config, requested) : [requested];
+    const now = new Date(Date.now());
+    return accountList(this.store.local, runner).filter((a) => a.name !== except && !this.guarded(runner, a.name) && (!a.api_key_env || Boolean(process.env[a.api_key_env]))
+      && chain.some((m) => !unavailableEntry(unavailableView(this.store.local.model_unavailable, a.name), m.id, now)));
+  }
+  /**
+   * Out of usage (#242): with another account that could take the turn, the block comes with a card of its own, "Continue on
+   * <account>" for each (up to three) and "Wait for the reset"; spending on another account is the user's call, so it is
+   * not triaged. Without one, the plain usage_exhausted stop.
+   */
+  private blockExhausted(id: string, requested: ModelDef, account: Account, detail: string): void {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    const others = this.accountsFree(fm, requested, account.name).slice(0, 3);
+    if (!others.length || fm.taken_over) { this.block(id, 'usage_exhausted', detail); return; }
+    const saved = fm.agent_sessions?.[requested.runner ?? 'claude']?.account ?? account.name;
+    const options: DecisionOption[] = others.map((a, i) => ({
+      label: `Continue on ${a.label}`.slice(0, 60),
+      description: `${sameSessionStore(this.store.local, saved, a.name) ? 'Its conversation resumes there' : 'That account cannot see its conversation, so a fresh one starts from a brief'}; usage is billed to ${a.name === DEFAULT_ACCOUNT ? 'the default login' : `account ${a.name}`}.`,
+      ...(i === 0 ? { recommended: true } : {}),
+      action: { tool: 'continue_on_account', args: { id, account: a.name } },
+    }));
+    options.push({ label: 'Wait for the reset', description: `It stays blocked until ${requested.label}'s usage resets on ${account.label}${this.store.config.usage_guard.auto_resume ? ', then carries on by itself' : '; unblock it then'}.`, action: { tool: 'wait_for_reset', args: { id } } });
+    this.block(id, 'usage_exhausted', detail, 'user', undefined, {
+      question: `${requested.label} is out of usage on ${account.label}. Carry on with another account?`.slice(0, 200),
+      why: `${others.map((a) => a.label).join(', ')} can take this turn now; it spends that account's usage.`.slice(0, 400),
+      options, allow_free_text: false,
+    });
+  }
+  /** Why `account` cannot take item `id`'s turn now, or null (checked when the card is filed and again at the tap). */
+  private accountRefusal(id: string, name: string): string | null {
+    const fm = this.store.getItem(id)?.file.frontmatter;
+    if (!fm) return `there is no item ${id}`;
+    if (fm.taken_over) return `${id} is taken over: the user is finishing it by hand`;
+    if (fm.blocked_reason !== 'usage_exhausted') return `${id} is not stopped for usage`;
+    const requested = findModel(this.store.config, fm.status === 'PLAN_IN_PROGRESS' ? fm.planner : fm.implementer);
+    if (!requested) return `${id} has no model to run`;
+    const acct = resolveAccount(this.store.local, requested.runner ?? 'claude', { item: name });
+    if ('missing' in acct) return acct.why;
+    if (acct.account.runner !== (requested.runner ?? 'claude')) return `account ${name} is a ${acct.account.runner} account; ${requested.label} runs on ${requested.runner ?? 'claude'}`;
+    if (!this.accountsFree(fm, requested, '').some((a) => a.name === name)) return `${requested.label} cannot run on account ${name} now (its usage is out or paused there too)`;
+    return this.busyWith(id) ?? null;
+  }
+  /** The user's "Continue on <account>": the item runs on it from here, and carries on from where it stopped. */
+  private async continueOnAccount(id: string, name: string): Promise<string> {
+    const refusal = this.accountRefusal(id, name);
+    if (refusal) throw new Error(refusal);
+    const fm = this.store.requireItem(id).file.frontmatter;
+    const runner = findModel(this.store.config, fm.status === 'PLAN_IN_PROGRESS' ? fm.planner : fm.implementer)?.runner ?? 'claude';
+    const label = accountList(this.store.local, runner).find((a) => a.name === name)?.label ?? name;
+    this.store.mutateItem(id, [{ set: { account: name } }, { activity: { actor: 'user', text: `continues on ${label}: its turns run on that account from here` } }], 'user', { commit: `${id}: continue on account ${name}` });
+    await this.unblock(id, undefined, 'user');
+    return `${id} continues on account ${name}`;
+  }
+
   /** Mark a model out of usage on this machine until its reset (or the default window); returns the time, for messages. */
-  recordUnavailable(def: { id: string; label: string }, limit: TurnResult['usageLimit'], manual = false): string {
+  recordUnavailable(def: { id: string; label: string }, limit: TurnResult['usageLimit'], manual = false, account?: string): string {
     const now = new Date(Date.now());
     const until = unavailableUntil(limit?.resetsAt, now);
-    this.store.updateLocal({ model_unavailable: markUnavailable(this.store.local.model_unavailable, def.id, { until, reason: limit?.message ?? 'usage limit', manual }, now) });
-    this.store.journal.append({ type: 'model.unavailable', actor: manual ? 'user' : 'engine', data: { model: def.id, until: until.toISOString(), reason: limit?.message ?? '' } });
-    this.note('warn', `${def.label} is out of usage until ${until.toISOString()}`);
+    this.store.updateLocal({ model_unavailable: markUnavailable(this.store.local.model_unavailable, unavailableKey(def.id, account), { until, reason: limit?.message ?? 'usage limit', manual }, now) });
+    this.store.journal.append({ type: 'model.unavailable', actor: manual ? 'user' : 'engine', data: { model: def.id, until: until.toISOString(), reason: limit?.message ?? '', ...(account && account !== DEFAULT_ACCOUNT ? { account } : {}) } });
+    this.note('warn', `${def.label} is out of usage${account && account !== DEFAULT_ACCOUNT ? ` on account ${account}` : ''} until ${until.toISOString()}`);
     this.armModelResume();
     return until.toISOString();
   }
 
   /** `stall`: the runner the stop waits on (#216): it joins that runner's one signal instead of a triage of its own. */
-  private block(id: string, reason: string, detail: string, awaiting: 'user' | undefined = 'user', stall?: RunnerStall): void {
+  private block(id: string, reason: string, detail: string, awaiting: 'user' | undefined = 'user', stall?: RunnerStall, card?: Omit<Decision, 'requested_at' | 'reason'>): void {
     // No space left (#161): whatever stopped on it, the cause is the disk, which no instruction fixes. Said as such, never
     // triaged, and the guard reads the disk at once (it pauses everything else rather than let each item fail in turn).
     // Only a generic stop is renamed: one with its own reason (cleanup_dirty keeps its invariant-7 story) keeps it, and the disk is still read.
@@ -3944,7 +4035,7 @@ export class LiveEngine implements Engine {
       // running under a take-over blocked HH-136, by then in review with its PR, as agent_blocked).
       if (cur.taken_over) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `not blocked (${reason}), since you have this item: ${detail.replace(/\s+/g, ' ').slice(0, 300)}` } }], 'engine'); return; }
       // A stop for a person goes to the orchestrator first (triage); it resolves it or asks one plain question.
-      const triage = stall ? { on: false, ops: [{ set: { op_data: { ...(cur.op_data ?? {}), runner_stall: this.stallMark(stall) } } }, { activity: { actor: 'app', text: `not triaged: runner ${stall.label} looks stalled or offline, and every item waiting on it is said in one signal; it waits for CI again by itself once a runner takes a job` } }] as ItemOp[] } : this.triageOps(cur, reason);
+      const triage = card ? { on: false, ops: [] as ItemOp[] } : stall ? { on: false, ops: [{ set: { op_data: { ...(cur.op_data ?? {}), runner_stall: this.stallMark(stall) } } }, { activity: { actor: 'app', text: `not triaged: runner ${stall.label} looks stalled or offline, and every item waiting on it is said in one signal; it waits for CI again by itself once a runner takes a job` } }] as ItemOp[] } : this.triageOps(cur, reason);
       // A card that was waiting for an answer is about a stop that no longer exists: this block replaces it (HH-162, dogfood p42).
       const { decision: staleCard, ...restData } = cur.awaiting_data ?? {};
       this.store.mutateItem(id, [
@@ -3953,10 +4044,12 @@ export class LiveEngine implements Engine {
         ...(cur.op ? [{ unset: ['op', 'op_started_at'] } as ItemOp] : []),
         { activity: { actor: 'app', text: `BLOCKED (${reason}): ${detail.replace(/\s+/g, ' ').slice(0, 500)}` } },
         ...triage.ops,
+        // A card the engine can file itself (#242) is the user's call from the start: no triage, no wake.
+        ...(card ? [{ set: { awaiting_data: { ...restData, decision: { ...card, requested_at: this.now(), reason } } } } as ItemOp, { activity: { actor: 'app', text: `decision needed: ${card.question}` } } as ItemOp] : []),
       ], 'engine', { commit: `${id}: blocked (${reason})` });
       this.note('warn', `${id} blocked: ${reason} — ${detail.slice(0, 200)}${triage.on ? ' (the orchestrator is triaging it)' : ''}`);
       if (triage.on) this.wakeWhenIdle(id, `blocked_${reason}`, { detail: detail.slice(0, 2000) });
-      else if (!stall && (JUDGMENT_BLOCKS as readonly string[]).includes(reason)) this.wakeOrchestrator(`blocked_${reason}`, id, { detail: detail.slice(0, 2000) });
+      else if (!stall && !card && (JUDGMENT_BLOCKS as readonly string[]).includes(reason)) this.wakeOrchestrator(`blocked_${reason}`, id, { detail: detail.slice(0, 2000) });
     } catch (e) { this.note('error', `could not record block on ${id}: ${(e as Error).message}`); }
   }
 
@@ -4484,6 +4577,8 @@ export class LiveEngine implements Engine {
     if (action.tool === 'close_as_done') return this.closeAsDoneRefusal(action.args.id);
     if (action.tool === 'rerun_ci') return this.rerunRefusal(action.args.id);
     if (action.tool === 'reopen_pr') return this.reopenRefusal(action.args.id);
+    if (action.tool === 'continue_on_account') return this.accountRefusal(action.args.id, action.args.account);
+    if (action.tool === 'wait_for_reset') return this.store.getItem(action.args.id)?.file.frontmatter.blocked_reason === 'usage_exhausted' ? null : `${action.args.id} is not stopped for usage`;
     if (action.tool === 'submit_item') {
       const item = this.store.getItem(action.args.id);
       if (!item) return `there is no item ${action.args.id}`;
@@ -4532,7 +4627,7 @@ export class LiveEngine implements Engine {
    */
   private performAction(action: DecisionAction, from: string): string {
     const why = `you chose it on ${from}'s decision card`;
-    if (action.tool === 'discard_item' || action.tool === 'close_as_done' || action.tool === 'rerun_ci' || action.tool === 'reopen_pr') throw new Error(`${action.tool} is carried out by answerDecision`);
+    if (action.tool === 'discard_item' || action.tool === 'close_as_done' || action.tool === 'rerun_ci' || action.tool === 'reopen_pr' || action.tool === 'continue_on_account' || action.tool === 'wait_for_reset') throw new Error(`${action.tool} is carried out by answerDecision`);
     if (action.tool === 'submit_item') return this.submitAsUser(action.args.id, why) === 'planning' ? `epic ${action.args.id} is having its breakdown planned` : `${action.args.id} is queued for planning`;
     const a = action.args; const epic = a.kind === 'epic';
     const planner = findModel(this.store.config, a.planner)?.id; const implementer = findModel(this.store.config, a.implementer)?.id;
@@ -4602,11 +4697,13 @@ export class LiveEngine implements Engine {
     // So does closing one as done (#126): both are async, and both can end this card's own item (icebox, FINISHED).
     const act = chosen?.action;
     // A re-run clears the block and the card with it (#162): the same ending as the two that move the item.
-    const ends = act?.tool === 'discard_item' || act?.tool === 'close_as_done' || act?.tool === 'rerun_ci' || act?.tool === 'reopen_pr';
+    const ends = act?.tool === 'discard_item' || act?.tool === 'close_as_done' || act?.tool === 'rerun_ci' || act?.tool === 'reopen_pr' || act?.tool === 'continue_on_account' || act?.tool === 'wait_for_reset';
     const done = act?.tool === 'discard_item' ? await this.discard(act.args.id, act.args.reason, { deleteBranch: act.args.delete_branch === true, from: `your answer on ${id}'s decision card` })
       : act?.tool === 'close_as_done' ? (await this.closeAsDone(act.args.id, `${act.args.reason} (your answer on ${id}'s decision card)`), `${act.args.id} closed as done`)
       : act?.tool === 'rerun_ci' ? await (async () => { const r = await this.rerunCi(act.args.id, 'user'); if (/^not (possible|now)/.test(r)) throw new Error(r); return r; })()
       : act?.tool === 'reopen_pr' ? await (async () => { const r = await this.reopenPr(act.args.id); if (/^not (possible|now)/.test(r)) throw new Error(r); return r; })()
+      : act?.tool === 'continue_on_account' ? await this.continueOnAccount(act.args.id, act.args.account)
+      : act?.tool === 'wait_for_reset' ? (this.store.mutateItem(id, [Object.keys(rest).length ? { set: { awaiting_data: rest } } : { unset: ['awaiting_data'] }], 'user'), `${act.args.id} waits for its usage to reset`)
       : act ? this.performAction(act, id) : undefined;
     if (ends && !decisionOf(this.store.requireItem(id).file.frontmatter)) {
       this.store.mutateItem(id, [{ activity: { actor: 'user', text: `decided: ${decision.question} → ${said} (done for you: ${done})` } }], 'user', { commit: `${id}: decision answered` });
@@ -4849,11 +4946,14 @@ export class LiveEngine implements Engine {
     const branch = fm.branch!;
     const requested = this.store.config.models.find((m) => m.id === (fm.implementer ?? this.store.config.defaults.implementer));
     if (!requested) return `its implementer ${fm.implementer ?? this.store.config.defaults.implementer} is not a model row`;
-    const pick = resolveTurnModel(this.store.config, requested, { allow: fm.allow_model_fallback === true, unavailable: this.store.local.model_unavailable, now: new Date(Date.now()) });
+    const acct = this.accountFor(fm, requested);
+    if ('missing' in acct) return acct.why;
+    const account = acct.account;
+    const pick = resolveTurnModel(this.store.config, requested, { allow: fm.allow_model_fallback === true, unavailable: unavailableView(this.store.local.model_unavailable, account.name), now: new Date(Date.now()) });
     if (pick.exhaustedUntil) return `${requested.label} is out of usage until ${pick.exhaustedUntil}`;
     const def = pick.def;
     const runner = def.runner ?? 'claude';
-    if (this._paused || this.store.local.engine.provider_guards?.[runner]) return `${runner} is paused`;
+    if (this._paused || this.guarded(runner, account.name)) return `${runner} is paused`;
     const agent = this.ports.agents[runner];
     if (!agent) return `${def.label} needs the ${runner} runner, which is not available here`;
     const model = runner === 'claude' ? def.claude_model : def[`${runner}_model`];
@@ -4899,10 +4999,10 @@ export class LiveEngine implements Engine {
     try {
       result = await this.withRunnerSlot(runner, () => this.withSessionSlot(id, async () => {
         // A pause may arrive while this turn is waiting for another runner to release its slot.
-        if (this._paused || this.draining || this.stopping || abort.signal.aborted || this.store.local.engine.provider_guards?.[runner])
+        if (this._paused || this.draining || this.stopping || abort.signal.aborted || this.guarded(runner, account.name))
           return { subtype: 'killed', isError: false, costUsd: 0, numTurns: 0, text: '' };
         return agent.runTurn({
-        itemId: id, phase: 'fix', cwd, model: model as string, transport: modelCapabilities(def).transport, ...runnerTurnSettings(def), maxTokens: remainingTokens, permissionMode: 'acceptEdits', prompt,
+        itemId: id, phase: 'fix', cwd, model: model as string, transport: modelCapabilities(def).transport, ...runnerTurnSettings(def), ...this.accountTurnOptions(account), maxTokens: remainingTokens, permissionMode: 'acceptEdits', prompt,
         systemAppend: `${this.store.renderPrompt(modelCapabilities(def).workerPrompt, item)}\n\n${this.hostNote}${runner === 'claude' ? cwdNote(cwd) : ''}`,
         ...(pick.sdkFallback ? { fallbackModel: pick.sdkFallback } : {}),
         allowedTools: sdkRules(allowed, rules), extraDirs: [this.store.dataDir], maxBudgetUsd: cap, tools,
@@ -4923,7 +5023,7 @@ export class LiveEngine implements Engine {
     this.recordUsage(id, def, model ?? def.label, 'worker', 'conflict_session', result);
     const after = this.store.requireItem(id).file.frontmatter;
     this.store.mutateItem(id, [{ set: { cost_usd: Math.round(((after.cost_usd ?? 0) + result.costUsd) * 10000) / 10000, turns: (after.turns ?? 0) + result.numTurns, tokens: (after.tokens ?? 0) + (result.tokens ?? 0), agent_turns: (after.agent_turns ?? 0) + (result.numTurns > 0 ? 1 : 0) } }, { unset: ['op', 'op_started_at'] }], 'engine');
-    this.usageSeen(result.rateLimit, runner);
+    this.usageSeen(result.rateLimit, guardKey(runner, account.name));
     const spendLabel = tokenAccounting ? `${(result.tokens ?? 0).toLocaleString()} tokens; dollar cost not reported` : `$${result.costUsd.toFixed(2)}`;
     const fail = async (why: string): Promise<string> => {
       await this.ports.git.abortInProgress(cwd).catch(() => undefined);

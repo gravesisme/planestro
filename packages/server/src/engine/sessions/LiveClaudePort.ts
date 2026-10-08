@@ -2,10 +2,10 @@ import * as sdk from '@anthropic-ai/claude-agent-sdk';
 import { query, tool, createSdkMcpServer, type HookCallback } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { extname, join } from 'node:path';
 import { KNOWN_USAGE_LIMIT_PREFIXES, USAGE_ERROR_CODES, isUsageLimitText, resetTime, worseRateLimit, type RateLimitSnapshot } from '@planestro/shared';
-import type { ClaudePort, TurnOptions, TurnResult, CustomTurnOptions, ResumeQuote, UndeliveredReport, ConnectionDrop } from '../ports.ts';
+import type { AccountCredentials, ClaudePort, TurnOptions, TurnResult, CustomTurnOptions, ResumeQuote, UndeliveredReport, ConnectionDrop } from '../ports.ts';
 import { PARKED_REFUSAL } from '../parks.ts';
 import { secretDenial, type SecretOptions } from '../secrets.ts';
 
@@ -25,6 +25,21 @@ const USAGE_PREFIXES: readonly string[] = [...new Set([...(((sdk as Record<strin
  * planestro's tools are an in-process MCP server; `canUseTool` routes ExitPlanMode,
  * AskUserQuestion and every other prompt to the engine's policy (see docs/notes/sdk-notes.md).
  */
+/**
+ * The environment a Claude session starts with (#242). The default login is planestro's own environment, with the
+ * machine's Console key (`anthropic_api_key`) if it has one. A named account replaces both: its `home` is the session's
+ * CLAUDE_CONFIG_DIR (a second subscription's login, and where its transcripts live), its `apiKeyEnv` the variable whose
+ * key bills it. ANTHROPIC_API_KEY is dropped for an account without one, since a key outranks the login it would shadow.
+ */
+export function claudeEnv(base: NodeJS.ProcessEnv, apiKey: string | undefined, account?: AccountCredentials, home = homedir()): NodeJS.ProcessEnv {
+  if (!account) return { ...base, ...(apiKey ? { ANTHROPIC_API_KEY: apiKey } : {}) };
+  const env: NodeJS.ProcessEnv = { ...base };
+  delete env.ANTHROPIC_API_KEY;
+  if (account.home) env.CLAUDE_CONFIG_DIR = account.home === '~' ? home : account.home.startsWith('~/') ? join(home, account.home.slice(2)) : account.home;
+  if (account.apiKeyEnv && base[account.apiKeyEnv]) env.ANTHROPIC_API_KEY = base[account.apiKeyEnv];
+  return env;
+}
+
 export class LiveClaudePort implements ClaudePort {
   constructor(private readonly claudeBin?: string, private readonly apiKey?: string) {}
 
@@ -55,7 +70,7 @@ export class LiveClaudePort implements ClaudePort {
         allowedTools: customAllowedTools(o),
         maxTurns: o.maxTurns, abortController,
         ...(this.claudeBin ? { pathToClaudeCodeExecutable: this.claudeBin } : {}),
-        ...(this.apiKey ? { env: { ...process.env, ANTHROPIC_API_KEY: this.apiKey } } : {}),
+        ...(this.apiKey || o.account ? { env: claudeEnv(process.env, this.apiKey, o.account) } : {}),
         canUseTool: async (toolName, input) => {
           if (toolName.startsWith('mcp__planestro__') || allow.whole.has(toolName)) return { behavior: 'allow', updatedInput: input };
           return { behavior: 'deny', message: `${toolName} is not available in this role; use the planestro tools.` };
@@ -109,13 +124,13 @@ export class LiveClaudePort implements ClaudePort {
         ...resumed.options,
         // The secret-file deny list (#227) before anything else: allow rules and the CLI's own approvals never reach canUseTool.
         // What ran without a park is counted from the tool calls that ran (#203): the SDK's own approvals never reach canUseTool.
-        hooks: { ...(resumed.options.hooks as object | undefined), PreToolUse: [{ hooks: [secretHook(o.cwd, {}, (id) => ran.refused(id))] }], PostToolUse: [{ hooks: [ran.hook()] }], PostToolUseFailure: [{ hooks: [ran.hook()] }] },
+        hooks: { ...(resumed.options.hooks as object | undefined), PreToolUse: [{ hooks: [secretHook(o.cwd, { dirs: o.secretDirs }, (id) => ran.refused(id))] }], PostToolUse: [{ hooks: [ran.hook()] }], PostToolUseFailure: [{ hooks: [ran.hook()] }] },
         // The model's own servers ride along; their tools are not allow-listed, so every call reaches canUseTool and the engine's count.
         mcpServers: { planestro, ...(o.mcpServers ?? {}) } as any, strictMcpConfig: true, settingSources: ['project'],
         allowedTools: allow.rules,
         additionalDirectories: o.extraDirs, maxBudgetUsd: o.maxBudgetUsd, abortController,
         ...(this.claudeBin ? { pathToClaudeCodeExecutable: this.claudeBin } : {}),
-        env: { ...process.env, ...PINNED, ...(this.apiKey ? { ANTHROPIC_API_KEY: this.apiKey } : {}) },
+        env: { ...claudeEnv(process.env, this.apiKey, o.account), ...PINNED },
         canUseTool: async (toolName, input, { toolUseID }) => {
           const res = await decide(toolName, input);
           if (res.behavior !== 'allow') ran.refused(toolUseID);

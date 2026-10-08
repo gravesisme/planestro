@@ -103,6 +103,7 @@ dollar figures elsewhere carry a short hint.
 | `models.user_approves_plans` | false | Paid tools (#157): a plan for this model is the user's to approve, never the orchestrator's, and its MCP calls need a budget the user sets at approval (the item's `mcp_budget`, prefilled from the plan's `MCP budget:` line). With no budget the worker makes no MCP call. The item's `mcp_budget` replaces `mcp_calls_per_item` when set. |
 | `models.hold_for_review` | `false` | Park this model's pull requests on `awaiting: review` after CI until you approve them. |
 | `models.engine_commits` | `false` | planestro commits for this model's sessions: work left uncommitted after a done report is committed with the worker's summary, and a block with work left in the tree is committed too: a block about git or committing (a sandbox that cannot write the worktree's `index.lock`, "planestro needs to commit this") is then cleared and the session resumed, and any other block stands with the work committed. Finish from here commits such a tree first instead of refusing it. For runners whose sandbox cannot reliably write git's files. |
+| `models.account` | none | The account its turns run on: a name from `accounts` in planestro.local.yml, on this row's runner. Unset: the runner's default login. A machine without that account stops the item as `account_missing`. See [A second account for the same provider](#a-second-account-for-the-same-provider). |
 | `models.fallback` | none | Another model id on the same runner. An item that allows fallback (**allow fallback model**, `allow_model_fallback: true`) runs on it while this model is out of usage, and the Claude SDK also uses it when this model is overloaded. Chains are followed (`a → b → c`). See [Model fallback](#model-fallback). |
 | `models.external` | `false` | Not run by planestro; its items are watched. |
 | `defaults.planner` | — | For new items. Must be a model that can plan. |
@@ -347,13 +348,14 @@ Default: **Release notes** and **Notes**.
 | `allowed_hosts` | Extra names this machine is reached by — a Tailscale or DNS name for the phone. The server answers only requests addressed to `localhost`, `127.0.0.1`, the `--host` it is bound to (with `0.0.0.0`: this machine's hostname and interface addresses) and these; anything else, and any request from another website, gets a 403. |
 | `codex_bin` | Path to `codex`, if not on `PATH`. Only used by models with `runner: codex`. |
 | `anthropic_api_key` | Bills Claude sessions to the API under the Commercial Terms instead of a claude.ai login. `ANTHROPIC_API_KEY` in the environment does the same. |
-| `model_unavailable` | Models this machine's account cannot use right now, by model id: `{ until, reason, since, manual }`. Written when a turn fails on a usage limit and by **mark unavailable** in Settings; cleared there or when `until` passes. Per machine because usage belongs to the account logged in here. |
+| `accounts` | Other logins or keys for the same runner ([second accounts](#a-second-account-for-the-same-provider)), by name: `{ runner, label?, home?, api_key_env? }`. Hand-edited here; the default login is `default`. |
+| `model_unavailable` | Models this machine's account cannot use right now, by model id (`<id>@<account>` for a named account): `{ until, reason, since, manual }`. Written when a turn fails on a usage limit and by **mark unavailable** in Settings; cleared there or when `until` passes. Per machine because usage belongs to the account logged in here. |
 | `engine.paused` | The PAUSE AUTOMATION lever, persisted. |
 | `engine.paused_by` | `user` (the lever) or `disk`. Provider guards are independent. Only a disk pause can automatically release this global lever; a user pause never does. |
 | `engine.disk_guard.free_gib` | While the [disk guard](#disk-guard) holds automation paused: the GiB free when it tripped… |
 | `engine.disk_guard.path` | …on which volume (the repo or the worktrees root, whichever had less)… |
 | `engine.disk_guard.tripped_at` | …and when. |
-| `engine.provider_guards` | Guards keyed by provider, each with window, status, optional utilization/reset, trip time and optional resume time. Other providers remain available. |
+| `engine.provider_guards` | Guards keyed by provider (`<provider>:<account>` for a named account), each with window, status, optional utilization/reset, trip time and optional resume time. Other providers remain available. |
 | `engine.provider_guard_last` | Last crossing per provider. An explicit provider retry suppresses that same crossing until reset. |
 | `engine.mode` | This machine's override of `engine.mode`. |
 
@@ -445,3 +447,35 @@ same conversation. Later turns go straight to the fallback until the reset; afte
 original model is tried first again. An item that does not allow a fallback blocks as
 `usage_exhausted` instead. You can also **mark unavailable until…** a model in Settings when you
 already know it is out, so no turn is spent discovering it.
+
+## A second account for the same provider
+
+Two Claude subscriptions, or a subscription and an API key, or two Codex logins (#242). Name each extra one in
+`planestro.local.yml`; the runner's own login is `default`. An account says where its credential is, never what it is:
+
+```yaml
+accounts:
+  work:                         # a second Claude subscription
+    runner: claude
+    label: Work Max
+    home: ~/.claude-work        # its CLAUDE_CONFIG_DIR: sign in once with `CLAUDE_CONFIG_DIR=~/.claude-work claude`, then /login
+  api:                          # a Console key, read from planestro's environment
+    runner: claude
+    api_key_env: ANTHROPIC_API_KEY_2
+  codex-2:
+    runner: codex
+    home: ~/.codex-2            # its CODEX_HOME: `CODEX_HOME=~/.codex-2 codex login` (or `codex login --with-api-key`)
+```
+
+A model row may name one (`account: work`); its turns, and the orchestrator's on that row, run there. A name this machine
+does not define, or an `api_key_env` that is not set, stops the item as `account_missing` instead of billing the default
+login. A named account replaces `anthropic_api_key` / `ANTHROPIC_API_KEY` for its sessions. Each account has its own usage
+guard (`engine.provider_guards.claude:work`) and its own remembered outages (`model_unavailable: fable-5@work`). The other
+accounts' `home` folders are on the workers' secret-file deny list.
+
+When a turn runs out of usage and another account on the same runner can take it (not paused, its key set, the model, or a
+fallback the item allows, not out there too), the item blocks `usage_exhausted` with a card of its own, not triaged:
+**Continue on <account>** for each (up to three) and **Wait for the reset**. Continuing moves the item onto that account
+(its `account` field) and carries on from where it stopped: the conversation resumes when the new account keeps it in the
+same place (an account with only a key shares the default login's folder), and otherwise a fresh conversation starts from
+a brief (a Claude transcript lives under its `CLAUDE_CONFIG_DIR`, a Codex thread under its `CODEX_HOME`).

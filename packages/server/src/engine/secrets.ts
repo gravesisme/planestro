@@ -15,6 +15,8 @@ export interface SecretOptions {
   home?: string;
   /** `$CODEX_HOME`, whose auth.json is Codex's login. */
   codexHome?: string;
+  /** More folders whose every file is a secret: the other accounts' config folders (#242). `~/` is the home folder. */
+  dirs?: readonly string[];
   /** Whether a path exists (tests). */
   exists?(path: string): boolean;
 }
@@ -52,6 +54,7 @@ const within = (abs: string, root: string): boolean => abs === root || abs.start
 function listed(abs: string, o: SecretOptions): string | null {
   const home = o.home ?? homedir();
   for (const d of SECRET_DIRS) if (within(abs, join(home, d))) return `~/${d}`;
+  for (const d of o.dirs ?? []) if (within(abs, resolve(d.startsWith('~/') ? join(home, d.slice(2)) : d))) return "another account's config folder";
   const gcloud = process.env.CLOUDSDK_CONFIG;
   if (gcloud && within(abs, resolve(gcloud))) return 'gcloud config';
   const auth = [join(o.codexHome ?? process.env.CODEX_HOME ?? join(home, '.codex'), 'auth.json'), join(home, '.codex', 'auth.json'), join(home, '.planestro', 'codex', 'auth.json')];

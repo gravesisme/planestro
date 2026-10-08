@@ -237,6 +237,11 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   issues**, #231): the ones picked, or every open one with `issues.import_label`. `source: {github_issue}` is the evidence
   an issue is in (never filed twice); nothing is submitted (#73); the PR says `Closes #N` only with `source.closes`.
 - Provider switches in either direction keep item state, worktrees, PRs and decisions, using the existing fresh-brief intent. `agent_sessions` (schema 4) stores a session id, role and tool contract per runner. Provider usage guards are machine-local and independent of the global user/disk pause. Orchestrator model changes apply next wake without a restart; its queue remains in memory, including when a wake hits its token cap.
+  A second login or key for the same runner is a named account (#242: `accounts` in planestro.local.yml, a `home` config
+  dir or an `api_key_env` name, never the key): a model row or the item (`account`) picks it, a missing one blocks
+  `account_missing` rather than bill the default login, and guards / `model_unavailable` are keyed per account. Out of usage
+  with another account free, the engine files the card itself (`continue_on_account`, `wait_for_reset`; no triage); a
+  conversation resumes only from the same store (`sameSessionStore`), else a fresh brief.
 - A wait on a person (an item whose `needs_you` turns true, an open orchestrator question) is announced once
   (#224): `NeedsYouWatch` (`engine/needsYou.ts`) sees every store event, journals one `notification`
   (`on_needs_you`, with an absolute link) per wait key and runs `notifications.on_needs_you`. It holds back while a

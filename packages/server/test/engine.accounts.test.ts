@@ -6,6 +6,8 @@ import { DataStore } from '../src/store/DataStore.ts';
 import { LiveEngine } from '../src/engine/LiveEngine.ts';
 import { FakeWorld, DryRunGitPort, DryRunGhPort, DryRunProcPort, DryRunClaudePort } from '../src/engine/dryrun-ports.ts';
 import { claudeEnv } from '../src/engine/sessions/LiveClaudePort.ts';
+import { codexHomeOf } from '../src/engine/sessions/LiveCodexPort.ts';
+import { secretPath } from '../src/engine/secrets.ts';
 import type { Ports, TurnOptions, TurnResult, CustomTurnOptions } from '../src/engine/ports.ts';
 import { makeFixture, sleep } from './helpers.ts';
 
@@ -31,7 +33,7 @@ function accountsClaude(exhausted: Set<string>, used: Used[], rateLimit?: { acco
         const r = await inner.runTurn(o);
         return rateLimit?.account === account ? { ...r, rateLimit: { status: 'rejected', window: 'five_hour', resetsAt: RESET } } : r;
       },
-      async runCustomTurn(o: CustomTurnOptions): Promise<TurnResult> { return inner.runCustomTurn(o); },
+      async runCustomTurn(o: CustomTurnOptions): Promise<TurnResult> { used.push({ account: o.account?.name ?? 'default', home: o.account?.home }); return inner.runCustomTurn(o); },
     };
   };
 }
@@ -77,7 +79,7 @@ describe('a second account for the same provider (#242)', () => {
     const turns = used.filter((u) => u.item === a.id);
     expect(turns.map((u) => u.account)).toEqual(['default', 'api']);
     expect(turns[1]).toMatchObject({ apiKeyEnv: 'PLANESTRO_TEST_KEY_2', resume: `s-${a.id}-default` });
-    expect(fm(store, a.id).agent_sessions?.claude?.account).toBe('api');
+    await waitFor(() => fm(store, a.id).agent_sessions?.claude?.account === 'api'); // recorded as the turn ends, after its plan landed
     expect(activity(store, a.id)).toContain('continues on api');
   });
 
@@ -138,6 +140,20 @@ describe('a second account for the same provider (#242)', () => {
   });
 });
 
+describe('the orchestrator on an account (#242)', () => {
+  it("wakes on its model row's account, and that account's outage holds it, not the default's", async () => {
+    const used: Used[] = [];
+    const { store, engine } = await setup(accountsClaude(new Set(), used), (y) => y.replace('claude_model: claude-fable-5, fallback: opus-5 }', 'claude_model: claude-fable-5, fallback: opus-5, account: work }'));
+    expect(engine.orchestrator.modelForWake()).toMatchObject({ model: 'claude-fable-5', account: 'work' });
+    await (engine.orchestrator as any).runWake([{ type: 'user_message', data: { text: 'hello' } }]);
+    expect(used.at(-1)).toMatchObject({ account: 'work' });
+    store.updateLocal({ model_unavailable: { 'fable-5': { until: RESET, reason: 'default is out' } } });
+    expect((engine.orchestrator as any).unavailable()).toBe(false);
+    store.updateLocal({ model_unavailable: { 'fable-5@work': { until: RESET, reason: 'work is out' } } });
+    expect((engine.orchestrator as any).unavailable()).toBe(true);
+  });
+});
+
 describe('Claude credentials per account', () => {
   it('a login folder replaces any API key; a key comes from the named variable', () => {
     const base = { PATH: '/bin', ANTHROPIC_API_KEY: 'from-env', PLANESTRO_TEST_KEY_2: 'second' };
@@ -147,5 +163,12 @@ describe('Claude credentials per account', () => {
     expect(work.ANTHROPIC_API_KEY).toBeUndefined();
     expect(claudeEnv(base, 'local-key', { name: 'api', apiKeyEnv: 'PLANESTRO_TEST_KEY_2' })).toMatchObject({ ANTHROPIC_API_KEY: 'second' });
     expect(claudeEnv(base, undefined, { name: 'w', home: '~/x' }, '/home/me').CLAUDE_CONFIG_DIR).toBe('/home/me/x');
+  });
+  it("a Codex account runs exec with its own CODEX_HOME, and the accounts' folders are secrets to workers", () => {
+    expect(codexHomeOf({ name: 'c2', home: '/h/codex-2' })).toBe('/h/codex-2');
+    expect(codexHomeOf(undefined)).toBe(process.env.CODEX_HOME);
+    expect(secretPath('/h/claude-work/.credentials.json', '/repo', { home: '/home/me', dirs: ['/h/claude-work'], exists: () => false })).toBe("another account's config folder");
+    expect(secretPath('~/.codex-2/auth.json', '/repo', { home: '/home/me', dirs: ['~/.codex-2'], exists: () => false })).toBe("another account's config folder");
+    expect(secretPath('/repo/src/a.ts', '/repo', { home: '/home/me', dirs: ['/h/claude-work'], exists: () => false })).toBeNull();
   });
 });

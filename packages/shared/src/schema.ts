@@ -52,7 +52,7 @@ export type Attachment = z.infer<typeof Attachment>;
 export const AUTHORITATIVE_KEYS = [
   'schema', 'id', 'kind', 'parent', 'title', 'category', 'priority', 'status', 'rank',
   'planner', 'implementer', 'allow_model_fallback', 'auto_approve_plan', 'budget_usd', 'budget_turns', 'budget_tokens', 'mcp_budget', 'depends_on', 'attachments',
-  'merge_policy', 'base_branch_override', 'loop', 'source',
+  'merge_policy', 'base_branch_override', 'loop', 'source', 'account',
 ] as const;
 export const OPERATIONAL_KEYS = [
   'created_at', 'updated_at', 'queued_at', 'started_at', 'plan_ready_at', 'plan_approved_at',
@@ -103,6 +103,8 @@ export const ItemFrontmatter = z.object({
    * issue from being imported twice. `closes`: its PR says `Closes #N`, so merging it closes the issue; only on request.
    */
   source: z.object({ github_issue: z.number().int().positive(), closes: z.boolean().optional() }).passthrough().optional(),
+  /** The account (#242, `accounts` in planestro.local.yml) this item's turns run on for that account's runner, over its model row's: the user's "Continue on <account>". */
+  account: z.string().min(1).optional(),
 
   created_at: ts,
   updated_at: ts,
@@ -123,6 +125,8 @@ export const ItemFrontmatter = z.object({
     session_id: z.string(), model: z.string().optional(),
     role: z.enum(['plan', 'implement', 'fix']), tool_contract: z.string(),
     transport: z.enum(['exec', 'app-server']).optional(),
+    /** The account it ran under (#242), unset for the runner's default login: another account resumes it only from the same store. */
+    account: z.string().optional(),
   })).optional(),
   /**
    * What the conversation in `session_id` held when its last turn ended (#64): its window, its
@@ -367,6 +371,8 @@ export const ModelDef = z.object({
   user_approves_plans: z.boolean().optional(),
   /** planestro commits for this model's sessions when they could not (a sandbox that intermittently refuses git's lock files): work left uncommitted after a done report is committed with the summary, and a block on a git refusal is committed and resumed. Git stays planestro's either way. */
   engine_commits: z.boolean().optional(),
+  /** The account its turns run on (#242): a name from `accounts` in planestro.local.yml, on this row's runner. Unset: the runner's default login. */
+  account: z.string().min(1).optional(),
   external: z.boolean().default(false),
 });
 export type ModelDef = z.infer<typeof ModelDef>;
@@ -588,6 +594,24 @@ export type UsageGuardState = z.infer<typeof UsageGuardState>;
 
 /** Machine-local overrides (gitignored planestro.local.yml). */
 
+/**
+ * A second login or key for a runner (#242), by name in planestro.local.yml (machine-local, gitignored). It says where the
+ * credential is, never what it is: `home` is the account's own config folder (CLAUDE_CONFIG_DIR for Claude, signed in with
+ * `CLAUDE_CONFIG_DIR=<home> claude` → /login; CODEX_HOME for Codex, signed in with `CODEX_HOME=<home> codex login`, a
+ * subscription or --with-api-key), and `api_key_env` (Claude) names a variable in planestro's environment holding a Console key.
+ */
+export const AccountDef = z.object({
+  runner: z.enum(RUNNERS),
+  label: z.string().min(1).optional(),
+  home: z.string().min(1).optional(),
+  api_key_env: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'api_key_env is the name of an environment variable that holds the key, not the key').optional(),
+}).superRefine((a, ctx) => {
+  if (!a.home && !a.api_key_env) ctx.addIssue({ code: 'custom', message: 'an account needs a home or api_key_env: where its credential is' });
+  if (a.runner === 'codex' && a.api_key_env) ctx.addIssue({ code: 'custom', message: 'a Codex account signs in from its home (CODEX_HOME=<home> codex login --with-api-key), not api_key_env' });
+  if (a.runner === 'codex' && !a.home) ctx.addIssue({ code: 'custom', message: 'a Codex account needs a home: its own CODEX_HOME' });
+});
+export type AccountDef = z.infer<typeof AccountDef>;
+
 export const LocalConfig = z.object({
   code_repo_path: z.string().optional(),
   /** This machine's own allow / deny rules for this project, merged after the machine policy and the project's (#229). */
@@ -612,7 +636,9 @@ export const LocalConfig = z.object({
   })).default({}),
   /** Imported MCP servers removed here, as `<source>:<name>`, so an import does not bring them back (#237). */
   mcp_import_skip: z.array(z.string()).optional(),
-  /** Models this machine's account cannot use right now, by model id: detected usage limits and ones marked in Settings. */
+  /** Other logins or keys per runner (#242), by name ("default" is the runner's own login). Hand-edited here; never committed. */
+  accounts: z.record(z.string().regex(/^(?!default$)[a-z0-9][a-z0-9_-]{0,39}$/, 'an account name is lowercase letters, digits, - and _ (and not "default")'), AccountDef).optional(),
+  /** Models this machine's account cannot use right now, by model id (`<id>@<account>` for a named account): detected usage limits and ones marked in Settings. */
   model_unavailable: z.record(z.string(), ModelUnavailable).optional(),
   /**
    * `serve --watch` keeping this machine's planestro checkout current (#103): `main-green` moves it to the newest
