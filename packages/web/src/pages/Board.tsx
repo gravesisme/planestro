@@ -10,12 +10,12 @@ import { NewItemDialog } from '../components/NewItemDialog.tsx';
 import { PreviewDrawer } from '../components/PreviewDrawer.tsx';
 import { usePhone } from '../usePhone.ts';
 import { activeFilters, emptyText, type ActiveFilter, type FilterKey } from '../boardFilters.ts';
+import { boardColumns } from '../boardColumns.ts';
 
-const BOARD_COLUMNS = ['NOT_YET_SUBMITTED', 'QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW', 'MERGED'];
 const COL = 'col:';
 /** A drop target's column: `col:<status>` is a column (or a phone stage), `col:<status>@strip` a cell of the phone's stage strip. */
 const colStatus = (id: string | number): string => String(id).slice(COL.length).split('@')[0]!;
-/** The phone's stage strip has seven cells across one screen: names that fit, in the order of the columns. */
+/** The phone's stage strip has a cell per column across one screen: names that fit, in the order of the columns. */
 const STAGE_SHORT: Record<string, string> = { NOT_YET_SUBMITTED: 'Backlog', QUEUED: 'Queued', PLAN_IN_PROGRESS: 'Planning', PLAN_READY: 'Plan ready', IN_PROGRESS: 'Working', IN_REVIEW: 'Review', MERGED: 'Merged' };
 const LANES = [{ to: '/', lane: 'board', label: 'Board' }, { to: '/icebox', lane: 'icebox', label: 'Icebox' }, { to: '/done', lane: 'done', label: 'Done' }] as const;
 
@@ -118,7 +118,7 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
   const dropAt = (status: string): 'ok' | 'no' | undefined => dragTarget?.status === status ? (dragTarget.ok ? 'ok' : 'no') : undefined;
 
   if (!state) return <p className="muted">Loading…</p>;
-  const columns = lane === 'board' ? BOARD_COLUMNS : [lane === 'icebox' ? 'ICEBOX' : 'FINISHED'];
+  const columns = lane === 'board' ? boardColumns(state.items.filter((i) => i.derived.lane === 'board').map((i) => i.frontmatter.status)) : [lane === 'icebox' ? 'ICEBOX' : 'FINISHED'];
   const done = lane === 'done' ? [...items].sort((a, b) => (b.frontmatter.finished_at ?? '').localeCompare(a.frontmatter.finished_at ?? '')) : items;
   return (
     <div className="board-page">
@@ -171,7 +171,7 @@ function Empty({ filters, onClear }: { filters: ActiveFilter[]; onClear: () => v
 
 /**
  * The board on a phone: every stage in one scroll, stages with nothing in them left out, and the
- * strip above it showing all seven at once. A card drags by its handle (#215): within its stage to
+ * strip above it showing every column at once (Merged only while something is in it, #291). A card drags by its handle (#215): within its stage to
  * reorder, or onto another stage, or onto that stage's cell in the strip when it is empty or off screen.
  */
 function PhoneBoard({ columns, items, filters, onClear, onSelect, dropAt }: { columns: string[]; items: ItemView[]; filters: ActiveFilter[]; onClear: () => void; onSelect: (id: string) => void; dropAt: (status: string) => 'ok' | 'no' | undefined }) {

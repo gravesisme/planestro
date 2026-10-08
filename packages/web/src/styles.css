@@ -208,7 +208,7 @@ html { -webkit-text-size-adjust: 100%; }
   .filter-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; font-size: 13px; } .filter-bar .chip { min-height: 32px; padding: 3px 11px; } .filter-bar button.link { min-height: 32px; }
   .fab { position: absolute; z-index: 11; right: max(14px, env(safe-area-inset-right)); bottom: calc(var(--tabbar-h) + var(--safe-b) + 14px); min-height: 50px; padding: 0 20px; border-radius: 999px; box-shadow: 0 6px 22px #000c; }
   .list:has(.stage), .card-list { padding-bottom: 60px; }
-  .pipeline { position: sticky; top: -10px; z-index: 4; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 3px; margin: 0 calc(-1 * var(--gutter)) 12px; padding: 8px var(--gutter) 6px; background: var(--bg); border-bottom: 1px solid var(--line); }
+  .pipeline { position: sticky; top: -10px; z-index: 4; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 3px; margin: 0 calc(-1 * var(--gutter)) 12px; padding: 8px var(--gutter) 6px; background: var(--bg); border-bottom: 1px solid var(--line); }
   .pipeline button { display: grid; justify-items: center; align-content: start; gap: 1px; min-height: 0; padding: 5px 0 2px; background: transparent; border: 0; border-top: 3px solid var(--line); border-radius: 0; color: var(--muted); opacity: 1; }
   .pipeline button b { font-size: 17px; line-height: 1.2; font-variant-numeric: tabular-nums; font-weight: 650; } .pipeline button span { font-size: 10px; line-height: 1.15; white-space: normal; text-align: center; }
   .pipeline button:disabled b { font-weight: 400; opacity: .55; }
