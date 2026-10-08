@@ -11,7 +11,7 @@ export function itemView(store: DataStore, item: StoredItem) {
   return {
     id: fm.id,
     path: item.path,
-    frontmatter: fm.awaiting_data?.tool === 'CodexApproval' ? { ...fm, awaiting_data: { ...fm.awaiting_data, grantable: !permissionGrantRefusal({ tool: 'CodexApproval', input: (fm.awaiting_data.input ?? {}) as Record<string, unknown> }) } } : fm,
+    frontmatter: fm.awaiting_data?.tool === 'CodexApproval' ? codexApprovalView(fm) : fm,
     sections: { Description: getSection(item.file, 'Description'), Notes: getSection(item.file, 'Notes'), Plan: getSection(item.file, 'Plan'), Activity: getSection(item.file, 'Activity') },
     activity: parseActivity(item.file),
     derived: store.derived(item),
@@ -19,6 +19,12 @@ export function itemView(store: DataStore, item: StoredItem) {
     // What merged into its base since its plan was cut (#217): the approval card says approving syncs it first.
     merged_since_cut: store.mergedSinceCut(item),
   };
+}
+
+/** A Codex approval as the card shows it: whether allow is possible, and if not why and what can be done (#297). Derived, never persisted. */
+function codexApprovalView<T extends { awaiting_data?: Record<string, unknown> }>(fm: T): T {
+  const refusal = permissionGrantRefusal({ tool: 'CodexApproval', input: (fm.awaiting_data?.input ?? {}) as Record<string, unknown> });
+  return { ...fm, awaiting_data: { ...fm.awaiting_data, grantable: !refusal, ...(refusal ? { grant_refusal: refusal } : {}) } };
 }
 
 /** A parked Bash request on an item that has parked on the same kind of command before: the rule that would have allowed it (#108). */

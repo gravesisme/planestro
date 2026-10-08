@@ -765,6 +765,8 @@ export class LiveEngine implements Engine {
     if (fm.awaiting !== 'orchestrator' || fm.awaiting_data?.kind !== 'permission') return `nothing to decide: ${id} is not waiting on you for a permission`;
     if (!this.permissionsDelegated()) { this.handPermissionToUser(id, 'permission requests are no longer delegated to the orchestrator'); return 'not permitted: the user decides permission requests'; }
     if (decision === 'ask_user') { this.handPermissionToUser(id, `the orchestrator left it to you: ${reason}`); return 'handed to the user'; }
+    const refusal = decision === 'allow' ? permissionGrantRefusal(fm.awaiting_data as unknown as PermissionRequest) : undefined;
+    if (refusal) return `not possible: ${refusal} Decide again with deny (and what to do instead) or ask_user.`;
     await this.respond(id, { kind: 'permission', decision, reason }, 'orchestrator');
     return decision === 'allow' ? 'allowed once; the session resumes' : 'denied; the session resumes with your reason';
   }

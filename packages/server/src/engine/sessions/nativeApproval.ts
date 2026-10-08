@@ -19,6 +19,24 @@ export function commandGrant(req: PermissionRequest): CommandGrant | undefined {
   return { command: p.command, cwd: p.cwd, environmentId: 'local' };
 }
 
+/** What a known extra field asks for, in words; an unknown one is named as it is. */
+const ASKS: Record<string, string> = { networkApprovalContext: 'network access', additionalPermissions: 'additional sandbox permissions' };
+
+/** Why a Codex approval is not one grantable local command (#297), so the refusal is known before anyone is offered allow. */
+export function commandGrantGap(req: PermissionRequest): string | undefined {
+  if (req.tool !== 'CodexApproval' || commandGrant(req)) return;
+  const p = req.input;
+  if (p.method === 'item/fileChange/requestApproval') return 'Codex asked to approve a file change, not a command';
+  if (p.method === 'item/permissions/requestApproval') return 'Codex asked to widen the sandbox itself, not to run one command';
+  if (p.method !== 'item/commandExecution/requestApproval') return `Codex asked through ${String(p.method ?? 'an unknown request')}, not for one command`;
+  const extra = Object.keys(p).filter((k) => !FIELDS.has(k) && p[k] != null);
+  if (extra.length) return `the request also asks for ${extra.map((k) => ASKS[k] ?? k).join(', ')}`;
+  if (p.kind != null && p.kind !== 'command') return `it is a ${String(p.kind)} request, not a command`;
+  if (p.environmentId != null && p.environmentId !== 'local') return `it would run in the ${String(p.environmentId)} environment, not on this machine`;
+  if (typeof p.command !== 'string' || !p.command.trim() || typeof p.cwd !== 'string' || !isAbsolute(p.cwd)) return 'Codex did not show the complete command and its working directory';
+  return 'Codex does not offer a one-time accept for it';
+}
+
 export function matchesCommandGrant(grant: CommandGrant, req: PermissionRequest): boolean {
   const next = commandGrant(req);
   return !!next && next.command === grant.command && next.cwd === grant.cwd && next.environmentId === grant.environmentId;

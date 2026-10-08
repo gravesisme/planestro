@@ -5,7 +5,7 @@ import { isAbsolute, join } from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
 import { modelCapabilities, runnerTurnSettings, type ModelDef, type Runner, getSection, planToolsMissing, epicFlagOf, holdShapeOf, heldReasonOf, previewOf, type HoldFlag, partsSummary, serializeItemFile, serializeQuestionFile, parseThread, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent, parseActivity, usageTurnData, USAGE_TURN, resolveAccount, guardKey, unavailableKey, unavailableView, sameSessionStore, DEFAULT_ACCOUNT } from '@planestro/shared';
-import { parkHint } from './parks.ts';
+import { parkHint, permissionGrantRefusal } from './parks.ts';
 import { precedents, rulingsFromJournal, worktreeFinder, worstOf } from './allowSuggest.ts';
 import { hostNote, keptPathsNote } from './hostNote.ts';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
@@ -619,6 +619,19 @@ export class Orchestrator {
     if (fm.awaiting !== 'orchestrator' || data.kind !== 'permission') return 'Permission request: already decided (nothing to do for this one).';
     const input = (data.input ?? {}) as Record<string, unknown>;
     const what = data.tool === 'Bash' ? String(input.command ?? '') : JSON.stringify(input, null, 2);
+    // #297: what planestro cannot grant is said before allow is offered, with the paths that do exist.
+    const refusal = permissionGrantRefusal({ tool: String(data.tool), input });
+    const choices = refusal ? [
+      `Read the whole request: allow is NOT possible for this request. ${refusal}`,
+      'Call decide_permission with exactly one of:',
+      '- deny — say what the worker should do instead: a command or approach that needs no more than its sandbox gives. The worker is told it may do that; the denied request itself is not retried.',
+      '- ask_user — the action is needed as asked: the user can take the item over, do it and hand it back.',
+    ] : [
+      'Read the whole request, then call decide_permission with exactly one of:',
+      '- allow — ordinary development work for this item: reading and searching, building, running the project\'s tests and checks, generating or editing files inside its worktree, scratch files under a temp dir, git on its own branch. It is allowed this once and the session resumes.',
+      '- deny — not needed for this item or plainly the wrong way to do it. Say why and what to do instead; the worker continues without it.',
+      '- ask_user — anything that writes or deletes outside the worktree and temp dirs, installs or downloads software, talks to the network beyond the project\'s own tooling, reads or writes credentials, keys or env files, uses sudo, changes git config or history, or that you cannot fully read and understand. When in doubt, ask_user: the user sees the request exactly as you did.',
+    ];
     return [
       `Permission request: DELEGATED TO YOU. The worker on this item wants to use ${String(data.tool)}, which its allow-list does not cover, and its session is parked until someone answers.`,
       fm.worktree ? `Its worktree (the only place it should write, besides scratch files under /tmp or $TMPDIR): ${isAbsolute(fm.worktree) ? fm.worktree : join(this.store.codeRepoPath(), fm.worktree)}` : '',
@@ -631,11 +644,8 @@ export class Orchestrator {
         return hint ? [`This item has parked ${hint.parks} times on \`${hint.shape} …\`. The allow rule ${hint.rule} would let such commands run inside the worktree without a park. Only the user adds allow rules: if it fits this project, say so in your decision's reason (the user's card offers it).`] : [];
       })(),
       `The request, in full:\n\`\`\`\n${what}\n\`\`\``,
-      nativeApprovalGuidance(data.tool) ?? 'planestro has already refused the things no worker may do (git push, gh pr, touching protected branches, force flags, rm -rf of / or ~).',
-      'Read the whole request, then call decide_permission with exactly one of:',
-      '- allow — ordinary development work for this item: reading and searching, building, running the project\'s tests and checks, generating or editing files inside its worktree, scratch files under a temp dir, git on its own branch. It is allowed this once and the session resumes.',
-      '- deny — not needed for this item or plainly the wrong way to do it. Say why and what to do instead; the worker continues without it.',
-      '- ask_user — anything that writes or deletes outside the worktree and temp dirs, installs or downloads software, talks to the network beyond the project\'s own tooling, reads or writes credentials, keys or env files, uses sudo, changes git config or history, or that you cannot fully read and understand. When in doubt, ask_user: the user sees the request exactly as you did.',
+      (refusal ? undefined : nativeApprovalGuidance(data.tool)) ?? 'planestro has already refused the things no worker may do (git push, gh pr, touching protected branches, force flags, rm -rf of / or ~).',
+      ...choices,
       'Judge the command, not the worker\'s description of it. If you decide nothing, it goes to the user.',
       data.tool === 'Bash' ? this.earlierRulings(what, fm) : '',
       this.rulingRubric(),
