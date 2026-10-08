@@ -9,6 +9,7 @@ import { ItemCard, statusLabel } from '../components/ItemCard.tsx';
 import { NewItemDialog } from '../components/NewItemDialog.tsx';
 import { PreviewDrawer } from '../components/PreviewDrawer.tsx';
 import { usePhone } from '../usePhone.ts';
+import { activeFilters, emptyText, type ActiveFilter, type FilterKey } from '../boardFilters.ts';
 
 const BOARD_COLUMNS = ['NOT_YET_SUBMITTED', 'QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW', 'MERGED'];
 const COL = 'col:';
@@ -107,6 +108,13 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
     void act(() => api.move(a.id, before ? 'before' : 'after', o.id));
   };
 
+  const filters = activeFilters({ q, category, priority, needsOnly });
+  const clear = (key: FilterKey) => {
+    if (key === 'needs') setParams((p) => { p.delete('needs'); return p; });
+    else if (key === 'category') setCategory(''); else if (key === 'priority') setPriority(''); else setQ('');
+  };
+  const clearAll = () => filters.forEach((f) => clear(f.key));
+
   const dropAt = (status: string): 'ok' | 'no' | undefined => dragTarget?.status === status ? (dragTarget.ok ? 'ok' : 'no') : undefined;
 
   if (!state) return <p className="muted">Loading…</p>;
@@ -122,12 +130,20 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
           {state.config.categories.map((c) => <button key={c} className={`chip ${category === c ? 'on' : ''}`} onClick={() => setCategory(category === c ? '' : c)}>{c}</button>)}
           <span className="chip-sep" aria-hidden />
           {PRIORITIES.map((p) => <button key={p} className={`chip prio-${p} ${priority === p ? 'on' : ''}`} title={`Only ${p}-priority items`} onClick={() => setPriority(priority === p ? '' : p)}>{p}</button>)}
-          {needsOnly && <button className="chip on" onClick={() => setParams({})}>needs you ×</button>}
+          {needsOnly && <button className="chip on" onClick={() => clear('needs')}>needs you ×</button>}
         </div>
         <span className="grow desk-only" />
         <span className="muted small desk-only">{items.length} item{items.length === 1 ? '' : 's'}</span>
         <button className="primary fab" onClick={() => setCreating(true)}>+ New item</button>
       </div>
+      {phone && filters.length > 0 && (
+        <div className="filter-bar" aria-label="Active filters">
+          <span className="muted">Showing</span>
+          {filters.map((f) => <button key={f.key} className="chip on" aria-label={`Stop filtering by ${f.label}`} onClick={() => clear(f.key)}>{f.label} ×</button>)}
+          <span className="grow" />
+          <button className="link" onClick={clearAll}>Show all</button>
+        </div>
+      )}
       {creating && <NewItemDialog onClose={() => setCreating(false)} icebox={lane === 'icebox'} />}
       {preview && <PreviewDrawer id={preview} onClose={() => setPreview(null)} />}
       {lane === 'done' ? (
@@ -135,16 +151,22 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
       ) : (
         <DndContext sensors={sensors} collisionDetection={columnFirst} autoScroll={{ canScroll: () => !overStrip.current }} onDragOver={onDragOver} onDragEnd={onDragEnd} onDragCancel={() => { setDragTarget(null); overStrip.current = false; }}>
           {phone ? (
-            <PhoneBoard columns={columns} items={items} filtered={!!q || !!category || !!priority || needsOnly} onSelect={setPreview} dropAt={dropAt} />
-          ) : (
+            <PhoneBoard columns={columns} items={items} filters={filters} onClear={clearAll} onSelect={setPreview} dropAt={dropAt} />
+          ) : (<>
+            {!items.length && filters.length > 0 && <Empty filters={filters} onClear={clearAll} />}
             <div className="board" style={lane === 'icebox' ? { gridAutoColumns: 'minmax(420px, 640px)' } : undefined}>
               {columns.map((status) => { const col = items.filter((i) => i.frontmatter.status === status); return <Column key={status} status={status} items={col} onSelect={setPreview} drop={dropAt(status)} />; })}
             </div>
-          )}
+          </>)}
         </DndContext>
       )}
     </div>
   );
+}
+
+/** An empty board names the filters that emptied it and offers to drop them (#286). */
+function Empty({ filters, onClear }: { filters: ActiveFilter[]; onClear: () => void }) {
+  return <p className="muted board-empty">{emptyText(filters)}{filters.length > 0 && <> <button className="link" onClick={onClear}>Show all items</button></>}</p>;
 }
 
 /**
@@ -152,7 +174,7 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
  * strip above it showing all seven at once. A card drags by its handle (#215): within its stage to
  * reorder, or onto another stage, or onto that stage's cell in the strip when it is empty or off screen.
  */
-function PhoneBoard({ columns, items, filtered, onSelect, dropAt }: { columns: string[]; items: ItemView[]; filtered: boolean; onSelect: (id: string) => void; dropAt: (status: string) => 'ok' | 'no' | undefined }) {
+function PhoneBoard({ columns, items, filters, onClear, onSelect, dropAt }: { columns: string[]; items: ItemView[]; filters: ActiveFilter[]; onClear: () => void; onSelect: (id: string) => void; dropAt: (status: string) => 'ok' | 'no' | undefined }) {
   const stages = columns.map((status) => ({ status, items: items.filter((i) => i.frontmatter.status === status) }));
   return (
     <div className="list">
@@ -162,7 +184,7 @@ function PhoneBoard({ columns, items, filtered, onSelect, dropAt }: { columns: s
         </div>
       )}
       {stages.filter((s) => s.items.length).map((s) => <Stage key={s.status} status={s.status} items={s.items} onSelect={onSelect} drop={dropAt(s.status)} />)}
-      {!items.length && <p className="muted">{filtered ? 'No item matches.' : 'Nothing here yet. Add an item with + New item.'}</p>}
+      {!items.length && <Empty filters={filters} onClear={onClear} />}
     </div>
   );
 }
