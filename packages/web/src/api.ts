@@ -107,6 +107,7 @@ export const api = {
   requestReviewChanges: (id: string, note: string) => req<ItemView>('POST', `/api/items/${id}/review/changes`, { note }),
   releaseHold: (id: string, note?: string) => req<ItemView>('POST', `/api/items/${id}/hold/release`, { note }),
   approveBreakdown: (id: string, children: BreakdownChild[], queue: boolean) => req<{ created: string[]; item: ItemView }>('POST', `/api/items/${id}/breakdown/approve`, { children, queue }),
+  addChildren: (id: string, children: BreakdownChild[], queue: boolean) => req<{ created: string[]; item: ItemView }>('POST', `/api/items/${id}/children`, { children, queue }),
   /** `hold`: its pull request stays out of the merge queue until released, for this reason (#97). */
   reviewPlanAgain: (id: string) => req<{ said: string }>('POST', `/api/items/${id}/plan/review`),
   approvePlan: (id: string, notes?: string, asItem?: boolean, hold?: string, mcpBudget?: number) => req<ItemView>('POST', `/api/items/${id}/plan/approve`, { notes, ...(asItem ? { as_item: true } : {}), ...(hold?.trim() ? { hold: hold.trim() } : {}), ...(mcpBudget !== undefined ? { mcp_budget: mcpBudget } : {}) }),

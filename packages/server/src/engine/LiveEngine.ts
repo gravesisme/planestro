@@ -3202,17 +3202,7 @@ export class LiveEngine implements Engine {
     const fm = item.file.frontmatter;
     if (fm.kind !== 'epic' || fm.status !== 'PLAN_READY') throw new Error(`${id} has no breakdown waiting for approval`);
     const children = edited ?? (fm.awaiting_data?.children as BreakdownChild[] | undefined) ?? [];
-    const problem = validateBreakdown(children, this.store.config.models, this.store.config.categories);
-    if (problem) throw new Error(problem);
-    // dependencies first, so every depends_on can name an item that already exists
-    const ids = new Map<number, string>();
-    for (const i of dependencyOrder(children)) {
-      const c = children[i];
-      // A child is planned by the model the breakdown names, else by the epic's own planner (not the project default: an outage of that one should not reach every child).
-      const child = this.store.createItem({ title: c.title.trim(), description: c.description.trim(), category: c.category ?? fm.category, ...(fm.priority ? { priority: fm.priority } : {}), implementer: c.implementer, planner: c.planner ?? fm.planner, allow_model_fallback: fm.allow_model_fallback === true, parent: id, depends_on: (c.depends_on ?? []).map((d) => ids.get(d)!), ...(c.hold_for_review ? { extra: { review_hold: true } } : {}) }, 'user');
-      ids.set(i, child.id);
-    }
-    const created = children.map((_c, i) => ids.get(i)!);
+    const created = this.createChildren(id, children);
     const dir = fm.worktree ? this.absWorktree(fm.worktree) : undefined;
     this.store.mutateItem(id, [
       { transition: { to: 'IN_PROGRESS', actor: 'user' } },
@@ -3230,6 +3220,38 @@ export class LiveEngine implements Engine {
       if (opts.queue !== false) for (const cid of created) this.store.transition(cid, 'QUEUED', 'user');
       void this.tick();
     });
+    return created;
+  }
+
+  /** The user's children for an epic, validated as a breakdown is; returns their ids in the order given. */
+  private createChildren(id: string, children: BreakdownChild[]): string[] {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    const problem = validateBreakdown(children, this.store.config.models, this.store.config.categories);
+    if (problem) throw new Error(problem);
+    // dependencies first, so every depends_on can name an item that already exists
+    const ids = new Map<number, string>();
+    for (const i of dependencyOrder(children)) {
+      const c = children[i];
+      // A child is planned by the model the breakdown names, else by the epic's own planner (not the project default: an outage of that one should not reach every child).
+      const child = this.store.createItem({ title: c.title.trim(), description: c.description.trim(), category: c.category ?? fm.category, ...(fm.priority ? { priority: fm.priority } : {}), implementer: c.implementer, planner: c.planner ?? fm.planner, allow_model_fallback: fm.allow_model_fallback === true, parent: id, depends_on: (c.depends_on ?? []).map((d) => ids.get(d)!), ...(c.hold_for_review ? { extra: { review_hold: true } } : {}) }, 'user');
+      ids.set(i, child.id);
+    }
+    return children.map((_c, i) => ids.get(i)!);
+  }
+
+  /**
+   * Children the user rendered from a list and reviewed (#239), added to an epic that is not being planned: one not yet
+   * started (queuing a child opens it), in progress, or in review (reopenEpics takes it back for them). Queued only on
+   * the user's word (#73). A breakdown waiting for approval takes them into its proposal instead.
+   */
+  async addChildren(id: string, children: BreakdownChild[], opts: { queue?: boolean } = {}): Promise<string[]> {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    if (fm.kind !== 'epic') throw new Error(`${id} is not an epic`);
+    if (fm.status === 'PLAN_READY') throw new Error(`${id} has a breakdown waiting for approval: add them to it there`);
+    if (!['NOT_YET_SUBMITTED', 'IN_PROGRESS', 'IN_REVIEW'].includes(fm.status)) throw new Error(`${id} is ${fm.status}: children are added to an epic not yet started, in progress or in review`);
+    const created = this.createChildren(id, children);
+    this.store.mutateItem(id, [{ activity: { actor: 'user', text: `added ${created.length} ${created.length === 1 ? 'child' : 'children'} from a list: ${created.join(', ')}` } }], 'user', { commit: `${id}: add ${created.length} children` });
+    if (opts.queue) { for (const cid of created) this.store.transition(cid, 'QUEUED', 'user'); void this.tick(); }
     return created;
   }
 

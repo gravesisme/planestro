@@ -171,11 +171,19 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   // Item ↔ epic while nothing has run for implementation (#69, HH-198).
   api.post('/items/:id/convert', async (c) => { try { const { to, reason } = z.object({ to: z.enum(['item', 'epic']), reason: z.string().optional() }).parse(await c.req.json()); await engine.convertKind(c.req.param('id'), to, 'user', reason); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
   api.post('/items/:id/epic/plan', async (c) => { try { await engine.planEpic(c.req.param('id')); return c.json(itemView(store, store.requireItem(c.req.param('id')))); } catch (e) { return fail(c, e); } });
+  const breakdownChild = z.object({ title: z.string().min(1), description: z.string(), implementer: z.string(), category: z.string().optional(), depends_on: z.array(z.number().int().nonnegative()).optional(), planner: z.string().optional(), hold_for_review: z.boolean().optional() });
   api.post('/items/:id/breakdown/approve', async (c) => {
     try {
-      const child = z.object({ title: z.string().min(1), description: z.string(), implementer: z.string(), category: z.string().optional(), depends_on: z.array(z.number().int().nonnegative()).optional() });
-      const { children, queue } = z.object({ children: z.array(child).optional(), queue: z.boolean().optional() }).parse(await c.req.json().catch(() => ({})));
+      const { children, queue } = z.object({ children: z.array(breakdownChild).optional(), queue: z.boolean().optional() }).parse(await c.req.json().catch(() => ({})));
       const created = await engine.approveBreakdown(c.req.param('id'), children, { queue });
+      return c.json({ created, item: itemView(store, store.requireItem(c.req.param('id'))) });
+    } catch (e) { return fail(c, e); }
+  });
+  // Children rendered from a list and reviewed by the user (#239).
+  api.post('/items/:id/children', async (c) => {
+    try {
+      const { children, queue } = z.object({ children: z.array(breakdownChild), queue: z.boolean().optional() }).parse(await c.req.json());
+      const created = await engine.addChildren(c.req.param('id'), children, { queue });
       return c.json({ created, item: itemView(store, store.requireItem(c.req.param('id'))) });
     } catch (e) { return fail(c, e); }
   });
