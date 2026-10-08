@@ -65,12 +65,12 @@ describe('children from a list (#239)', () => {
     expect(created.map((id) => fmOf(store, id).parent)).toEqual([epic.id, epic.id]);
   });
 
-  it('is refused for an epic whose planner is still proposing, one that is done, and a plain item', async () => {
+  it('is refused for an iceboxed epic, a plain item and children the breakdown rules refuse', async () => {
     const { store, engine } = await setup();
     const { children } = childrenFromList({ template: TEMPLATE.replace('{{name}}', '{{item}}'), list: 'shared', implementer: store.config.defaults.implementer });
-    const done = store.createItem({ title: 'Done epic', description: 'x', kind: 'epic', status: 'FINISHED' });
+    const done = store.createItem({ title: 'Iceboxed epic', description: 'x', kind: 'epic', status: 'ICEBOX' });
     const item = store.createItem({ title: 'Plain', description: 'x' });
-    await expect(engine.addChildren(done.id, children)).rejects.toThrow(/FINISHED/);
+    await expect(engine.addChildren(done.id, children)).rejects.toThrow(/ICEBOX/);
     await expect(engine.addChildren(item.id, children)).rejects.toThrow(/not an epic/);
     const epic = store.createItem({ title: 'Lint everywhere', description: 'x', kind: 'epic' });
     await expect(engine.addChildren(epic.id, [{ ...children[0], implementer: 'nobody' }])).rejects.toThrow(/not one of/);

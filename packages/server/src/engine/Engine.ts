@@ -32,6 +32,8 @@ export interface Engine {
   planEpic(id: string, why?: string): Promise<void>;
   /** Create the children (as the user edited them), open the epic and queue what can start. Returns the new ids. */
   approveBreakdown(id: string, children?: BreakdownChild[], opts?: { queue?: boolean }): Promise<string[]>;
+  /** Children the user rendered from a list (#239) for an epic not being planned; queued only when asked. Returns the new ids. */
+  addChildren(id: string, children: BreakdownChild[], opts?: { queue?: boolean }): Promise<string[]>;
   reviewImages(id: string): Promise<ReviewImage[]>;
   reviewImage(id: string, path: string, side: 'before' | 'after'): Promise<Buffer | null>;
   /** A take of the audition the item waits on (#207), and only while it waits; null for any other path. */

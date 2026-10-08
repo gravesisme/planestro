@@ -69,6 +69,8 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
   const [reject, setReject] = useState('');
   const [msg, setMsg] = useState('');
   const [discarding, setDiscarding] = useState(false);
+  const [listOpen, setListOpen] = useState(false);
+  useEffect(() => { setListOpen(false); }, [item.id]);
   const [refPath, setRefPath] = useState('');
   const session = state.engine.sessions.find((s) => s.item === item.id);
   const children = d.children.map((c) => state.items.find((i) => i.id === c)).filter(Boolean) as ItemView[];
@@ -234,9 +236,11 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
               {/* a childless epic's branch would sit idle (dogfood p56, LM-2) */}{fm.status === 'NOT_YET_SUBMITTED' && children.length > 0 && <ActionButton className="small" working="Opening…" onAct={() => act(() => api.epicAction(item.id, 'open'))}>Open epic branch</ActionButton>}{' '}
               {fm.status === 'IN_PROGRESS' && <ActionButton className="small" working="Syncing…" onAct={() => act(() => api.epicAction(item.id, 'sync'))}>Sync with {d.base_branch}</ActionButton>}{' '}
               {fm.status === 'IN_PROGRESS' && children.length > 0 && children.every((c) => ['MERGED', 'FINISHED'].includes(c.frontmatter.status)) && <ActionButton className="small primary" working="Submitting…" onAct={() => act(() => api.epicAction(item.id, 'submit'))}>Submit epic PR</ActionButton>}
+              {['NOT_YET_SUBMITTED', 'IN_PROGRESS', 'IN_REVIEW'].includes(fm.status) && !listOpen && <button className="small" title="One child per entry of a list, from a prompt template: you review them before anything is created" onClick={() => setListOpen(true)}>Add children from list…</button>}
             </ActionGroup></span></h2>
+            {listOpen && ['NOT_YET_SUBMITTED', 'IN_PROGRESS', 'IN_REVIEW'].includes(fm.status) && <BreakdownPanel key={item.id} item={item} mode="list" onClose={() => setListOpen(false)} />}
             <ChildrenTable epic={item} items={state.items} />
-            {!children.length && <p className="muted small">No children yet — plan the breakdown, or create items with this epic as their parent.</p>}
+            {!children.length && <p className="muted small">No children yet — plan the breakdown, add them from a list, or create items with this epic as their parent.</p>}
           </div>
         )}
         <div className="section"><h2>Session</h2>

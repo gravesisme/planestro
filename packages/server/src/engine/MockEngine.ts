@@ -33,6 +33,7 @@ export class MockEngine implements Engine {
     return `${id} converted to ${to === 'epic' ? 'an epic' : 'an item'}`;
   }
   async approveBreakdown(): Promise<string[]> { throw new Error('no engine is running'); }
+  async addChildren(): Promise<string[]> { throw new Error('no engine is running'); }
   async reviewImages(): Promise<[]> { return []; }
   async reviewImage(): Promise<null> { return null; }
   async reviewDiff(): Promise<null> { return null; }

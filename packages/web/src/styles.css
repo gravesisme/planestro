@@ -159,6 +159,7 @@ button.checker { cursor: zoom-in; } .checker img { max-width: 100%; max-height: 
 .audition-pick { display: flex; align-items: center; gap: 6px; overflow-wrap: anywhere; margin-bottom: 4px; }
 .approval h2 { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
 .breakdown { list-style: none; padding: 0; margin: 8px 0; display: grid; gap: 8px; } .breakdown .row { margin: 0; flex-wrap: wrap; } .breakdown input.grow { min-width: 180px; }
+.from-list { display: grid; gap: 8px; margin: 8px 0; } .from-list label { display: grid; gap: 4px; } .from-list .row { margin: 0; flex-wrap: wrap; } .from-list textarea { font-family: inherit; }
 
 /* On a wide screen the board is the page: it fills the window under the toolbar and scrolls inside
    itself, so the sideways scrollbar sits at the bottom edge however short or tall the columns are. */
