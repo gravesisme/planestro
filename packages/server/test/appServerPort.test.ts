@@ -211,3 +211,9 @@ it('refuses the turn when the thread does not report the requested tier, as for 
   expect(readFileSync(log, 'utf8')).not.toContain('"method":"turn/start"');
 });
 
+it('an orchestrator wake hands the chat\'s images to Codex as local images (#288)', async () => {
+  const { root, log, port } = fixture('worker');
+  await port.runCustomTurn({ label: 'user_message', cwd: root, model: 'test-model', permissionMode: 'dontAsk', prompt: 'Test', systemAppend: 'Test', allowedTools: [], mcpTools: [], onOutput: () => {}, images: [join(root, 'shot.png')] });
+  const records = readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  expect(records.find((r) => r.method === 'turn/start').params.input).toContainEqual({ type: 'localImage', path: join(root, 'shot.png') });
+});

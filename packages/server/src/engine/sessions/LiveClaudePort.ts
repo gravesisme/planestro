@@ -3,7 +3,7 @@ import { query, tool, createSdkMcpServer, type HookCallback } from '@anthropic-a
 import { z } from 'zod';
 import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { extname, join } from 'node:path';
 import { KNOWN_USAGE_LIMIT_PREFIXES, USAGE_ERROR_CODES, isUsageLimitText, resetTime, worseRateLimit, type RateLimitSnapshot } from '@planestro/shared';
 import type { ClaudePort, TurnOptions, TurnResult, CustomTurnOptions, ResumeQuote, UndeliveredReport, ConnectionDrop } from '../ports.ts';
 import { PARKED_REFUSAL } from '../parks.ts';
@@ -41,7 +41,7 @@ export class LiveClaudePort implements ClaudePort {
     const allow = splitAllowed(o.allowedTools);
     const input = new InputGate();
     const q = query({
-      prompt: input.open(o.prompt),
+      prompt: input.open(o.prompt, o.images),
       options: {
         cwd: o.cwd, model: o.model, permissionMode: o.permissionMode, resume: o.resume,
         ...(o.fallbackModel && o.fallbackModel !== o.model ? { fallbackModel: o.fallbackModel } : {}),
@@ -141,6 +141,7 @@ export function secretHook(cwd: string, o: SecretOptions = {}): HookCallback {
  * Here the input ends at a `result` only when no background task is live (`background_tasks_changed`), or once the
  * last one has ended and no follow-up turn began within `graceMs`. A CLI that reports no tasks ends where it always did.
  */
+const IMAGE_TYPES: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' };
 export class InputGate {
   private live = 0;
   private between = false;
@@ -150,8 +151,10 @@ export class InputGate {
   closed = false;
   constructor(private readonly graceMs = 30_000) {}
 
-  async *open(prompt: string): AsyncGenerator<any> {
-    yield { type: 'user', message: { role: 'user', content: prompt }, parent_tool_use_id: null, session_id: '' };
+  /** `images` (absolute paths) ride in the first message as image content (#288): the model sees them without a Read. */
+  async *open(prompt: string, images: string[] = []): AsyncGenerator<any> {
+    const content = images.length ? [{ type: 'text', text: prompt }, ...images.map((p) => ({ type: 'image', source: { type: 'base64', media_type: IMAGE_TYPES[extname(p).slice(1).toLowerCase()] ?? 'image/png', data: readFileSync(p).toString('base64') } }))] : prompt;
+    yield { type: 'user', message: { role: 'user', content }, parent_tool_use_id: null, session_id: '' };
     await this.ended;
   }
 

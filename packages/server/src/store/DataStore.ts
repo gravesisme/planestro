@@ -9,7 +9,7 @@ import { planReviewByDefault,
   parseQuestionFile, serializeQuestionFile, setQuestionSection, appendThread, questionNumber, QUESTION_SECTIONS,
   applyTransition, flavorOf, laneOf, needsYou, baseBranchOf, depsSatisfied,
   rankForTop, rankForBottom, rankBefore, rankAfter, renormalize, sortByRank, priorityBand,
-  isoLocal, SCHEMA_VERSION,
+  isoLocal, SCHEMA_VERSION, chatAttachmentKind, chatAttachmentRefusal, CHAT_ATTACHMENTS_DIR, type ChatAttachment,
   type ItemFile, type ItemFrontmatter, type PromptFile, type ReleaseFile, type ReleaseStatus, type QuestionFile, type QuestionStatus, type ScheduleFile, type ThreadActor, type Status, type Actor, type Flavor, type Lane, type Priority,
   type Config, type LocalConfig, type ServerEvent, type ActivityActor,
 } from '@planestro/shared';
@@ -438,6 +438,32 @@ export class DataStore {
     const entry = { path: rel, kind: 'managed' as const, added_at: isoLocal() };
     this.mutateItem(id, [{ set: { attachments: [...this.requireItem(id).file.frontmatter.attachments, entry] } }, { activity: { actor: actorToActivity(actor), text: `attached ${rel}` } }], actor, { commit: `${id}: attach ${safe}`, paths: [rel] });
     return entry;
+  }
+
+  /** What the user sends the orchestrator with a chat message (#288): checked whole before anything is written, then committed once. */
+  addChatAttachments(files: { name: string; data: Buffer }[]): ChatAttachment[] {
+    this.assertWritable();
+    const why = chatAttachmentRefusal(files.map((f) => ({ name: f.name, size: f.data.length })), this.config.attachments.managed_max_bytes);
+    if (why) throw new Error(why);
+    if (!files.length) return [];
+    const stamp = isoLocal().slice(0, 19).replace(/[-:T]/g, '').replace(/^(\d{8})(\d{6})$/, '$1-$2');
+    const used = new Set<string>();
+    const out = files.map((f) => {
+      const safe = basename(f.name).replace(/[^A-Za-z0-9._-]+/g, '-');
+      let file = `${stamp}-${safe}`;
+      for (let n = 2; used.has(file) || existsSync(join(this.attachmentsDir, CHAT_ATTACHMENTS_DIR, file)); n++) file = `${stamp}-${n}-${safe}`;
+      used.add(file);
+      atomicWrite(managedAttachmentPath(this.dataDir, CHAT_ATTACHMENTS_DIR, file, true), f.data);
+      return { path: `attachments/${CHAT_ATTACHMENTS_DIR}/${file}`, name: f.name, kind: chatAttachmentKind(f.name)!, bytes: f.data.length };
+    });
+    this.git.commit(`chat: attach ${out.map((a) => basename(a.name).replace(/[^A-Za-z0-9._-]+/g, '-')).join(', ')}`, undefined, out.map((a) => a.path));
+    return out;
+  }
+
+  /** Absolute path of a chat attachment, inside the data dir only. */
+  chatAttachmentAbsPath(path: string): string {
+    const parts = managedAttachmentParts(path, CHAT_ATTACHMENTS_DIR);
+    return managedAttachmentPath(this.dataDir, parts.id, parts.file);
   }
 
   addReferenceAttachment(id: string, path: string, actor: Actor = 'user'): { path: string; kind: 'reference' } {
