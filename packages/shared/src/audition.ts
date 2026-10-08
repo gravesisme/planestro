@@ -13,19 +13,42 @@ export const AuditionRole = z.object({
   where: z.string().max(500).optional(),
   /** What the takes were generated from. */
   prompt: z.string().max(2000).optional(),
-  takes: z.array(z.string().trim().min(1)).min(1).max(12),
+  /** How many takes the role needs (#318); unset is one. */
+  pick: z.number().int().min(1).max(10).optional(),
+  /** Takes the user kept in an earlier round: shown locked, still playable, never picked again. */
+  kept: z.array(z.string().trim().min(1)).max(10).optional(),
+  /** The candidates of this round; none for a role that its kept takes already fill. */
+  takes: z.array(z.string().trim().min(1)).max(30).default([]),
 });
 export type AuditionRole = z.infer<typeof AuditionRole>;
 export const Audition = z.object({
   title: z.string().trim().min(1).max(200),
   roles: z.array(AuditionRole).min(1).max(30),
-  /** Whether the user may answer "none of these: regenerate", with a note. */
+  /** #207's opt-in to "none of these: regenerate". Accepted for older callers and ignored: regenerating is always offered (#318). */
   allow_regenerate: z.boolean().optional(),
 });
 export type Audition = z.infer<typeof Audition>;
 
-/** The user's answer for one role: one of its takes, or (when allowed) none of them, with what to change. */
-export type AuditionPick = { take: string } | { regenerate: string };
+/** At most this many takes (kept and new) in one audition, across its roles. */
+export const AUDITION_MAX_TAKES = 120;
+
+/** The user's answer for one role: the takes kept from this round and, when that is fewer than it needs, regenerate the rest with an optional note. */
+export type AuditionPick = { takes: string[]; regenerate?: string };
+
+/** Picks as they arrive: this shape, or #207's one `{take}` / `{regenerate}` per role, read as this shape. */
+export const AuditionPicks = z.record(z.string(), z.union([
+  z.strictObject({ takes: z.array(z.string()).max(30), regenerate: z.string().max(2000).optional() }),
+  z.strictObject({ take: z.string() }).transform((p) => ({ takes: [p.take] })),
+  z.strictObject({ regenerate: z.string().max(2000) }).transform((p) => ({ takes: [] as string[], regenerate: p.regenerate })),
+]));
+
+const pickOf = (r: AuditionRole) => r.pick ?? 1;
+const keptOf = (r: AuditionRole) => r.kept ?? [];
+/** How many more takes the role needs this round. */
+export const auditionNeed = (r: AuditionRole): number => Math.max(0, pickOf(r) - keptOf(r).length);
+
+/** Every take this audition may serve: the kept ones and the new ones. */
+export function auditionTakes(a: Audition): string[] { return a.roles.flatMap((r) => [...keptOf(r), ...r.takes]); }
 
 /** Why this audition cannot be put to the user, or undefined. Files are the engine's to check. */
 export function auditionProblem(a: Audition): string | undefined {
@@ -33,9 +56,17 @@ export function auditionProblem(a: Audition): string | undefined {
   for (const r of a.roles) {
     if (ids.has(r.id)) return `role id "${r.id}" is used twice; give each role its own id`;
     ids.add(r.id);
-    if (new Set(r.takes).size !== r.takes.length) return `role "${r.id}" lists a take twice`;
-    for (const t of r.takes) if (takePathProblem(t)) return `role "${r.id}": ${takePathProblem(t)}`;
+    const kept = keptOf(r);
+    if (new Set(r.takes).size !== r.takes.length || new Set(kept).size !== kept.length) return `role "${r.id}" lists a take twice`;
+    if (kept.length > pickOf(r)) return `role "${r.id}" keeps ${kept.length} takes but needs only ${pickOf(r)} (pick)`;
+    const both = r.takes.find((t) => kept.includes(t));
+    if (both) return `role "${r.id}": ${both} is both kept and offered; list it only in kept`;
+    if (auditionNeed(r) > 0 && !r.takes.length) return `role "${r.id}" needs ${auditionNeed(r)} more but offers no takes`;
+    for (const t of [...kept, ...r.takes]) if (takePathProblem(t)) return `role "${r.id}": ${takePathProblem(t)}`;
   }
+  if (!a.roles.some((r) => auditionNeed(r) > 0)) return 'every role is already filled by its kept takes: nothing left to pick';
+  const n = auditionTakes(a).length;
+  if (n > AUDITION_MAX_TAKES) return `${n} takes is too many for one audition (at most ${AUDITION_MAX_TAKES}); put fewer up at once`;
   return undefined;
 }
 
@@ -46,26 +77,51 @@ export function takePathProblem(path: string): string | undefined {
   return undefined;
 }
 
-/** Why these picks do not answer this audition, or undefined: every role needs exactly one pick, from its own takes. */
+/**
+ * Why these picks do not answer this audition, or undefined: a role that needs takes gets up to what it needs, from this
+ * round's takes, and, short of that, a regenerate (its note optional). A role its kept takes fill takes no picks.
+ */
 export function auditionPicksProblem(a: Audition, picks: Record<string, AuditionPick>): string | undefined {
   for (const id of Object.keys(picks)) if (!a.roles.some((r) => r.id === id)) return `there is no role "${id}" in this audition`;
   for (const r of a.roles) {
-    const p = picks[r.id];
-    if (!p) return `pick a take for ${r.name} (${r.id})`;
-    if ('take' in p) { if (!r.takes.includes(p.take)) return `${p.take} is not one of the takes for ${r.name} (${r.id})`; }
-    else if (!a.allow_regenerate) return `${r.name} (${r.id}): the worker did not offer to regenerate; pick one of its takes`;
-    else if (!String(p.regenerate ?? '').trim()) return `${r.name} (${r.id}): say what to change for the regenerated takes`;
+    const p = picks[r.id]; const need = auditionNeed(r); const label = `${r.name} (${r.id})`;
+    if (need === 0) { if (p?.takes.length) return `${label} is already filled by its kept takes`; continue; }
+    if (!p) return `pick ${need === 1 ? 'a take' : `${need} takes`} for ${label}, or regenerate the rest`;
+    if (new Set(p.takes).size !== p.takes.length) return `${label}: a take is picked twice`;
+    const stray = p.takes.find((t) => !r.takes.includes(t));
+    if (stray) return `${stray} is not one of the takes for ${label}`;
+    if (p.takes.length > need) return `${label}: pick at most ${need}${keptOf(r).length ? ' more' : ''}`;
+    if (p.takes.length < need && p.regenerate === undefined) return `${label}: ${keptOf(r).length + p.takes.length} of ${pickOf(r)} picked; pick more or regenerate the rest`;
   }
   return undefined;
 }
 
-/** One line per role, as the worker reads it back: `<role> <take>`, or `<role> regenerate: <note>`. */
-export function auditionPickLines(a: Audition, picks: Record<string, AuditionPick>): string[] {
-  return a.roles.map((r) => { const p = picks[r.id]; return 'take' in p ? `${r.id} ${p.take}` : `${r.id} regenerate: ${p.regenerate.trim().replace(/\s+/g, ' ')}`; });
+/** Whether these picks fill every role, so no round follows. */
+export function auditionComplete(a: Audition, picks: Record<string, AuditionPick>): boolean {
+  return a.roles.every((r) => (picks[r.id]?.takes.length ?? 0) >= auditionNeed(r));
 }
 
-/** The picks as they are kept on the item, under the role names the user saw. */
+const oneLine = (s: string) => s.trim().replace(/\s+/g, ' ');
+function roleAnswer(r: AuditionRole, p: AuditionPick | undefined) {
+  const keep = [...keptOf(r), ...(p?.takes ?? [])];
+  const more = Math.max(0, pickOf(r) - keep.length);
+  return { keep, more, note: more ? oneLine(p?.regenerate ?? '') : '' };
+}
+
+/** One line per role, as the worker reads it back: `<role> keep <takes…>`, then `; regenerate <k> more: <note>` while it is short. */
+export function auditionPickLines(a: Audition, picks: Record<string, AuditionPick>): string[] {
+  return a.roles.map((r) => {
+    const { keep, more, note } = roleAnswer(r, picks[r.id]);
+    const regen = more ? `regenerate ${more} more${note ? `: ${note}` : ''}` : '';
+    return [`${r.id}${keep.length ? ` keep ${keep.join(' ')}` : ''}`, regen].filter(Boolean).join(keep.length ? '; ' : ' ');
+  });
+}
+
+/** The picks as they are kept on the item, under the role names the user saw: every kept take so far, and what is asked again. */
 export function auditionNote(a: Audition, picks: Record<string, AuditionPick>): string {
-  const lines = a.roles.map((r) => { const p = picks[r.id]; return `- ${r.name} (\`${r.id}\`): ${'take' in p ? `\`${p.take}\`` : `none, regenerate: ${p.regenerate.trim()}`}`; });
+  const lines = a.roles.map((r) => {
+    const { keep, more, note } = roleAnswer(r, picks[r.id]);
+    return `- ${r.name} (\`${r.id}\`): ${keep.length ? keep.map((t) => `\`${t}\``).join(', ') : 'none kept'} (${keep.length} of ${pickOf(r)})${more ? `; regenerate ${more} more${note ? `: ${note}` : ''}` : ''}`;
+  });
   return `**Audition: ${a.title}**\n\n${lines.join('\n')}`;
 }

@@ -4,7 +4,7 @@ import { join, relative, isAbsolute, extname, basename, matchesGlob } from 'node
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { Audition, auditionProblem, takePathProblem, auditionPicksProblem, auditionPickLines, auditionNote, type AuditionPick, runnerTurnSettings, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem } from '@planestro/shared';
+import { Audition, AuditionPicks, auditionProblem, takePathProblem, auditionPicksProblem, auditionPickLines, auditionNote, auditionComplete, auditionTakes, runnerTurnSettings, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote, type CiQueue, type RunnerReport, type UndeliveredReport, type ConnectionDrop } from './ports.ts';
@@ -1204,7 +1204,7 @@ export class LiveEngine implements Engine {
       if (by !== 'user') throw new Error('only the user picks the takes of an audition');
       if (fm.awaiting !== 'audition') throw new Error(`${id} is not waiting on an audition`);
       const audition = Audition.parse(fm.awaiting_data?.audition);
-      const picks = z.record(z.string(), z.union([z.strictObject({ take: z.string() }), z.strictObject({ regenerate: z.string() })])).parse(payload.picks ?? {}) as Record<string, AuditionPick>;
+      const picks = AuditionPicks.parse(payload.picks ?? {});
       const problem = auditionPicksProblem(audition, picks);
       if (problem) throw new Error(problem);
       const lines = auditionPickLines(audition, picks);
@@ -1220,7 +1220,7 @@ export class LiveEngine implements Engine {
         { section: 'Notes', body: notes ? `${notes}\n\n${note}` : note },
         { activity: { actor: by, text: `audition picked: ${lines.join('; ').slice(0, 600)}${pending.length ? ` (with ${pending.length} queued message${pending.length === 1 ? '' : 's'})` : ''}` } },
       ], by, { commit: `${id}: audition picks` });
-      this.queueTurn(id, phase, `${this.resumeNote(id, 'your audition')}\n\nAudition picks from the user (${audition.title}):\n\n${lines.join('\n')}${also}\n\nBuild on the picked takes; for a role marked regenerate, make new takes from the note and audition them again with request_audition. Continue.`);
+      this.queueTurn(id, phase, `${this.resumeNote(id, 'your audition')}\n\nAudition picks from the user (${audition.title}):\n\n${lines.join('\n')}${also}\n\n${auditionComplete(audition, picks) ? 'Every role has its takes: build on the kept ones.' : 'For each role marked regenerate, make new takes from the note, about 2–3× as many as it still needs, and call request_audition again with every role: its kept takes in `kept`, only the new ones in `takes`.'} Continue.`);
       return;
     }
     if (payload.kind === 'permission') {
@@ -3669,13 +3669,13 @@ export class LiveEngine implements Engine {
     const parsed = Audition.safeParse(input);
     if (!parsed.success) return `Rejected: ${parsed.error.issues.map((i) => `${i.path.join('.') || 'audition'}: ${i.message}`).join('; ').slice(0, 600)}. Fix it and call request_audition again.`;
     const audition = parsed.data;
-    const problem = auditionProblem(audition) ?? audition.roles.flatMap((r) => r.takes.map((t) => this.takeProblem(fm.worktree!, t))).find(Boolean);
+    const problem = auditionProblem(audition) ?? auditionTakes(audition).map((t) => this.takeProblem(fm.worktree!, t)).find(Boolean);
     if (problem) return `Rejected: ${problem}. Fix it and call request_audition again.`;
     const takes = audition.roles.reduce((n, r) => n + r.takes.length, 0);
     const park = this.recordPark(id, 'audition', audition.title, 'user');
     this.store.mutateItem(id, [{ set: { awaiting: 'audition', awaiting_data: { audition, requested_at: this.now(), park } } }, { activity: { actor: 'app', text: `parked: audition "${audition.title}" (${audition.roles.length} role${audition.roles.length === 1 ? '' : 's'}, ${takes} take${takes === 1 ? '' : 's'})` } }], 'engine', { commit: `${id}: awaiting audition` });
     this.note('info', `${id}: ${takes} take${takes === 1 ? '' : 's'} to audition (${audition.title})`);
-    return `${AUDITION_PARKED}: the user hears the takes and picks one per role. End your turn now; planestro resumes you with the picks.`;
+    return `${AUDITION_PARKED}: the user hears the takes, keeps what each role needs and may ask for the rest again. End your turn now; planestro resumes you with the picks.`;
   }
 
   /** Why a take cannot be played from this worktree: missing, not a file a person reviews, or (through a link) outside it. */
@@ -3697,7 +3697,7 @@ export class LiveEngine implements Engine {
     const fm = this.store.requireItem(id).file.frontmatter;
     if (fm.awaiting !== 'audition' || !fm.worktree) return null;
     const audition = Audition.safeParse(fm.awaiting_data?.audition);
-    if (!audition.success || !audition.data.roles.some((r) => r.takes.includes(path)) || this.takeProblem(fm.worktree, path)) return null;
+    if (!audition.success || !auditionTakes(audition.data).includes(path) || this.takeProblem(fm.worktree, path)) return null;
     try { return readFileSync(join(this.absWorktree(fm.worktree), path)); } catch { return null; }
   }
 

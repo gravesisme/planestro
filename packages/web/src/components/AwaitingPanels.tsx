@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import { api, type ItemView } from '../api.ts';
 import { act } from '../store.ts';
-import { decisionOf, auditionPicksProblem, type Audition, type AuditionPick } from '@planestro/shared';
+import { decisionOf, auditionPicksProblem, auditionNeed, type Audition, type AuditionPick } from '@planestro/shared';
 import { TriageNote } from './DecisionCard.tsx';
 import { useSending } from '../sending.ts';
 import { Sending } from './Sending.tsx';
@@ -60,51 +60,90 @@ const takeUrl = (id: string, path: string, v: string) => `/api/items/${id}/audit
 const takeName = (path: string) => path.split('/').pop() ?? path;
 
 /**
- * A mid-build audition (#207): every take the worker made, playable here (a phone included), one pick per role or,
- * when the worker offered it, none of them with what to change. The picks resume the worker.
+ * A mid-build audition (#207, #318): every take the worker made, playable here (a phone included). Each role keeps up to
+ * as many takes as it needs, and short of that asks for the rest again, with an optional note; takes kept in an earlier
+ * round are shown locked. The picks resume the worker.
  */
 function AuditionPanel({ item, audition, sending, respond }: { item: ItemView; audition: Audition; sending?: string; respond: (key: string, payload: Record<string, unknown>) => Promise<boolean> }) {
   const v = String(item.frontmatter.awaiting_data?.requested_at ?? item.frontmatter.updated_at);
   const [picks, setPicks] = useState<Record<string, AuditionPick>>({});
   const missing = auditionPicksProblem(audition, picks);
-  const takes = audition.roles.reduce((n, r) => n + r.takes.length, 0);
+  const takes = audition.roles.reduce((n, r) => n + (r.takes?.length ?? 0), 0);
+  const kept = audition.roles.some((r) => r.kept?.length);
+  const set = (id: string, f: (p: AuditionPick) => AuditionPick) => setPicks((x) => ({ ...x, [id]: f(x[id] ?? { takes: [] }) }));
   return (
     <div className="approval audition" id="audition">
       <h2 style={{ margin: '0 0 4px' }}>Audition: {audition.title}</h2>
-      <p className="small" style={{ marginTop: 0 }}>The worker made {takes} take{takes === 1 ? '' : 's'} and waits for your pick{audition.roles.length === 1 ? '' : ' for each role'} before it builds on {audition.roles.length === 1 ? 'one' : 'them'}.</p>
+      <p className="small" style={{ marginTop: 0 }}>The worker made {takes} {kept ? 'new ' : ''}take{takes === 1 ? '' : 's'}. Keep what each role needs; if too few are right, regenerate the rest and say what to change.</p>
       {audition.roles.map((r) => {
-        const p = picks[r.id];
+        const need = auditionNeed(r); const want = r.pick ?? 1; const p = picks[r.id] ?? { takes: [] };
+        const short = need - p.takes.length;
         return (
           <fieldset key={r.id} className="audition-role">
             <legend><b>{r.name}</b> <span className="muted small">{r.id}</span></legend>
+            <div className={`audition-count small${short <= 0 ? ' done' : ''}`} aria-live="polite">{need === 0 ? `Filled: ${want} of ${want} kept` : `${(r.kept?.length ?? 0) + p.takes.length} of ${want} picked`}</div>
             {r.where && <div className="small muted">Plays: {r.where}</div>}
             {r.prompt && <div className="small muted">From: {r.prompt}</div>}
-            {r.takes.map((t) => (
-              <label key={t} className="audition-take">
-                <span className="audition-pick"><input type="radio" name={`audition-${r.id}`} checked={!!p && 'take' in p && p.take === t} onChange={() => setPicks((x) => ({ ...x, [r.id]: { take: t } }))} /> {takeName(t)}</span>
+            {(r.kept ?? []).map((t) => (
+              <div key={t} className="audition-take kept">
+                <span className="tag ok" title="Kept in an earlier round">Kept</span>
+                <span className="audition-name">{takeName(t)}</span>
                 <Take url={takeUrl(item.id, t, v)} path={t} />
-              </label>
+              </div>
             ))}
-            {audition.allow_regenerate && (
-              <label className="audition-take">
-                <span className="audition-pick"><input type="radio" name={`audition-${r.id}`} checked={!!p && 'regenerate' in p} onChange={() => setPicks((x) => ({ ...x, [r.id]: { regenerate: '' } }))} /> None of these: regenerate</span>
-                {p && 'regenerate' in p && <input style={{ width: '100%' }} placeholder="What should change?" value={p.regenerate} onChange={(e) => setPicks((x) => ({ ...x, [r.id]: { regenerate: e.target.value } }))} />}
-              </label>
+            {need > 0 && (r.takes ?? []).map((t) => {
+              const on = p.takes.includes(t);
+              return (
+                <label key={t} className={`audition-take${on ? ' on' : ''}`}>
+                  <input type="checkbox" checked={on} disabled={!on && short <= 0} onChange={() => set(r.id, (q) => ({ ...q, takes: on ? q.takes.filter((x) => x !== t) : [...q.takes, t] }))} />
+                  <span className="audition-name">{takeName(t)}</span>
+                  <Take url={takeUrl(item.id, t, v)} path={t} />
+                </label>
+              );
+            })}
+            {short > 0 && (
+              <div className="audition-regen">
+                <label><input type="checkbox" checked={p.regenerate !== undefined} onChange={(e) => set(r.id, (q) => (e.target.checked ? { ...q, regenerate: q.regenerate ?? '' } : { takes: q.takes }))} /> Regenerate the rest ({short} more)</label>
+                {p.regenerate !== undefined && <input placeholder="Notes for the new takes (optional)" value={p.regenerate} onChange={(e) => set(r.id, (q) => ({ ...q, regenerate: e.target.value }))} />}
+              </div>
             )}
           </fieldset>
         );
       })}
-      <div className="row">
+      <div className="row" style={{ flexWrap: 'wrap' }}>
         <button className="primary" disabled={!!missing || sending !== undefined} aria-busy={sending === 'picks'} title={missing} onClick={() => void respond('picks', { kind: 'audition', picks })}>{sending === 'picks' ? <Sending /> : 'Send picks'}</button>
+        {missing && <span className="small muted">{missing}</span>}
       </div>
     </div>
   );
 }
 
+/** One take at a time plays: starting another stops the last. */
+let playing: HTMLAudioElement | null = null;
+
 function Take({ url, path }: { url: string; path: string }) {
-  if (/\.(mp3|wav|ogg|flac|m4a|aac)$/i.test(path)) return <audio controls preload="none" src={url} style={{ width: '100%' }} />;
-  if (/\.(png|jpe?g|webp|gif|svg)$/i.test(path)) return <img src={url} alt={takeName(path)} className="checker" style={{ maxWidth: '100%', maxHeight: 240 }} />;
-  return <a href={url} download={takeName(path)} className="small">Download {takeName(path)}</a>;
+  if (/\.(mp3|wav|ogg|flac|m4a|aac)$/i.test(path)) return <PlayButton url={url} name={takeName(path)} />;
+  if (/\.(png|jpe?g|webp|gif|svg)$/i.test(path)) return <a href={url} target="_blank" rel="noreferrer" className="audition-thumb" onClick={(e) => e.stopPropagation()}><img src={url} alt={takeName(path)} className="checker" /></a>;
+  return <a href={url} download={takeName(path)} className="small" onClick={(e) => e.stopPropagation()}>Download</a>;
+}
+
+function PlayButton({ url, name }: { url: string; name: string }) {
+  const ref = useRef<HTMLAudioElement>(null);
+  const [on, setOn] = useState(false);
+  useEffect(() => () => { if (playing === ref.current) playing = null; }, []);
+  const toggle = (e: MouseEvent) => {
+    e.preventDefault(); e.stopPropagation();
+    const a = ref.current; if (!a) return;
+    if (!a.paused) { a.pause(); return; }
+    if (playing && playing !== a) playing.pause();
+    playing = a; a.currentTime = 0; void a.play().catch(() => setOn(false));
+  };
+  return (
+    <>
+      <button type="button" className="audition-play" aria-label={`${on ? 'Stop' : 'Play'} ${name}`} aria-pressed={on} onClick={toggle}>{on ? '■' : '▶'}</button>
+      <audio ref={ref} preload="none" src={url} onPlay={() => setOn(true)} onPause={() => setOn(false)} onEnded={() => setOn(false)} />
+    </>
+  );
 }
 
 function QuestionForm({ questions, onSubmit, sending }: { questions: Question[]; onSubmit: (answers: Record<string, string>) => void; sending: boolean }) {

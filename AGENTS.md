@@ -119,7 +119,9 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   approval refuses it for everyone but a user approving it as one item on purpose (#69).
 - A worker's `request_audition` (#207) parks the item on takes for the user to hear or see (`awaiting: audition`,
   worktree paths, ignored folders included). Only the listed takes are served (`auditionFile`), only while it waits;
-  it never goes to triage, and only the user's picks (one per role, or a regenerate note) resume the worker.
+  it never goes to triage, and only the user's picks resume the worker. A role needs `pick` takes (#318): the user keeps
+  up to that many and regenerates the rest (note optional); the worker re-auditions with them in `kept` (locked, still
+  served) until every role is filled. The #207 shape (`{take}` / `{regenerate}`, `allow_regenerate`) still reads.
 - An item that returns to QUEUED after an icebox/backlog round-trip reuses the
   worktree it already has; setup hooks are not re-run.
 - A hold (`skip_merge`) carries its reason in `hold_reason`, which lasts exactly as long as the
