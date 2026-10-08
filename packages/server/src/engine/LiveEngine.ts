@@ -18,6 +18,7 @@ import { NeedsYouWatch, type Wait } from './needsYou.ts';
 import { pngSize } from './placeholderPng.ts';
 import { findWorkflow, namedInLog, prSkippedByPaths } from './ciFilters.ts';
 import { quietTransientFailure } from './transient.ts';
+import { driveSchedules } from './schedules.ts';
 import { runnerStatusText, stallOf, recovered, type RunnerStall } from './runners.ts';
 import type { ReviewImage, ReviewDiff } from './Engine.ts';
 
@@ -491,6 +492,8 @@ export class LiveEngine implements Engine {
     if (this._paused) return;
     try {
       this.orchestrator.kick();
+      // Before admission, so an item a schedule submits starts on this pass.
+      driveSchedules(this.store, new Date(Date.parse(this.now())), { submit: (id, why) => { this.submitAsUser(id, why); }, note: (l, m) => this.note(l, m) });
       this.drivePendingTurns();
       this.driveTransientRetries();
       for (const item of this.store.listItems()) this.continueAfterProviderSwitch(item.id);

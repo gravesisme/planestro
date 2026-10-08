@@ -12,14 +12,15 @@ import { LiveEngine } from '../src/engine/LiveEngine.ts';
 import { FakeWorld, DryRunGitPort, DryRunGhPort, DryRunProcPort, DryRunClaudePort } from '../src/engine/dryrun-ports.ts';
 import type { Ports } from '../src/engine/ports.ts';
 import { makeFixture } from './helpers.ts';
+import { apiRoutes } from '../src/routes/api.ts';
 
 let store: DataStore | undefined; let engine: LiveEngine | undefined;
 afterEach(async () => { await engine?.stop(); store?.close(); store = undefined; engine = undefined; });
 
 const HOUR = 3_600_000; const DAY = 24 * HOUR;
-// Slots are relative to the real day, since a schedule is armed when it is made: the next UTC midnight, then 09:00 each day.
-const day0 = Math.ceil(Date.now() / DAY) * DAY + DAY;
-const slot = (n: number) => day0 + n * DAY + 9 * HOUR;
+// Slots are relative to the real time, since a schedule is armed when it is made: the first 09:00 UTC after a minute from now, then each day.
+const first = (() => { const t = Math.floor(Date.now() / DAY) * DAY + 9 * HOUR; return t > Date.now() + 60_000 ? t : t + DAY; })();
+const slot = (n: number) => first + n * DAY;
 let clock = Date.now();
 
 async function open(dataDir: string) {
@@ -116,11 +117,10 @@ describe('schedules (#247)', () => {
     const [it] = filed(store);
     expect(store.requireItem(it.id).file.frontmatter.status).not.toBe('NOT_YET_SUBMITTED');
     // A file that says submit but was not made by the user (a hand edit) files without submitting.
-    const path = store.requireSchedule('daily').path;
-    store.close();
+    const path = store.requireSchedule('daily').path; const dir = store.dataDir;
+    await engine.stop(); store.close();
     writeFileSync(path, readFileSync(path, 'utf8').replace('created_by: user', 'created_by: orchestrator'));
-    await engine.stop(); engine = undefined;
-    const { store: s2, engine: e2 } = await open(store.dataDir);
+    const { store: s2, engine: e2 } = await open(dir);
     clock = slot(1) + 60_000; await e2.tick();
     expect(filed(s2).map((i) => i.file.frontmatter.status)).toContain('NOT_YET_SUBMITTED');
   });
@@ -133,5 +133,21 @@ describe('schedules (#247)', () => {
     expect(() => make(store, { title: 'Audit {{when}}' })).toThrow(/when/);
     make(store);
     expect(() => make(store)).toThrow(/exists/);
+  });
+
+  it('the API makes a schedule as the user, shows its next run, edits and deletes it', async () => {
+    const { store, engine } = await setup();
+    const app = apiRoutes(store, engine);
+    const send = (method: string, path: string, body?: unknown) => app.request(path, { method, headers: { 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });
+    const made = await send('POST', '/schedules', { name: 'weekly', title: 'Bump deps {{date}}', description: 'Bump them.', cron: '0 9 * * MON', tz: 'Europe/London', submit: true, skip_if_open: true });
+    expect(made.status).toBe(201);
+    const view = (await made.json()) as { next_run: string; frontmatter: { created_by: string } };
+    expect(view.frontmatter.created_by).toBe('user');
+    expect(view.next_run).toMatch(/T09:00:00\+0[01]:00$/);
+    expect((await send('PATCH', '/schedules/weekly', { cron: '0 9 * *' })).status).toBe(400);
+    expect((await send('PATCH', '/schedules/weekly', { enabled: false })).status).toBe(200);
+    expect(store.requireSchedule('weekly').file.frontmatter.enabled).toBe(false);
+    expect((await send('DELETE', '/schedules/weekly')).status).toBe(200);
+    expect(store.listSchedules()).toEqual([]);
   });
 });

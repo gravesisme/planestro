@@ -200,6 +200,11 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   (which ends in `resolve_question` / `update_question`, or planestro notes "reviewed, no
   change"). An item reaching FINISHED or ICEBOX resolves its open questions in the store
   (`settleQuestions`), never by asking the model.
+- Schedules (`schedules/<name>.md`, schema 7, #247) are a fourth file type: cron, `tz`, an item title and
+  `# Description` template (`{{date}}`, `{{slot}}`, `{{schedule}}`). `driveSchedules` (tick, after the pause check)
+  files one item per slot keyed `scheduled_from: <name>:<slot>`; that key and the schedule's `last_slot` / `armed_at`
+  mean a restart never files twice, a sleep files the latest missed slot once. `skip_if_open` skips while the last
+  one is open. `submit` is honoured only with `created_by: user` and set only by the user (#73).
 - Provider switches in either direction keep item state, worktrees, PRs and decisions, using the existing fresh-brief intent. `agent_sessions` (schema 4) stores a session id, role and tool contract per runner. Provider usage guards are machine-local and independent of the global user/disk pause. Orchestrator model changes apply next wake without a restart; its queue remains in memory, including when a wake hits its token cap.
 - A wait on a person (an item whose `needs_you` turns true, an open orchestrator question) is announced once
   (#224): `NeedsYouWatch` (`engine/needsYou.ts`) sees every store event, journals one `notification`

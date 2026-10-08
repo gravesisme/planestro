@@ -10,11 +10,11 @@ import { join } from 'node:path';
 import { managedAttachmentPath } from '../store/managedAttachments.ts';
 import { existsSync, readFileSync } from 'node:fs';
 import YAML from 'yaml';
-import { allowedTransitions, parsePromptFile, RenderError, STATUSES, PRIORITIES, type Priority, PROMPT_KINDS, RELEASE_STATUSES, markUnavailable, type Status, type Actor } from '@planestro/shared';
+import { allowedTransitions, parsePromptFile, RenderError, STATUSES, PRIORITIES, type Priority, PROMPT_KINDS, RELEASE_STATUSES, KINDS, markUnavailable, type Status, type Actor } from '@planestro/shared';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Engine } from '../engine/Engine.ts';
 import type { ConsoleBuffer } from '../store/ConsoleBuffer.ts';
-import { itemView, promptView, releaseView, questionView, stateView, guardView, runnerStallsView, publicLocal } from './views.ts';
+import { itemView, promptView, releaseView, scheduleView, questionView, stateView, guardView, runnerStallsView, publicLocal } from './views.ts';
 import { applyConfigSettings, applyLocalSettings, putModel, removeModel } from '../settingsWrite.ts';
 import { importCandidates, importMcpServers, putMcpServer, removeMcpServer, testMcpServer } from '../mcpServers.ts';
 
@@ -332,6 +332,20 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
     } catch (e) { return fail(c, e); }
   });
   api.delete('/releases/:version', (c) => { try { store.deleteRelease(c.req.param('version')); return c.json({ ok: true }); } catch (e) { return fail(c, e); } });
+
+  // Schedules (#247): made and changed by the user here, which is what lets one submit what it files (#73).
+  const scheduleFields = z.object({ title: z.string().min(1), description: z.string(), cron: z.string().min(1), tz: z.string().min(1), enabled: z.boolean(), skip_if_open: z.boolean(), submit: z.boolean(), kind: z.enum(KINDS), category: z.string().nullable(), priority: z.enum(PRIORITIES).nullable() }).partial().strict();
+  api.get('/schedules', (c) => c.json(store.listSchedules().map((s) => scheduleView(s))));
+  api.post('/schedules', async (c) => {
+    try {
+      const input = scheduleFields.extend({ name: z.string().min(1), title: z.string().min(1), cron: z.string().min(1), tz: z.string().min(1) }).parse(await c.req.json());
+      const s = store.createSchedule({ ...input, category: input.category ?? undefined, priority: input.priority ?? undefined }, 'user');
+      engine.poke();
+      return c.json(scheduleView(s), 201);
+    } catch (e) { return fail(c, e); }
+  });
+  api.patch('/schedules/:name', async (c) => { try { const s = store.editSchedule(c.req.param('name'), scheduleFields.parse(await c.req.json()), 'user'); engine.poke(); return c.json(scheduleView(s)); } catch (e) { return fail(c, e); } });
+  api.delete('/schedules/:name', (c) => { try { store.deleteSchedule(c.req.param('name')); return c.json({ ok: true }); } catch (e) { return fail(c, e); } });
 
   api.get('/config', (c) => c.json({ config: store.config, local: publicLocal(store.local), configText: readFileSync(join(store.dataDir, 'planestro.yml'), 'utf8') }));
   // Settings writes: only keys the shared registry marks editable, validated through the schema (settingsWrite.ts).
