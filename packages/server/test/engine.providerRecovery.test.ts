@@ -308,3 +308,32 @@ it('leaves operational data alone when stopping an item with no saved work', asy
     expect(store.requireItem(id).file.frontmatter.op_data).toEqual(op_data);
   }
 });
+
+it('resumes after permission rulings without charging turns against the cap (#295)', async () => {
+  // HH-439's shape: a Codex turn parks on a command approval, the ruling resumes it, it parks on the next one.
+  let n = 0;
+  const ctx = await setup(async (o) => {
+    n++;
+    if (n <= 5) {
+      await o.onApproval!({ tool: 'CodexApproval', input: { method: 'item/commandExecution/requestApproval', command: `npm run check-${n}`, cwd: ctx.codeRepo } });
+      return { ...success, tokens: 100, parked: 'permission' };
+    }
+    return { ...success, tokens: 100 };
+  });
+  const id = ctx.item({ implementer: 'codex-general', budget_turns: 1 });
+  (engine as any).runJob(id, () => (engine as any).runTurnFor(id, 'implement', 'First instruction'));
+  for (let k = 1; k <= 5; k++) {
+    await until(() => store.requireItem(id).file.frontmatter.blocked === true || (store.requireItem(id).file.frontmatter.awaiting === 'permission' && !(engine as any).jobs.has(id)));
+    expect(store.requireItem(id).file.frontmatter.blocked_reason).toBeUndefined();
+    await engine.respond(id, { kind: 'permission', decision: k % 2 ? 'allow' : 'deny', reason: 'ruled' }, k % 2 ? 'user' : 'orchestrator');
+  }
+  await until(() => ctx.calls.length === 6 && !(engine as any).jobs.has(id));
+  const fm = store.requireItem(id).file.frontmatter;
+  expect(fm.blocked_reason).not.toBe('turn_budget');
+  expect(fm.agent_turns).toBe(1);   // the turn the rulings resumed, charged once
+  expect(fm.tokens).toBe(600);      // what the resumes spent still counts
+  // A turn that is not a ruling's resume is charged, and stopped at the cap.
+  await (engine as any).runTurnFor(id, 'implement', 'Another instruction');
+  expect(store.requireItem(id).file.frontmatter.blocked_reason).toBe('turn_budget');
+  expect(ctx.calls).toHaveLength(6);
+});
