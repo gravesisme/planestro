@@ -15,7 +15,7 @@ import { hostNote, keptPathsNote, cwdNote } from './hostNote.ts';
 import { Orchestrator } from './orchestrator.ts';
 import { NeedsYouWatch, type Wait } from './needsYou.ts';
 import { pngSize } from './placeholderPng.ts';
-import { findWorkflow, prSkippedByPaths } from './ciFilters.ts';
+import { findWorkflow, namedInLog, prSkippedByPaths } from './ciFilters.ts';
 import type { ReviewImage } from './Engine.ts';
 
 const IMAGE_FILE = /\.(png|jpe?g|webp|gif|svg)$/i;
@@ -126,6 +126,9 @@ const SAME_CROSSING_MS = 5 * 60_000;
 const MAX_TIMER_MS = 2 ** 31 - 1;
 
 /** What a sync with the base did (LiveEngine.syncBranch). */
+/** An epic's red run that is likely its base's, waiting for the base to move (#204); `synced` is the base tip merged in once it did. */
+type BaseWait = { sha: string; base: string; base_sha: string; files: string[]; since: string; synced?: string };
+
 type SyncOutcome =
   | { kind: 'current'; base: string; baseSha: string }
   | { kind: 'synced'; base: string; baseSha: string; head: string; pushed: boolean; integration: boolean }
@@ -494,6 +497,7 @@ export class LiveEngine implements Engine {
       await this.driveExternal();
       this.driveInReview();
       this.driveHeld();
+      this.driveBaseWaits();
       await this.driveStalls();
       this.driveReviewStalls();
       this.driveResumeAfter();
@@ -2394,9 +2398,104 @@ export class LiveEngine implements Engine {
     ], 'engine', { commit: `${id}: CI red (${count})` });
     this.store.journal.end(opId, id, 'failed', { reason: 'ci_red', count });
     if (this.store.requireItem(id).file.frontmatter.taken_over) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: 'no fix turn: you have this item (taken over)' } }], 'engine'); return; }
-    if (!canFix) { this.block(id, 'ci_red', 'CI is red and there is no session to hand the failure to; investigate by hand'); return; }
+    if (!canFix) {
+      // An epic's red that is likely the base's waits for the base (#204), once; red again after that comes here as ever.
+      const waited = fm.kind === 'epic' && source === 'github' ? await this.waitForBaseFix(id, headSha, log) : undefined;
+      if (waited === true) return;
+      this.block(id, 'ci_red', `CI is red and there is no session to hand the failure to; investigate by hand${waited ?? ''}`);
+      return;
+    }
     if (count >= 2) { this.block(id, 'ci_red_twice', `CI failed ${count} times`); this.wakeOrchestrator('ci_red_again', id, { failed_log: log.slice(0, 3000) }); return; }
     this.queueTurn(id, 'fix', this.store.renderPrompt('ci-failed', this.store.requireItem(id), { ci: { attempt: String(count), run_url: ci?.url ?? '(local run)', failed_log: log } }), [], [], { fresh: 'auto' });
+  }
+
+  /**
+   * A red epic whose run is likely the base's (#204, HH-375): its failed log names files the base changed since the epic
+   * last synced and none the epic changed. HH-375's PR went red on a check develop had just broken; the orchestrator
+   * triaged ci_red, blamed the epic, and a worker turn pushed a duplicate of develop's own fix onto the integration
+   * branch. So it is not blocked: `op_data.base_wait` records the evidence and driveBaseWaits merges the base in once it
+   * moves, so CI runs again. That happens once. Returns true when it waits, or, when it already waited, the words the
+   * ci_red block adds (and the record is dropped, so a later red is looked at afresh); undefined otherwise.
+   */
+  private async waitForBaseFix(id: string, headSha: string, log: string): Promise<true | string | undefined> {
+    const item = this.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    const prior = fm.op_data?.base_wait as BaseWait | undefined;
+    if (prior) {
+      const { base_wait: _w, ...od } = fm.op_data ?? {};
+      this.store.mutateItem(id, [{ set: { op_data: od } }], 'engine');
+      return prior.synced ? `. It is still red after merging the moved base in (it looked like a base regression in ${prior.files.join(', ')})` : undefined;
+    }
+    const base = this.store.derived(item).base_branch;
+    if (!base) return undefined;
+    let files: string[];
+    let baseSha: string;
+    try {
+      await this.ports.git.fetch(this.repo);
+      baseSha = await this.ports.git.revParse(this.repo, `origin/${base}`);
+      // Three dots: the epic's own changes since it left the base, and the base's since then.
+      const [own, theirs] = await Promise.all([this.ports.git.changedFiles(this.repo, `origin/${base}`, headSha), this.ports.git.changedFiles(this.repo, headSha, `origin/${base}`)]);
+      if (own.some((f) => namedInLog(log, f.path))) return undefined;
+      files = theirs.map((f) => f.path).filter((p) => namedInLog(log, p));
+    } catch { return undefined; }   // cannot tell: the stop is a person's, as before
+    if (!files.length) return undefined;
+    const wait: BaseWait = { sha: headSha, base, base_sha: baseSha, files: files.slice(0, 20), since: this.now() };
+    this.store.mutateItem(id, [
+      { set: { op_data: { ...(this.store.requireItem(id).file.frontmatter.op_data ?? {}), base_wait: wait } } },
+      { activity: { actor: 'app', text: `likely a base regression: the failed run names ${files.slice(0, 5).join(', ')}${files.length > 5 ? ', …' : ''}, which ${base} changed since this epic last synced, and nothing this epic changed. No fix turn on the integration branch: waiting for ${base} to move past ${baseSha.slice(0, 7)}, then merging it in and running CI again, once` } },
+    ], 'engine', { commit: `${id}: CI red, waiting for ${base}` });
+    this.note('info', `${id}: CI red on files ${base} changed; waiting for ${base} to move rather than starting a fix`);
+    return true;
+  }
+
+  private baseWaitPolledAt = new Map<string, number>();
+  /** Epics waiting on their base (`op_data.base_wait`, #204), looked at once a minute outside any other step. */
+  private driveBaseWaits(): void {
+    const now = Date.now();
+    for (const item of this.store.listItems()) {
+      const fm = item.file.frontmatter;
+      if (fm.kind !== 'epic' || fm.status !== 'IN_REVIEW' || !fm.op_data?.base_wait || (fm.op_data.base_wait as BaseWait).synced) continue;
+      if (fm.blocked || fm.awaiting || fm.taken_over || fm.op || !fm.branch || this.jobs.has(item.id) || this.turns.has(item.id)) continue;
+      if (now - (this.baseWaitPolledAt.get(item.id) ?? 0) < HELD_POLL_MS) continue;
+      this.baseWaitPolledAt.set(item.id, now);
+      this.runJob(item.id, () => this.baseWaitStep(item.id));
+    }
+  }
+
+  /**
+   * One look at an epic waiting on its base. Its own head moved (a child merged): that head's CI decides, as ever. The
+   * base moved: it is merged in and pushed, so CI runs again for the new head, and the next red is ci_red. Neither, past
+   * `ci.stall_wake_min`: the wait ends as ci_red, with the suspicion said, for the orchestrator and then a person.
+   */
+  private async baseWaitStep(id: string): Promise<void> {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    const wait = fm.op_data?.base_wait as BaseWait | undefined;
+    if (!wait || wait.synced) return;
+    const drop = (): Record<string, unknown> => { const { base_wait: _w, ...od } = this.store.requireItem(id).file.frontmatter.op_data ?? {}; return od; };
+    await this.ports.git.fetch(this.repo);
+    const remote = await this.ports.git.remoteBranchSha(this.repo, fm.branch!);
+    if (remote && remote !== wait.sha) {
+      this.store.mutateItem(id, [{ set: { ci_result: 'pending', op_data: drop() } }, { activity: { actor: 'app', text: `${fm.branch} moved to ${remote.slice(0, 7)} while waiting for ${wait.base}; its CI decides now` } }], 'engine');
+      void this.tick();
+      return;
+    }
+    const tip = await this.ports.git.revParse(this.repo, `origin/${wait.base}`);
+    const regression = `likely a base regression in ${wait.files.join(', ')}`;
+    if (tip === wait.base_sha) {
+      const after = this.store.config.ci.stall_wake_min * 60_000;
+      if (after && Date.now() - Date.parse(wait.since) >= after) {
+        this.store.mutateItem(id, [{ set: { op_data: drop() } }], 'engine');
+        this.block(id, 'ci_red', `CI is red on files ${wait.base} changed (${regression}), and ${wait.base} has not moved past ${wait.base_sha.slice(0, 7)} in ${Math.round(after / 60_000)} min. Wait for its fix, or fix ${wait.base}; a fix on this integration branch would duplicate it`);
+      }
+      return;
+    }
+    this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), base_wait: { ...wait, synced: tip } } } }, { activity: { actor: 'app', text: `${wait.base} moved to ${tip.slice(0, 7)} (${regression}); merging it in and running CI again, once` } }], 'engine');
+    const r = await this.syncBranch(id, `for the base it was waiting on`);
+    if (r.kind === 'synced') { this.store.mutateItem(id, [{ set: { ci_result: 'pending', ci_head_sha: r.head } }], 'engine'); void this.tick(); return; }
+    this.store.mutateItem(id, [{ set: { op_data: drop() } }], 'engine');
+    if (r.kind === 'conflict') this.block(id, 'sync_conflict', `merging origin/${r.base} into ${fm.branch} (to take in the base's fix for the red run, ${regression}) conflicted in ${r.files.join(', ')}; it was aborted. Resolve it by hand in ${r.cwd}, or have the orchestrator retry with resolve_epic_conflict and a hint`);
+    else if (r.kind === 'dirty') this.block(id, 'dirty_tree', `not synced with ${r.base} to take in its fix for the red run (${regression}): ${r.why ?? `files in the way: ${r.files.slice(0, 5).join(', ')}`}`);
+    else this.block(id, 'ci_red', `CI is red (${regression}), and ${wait.base} moved, but ${r.kind === 'current' ? `${fm.branch} already has it` : 'the sync did not run'}; investigate by hand`);
   }
 
   /**

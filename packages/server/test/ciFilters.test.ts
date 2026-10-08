@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { filterPattern, findWorkflow, prSkippedByPaths } from '../src/engine/ciFilters.ts';
+import { filterPattern, findWorkflow, prSkippedByPaths, namedInLog } from '../src/engine/ciFilters.ts';
 
 const HH = `name: CI
 on:
@@ -38,5 +38,19 @@ describe('CI path filters (HH-324)', () => {
     expect(prSkippedByPaths({ on: { pull_request: {} } }, ['docs/a.md'])).toBeNull();
     expect(prSkippedByPaths({ on: ['push', 'pull_request'] }, ['docs/a.md'])).toBeNull();
     expect(prSkippedByPaths({ on: { push: {} } }, ['docs/a.md'])).toBeNull();
+  });
+});
+
+describe('namedInLog: the files a failed run names (#204)', () => {
+  it('matches a path, a file name, or a long stem standing alone', () => {
+    const log = 'mine_cart_check: failure\nFAIL checks/mine_cart_check.gd:42\nError in util.ts';
+    expect(namedInLog(log, 'checks/mine_cart_check.gd')).toBe(true);
+    expect(namedInLog('job mine_cart_check failed', 'checks/mine_cart_check.gd')).toBe(true);
+    expect(namedInLog(log, 'src/util.ts')).toBe(true);
+  });
+  it('does not match a short stem, a longer name that contains it, or the same name in another directory', () => {
+    expect(namedInLog('the config was wrong', 'src/config.ts')).toBe(false);
+    expect(namedInLog('FAIL checks/mine_cart_check_extra.gd', 'checks/mine_cart_check.gd')).toBe(false);
+    expect(namedInLog('FAIL other/mine_cart_check.gd:1', 'checks/mine_cart_check.gd')).toBe(false);
   });
 });

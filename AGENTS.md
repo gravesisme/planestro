@@ -74,6 +74,8 @@ Releasing a hold keeps a green run whose head is unchanged and still on the base
 A red head the session changed nothing for is re-run once (`onSameRedRun`), then blocks `ci_red_parked`:
 nothing waits on a run that is not coming, and an item in review that nothing moves for `ci.stall_wake_min`
 wakes the orchestrator once (`review_stalled`, #201).
+A red epic whose failed log names files its base changed since it last synced, and none of its own, is not blocked:
+`op_data.base_wait` waits for the base to move, merges it in and lets CI run once more (`driveBaseWaits`, #204).
 A held item (`skip_merge`) skips only the merge: its new commits are pushed and its
 CI is polled from the tick, outside the merge chain (`driveHeld`).
 Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in

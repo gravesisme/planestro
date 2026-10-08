@@ -52,7 +52,7 @@ and brings you only a plain decision card. See [Needs-you triage](concepts.md#ne
 
 | Reason | Meaning | Do |
 |---|---|---|
-| `ci_red` | CI failed and there is no session to hand the failure to. | Fix the branch by hand. |
+| `ci_red` | CI failed and there is no session to hand the failure to. An epic whose failed run names files its base changed since it last synced, and none it changed, is not stopped at first: it waits for the base to move, merges it in and runs CI once more (#204). It stops here if that run is red too, or if the base does not move within `ci.stall_wake_min`. | Fix the branch by hand. If the reason says it is likely a base regression, fix the base, not the integration branch. |
 | `ci_red_twice` | CI failed again after the session's fix. | Read both logs; message the session with what it is missing, or take over. |
 | `ci_red_parked` | CI is red, the session changed nothing (it judged the failure not its own), and planestro already re-ran the failed jobs once for this head, or could not. Nothing else is coming, so it stops rather than waits. The orchestrator triages it first. | Read the run and the session's report (quoted in the message). A flake: **Re-run failed CI jobs**. A real failure: message the session with what to fix, or take over. |
 | `ci_timeout` | A run ran longer than `ci.timeout_min` after a runner started it, or waited queued longer than `ci.queue_timeout_min` without starting (the message says which, with the queue depth). | A run that ran long: check the run. One that never started: the runners are short of capacity, not the change is broken; consider `ci.max_queued_runs`. Unblock to re-enter the pipeline. |
