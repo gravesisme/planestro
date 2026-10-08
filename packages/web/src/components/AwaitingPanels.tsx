@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { api, type ItemView } from '../api.ts';
 import { act } from '../store.ts';
-import { decisionOf } from '@planestro/shared';
+import { decisionOf, auditionPicksProblem, type Audition, type AuditionPick } from '@planestro/shared';
 import { TriageNote } from './DecisionCard.tsx';
 
 type Question = { question: string; header?: string; options: { label: string; description?: string }[]; multiSelect?: boolean };
@@ -23,6 +23,7 @@ export function AwaitingPanels({ item }: { item: ItemView }) {
       <QuestionForm questions={data.questions} onSubmit={(answers) => act(() => api.respond(item.id, { kind: 'question', answers }))} />
     </div>
   );
+  if (fm.awaiting === 'audition' && (fm.awaiting_data as { audition?: Audition } | undefined)?.audition) return <AuditionPanel item={item} audition={(fm.awaiting_data as { audition: Audition }).audition} />;
   if ((fm.awaiting === 'permission' || orchestrating) && data) {
     const nativeCodex = data.tool === 'CodexApproval';
     const cannotGrant = data.grantable === false || (nativeCodex && data.grantable !== true);
@@ -48,6 +49,57 @@ export function AwaitingPanels({ item }: { item: ItemView }) {
     );
   }
   return null;
+}
+
+const takeUrl = (id: string, path: string, v: string) => `/api/items/${id}/audition?path=${encodeURIComponent(path)}&v=${encodeURIComponent(v)}`;
+const takeName = (path: string) => path.split('/').pop() ?? path;
+
+/**
+ * A mid-build audition (#207): every take the worker made, playable here (a phone included), one pick per role or,
+ * when the worker offered it, none of them with what to change. The picks resume the worker.
+ */
+function AuditionPanel({ item, audition }: { item: ItemView; audition: Audition }) {
+  const v = String(item.frontmatter.awaiting_data?.requested_at ?? item.frontmatter.updated_at);
+  const [picks, setPicks] = useState<Record<string, AuditionPick>>({});
+  const missing = auditionPicksProblem(audition, picks);
+  const takes = audition.roles.reduce((n, r) => n + r.takes.length, 0);
+  return (
+    <div className="approval audition" id="audition">
+      <h2 style={{ margin: '0 0 4px' }}>Audition: {audition.title}</h2>
+      <p className="small" style={{ marginTop: 0 }}>The worker made {takes} take{takes === 1 ? '' : 's'} and waits for your pick{audition.roles.length === 1 ? '' : ' for each role'} before it builds on {audition.roles.length === 1 ? 'one' : 'them'}.</p>
+      {audition.roles.map((r) => {
+        const p = picks[r.id];
+        return (
+          <fieldset key={r.id} className="audition-role">
+            <legend><b>{r.name}</b> <span className="muted small">{r.id}</span></legend>
+            {r.where && <div className="small muted">Plays: {r.where}</div>}
+            {r.prompt && <div className="small muted">From: {r.prompt}</div>}
+            {r.takes.map((t) => (
+              <label key={t} className="audition-take">
+                <span className="audition-pick"><input type="radio" name={`audition-${r.id}`} checked={!!p && 'take' in p && p.take === t} onChange={() => setPicks((x) => ({ ...x, [r.id]: { take: t } }))} /> {takeName(t)}</span>
+                <Take url={takeUrl(item.id, t, v)} path={t} />
+              </label>
+            ))}
+            {audition.allow_regenerate && (
+              <label className="audition-take">
+                <span className="audition-pick"><input type="radio" name={`audition-${r.id}`} checked={!!p && 'regenerate' in p} onChange={() => setPicks((x) => ({ ...x, [r.id]: { regenerate: '' } }))} /> None of these: regenerate</span>
+                {p && 'regenerate' in p && <input style={{ width: '100%' }} placeholder="What should change?" value={p.regenerate} onChange={(e) => setPicks((x) => ({ ...x, [r.id]: { regenerate: e.target.value } }))} />}
+              </label>
+            )}
+          </fieldset>
+        );
+      })}
+      <div className="row">
+        <button className="primary" disabled={!!missing} title={missing} onClick={() => act(() => api.respond(item.id, { kind: 'audition', picks }))}>Send picks</button>
+      </div>
+    </div>
+  );
+}
+
+function Take({ url, path }: { url: string; path: string }) {
+  if (/\.(mp3|wav|ogg|flac|m4a|aac)$/i.test(path)) return <audio controls preload="none" src={url} style={{ width: '100%' }} />;
+  if (/\.(png|jpe?g|webp|gif|svg)$/i.test(path)) return <img src={url} alt={takeName(path)} className="checker" style={{ maxWidth: '100%', maxHeight: 240 }} />;
+  return <a href={url} download={takeName(path)} className="small">Download {takeName(path)}</a>;
 }
 
 function QuestionForm({ questions, onSubmit }: { questions: Question[]; onSubmit: (answers: Record<string, string>) => void }) {

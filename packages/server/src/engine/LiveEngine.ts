@@ -2,14 +2,15 @@ import { itemModelSwitchOps, clearUsageStopOps } from '../providerSwitch.ts';
 import { join, relative, isAbsolute, extname, basename, matchesGlob } from 'node:path';
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem } from '@planestro/shared';
+import { z } from 'zod';
+import { Audition, auditionProblem, takePathProblem, auditionPicksProblem, auditionPickLines, auditionNote, type AuditionPick, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote, type CiQueue, type UndeliveredReport, type ConnectionDrop } from './ports.ts';
 import { operatorMcpUrl } from '../routes/mcp.ts';
 import { listInstances } from '../instances.ts';
 import { makePolicy, ruleFor, allowedByRules, sdkRules, BASE_ALLOWED } from './policy.ts';
-import { answeredCommand, commandShape, rulingText, parkedRefusal, permissionGrantRefusal } from './parks.ts';
+import { answeredCommand, commandShape, rulingText, parkedRefusal, permissionGrantRefusal, AUDITION_PARKED } from './parks.ts';
 import { commandGrant, commandForms, matchesCommandGrant, type CommandGrant } from './sessions/nativeApproval.ts';
 import { hostNote, keptPathsNote, cwdNote } from './hostNote.ts';
 import { Orchestrator } from './orchestrator.ts';
@@ -1129,10 +1130,10 @@ export class LiveEngine implements Engine {
     }
     // A session parked on its question (or a permission) takes the message with the answer (#128, HH-259): a designer
     // decision that changes the brief is not held back until someone answers, and does not wake it a second time.
-    const parked = fm.awaiting === 'question' || fm.awaiting === 'permission' || (fm.awaiting === 'orchestrator' && ['question', 'permission'].includes(String(fm.awaiting_data?.kind ?? '')));
+    const parked = fm.awaiting === 'question' || fm.awaiting === 'permission' || fm.awaiting === 'audition' || (fm.awaiting === 'orchestrator' && ['question', 'permission'].includes(String(fm.awaiting_data?.kind ?? '')));
     if (parked) {
       const pending = [...((fm.op_data?.pending_messages as string[] | undefined) ?? []), text];
-      this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), pending_messages: pending } } }, { activity: { actor: by === 'orchestrator' ? 'orchestrator' : 'user', text: `message queued: ${text} (it reaches the session with the answer to its ${fm.awaiting === 'question' || fm.awaiting_data?.kind === 'question' ? 'question' : 'permission request'})` } }], by === 'orchestrator' ? 'orchestrator' : 'user');
+      this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), pending_messages: pending } } }, { activity: { actor: by === 'orchestrator' ? 'orchestrator' : 'user', text: `message queued: ${text} (it reaches the session with the answer to its ${fm.awaiting === 'question' || fm.awaiting_data?.kind === 'question' ? 'question' : fm.awaiting === 'audition' ? 'audition' : 'permission request'})` } }], by === 'orchestrator' ? 'orchestrator' : 'user');
       return;
     }
     if (fm.awaiting && fm.awaiting !== 'user') throw new Error(`${id} is awaiting ${fm.awaiting}; answer that first`);
@@ -1159,6 +1160,30 @@ export class LiveEngine implements Engine {
       const also = pending.length ? `\n\nAlso, from the user while you waited (these may change the brief):\n\n${pending.map((m) => `- ${m}`).join('\n')}` : '';
       this.store.mutateItem(id, [{ unset: ['awaiting', 'awaiting_data', 'triage'] }, ...(pending.length ? [{ set: { op_data: { ...(fm.op_data ?? {}), pending_messages: [] } } } as ItemOp] : []), { activity: { actor: by, text: `answered: ${Object.values(answers).join(' / ')}${pending.length ? ` (with ${pending.length} queued message${pending.length === 1 ? '' : 's'})` : ''}` } }], by, { commit: `${id}: answer questions${by === 'orchestrator' ? ' (orchestrator)' : ''}` });
       this.queueTurn(id, phase, `${this.resumeNote(id, 'your questions')}\n\nAnswers to your questions:\n\n${text}${also}\n\nContinue.`);
+      return;
+    }
+    if (payload.kind === 'audition') {
+      // Listening and choosing is the designer's call (#207): nobody answers an audition for them.
+      if (by !== 'user') throw new Error('only the user picks the takes of an audition');
+      if (fm.awaiting !== 'audition') throw new Error(`${id} is not waiting on an audition`);
+      const audition = Audition.parse(fm.awaiting_data?.audition);
+      const picks = z.record(z.string(), z.union([z.strictObject({ take: z.string() }), z.strictObject({ regenerate: z.string() })])).parse(payload.picks ?? {}) as Record<string, AuditionPick>;
+      const problem = auditionPicksProblem(audition, picks);
+      if (problem) throw new Error(problem);
+      const lines = auditionPickLines(audition, picks);
+      this.recordAnswer(id, fm, by, 'picked');
+      const pending = (fm.op_data?.pending_messages as string[] | undefined) ?? [];
+      const also = pending.length ? `\n\nAlso, from the user while you waited (these may change the brief):\n\n${pending.map((m) => `- ${m}`).join('\n')}` : '';
+      const cur = this.store.requireItem(id);
+      const notes = getSection(cur.file, 'Notes');
+      const note = auditionNote(audition, picks);
+      this.store.mutateItem(id, [
+        { unset: ['awaiting', 'awaiting_data', 'triage'] },
+        ...(pending.length ? [{ set: { op_data: { ...(cur.file.frontmatter.op_data ?? {}), pending_messages: [] } } } as ItemOp] : []),
+        { section: 'Notes', body: notes ? `${notes}\n\n${note}` : note },
+        { activity: { actor: by, text: `audition picked: ${lines.join('; ').slice(0, 600)}${pending.length ? ` (with ${pending.length} queued message${pending.length === 1 ? '' : 's'})` : ''}` } },
+      ], by, { commit: `${id}: audition picks` });
+      this.queueTurn(id, phase, `${this.resumeNote(id, 'your audition')}\n\nAudition picks from the user (${audition.title}):\n\n${lines.join('\n')}${also}\n\nBuild on the picked takes; for a role marked regenerate, make new takes from the note and audition them again with request_audition. Continue.`);
       return;
     }
     if (payload.kind === 'permission') {
@@ -1203,7 +1228,7 @@ export class LiveEngine implements Engine {
   }
 
   /** A park begins (#108): journaled with what was asked, its kind of command and who it went to. Returns its id. */
-  private recordPark(id: string, kind: 'permission' | 'question', what: string, asked: 'user' | 'orchestrator'): string {
+  private recordPark(id: string, kind: 'permission' | 'question' | 'audition', what: string, asked: 'user' | 'orchestrator'): string {
     const park = `park-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     const shape = kind === 'permission' ? commandShape(what) : undefined;
     this.store.journal.append({ type: 'permission.parked', item: id, actor: 'engine', data: { park, kind, what: what.slice(0, 300), ...(shape ? { shape } : {}), asked } });
@@ -3268,6 +3293,7 @@ export class LiveEngine implements Engine {
         this.block(id, 'agent_blocked', reason, 'user'); return 'Recorded. End your turn now; planestro will resume you with the answer.';
       },
       hand_off: async (to, paths, note) => this.handOff(id, to, paths, note, 'worker'),
+      request_audition: async (audition) => this.requestAudition(id, audition),
       get_item: async () => serializeItemFile(s.requireItem(id).file),
     };
   }
@@ -3358,6 +3384,52 @@ export class LiveEngine implements Engine {
     }
     if (paths.length > 12) skipped.push(`${paths.length - 12} more (at most 12 a call)`);
     return [done.length ? `Attached for the user: ${done.join(', ')}.` : '', skipped.length ? `Not attached: ${skipped.join('; ')}.` : ''].filter(Boolean).join(' ');
+  }
+
+  // ---- a mid-build audition (#207) ----
+  /**
+   * The worker's takes, put to the user before it builds on one: the item parks on them (`awaiting: audition`) like a
+   * question, but never goes to triage, since listening and choosing is the designer's. Every take must be a file inside
+   * the worktree (ignored folders included) that a person reviews by eye or ear; a refusal is answered in words.
+   */
+  private requestAudition(id: string, input: unknown): string {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    if (fm.taken_over) return 'Not recorded: the user has taken this item over. Stop now and end your turn.';
+    if (fm.awaiting) return `Not recorded: ${id} is already awaiting ${fm.awaiting.replace(/_/g, ' ')}. End your turn now.`;
+    if (!fm.worktree) return 'Rejected: this item has no worktree to play takes from.';
+    const parsed = Audition.safeParse(input);
+    if (!parsed.success) return `Rejected: ${parsed.error.issues.map((i) => `${i.path.join('.') || 'audition'}: ${i.message}`).join('; ').slice(0, 600)}. Fix it and call request_audition again.`;
+    const audition = parsed.data;
+    const problem = auditionProblem(audition) ?? audition.roles.flatMap((r) => r.takes.map((t) => this.takeProblem(fm.worktree!, t))).find(Boolean);
+    if (problem) return `Rejected: ${problem}. Fix it and call request_audition again.`;
+    const takes = audition.roles.reduce((n, r) => n + r.takes.length, 0);
+    const park = this.recordPark(id, 'audition', audition.title, 'user');
+    this.store.mutateItem(id, [{ set: { awaiting: 'audition', awaiting_data: { audition, requested_at: this.now(), park } } }, { activity: { actor: 'app', text: `parked: audition "${audition.title}" (${audition.roles.length} role${audition.roles.length === 1 ? '' : 's'}, ${takes} take${takes === 1 ? '' : 's'})` } }], 'engine', { commit: `${id}: awaiting audition` });
+    this.note('info', `${id}: ${takes} take${takes === 1 ? '' : 's'} to audition (${audition.title})`);
+    return `${AUDITION_PARKED}: the user hears the takes and picks one per role. End your turn now; planestro resumes you with the picks.`;
+  }
+
+  /** Why a take cannot be played from this worktree: missing, not a file a person reviews, or (through a link) outside it. */
+  private takeProblem(worktree: string, take: string): string | undefined {
+    const bad = takePathProblem(take);
+    if (bad) return bad;
+    if (!reviewKind(take)) return `${take} is not an image, sound or model`;
+    const root = this.absWorktree(worktree);
+    try {
+      const real = realpathSync(join(root, take)); const rel = relative(realpathSync(root), real);
+      if (!rel || rel.startsWith('..') || isAbsolute(rel)) return `${take} leaves your worktree`;
+      if (!statSync(real).isFile()) return `${take} is not a file`;
+    } catch { return `${take} does not exist in your worktree`; }
+    return undefined;
+  }
+
+  /** A take of the audition the item waits on, and nothing else: no other path, and nothing once it is answered. */
+  async auditionFile(id: string, path: string): Promise<Buffer | null> {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    if (fm.awaiting !== 'audition' || !fm.worktree) return null;
+    const audition = Audition.safeParse(fm.awaiting_data?.audition);
+    if (!audition.success || !audition.data.roles.some((r) => r.takes.includes(path)) || this.takeProblem(fm.worktree, path)) return null;
+    try { return readFileSync(join(this.absWorktree(fm.worktree), path)); } catch { return null; }
   }
 
   // ---- hand-off: one item's files, given to another before any branch merges ----
@@ -4377,7 +4449,7 @@ export class LiveEngine implements Engine {
     const reported: { done?: string; blocked?: string } = {};
     const none = async () => 'not available in a conflict session: resolve the merge, then report_done or report_blocked';
     const tools: TurnTools = {
-      submit_plan: none, submit_breakdown: none, add_note: none, report_progress: none, report_iteration: none, hand_off: none,
+      submit_plan: none, submit_breakdown: none, add_note: none, report_progress: none, report_iteration: none, hand_off: none, request_audition: none,
       append_activity: async (t) => { this.store.mutateItem(id, [{ activity: { actor: 'worker', text: `[conflict session] ${String(t).slice(0, 500)}` } }], 'engine'); return 'appended'; },
       report_done: async (s) => { reported.done = String(s); return 'recorded: planestro checks your merge and pushes it. End your turn now.'; },
       report_blocked: async (r) => { reported.blocked = String(r); return 'recorded. End your turn now.'; },
@@ -5103,8 +5175,8 @@ export class LiveEngine implements Engine {
     const pending = (fm.op_data?.pending_messages as string[] | undefined) ?? [];
     if (pending.length) said.push(`${pending.length} queued message${pending.length === 1 ? '' : 's'}`);
     if (fm.resume_after) said.push(`the resume after ${waitsFor(fm.resume_after)}`);
-    const parked = fm.awaiting === 'permission' || fm.awaiting === 'question' || (fm.awaiting === 'orchestrator' && fm.awaiting_data?.kind === 'permission');
-    if (parked) said.push(`its parked ${fm.awaiting === 'question' ? 'question' : 'permission request'}`);
+    const parked = fm.awaiting === 'permission' || fm.awaiting === 'question' || fm.awaiting === 'audition' || (fm.awaiting === 'orchestrator' && fm.awaiting_data?.kind === 'permission');
+    if (parked) said.push(`its parked ${fm.awaiting === 'question' ? 'question' : fm.awaiting === 'audition' ? 'audition' : 'permission request'}`);
     if (fm.triage) said.push('triage');
     const unset = [...(fm.resume_after ? ['resume_after'] : []), ...(fm.triage ? ['triage'] : []), ...(parked ? ['awaiting', 'awaiting_data'] : [])];
     return { said, ops: [

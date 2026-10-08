@@ -123,6 +123,9 @@ button.checker { cursor: zoom-in; } .checker img { max-width: 100%; max-height: 
 .card-thumb { margin-top: 6px; } .card-thumb img { max-height: 84px; }
 .blocked-panel { border: 1px solid var(--hot); background: #2b1616; border-radius: var(--radius); padding: 12px; margin-bottom: 12px; } .blocked-panel h2 { margin: 0 0 8px; font-size: 16px; color: #ffb3b3; }
 .blocked-said { margin: 0 0 8px; overflow-wrap: anywhere; } .blocked-panel .md p { margin: 4px 0; } .blocked-panel .row { flex-wrap: wrap; margin-top: 8px; }
+.audition-role { border: 1px solid var(--line); border-radius: var(--radius); margin: 0 0 10px; padding: 8px 10px; min-width: 0; }
+.audition-take { display: block; margin: 8px 0; }
+.audition-pick { display: flex; align-items: center; gap: 6px; overflow-wrap: anywhere; margin-bottom: 4px; }
 .approval h2 { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
 .breakdown { list-style: none; padding: 0; margin: 8px 0; display: grid; gap: 8px; } .breakdown .row { margin: 0; flex-wrap: wrap; } .breakdown input.grow { min-width: 180px; }
 

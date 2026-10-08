@@ -4,7 +4,7 @@
  */
 import { z } from 'zod';
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 export const STATUSES = [
   'NOT_YET_SUBMITTED', 'QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY',
@@ -12,7 +12,7 @@ export const STATUSES = [
 ] as const;
 export type Status = (typeof STATUSES)[number];
 
-export const AWAITING = ['plan_approval', 'breakdown_approval', 'permission', 'question', 'review', 'orchestrator', 'user'] as const;
+export const AWAITING = ['plan_approval', 'breakdown_approval', 'permission', 'question', 'audition', 'review', 'orchestrator', 'user'] as const;
 export type Awaiting = (typeof AWAITING)[number];
 
 export const OPS = [

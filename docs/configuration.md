@@ -288,7 +288,7 @@ open tab had input in the last `notifications.idle_after_min` minutes) it is hel
 meanwhile is never sent.
 
 The command gets `PLANESTRO_TITLE` and `PLANESTRO_MESSAGE`, as the others do, and also `PLANESTRO_ITEM` (empty
-for a question about no item), `PLANESTRO_KIND` (`plan`, `breakdown`, `permission`, `question`, `review`,
+for a question about no item), `PLANESTRO_KIND` (`plan`, `breakdown`, `permission`, `question`, `audition`, `review`,
 `decision`, `blocked` or `hold`) and `PLANESTRO_URL`, an absolute link to the item (`/items/<id>#<kind>`) or the
 question (`/questions/<id>`).
 

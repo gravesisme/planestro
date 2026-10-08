@@ -48,7 +48,7 @@ export function suggestedRule(shape: string | undefined): string | undefined {
 export interface ParkRow {
   park: string;
   at: string;
-  kind: 'permission' | 'question';
+  kind: 'permission' | 'question' | 'audition';
   what: string;
   shape?: string;
   asked: 'user' | 'orchestrator';
@@ -64,7 +64,7 @@ export function parksOf(entries: JournalEntry[]): ParkRow[] {
   for (const e of entries) {
     const d = e.data ?? {};
     if (e.type === 'permission.parked' && typeof d.park === 'string') {
-      rows.set(d.park, { park: d.park, at: e.ts, kind: d.kind === 'question' ? 'question' : 'permission', what: String(d.what ?? ''), ...(typeof d.shape === 'string' ? { shape: d.shape } : {}), asked: d.asked === 'orchestrator' ? 'orchestrator' : 'user' });
+      rows.set(d.park, { park: d.park, at: e.ts, kind: d.kind === 'question' || d.kind === 'audition' ? d.kind : 'permission', what: String(d.what ?? ''), ...(typeof d.shape === 'string' ? { shape: d.shape } : {}), asked: d.asked === 'orchestrator' ? 'orchestrator' : 'user' });
     } else if (e.type === 'permission.answered' && typeof d.park === 'string') {
       const r = rows.get(d.park);
       if (r) r.answered = { by: String(d.by ?? e.actor), decision: String(d.decision ?? ''), waited_ms: Number(d.waited_ms ?? 0) };
@@ -129,6 +129,9 @@ export function rulingText(req: { tool: string; input: Record<string, unknown> }
   if (decision === 'deny') return `DENIED: ${who} denied ${what}${note ? `: ${note}` : ''}. Do not retry it in another form (a rewritten command, a script, another tool to the same effect). Continue without it, or call report_blocked if you cannot.`;
   return `APPROVED: ${who} approved ${what}${note ? ` (${note})` : ''}. Run it now, as it was; it is allowed. Then continue.`;
 }
+
+/** How a recorded audition is answered (#207), so a port can tell the park from a rejection. */
+export const AUDITION_PARKED = 'Audition recorded by planestro';
 
 /** How a refused report_blocked starts, so a port can tell the refusal from a recorded block. */
 export const PARKED_REFUSAL = 'Not recorded:';

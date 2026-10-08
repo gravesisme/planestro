@@ -134,6 +134,8 @@ export interface TurnTools {
   report_progress(parts: unknown): Promise<string>;
   /** Give files from this worktree to another item that waits on this one: they become its attachments and its session is told. */
   hand_off(to: string, paths: string[], note: string): Promise<string>;
+  /** Takes for the user to hear or see and pick from before the work builds on one (#207): parks the item on them (`awaiting: audition`). */
+  request_audition(audition: unknown): Promise<string>;
   get_item(): Promise<string>;
 }
 export interface PermissionRequest { tool: string; input: Record<string, unknown> }
@@ -237,7 +239,7 @@ export interface TurnResult {
   planSubmitted?: string;
   done?: string;
   blocked?: string;
-  parked?: 'question' | 'permission';
+  parked?: 'question' | 'permission' | 'audition';
   /** planestro tool calls that came back as errors without reaching their handler (a transport failure). */
   toolFailures?: { tool: string; error: string }[];
   /** The last report the session made that never reached planestro, unless a later one did (#167): the engine applies it. */
