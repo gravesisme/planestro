@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { api, type ImportableIssues, type ImportIssuesResult } from '../api.ts';
 import { act } from '../store.ts';
+import { ActionButton, ActionGroup } from './ActionButton.tsx';
 
 /**
  * Import issues (#231): the project's open GitHub issues, to file as items. Pick some, or import every one with the
@@ -13,13 +14,10 @@ export function ImportIssuesDialog({ onClose }: { onClose: () => void }) {
   const [picked, setPicked] = useState<Set<number>>(new Set());
   const [closes, setCloses] = useState(false);
   const [done, setDone] = useState<ImportIssuesResult | null>(null);
-  const [busy, setBusy] = useState(false);
   useEffect(() => { api.importableIssues().then(setList, (e: Error) => setError(e.message)); }, []);
 
-  const run = async (body: { issues?: number[]; label?: string }) => {
-    setBusy(true);
+  const importNow = async (body: { issues?: number[]; label?: string }) => {
     const r = await act(() => api.importIssues({ ...body, ...(closes ? { closes: true } : {}) }));
-    setBusy(false);
     if (r) setDone(r);
   };
   const toggle = (n: number) => setPicked((p) => { const s = new Set(p); if (s.has(n)) s.delete(n); else s.add(n); return s; });
@@ -28,7 +26,7 @@ export function ImportIssuesDialog({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="dialog" onClick={onClose}>
-      <form onClick={(e) => e.stopPropagation()} onSubmit={(e) => { e.preventDefault(); if (picked.size) void run({ issues: [...picked] }); }}>
+      <form onClick={(e) => e.stopPropagation()} onSubmit={(e) => e.preventDefault()}>
         <h2 style={{ margin: 0 }}>Import issues{list ? <span className="muted small"> · {list.repo}</span> : null}</h2>
         {error && <p className="small">{error}</p>}
         {!list && !error && <p className="muted small">Reading open issues…</p>}
@@ -53,12 +51,12 @@ export function ImportIssuesDialog({ onClose }: { onClose: () => void }) {
           )}
           <label className="row small" title='Its pull request says "Closes #N", so GitHub closes the issue when it merges into the default branch. You can change it on the item until its PR opens.'><input type="checkbox" checked={closes} onChange={(e) => setCloses(e.target.checked)} /> close each issue when its PR merges</label>
           <p className="muted small" style={{ margin: 0 }}>Each issue becomes an item that is not submitted; one already imported is never imported again.</p>
-          <div className="row">
-            {list.label && <button type="button" disabled={busy || !labelled.length} title={`Every open issue labelled ${list.label} that is not imported yet`} onClick={() => void run({ label: list.label })}>Import all labelled {list.label} ({labelled.length})</button>}
+          <ActionGroup><div className="row">
+            {list.label && <ActionButton type="button" disabled={!labelled.length} working="Importing…" title={`Every open issue labelled ${list.label} that is not imported yet`} onAct={() => importNow({ label: list.label })}>Import all labelled {list.label} ({labelled.length})</ActionButton>}
             <span className="grow" />
             <button type="button" onClick={onClose}>Cancel</button>
-            <button className="primary" type="submit" disabled={busy || !picked.size}>Import {picked.size || ''}</button>
-          </div>
+            <ActionButton className="primary" type="submit" disabled={!picked.size} working="Importing…" onAct={() => importNow({ issues: [...picked] })}>Import {picked.size || ''}</ActionButton>
+          </div></ActionGroup>
         </>)}
       </form>
     </div>
