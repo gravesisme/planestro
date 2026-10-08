@@ -7,8 +7,18 @@ import { watchInput } from './heartbeat.ts';
 /** Journal entries the orchestrator chat shows (a wake's `done` only when it answered a message). */
 export const isChatEntry = (j: JournalEntry) => ['orchestrator.user_message', 'orchestrator.reply', 'orchestrator.question'].includes(j.type) || (j.type === 'orchestrator.done' && ((j.data?.events as string[] | undefined) ?? []).includes('user_message'));
 
-const NOTES_SEEN = 'planestro.notes.seen';
-const readSeen = () => { try { return localStorage.getItem(NOTES_SEEN) ?? ''; } catch { return ''; } };
+/** Where this browser kept the read marker before the server did (#305): sent once if newer, then dropped. */
+const OLD_NOTES_SEEN = 'planestro.notes.seen';
+const NOTES_SEEN_TYPE = 'orchestrator.planestro_notes_seen';
+const later = (a: string, b: string) => (a > b ? a : b);
+async function migrateOldSeen(seen: string): Promise<string> {
+  let old = '';
+  try { old = localStorage.getItem(OLD_NOTES_SEEN) ?? ''; } catch { return seen; }
+  if (!old) return seen;
+  const now = old > seen ? (await api.markNotesSeen(old)).seen : seen;
+  try { localStorage.removeItem(OLD_NOTES_SEEN); } catch { /* nothing kept */ }
+  return now;
+}
 
 interface Store {
   state?: State; error?: string; connected: boolean; events: string[];
@@ -20,11 +30,11 @@ interface Store {
   /** The orchestrator chat: its thread (loaded when first opened, then kept live from the journal stream) and what it opens with. */
   chat: { open: boolean; entries?: JournalEntry[]; enabled?: boolean; item?: string; draft?: string };
   openChat(opts?: { item?: string; draft?: string }): void; closeChat(): void; loadChat(): Promise<void>;
-  /** The orchestrator's suggestions about planestro (f8), newest last, and the timestamp this viewer last marked read. */
+  /** The orchestrator's suggestions about planestro (f8), newest last, and the read marker, which the server keeps for every device (#305). */
   notes: NoteView[]; notesSeen: string;
   loadNotes(): Promise<void>;
-  /** Marks read every note up to `upTo` (the newest one shown), else the newest held. */
-  markNotesRead(upTo?: string): void;
+  /** Marks read every note up to `upTo` (the newest one shown), else the newest held, on every device. */
+  markNotesRead(upTo?: string): Promise<void>;
   /** The orchestrator's questions (#75), newest first, kept live by `question.updated`; `questionRev` bumps per id so an open question page refetches. */
   questions?: QuestionView[]; questionRev: Record<string, number>;
   loadQuestions(): Promise<void>;
@@ -57,12 +67,25 @@ if (typeof window !== 'undefined') {
 }
 
 export const useStore = create<Store>((set, get) => ({
-  connected: false, events: [], consoles: {}, updateReady: false, chat: { open: false }, notes: [], notesSeen: readSeen(), questionRev: {},
+  connected: false, events: [], consoles: {}, updateReady: false, chat: { open: false }, notes: [], notesSeen: '', questionRev: {},
   openChat(opts = {}) { set({ chat: { ...get().chat, open: true, item: opts.item, draft: opts.draft } }); void get().loadChat(); },
   closeChat() { set({ chat: { ...get().chat, open: false } }); },
   async loadChat() { try { const r = await api.orchestratorChat(); set({ chat: { ...get().chat, entries: r.entries, enabled: r.enabled } }); } catch { /* the panel says it could not load */ } },
-  async loadNotes() { try { set({ notes: await api.orchestratorNotes() }); } catch { /* the Console says so when it loads */ } },
-  markNotesRead(upTo) { const last = upTo ?? get().notes.at(-1)?.ts ?? ''; try { localStorage.setItem(NOTES_SEEN, last); } catch { /* private window: the badge comes back */ } set({ notesSeen: last }); },
+  // Notes and marker land together, so no page counts every note unread while the marker is on its way.
+  async loadNotes() {
+    try {
+      const [notes, { seen }] = await Promise.all([api.orchestratorNotes(), api.notesSeen()]);
+      set({ notes, notesSeen: later(get().notesSeen, seen) });
+      const migrated = await migrateOldSeen(seen);
+      if (migrated !== seen) set({ notesSeen: later(get().notesSeen, migrated) });
+    } catch { /* the Console says so when it loads */ }
+  },
+  async markNotesRead(upTo) {
+    const last = upTo ?? get().notes.at(-1)?.ts ?? '';
+    if (!last) return;
+    const { seen } = await api.markNotesSeen(last);
+    set({ notesSeen: later(get().notesSeen, seen) });
+  },
   // Only the newest request's answer is kept: an older one that returns late would bring back a stale list.
   async loadQuestions() { const n = ++questionsSeq; try { const questions = await api.questions(); if (n === questionsSeq) set({ questions }); } catch { /* the Console keeps what it had */ } },
   seedConsole(id, lines) { set({ consoles: { ...get().consoles, [id]: lines } }); },
@@ -93,6 +116,7 @@ export const useStore = create<Store>((set, get) => ({
         showIfNotification(e.entry);
         if (e.entry?.type === 'orchestrator.planestro_note') set({ notes: [...get().notes, e.entry] });
         if (e.entry?.type === 'orchestrator.planestro_note_link') void get().loadNotes();
+        if (e.entry?.type === NOTES_SEEN_TYPE) set({ notesSeen: later(get().notesSeen, String(e.entry.data?.up_to ?? '')) });
         const c = get().chat; if (c.entries && isChatEntry(e.entry) && !c.entries.some((x) => x.ts === e.entry.ts && x.type === e.entry.type)) set({ chat: { ...c, entries: [...c.entries.slice(-199), e.entry] } });
         return;
       }
