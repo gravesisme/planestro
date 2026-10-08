@@ -8,6 +8,7 @@ import { parkHint } from './parks.ts';
 import { hostNote, keptPathsNote } from './hostNote.ts';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Ports, CustomToolDef, TurnResult } from './ports.ts';
+import { quietTransientFailure } from './transient.ts';
 import type { DecisionInput, DecisionAction, RateLimitSnapshot, Priority } from '@planestro/shared';
 
 /**
@@ -61,7 +62,9 @@ const QUESTION_REVIEW_POLICY = [
 const RECENT_CHAT_DAYS = 7;
 const RECENT_CHAT_ENTRIES = 30;
 
-export interface WakeEvent { type: string; item?: string; data?: Record<string, unknown> }
+/** `retry`: queued again after a wake that failed before it did anything (#241); it is served from `not_before` (ms), and never queued a third time. */
+export interface WakeEvent { type: string; item?: string; data?: Record<string, unknown>; retry?: { not_before: number } }
+const due = (e: WakeEvent): boolean => !e.retry || e.retry.not_before <= Date.now();
 /** The question a wake is about: `question_message` and `question_review` carry its id in `data.question`. */
 const questionOf = (e: WakeEvent): string | undefined => (e.type.startsWith('question_') && typeof e.data?.question === 'string' ? e.data.question : undefined);
 
@@ -236,11 +239,12 @@ export class Orchestrator {
 
   private async drain(): Promise<void> {
     if (!this.enabled || this.unavailable() || this.running || this.stopped || this.pausedRef() || this.store.local.engine.provider_guards?.[this.modelForWake().runner]) return;
-    if (!this.queue.length) return;
+    if (!this.queue.some(due)) return;
     this.running = true;
     try {
-      while (this.queue.length && !this.unavailable() && !this.stopped && !this.pausedRef() && !this.store.local.engine.provider_guards?.[this.modelForWake().runner]) {
-        const batch = this.queue.splice(0, this.queue.length);
+      while (this.queue.some(due) && !this.unavailable() && !this.stopped && !this.pausedRef() && !this.store.local.engine.provider_guards?.[this.modelForWake().runner]) {
+        const batch = this.queue.filter(due);
+        this.queue = this.queue.filter((e) => !due(e));
         this.inFlight = new Set(batch.flatMap((e) => (e.item ? [e.item] : [])));
         this.questionsInFlight = new Set(batch.flatMap((e) => questionOf(e) ?? []));
         this.reviewsInFlight = new Set(batch.flatMap((e) => (e.type === 'question_review' ? questionOf(e) ?? [] : [])));
@@ -346,10 +350,21 @@ export class Orchestrator {
       this.log('warn', `orchestrator: ${def?.label ?? model} is out of usage until ${until.toISOString()}${another && !retried ? '; retrying the wake on its fallback' : ''}`);
       if (another && !retried) return this.runWake(events, true);
     }
+    // A wake that failed before it did anything (#241) is served again once, after concurrency.transient_retry_after_s, from
+    // the queue the tick drains (a pause holds it; a restart drops it with the rest of the queue, and triage re-wakes its items).
+    const after = this.store.config.concurrency.transient_retry_after_s;
+    const once = !retried && !events.some((e) => e.retry);
+    if (!doneSummary && once && after > 0 && quietTransientFailure(result)) {
+      const notBefore = Date.now() + after * 1000;
+      this.queue.unshift(...events.map((e) => ({ ...e, retry: { not_before: notBefore } })));
+      this.log('warn', `orchestrator: the wake failed with ${result.subtype} before it did anything${result.error ? ` (${result.error.slice(0, 200)})` : ''}; waking again once in ${after}s`);
+      this.store.journal.append({ type: 'orchestrator.transient_retry', actor: 'engine', data: { events: events.map((e) => e.type), subtype: result.subtype, error: (result.error ?? '').slice(0, 300), cost: result.costUsd, retry_at: new Date(notBefore).toISOString() } });
+      return;
+    }
     // An API error the CLI returned as text is a failed wake, not a summary: retry it once, then say so loudly.
     if ((result.subtype === 'api_error' || result.subtype === 'cli_too_old') && !doneSummary) {
-      this.log('warn', `orchestrator: the wake failed with ${result.subtype}: ${result.error ?? ''}${result.subtype === 'api_error' && !retried ? '; retrying once' : ''}`);
-      if (result.subtype === 'api_error' && !retried) return this.runWake(events, true);
+      this.log('warn', `orchestrator: the wake failed with ${result.subtype}: ${result.error ?? ''}${result.subtype === 'api_error' && once ? '; retrying once' : ''}`);
+      if (result.subtype === 'api_error' && once) return this.runWake(events, true);
     }
     this.lastOutcome = doneSummary ? `it ended with: ${doneSummary}` : result.isError ? `the wake failed: ${result.subtype}${result.error ? ` ${result.error}` : ''}` : '';
     const session = result.sessionId ?? state.session_id;

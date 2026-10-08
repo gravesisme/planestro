@@ -235,6 +235,8 @@ export interface TurnResult {
   tokens?: number;
   numTurns: number;
   text: string;
+  /** The turn did something: the model said anything, called a tool or changed a file. A failure without it produced nothing (#241). */
+  acted?: boolean;
   error?: string;
   planSubmitted?: string;
   done?: string;

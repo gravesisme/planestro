@@ -378,7 +378,9 @@ export const Config = z.object({
     runner_limits: z.record(z.string(), z.number().int().positive()).default({ codex: 1 }),
     /** An active item that nothing has driven for this many minutes is stalled: resumed once, then blocked. 0 turns the detector off. */
     stall_after_min: z.number().min(0).default(10),
-  }).default({ max_sessions: 3, max_local_jobs: 1, runner_limits: { codex: 1 }, stall_after_min: 10 }),
+    /** A turn that failed transiently before it produced anything is retried once after this many seconds (#241). 0 turns it off. */
+    transient_retry_after_s: z.number().min(0).default(30),
+  }).default({ max_sessions: 3, max_local_jobs: 1, runner_limits: { codex: 1 }, stall_after_min: 10, transient_retry_after_s: 30 }),
   permissions: z.object({ allow: z.array(z.string()).default([]), deny: z.array(z.string()).default([]) }).default({ allow: [], deny: [] }),
   ci: z.object({
     mode: z.enum(['github', 'github-or-local']).default('github'),

@@ -178,7 +178,10 @@ export class CodexAppServerPort implements AgentPort {
         }
         finish(); return;
       }
-      if (m.method === 'item/agentMessage/delta' && p.threadId === thread && p.turnId === turn) { result.text += p.delta ?? ''; o.onOutput(String(p.delta ?? '')); return; }
+      if (m.method === 'item/agentMessage/delta' && p.threadId === thread && p.turnId === turn) { result.text += p.delta ?? ''; result.acted = true; o.onOutput(String(p.delta ?? '')); return; }
+      // A command, a file change or a tool call is the turn doing something, whether or not it reaches planestro (#241).
+      if (m.method === 'item/started' && p.threadId === thread && p.turnId === turn && !['userMessage', 'reasoning'].includes(p.item?.type)) { result.acted = true; return; }
+      if (m.method === 'item/tool/call' || m.method?.endsWith('/requestApproval') || m.method === 'item/tool/requestUserInput') result.acted = true;
       if (m.id === undefined) return;
       serial = serial.then(async () => {
         if (m.method === 'item/tool/call') {

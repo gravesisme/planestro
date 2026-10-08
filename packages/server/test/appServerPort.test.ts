@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import { gitWritableRoots } from '../src/engine/sessions/gitWritableRoots.ts';
 import { CodexAppServerPort, ScopedTools, isolatedCodexHome } from '../src/engine/sessions/CodexAppServerPort.ts';
 import type { TurnOptions } from '../src/engine/ports.ts';
+import { quietTransientFailure } from '../src/engine/transient.ts';
 
 const roots: string[] = [];
 it('seeds private credentials once and preserves refresh rotation across later turns', () => {
@@ -57,6 +58,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
  if (m.method==='turn/start') {
   send({id:m.id,result:{turn:{id:'turn'}}});
   send({method:'turn/started',params:{threadId:'thread',turn:{id:'turn'}}});
+  if(mode.endsWith('overloaded')) { if(mode==='command-overloaded') send({method:'item/started',params:{threadId:'thread',turnId:'turn',item:{type:'commandExecution',id:'cmd',command:'ls'}}}); send({method:'turn/completed',params:{threadId:'thread',turn:{id:'turn',error:{message:'serverOverloaded',codexErrorInfo:'serverOverloaded'}}}}); return; }
   if(mode==='cap') { send({method:'thread/tokenUsage/updated',params:{threadId:'thread',turnId:'turn',tokenUsage:{total:{inputTokens:200,cachedInputTokens:100,outputTokens:20},last:{totalTokens:120}}}}); return; }
   if(mode.startsWith('approval')) send({id:100,method:'item/commandExecution/requestApproval',params:{threadId:mode==='approval-foreign'?'other':'thread',turnId:'turn',command:'network command',cwd:${JSON.stringify(root)},environmentId:'local',...(mode==='approval-scope'?{additionalPermissions:{network:{enabled:true}}}:{})}});
   else send({id:100,method:'item/tool/call',params:{threadId:'thread',turnId:'turn',callId:'call',tool:mode==='plan'?'submit_plan':'report_done',arguments:mode==='plan'?{plan:'A synthetic plan'}:{summary:'Done',attach:['capture.png'],review:'Loop review'}}});
@@ -157,4 +159,15 @@ it('restates narrow linked-worktree Git roots on both a start and a resume', asy
     expect(r.params.config['sandbox_workspace_write.writable_roots']).toEqual(expected);
   for (const r of records.filter((r) => r.method === 'turn/start'))
     expect(r.params.sandboxPolicy).toEqual({ type: 'workspaceWrite', writableRoots: expected, networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true });
+});
+it('reports whether a failed turn did anything, which decides the automatic retry (#241)', async () => {
+  const o = fixture('overloaded');
+  const quiet = await o.port.runTurn(options(o.root));
+  expect(quiet).toMatchObject({ subtype: 'runner_error', isError: true, error: 'serverOverloaded' });
+  expect(quiet.acted).toBeFalsy();
+  expect(quietTransientFailure(quiet)).toBe(true);
+  const f = fixture('command-overloaded');
+  const busy = await f.port.runTurn(options(f.root));
+  expect(busy).toMatchObject({ subtype: 'runner_error', acted: true });
+  expect(quietTransientFailure(busy)).toBe(false);
 });
