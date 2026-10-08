@@ -1,290 +1,458 @@
-# Public-release readiness checklist
+# Public-release readiness and onboarding audit
 
-Reviewed **2026-10-03**, against **`90f7dd1`**. The repository is still private.
-This replaces the September checklist, whose branch inventory, installation
-notes, and marketing-site work were out of date. Evidence under R1–R5 describes
-the reviewed baseline; their checkboxes record the subsequent fixes.
+Reviewed **2026-10-08**, against **`05be42709f371ce3c4cce6208bf9f2b64d46a7fd`**
+(`05be427`, PR #315). This was the latest remote default-branch commit when the
+fresh audit mirror was taken. One commit landed after the audit started; the
+isolated worktree was advanced to include it and the final checks use that revision.
+There are 98 commits and 256 changed files since the October 3 review's baseline,
+`90f7dd1`.
 
-**R1–R5 are implemented in this worktree; merge the reviewed fixes before
-inviting people to run Planestro. Complete R6–R10 before the public release.** Repository visibility and marketing-site
-publication are separate actions. Neither was changed by this review.
+This replaces the October 3 checklist. **Only this document was changed.**
+Recommendations below are proposed work, not implemented features. No repository
+settings, visibility, production planning data, marketing files, or DNS were changed.
 
-Planestro remains a local, single-user tool with no Planestro account or login.
-None of this checklist requires adding an account system or making API keys a
-prerequisite. The review focuses on safe local operation and reliable automation.
+## Recommendation
 
-## First: security and data-loss fixes
+**Planestro is close to being suitable for an explicitly experimental public
+source release. It is not yet a low-friction product launch.** The earlier
+security/data-loss fixes are merged, the dependency audit is clean, and there
+is substantial new recovery and usability work. The main remaining obstacles
+are release controls, contradictory setup guidance, and a first-run process
+that expects the new user to understand too much of the system.
 
-### R1 — P1: prevent attachment scripts from controlling Planestro
+Separate these decisions:
 
-- [x] Serve untrusted active content safely, and add a regression test for direct
-      navigation to an uploaded SVG.
-
-**Evidence:** [attachment response](../packages/server/src/routes/api.ts#L448)
-serves SVG as `image/svg+xml` on the application's own origin, without a sandbox
-CSP or download disposition. A disposable store accepted an SVG containing a
-script and returned it unchanged with HTTP 200. An item offers an **open** link
-to managed attachments.
-
-**Impact:** opening an SVG supplied by an agent or copied from elsewhere can run
-script with the same origin as the unauthenticated control API. The Host/Origin
-guard cannot distinguish that script from the UI. This concerns opening the SVG
-as a document; SVG displayed only as an image has different restrictions.
-[Browser behavior reference](https://developer.mozilla.org/en-US/docs/Web/SVG/Guides/SVG_as_an_image).
-
-**Done when:** unsafe formats download or render in an isolated, sandboxed
-context; responses have appropriate content types and `nosniff`; a browser test
-proves a malicious attachment cannot read state or perform an API mutation.
-Verified after the fix with a disposable browser fixture: opening an SVG with
-an API-calling script left the fixture page in place and made zero script API
-calls. Automated tests verify the download, sandbox and nosniff headers. The
-live instance was not used.
-
-### R2 — P1: enforce the attachment directory boundary
-
-- [x] Validate attachment IDs and resolve filesystem paths before serving them.
-
-**Evidence:** [path validation](../packages/server/src/routes/api.ts#L449) uses
-string `startsWith` and does not resolve symlinks. Local probes returned HTTP 200
-and marker contents for both:
-
-- `/attachments/..%2Fattachments-extra/probe.txt`, reading a sibling directory
-  whose name happens to begin with `attachments`;
-- a file inside an item's attachment directory symlinked to a file outside it.
-
-**Impact:** a caller admitted by the request guard can read files outside the
-intended attachment tree. This does not by itself bypass the request guard.
-
-**Done when:** IDs match known items, the resolved target is a regular file within
-the resolved attachment root using a separator-aware containment check, and
-encoded traversal, sibling-prefix and symlink escape tests are rejected. Apply
-consistent boundaries to managed attachment write/remove paths as well.
-
-### R3 — P1: keep machine-local settings out of every automatic commit
-
-- [x] Repair missing ignore rules during initialization and refuse to
-      automatically commit or push tracked machine-local settings.
-
-**Evidence:** [init](../packages/server/src/init.ts#L35) never updates an existing
-`.gitignore`, then [stages everything](../packages/server/src/init.ts#L142).
-[Checkpoints](../packages/server/src/store/GitCommitter.ts#L49) also stage everything.
-A temporary planning repository with an existing `.gitignore` and a dummy
-`planestro.local.yml` committed that local file during init. A subsequent
-checkpoint committed changes to the dummy credential too.
-
-**Impact:** local paths and optional MCP/API credentials can enter planning Git
-history and its configured remote. The current user's subscription setup does
-not require an API key; this bug also affects other machine-local settings.
-`SECURITY.md` currently promises this file is never committed or pushed.
-
-**Done when:** init preserves custom ignores while adding the required exclusions;
-startup/init detect an already tracked local file and stop unsafe automatic
-commits/pushes with an actionable message; regression tests cover existing ignores,
-tracked local files and checkpoints. Keep any credential-removal/history cleanup
-as an explicit user action. Write secret-bearing local files with owner-only
-permissions on supported systems.
-
-### R4 — P1: merge only the exact commit that passed checks
-
-- [x] Carry the verified head SHA through the merge port and require GitHub to
-      match it atomically when merging.
-
-**Evidence:** [engine merge](../packages/server/src/engine/LiveEngine.ts#L1736)
-calls [LiveGhPort.mergePr](../packages/server/src/engine/live-ports.ts#L317), whose
-contract carries only the PR number and a branch-deletion flag. It invokes
-`gh pr merge` without an expected head. Earlier checks do not close the interval
-between validation and this mutation.
-
-**Impact:** if another process pushes during that interval, a repository without
-sufficient branch protection can merge a commit Planestro did not verify.
-The fix is covered by a mocked GitHub-command test and an engine regression
-that changes the head at the final merge call. No live GitHub race was induced.
-
-**Done when:** use `--match-head-commit` or the equivalent API SHA precondition;
-head movement blocks for inspection and fresh validation without merging; tests move the head after
-CI validation and prove the merge is refused. [GitHub CLI reference](https://cli.github.com/manual/gh_pr_merge).
-
-### R5 — P1: delete only the branch tips that cleanup proved safe
-
-- [x] Make deletion conditional on the proven tip, and keep remote branch
-      deletion inside the positive-evidence cleanup path.
-
-**Evidence:** [cleanup](../packages/server/src/engine/LiveEngine.ts#L2075)
-checks ancestry, performs other operations, then rechecks only remote-branch
-existence and calls an [unleased delete](../packages/server/src/engine/live-ports.ts#L219).
-A probe using the real engine and its in-memory ports advanced the remote branch
-to an unmerged commit during worktree removal. Cleanup deleted that new tip and
-marked the item `FINISHED`.
-
-Also, the merge call requests `--delete-branch` before the subsequent cleanup
-proof, and local deletion uses `git branch -D` without an expected tip.
-
-**Done when:** reuse the existing `deleteRemoteBranchAt` lease with the SHA whose
-ancestry was checked, condition local ref deletion on its proven SHA, and block
-on movement or ambiguous evidence. Remove the merge-time deletion shortcut.
-Regression tests cover remote/local advancement, remote branch recreation, and
-retries after a transient failure. Preserve the existing fresh-fetch, merged-PR,
-ancestry, dirty-tree, and displaced-file checks.
-
-## Before public release
-
-### R6 — P2: resolve or explicitly triage dependency advisories
-
-- [ ] Update the lockfile for patchable runtime dependencies and assess the
-      Vitest upgrade; record any accepted, unreachable advisories with reasons.
-- [ ] Add recurring dependency-update automation and a dependency/security check
-      with a documented handling policy.
-
-`npm audit` on 2026-10-03 reports **five affected packages: one high, four
-moderate**. This is an inventory, not evidence that every advisory is exploitable
-through Planestro.
-
-| Locked dependency | Audit result | Follow-up |
+| Decision | Recommendation | Exit criteria |
 | --- | --- | --- |
-| `fast-uri@3.1.6` | High; URI authority/host handling | Update the transitive dependency under MCP SDK / ajv; check all applicable advisories. |
-| `hono@4.13.5` | Moderate; JSX boundary escaping | Update. Planestro uses a React frontend, so the vulnerable JSX path was not shown reachable. |
-| `ip-address@10.7.0` | Moderate; address checks / oversized input | Update the MCP SDK transitive dependency and assess its actual use. |
-| `vitest@3.2.7`, `@vitest/mocker` | Moderate; redirect-mock file access | Assess patched-version migration. The two package entries share an advisory; ordinary test execution was not shown exploitable. |
+| Make the source public as an experimental, macOS-first tool | Conditional go after the short publication gate below | Review newly public material, repair the supported setup instructions, establish GitHub protections/reporting, and record limitations and release evidence. |
+| Recommend unattended live use | Not yet established by this audit | A fresh-user live acceptance run for each advertised provider path, including pause/restart, a parked decision, CI, merge and cleanup. |
+| Promote a polished agent orchestration product | Not yet | Guided setup, a clear first-task experience, current product demonstrations, and measured onboarding with people unfamiliar with the project. |
 
-### R7 — P2: finish the publication privacy review
+A desktop installer, npm publication, a new account system, a complete UI redesign,
+and feature parity with another product are **not** prerequisites for opening
+an experimental repository. Fix the misleading and broken entry paths first;
+do not wait for every advanced feature or every cosmetic improvement.
 
-- [x] Scan a fresh GitHub mirror with Gitleaks 8.30.1, default rules, all refs,
-      and redacted output: **zero findings**. The downloaded binary's archive
-      checksum matched the official release manifest.
-- [x] Inventory advertised refs: **27 branches, 118 pull-request refs, no tags**;
-      371 reachable commits, with 356 commits reported scanned by Gitleaks.
-- [x] Confirm publication of the personal commit email and historical home paths
-      is acceptable. Historical paths remain in versions of
-      `docs/notes/dogfood-crystal-cavern.md` and `spikes/sdk-spike.ts`; a clean
-      current checkout does not erase PR history. Confirmed acceptable by the
-      repository owner on 2026-10-03.
-- [x] Review public-facing PR/issue text, uploaded images, Actions logs/artifacts
-      and screenshot contents. Those are outside a Git text-secret scan. Marked
-      complete on the repository owner's confirmation on 2026-10-03.
-- [ ] Re-run the redacted all-ref scan against the final release commit and any
-      newly pushed branches. Keep planning data and the pre-rewrite backup bundle
-      out of this repository. Do not rewrite history merely because old refs exist.
+## What was verified
 
-The scan found no historical files matching the checked local-config, environment,
-private-key, item-file or journal-file naming patterns. This is useful evidence,
-not a guarantee that no private information exists. Prior decisions to use MIT,
-name Hurricane Harrison publicly, and retain history remain in force.
+| Check | Result and limits |
+| --- | --- |
+| Clean-worktree installation | `npm ci` succeeded on macOS with Node **24.11.1**, using the committed lockfile. Existing machine tooling/caches were available; this is not a clean-machine certification. |
+| Type checking | `npm run typecheck` passed on `05be427`. |
+| Production build | `npm run build` passed on `05be427`. Largest JS chunk: **1,001.04 kB / 312.83 kB gzip**, plus a **162.53 kB / 53.99 kB gzip** common chunk. Bundle-size and Zod annotation warnings remain. |
+| Exact-revision GitHub CI | The `check` job passed on `05be427`: [run evidence](https://github.com/gravesisme/planestro/actions/runs/37802619497/job/113398498943). The workflow runs install, typecheck, the full test suite and build on Node 24/Linux. |
+| Local test validation | **1,018 tests passed across 117 files** on `05be427`, using `npm test -- --maxWorkers=2 --reporter=verbose` (13m 48s). The earlier unrestricted run was stopped when advancing the audit snapshot; the final full run completed with no failures. |
+| Dependency advisories | Fresh `npm audit --json`: **zero known vulnerabilities**, including development dependencies. This supersedes the five affected packages listed on October 3. |
+| Secret scan | Fresh GitHub mirror; **Gitleaks 8.30.1**, official archive checksum verified, default rules, `git --log-opts=--all --redact`: **zero findings**. Mirror: **33 branches, 187 PR refs, no tags**, **563 reachable commits**; scanner reported **526 commits / 8.30 MB scanned**. Includes `05be427`. |
+| Sample | CLI seeded **14 items** in a disposable directory. The sample regression passed, including a simple item through FINISHED and a mixed-agent epic with art review. Local browser inspection covered the board, new-item form, and marketing homepage/quick start; no live model calls. |
+| Initialization probes | Disposable repos reproduced missing planning Git history, wrong fallback base, an ineffective orphan-layout option, and failure when nesting planning inside a linked worktree. Details below. |
+| Mode-change probe | In the disposable server, saving `engine.mode: live` returned saved config `live` while `/api/engine` remained `dry-run`. Restored config to `dry-run`; no live engine was started. |
+| GitHub release controls | Still **private**; `main` reports **`protected: false`**. Ruleset API returns the private-plan restriction (403). Actions default token is read-only and cannot approve PRs. Vulnerability reporting and Pages API return 404; enablement remains unverified. No `PAGES_ENABLED` variable was listed. |
 
-### R8 — P2: make the first-run documentation consistent
+The source review sampled request/file boundaries, initialization, settings,
+planning Git safety, merge/deletion safeguards, provider permissions, operator
+MCP, schedules, recovery-related changes, and the onboarding UI/docs. It was
+not a line-by-line audit of all changed code, a penetration test, or a paid
+live-agent/platform certification. A clean advisory or secret scan is not proof
+that no vulnerabilities or private information exist. PR descriptions/comments,
+uploaded media and Actions artifacts are outside the Git text scan.
 
-- [ ] Correct the remaining [README authentication section](../README.md#authentication-and-billing),
-      which still tells users to set a Console API key. Match the local-login
-      quick start; retain optional configuration documentation accurately.
-- [ ] Remove `--host 0.0.0.0` from routine background-start examples. Keep the
-      ordinary public path on loopback, and make the lack of network access
-      control explicit wherever LAN access is discussed. No account system is
-      needed for the local-only release.
-- [ ] Recommend a separate, private Git repository for planning data. Explain
-      that an orphan branch in a public code repository is also public if pushed;
-      isolation from the default branch is not confidentiality.
-- [ ] Declare the supported Node version in package metadata, matching Node 24
-      in CI/docs. Keep macOS support and Linux/Windows limitations explicit.
-- [ ] Add contribution/support expectations in `CONTRIBUTING.md` or a concise
-      README paragraph; retain the existing personal-project support scope.
-- [ ] Repeat fresh-clone installation, sample, and new-project initialization on
-      the final revision. Before recommending live use, separately validate one
-      small real Claude task and optional Codex implementation, including approval,
-      pause/restart, CI, merge and cleanup. That requires an authorized live trial;
-      this review made no paid agent calls or GitHub test repositories.
+## Previous release checklist: current disposition
 
-Clone + install + build is an acceptable first-release distribution. npm publishing,
-Codex-only orchestration and multi-project servers are not prerequisites. The
-server package already has a `bin` entry, contrary to the old checklist.
+The R identifiers are retained so earlier discussions still have a reference.
+Checked entries below mean the stated work/evidence is present; they do not mean
+an entire public release has been approved.
 
-### R9 — P2: prepare GitHub's public-repository controls
+| ID | Current disposition | Remaining work |
+| --- | --- | --- |
+| R1 — active attachments | **Implemented and merged.** Managed SVG/HTML/PDF download, with sandbox CSP and `nosniff`. | Keep coverage as new preview routes are added. |
+| R2 — attachment containment | **Implemented and merged.** Shared helper validates item/file names, real paths and symlinks for managed attachments, including new chat attachments. | Audition files use a separate allowlist/realpath check; retain separate regression coverage. |
+| R3 — private planning settings | **Implemented and merged.** Required ignores are repaired; tracked private paths stop unsafe Git operations; outgoing history is checked; local config writes use private permissions. | New-user setup still needs to establish a Git repository in the first place (O1). |
+| R4 — verified merge head | **Implemented and merged.** Merge requires the verified SHA via `--match-head-commit`. | Keep the moved-head regressions. |
+| R5 — conditional deletion | **Implemented and merged.** Conditional remote/local ref deletion; no merge-time `--delete-branch` shortcut. | Keep fresh-fetch, merged-PR, ancestry and dirty-tree checks. |
+| R6 — dependencies | **Patch work complete:** current audit has zero findings; Vitest is now 4.1.11. | Add recurring dependency updates and a documented advisory-handling check. No Dependabot/Renovate configuration or dependency-audit CI step is present in the reviewed tree. |
+| R7 — publication privacy | **Fresh all-ref scan complete.** Prior owner acceptance of personal commit email, historical home paths, Hurricane Harrison references and retained history still stands. | Review new public-facing PR/issue material, screenshots and Actions output added since the owner's October 3 review; scan again if more code/refs land before publication. |
+| R8 — installation/docs | **Still incomplete; materially more important now.** The website correctly initializes a separate planning Git repo, but the README/manual do not. | Fix O1–O5 and the supported-provider/startup instructions. Add Node engines metadata and concise contribution/support expectations. |
+| R9 — GitHub controls | **Partly complete.** Read-only Actions token, MIT license, security policy, topics and description exist; wiki/discussions are off. | Required CI/force-push/deletion controls, private vulnerability reporting, available secret scanning/push protection/dependency alerts, and fork-workflow verification. |
+| R10 — release checkpoint | **Open.** Current CI and scans are encouraging, not a release authorization. | Release notes, supported-path acceptance, explicit visibility decision and post-publication anonymous checks. Resolve version messaging. |
 
-- [ ] Require the `check` CI status on the default branch and restrict force-push
-      and deletion. The branch API currently reports **`protected: false`**.
-      Protection/ruleset APIs returned a private-repository plan restriction;
-      apply this at the visibility change if unavailable beforehand.
-- [ ] Enable private vulnerability reporting and verify that the reporting path
-      promised by `SECURITY.md` actually appears. Its API returned 404 here, so
-      enablement is unverified.
-- [ ] Enable the available secret-scanning, push-protection and dependency-alert
-      features; verify public-fork workflow behavior and avoid giving untrusted
-      PR jobs secrets or a privileged persistent runner.
-- [x] Default Actions token permissions are read-only; Actions cannot approve PRs.
-      CI uses `pull_request`, not `pull_request_target`.
-- [x] MIT license, repository description, CI workflow and security policy exist.
-      Wiki and discussions are disabled.
-- [ ] Decide whether to keep the enabled Projects feature; set useful topics and
-      a repository social preview. These presentation settings can follow release.
+Evidence: [attachment routes](../packages/server/src/routes/api.ts),
+[managed paths](../packages/server/src/store/managedAttachments.ts),
+[planning Git safety](../packages/server/src/store/planningGitSafety.ts),
+[Git committer](../packages/server/src/store/GitCommitter.ts),
+[live Git/GitHub ports](../packages/server/src/engine/live-ports.ts),
+[CI workflow](../.github/workflows/ci.yml).
 
-### R10 — final release checkpoint
+Other improvements since the previous audit deserve credit: persisted pending
+instructions and lost reports; bidirectional provider recovery and Codex
+orchestration; secret-path denials and an allowlisted Codex environment;
+machine-wide permission rules with deny precedence; runner-stall handling;
+once-per-wait notifications; MCP import/settings; schedules; file diffs;
+mobile recovery and action feedback; an all-projects overview. PR #315 also
+puts an active item's current state, phase and appropriate action at the top
+of its quick view. Extend that progress to onboarding rather than rebuilding it.
 
-- [ ] Complete R1–R9's required fixes/checks, with any accepted exceptions recorded.
-- [ ] Run tests, typecheck, build, dependency audit and the all-ref secret scan on
-      the exact commit to release. Record supported agent CLI/SDK versions.
-- [ ] Add release notes describing experimental status, local trust boundaries,
-      supported platforms, installation, backup/upgrade and known limitations.
-      A `v0.1.0` tag is useful; npm publication is a separate decision.
-- [ ] Change visibility only when explicitly authorized. Then verify an anonymous
-      clone, README image/link rendering, the sample, security reporting and
-      required CI. Do not publish a runtime port or planning repository with it.
+## Onboarding findings
 
-## Marketing-site launch — separate from repository visibility
+### O1 — The shortest real-project recipe does not establish its promised history
 
-Publish the existing marketing site from `site/`. The Pages workflow uploads
-that directory as-is; it does not generate a replacement site or apply a GitHub
-theme. Pages, domain, DNS and HTTPS settings make those same pages available at
-`https://planestro.com`. Keep the deployment source set to GitHub Actions and
-the artifact path set to `site/`.
+**Priority: fix the documented path before inviting live use. Reproduced.**
 
-- [x] Homepage, quick start, blog index and approved full article are implemented.
-      Canonical and social-image URLs already target `https://planestro.com`.
-- [ ] Enable GitHub Pages for Actions and set `PAGES_ENABLED=true` when ready.
-      The variable is currently absent; the Pages API returned 404.
-- [ ] Configure and verify the custom domain, DNS and HTTPS using the hosting
-      provider's current instructions. The repository has no `site/CNAME` yet.
-      This review did not change DNS or check the registrar account.
-- [ ] Serve the site at the domain root: assets are root-relative, so a default
-      `/planestro/` project-site URL alone is insufficient. Verify all four routes,
-      direct article anchors and social-preview images after deployment.
-- [ ] Once public access works, replace the site's private-access/forthcoming
-      notices. The repository's homepage already points to `https://planestro.com`.
+[README](../README.md#using-it-on-your-own-project) and
+[Getting started](getting-started.md#your-own-project) call `init` on a new
+sibling directory without `git init`. [initDataDir](../packages/server/src/init.ts)
+creates the files but never initializes Git; [GitCommitter.enabled](../packages/server/src/store/GitCommitter.ts)
+is false without a `.git` entry. The probe left a valid-looking planning folder
+with **no Git history**, despite the product's versioned-history promise.
+The [website quick start](../site/quick-start/index.html) already includes the
+missing `git init`; this is drift between entry points, not a universal failure.
 
-## Improvements that can follow the first release
+**Recommendation:** immediately make all supported recipes create a separate
+local planning Git repository and confirm its first commit. Explain that backup
+is a separate step and that any remote should be private. Longer term, setup
+should offer to create this repository itself, show its location, check the Git
+identity, and report whether history and backup actually exist. Do not silently
+fall back to unversioned storage while presenting a successful setup.
 
-- [ ] Split the web bundle if useful: the production build currently emits an
-      approximately 883 kB JavaScript chunk (276 kB gzip). This is not a release blocker.
-- [ ] Improve board keyboard reordering and review dialog focus behavior. Existing
-      item actions offer alternatives; the board currently uses `PointerSensor` only.
-- [ ] Bound upload bodies before multipart parsing/buffering; the current managed
-      file-size check happens after the body is in memory.
-- [ ] Add more convincing sample plans, refresh older demo screenshots, and record
-      a short walkthrough. Keep claims about historical screenshots accurate.
-- [ ] Consider packaging convenience and further platform coverage after the
-      documented clone-based workflow is reliable.
+**Done when:** following the shortest advertised recipe in empty sibling folders
+produces a planning commit; a subsequent item edit makes a semantic commit;
+missing Git identity has a clear repair; no planning files enter the code repo.
 
-## Review evidence and limits
+### O2 — "Switch to live" omits the required restart
 
-- Baseline review, `npm test`: **609 tests passed across 61 files**.
-- `npm run typecheck`: **passed**.
-- `npm run build`: **passed**, with the bundle-size warning noted above.
-- `npm run sample -- <temporary-directory> --no-serve`: **passed**, 14 items seeded.
-- Attachment boundary/settings probes used disposable repositories and dummy
-  strings. The original cleanup probe used in-memory Git/GitHub ports. Fix
-  regressions additionally exercise branch deletion in disposable local Git
-  repositories, with a local bare remote; no GitHub branches were deleted.
-- Gitleaks inspected GitHub's advertised Git refs, not GitHub comments, binaries
-  or every server-retained unreachable object. No matching secrets were found.
-- This was a targeted source review of server boundaries, storage/init, agent
-  launch policy, merge/cleanup, docs and release configuration, backed by the
-  existing full test suite. It is not an exhaustive security audit or a fresh
-  live-agent/platform/browser certification.
+**Priority: fix before inviting live use. Reproduced.**
 
-R1–R5 fixes: attachment downloads and shared filesystem boundaries; protected
-planning Git operations and private local-file permissions; exact-head merges and
-conditional branch deletion (including discard/unused-worktree cleanup). New
-regressions use dummy credentials and local or in-memory Git only. Focused
-regressions, type checking and the production build pass. The SVG browser fixture
-made zero API calls after opening the attachment. See the implementation PR for
-the final full-suite and CI results.
+Both short guides tell the user to change `engine.mode`, then start real work.
+The [settings registry](../packages/shared/src/settings.ts) does label this as
+restart-required, but the [server](../packages/server/src/server.ts) constructs
+ports once and [LiveEngine](../packages/server/src/engine/LiveEngine.ts) keeps
+that mode. The live-mode save probe left the actual engine in dry-run. A user
+can believe their first task is being implemented while it is still simulated.
+The local mode override is another source of confusion.
 
-Remaining implementation order: dependencies and docs (R6/R8), then the final
-privacy and GitHub release checks (R7/R9/R10).
+**Recommendation:** document stopping/restarting the foreground server and
+checking the running **Live** indicator, not just the saved setting. Put a
+persistent "restart required; still simulating" message beside a changed mode.
+For guided setup, provide an explicit enable-live step that explains the
+pending actions, drains/restarts safely, and verifies the effective mode.
+Do not convert an in-progress simulated item into real work.
+
+**Done when:** a user can distinguish configured, overridden and running mode;
+a new live task cannot look like real work while the engine is still simulated;
+the guide completes without discovering the restart requirement elsewhere.
+
+### O3 — Initialization trusts assumptions that it should check
+
+**Priority: repair or document supported workarounds before source release;
+fix in guided setup before broad launch. Reproduced in disposable repositories.**
+
+| Trigger | Observed result | Needed behavior |
+| --- | --- | --- |
+| Repo on `trunk`, without `origin/HEAD`, no explicit branch flag | Generated `default_branch: main` | Resolve/verify the intended remote branch, or ask; never guess silently. For now, explicitly pass and verify `--default-branch`. |
+| `--layout orphan-branch` | Files created, but no planning `.git`, orphan branch or second worktree | Implement the advertised layout, or withdraw/document the flag as requiring a pre-created worktree. Recommend the separate planning repo to newcomers. |
+| Planning nested inside an existing linked code worktree | `ENOTDIR` opening `.git/info/exclude`, after some files had already been written | Resolve Git metadata through Git, validate before writing, and make failure/retry leave a clear state. For now, use a separate sibling planning repo. |
+
+`init` checks for `.git` existence, not a complete live-ready repository.
+[`check`](../packages/server/src/cli.ts) validates stored files and reports
+access configuration; it is not a preflight for agent authentication, GitHub
+permissions, remote/base existence, dependency preparation or base CI.
+Calling it a readiness check would overstate what it does.
+
+### O4 — Provider choice is supported by the engine but not by one coherent setup path
+
+**Priority: correct claims before source release; simplify before promotion.**
+
+The engine now supports Claude-only, Codex-only (app-server), and mixed projects.
+The README requirements/manual still say Claude is required; the homepage still
+says Codex implementation is optional and labels the planning step "CLAUDE + YOU".
+The website guide acknowledges either provider, then gives Claude-specific
+commands and model checks. `init.ts` even retains the obsolete comment that a
+Codex CLI model never plans. The accurate Codex-only recipe is in
+[Switching providers](switching-providers.md#codex-only-setup), a separate document.
+
+The README's authentication section directs readers toward a Console API key,
+while the site teaches local sign-in and Settings describes the key as optional.
+Resolve these statements against current provider guidance before publishing
+billing/authentication claims; this audit does not determine vendor terms.
+Explain what Planestro technically uses, who bills usage, and what is optional.
+
+**Recommendation:** select **Claude** or **Codex** once during setup; detect
+installed tools without spending model quota; set planner, implementer and
+orchestrator consistently. Keep transport IDs, fallback chains, art routing and
+mixed-provider tuning under Advanced. Prefer the existing Codex-only switching
+logic where appropriate. Check model availability explicitly before promising
+success; baked-in model names are not an entitlement check.
+
+**Done when:** separate Claude-only and Codex-only first-task scripts work without
+the other CLI installed. Documentation also explains Planestro's dedicated Codex
+login home and its recovery path, without sending users to unrelated settings.
+
+### O5 — A successful install still leaves substantial operational setup to the user
+
+**Priority: the main usability work before broad promotion. Source inspection.**
+
+The guide asks the user to arrange Node, Git identity, GitHub authentication, an
+agent login, a committed repository, a pushable remote, base/PR CI, a second
+planning repository, model choices, budgets, dry-run and live mode. These are
+legitimate requirements for automated merges, but "four steps to the board"
+conceals the number of decisions. Reaching the board is not reaching value.
+
+Fresh worktrees also need project dependencies. The generated config has an
+empty `hooks.after_worktree_create`; Claude permission allows start empty beyond
+built-ins, and Codex's default command sandbox has no network. The starter
+project happens to need no install. A real project can stop on its first test
+or package install unless setup prepares it. A fake dry run cannot validate
+credentials, worktree installation or CI access.
+
+**Recommendation:** add a read-only preflight with actionable pass/fail results:
+Node version, Git identity/HEAD, repository/remote/base, selected provider login,
+model configuration, GitHub access, base and PR CI expectations, available port,
+planning Git/backup status, and an explicitly reviewed worktree setup command.
+Separate checks needing network from local checks. Never silently run repository
+hooks, approve broad permissions, create a GitHub repository, or start a paid
+turn as a "connection test". A guided preflight should persist its result and
+leave no held agent process while the user fixes something.
+
+**Done when:** missing prerequisites are found before queueing the first task,
+each failure offers one concrete repair, and a dependency-bearing project can
+run its first tests in the worker's actual environment.
+
+### O6 — The first task exposes the expert operating model too early
+
+**Priority: adoption improvement, not a security or source-publication blocker.**
+
+The initial board exposes nine main navigation destinations, lifecycle columns,
+category/priority filters, provider switching and the orchestrator. The new-item
+form offers prompt template, item/epic, category, priority, model, optional parent,
+fallback choice, title and description. Settings has nine sections and 94
+registered entries. These are useful controls, but they are not a beginner's
+checklist. This was visible in the disposable sample and is supported by
+[NewItemDialog](../packages/web/src/components/NewItemDialog.tsx),
+[Settings](../packages/web/src/pages/Settings.tsx) and
+[the settings registry](../packages/shared/src/settings.ts).
+
+**Recommendation:** start with a title and description, a visible inherited
+provider, and a clear **Create and plan** action whose label explicitly authorizes
+submission. Keep **Save to backlog** available. Put category, priority, epic,
+routing and fallback behind optional details. Show the next meaningful action
+and a compact progress explanation, building on PR #315. Keep current technical
+statuses for diagnostics and persisted state; simplify presentation without
+changing lifecycle semantics. Retain visible pause, budget and review controls.
+
+The sample is valuable, but 14 examples, mixed art/code, epics, releases and
+questions make it a showcase as well as a tutorial. Lead with one highlighted
+bug and a three-action tour; reveal the rest after the first completion.
+
+## Recommended onboarding design
+
+These are proposed product changes, not commands/features that exist today.
+
+1. **Explore:** the first CTA opens a short product walkthrough or the isolated
+   sample. No GitHub or agent login is needed to see a task reach simulated Done.
+   Keep simulation explicit. A hosted interactive demo is a later option, not
+   something to claim is already available.
+2. **Connect:** select an existing repository. Infer name/prefix and suggest a
+   separate local planning Git repository; show/confirm the detected base and
+   selected provider. New-repository creation stays an optional separate recipe.
+3. **Check:** run preflight and present only failures needing attention. Confirm
+   any dependency setup and a conservative first-run profile: one worker, human
+   plan approval, finite usage limits, and the first PR held for human review.
+   Persist choices; advanced automation comes later.
+4. **Ship one small change:** type the task, deliberately enable live execution,
+   approve the plan, inspect the tested PR and release its hold. Explain what
+   happens next and how to stop. Keep the trial's real/simulated identity clear.
+5. **Expand when useful:** epics, mixed agents, schedules, MCP tools, policy
+   suggestions, notifications, release notes and more concurrency.
+
+For the first iteration, a guided CLI plus a small welcome/preflight screen is
+sufficient. Do not make a packaged desktop app a dependency of this work. If a
+single launcher is later introduced, it should validate Node, install/build the
+pinned version, select a free local port and open the UI; it should not silently
+modify shell configuration or widen network/agent permissions.
+
+Measure this with **five developers unfamiliar with Planestro**, covering
+Claude-only and Codex-only paths and one project that needs dependency setup.
+Proposed acceptance targets, not measured results:
+
+- At least four of five complete the sample without assistance in five minutes
+  **after installation**; measure install time separately.
+- At least four of five reach their first real plan within fifteen minutes
+  **after required tools/accounts are ready**, without editing YAML or asking the
+  maintainer. Report wall time and prerequisite time separately.
+- Every participant can identify demo vs live mode, pause work, find the pending
+  decision, and explain whether the first PR will merge automatically.
+- Record failed steps, unnecessary choices and permission interruptions. Measure
+  time to first tested PR separately from CI/model latency; do not market a
+  "one minute" experience until an unassisted first-time run supports it.
+
+## Marketing site: compete on demonstrated outcomes and ease of entry
+
+The current site already has coherent typography, restrained styling, product
+captures, copy buttons, a substantive field note and a useful static deployment
+model. It does not need a new framework. The bigger problem is that its primary
+CTA opens installation documentation, the sample is secondary, and the hero
+explains a workflow before showing the product doing useful work.
+
+### Market benchmark
+
+Reviewed a comparable agent development tool’s public homepage in the browser
+on October 8.
+Its presentation makes download, supported agents and a no-account entry point
+prominent, with interactive product previews for parallel work, approvals,
+backlog handling and editing. It also presents settings import and reusable
+flows. Those are website observations, not an installed-product evaluation or
+a reliability comparison. The live page was newer than the search cache; this
+audit does not use cached release/platform claims as current fact.
+
+The useful benchmark is the ease of understanding the first action and seeing
+its result. Planestro should show how a requirement reaches an approved plan,
+a tested PR and a controlled merge, with decisions recoverable after a restart.
+Parallel agents and backlog handling alone are not a distinctive pitch.
+Do not claim other products lack Planestro's safeguards without inspecting their code and
+behavior; the recommendation is to prove Planestro's strengths directly.
+
+### Proposed site work, in order
+
+| Order | Recommendation | Acceptance criterion |
+| --- | --- | --- |
+| M1 | Put a current, sanitized product demonstration beside the hero: requirement → plan approval → work → CI → held PR/merge. Use a short captioned recording or lightweight interactive walkthrough. | A newcomer can identify what they will do and what Planestro handles within a short visit. Include pause/reduced-motion behavior and a static fallback. |
+| M2 | Use one primary CTA appropriate to availability: **Try the demo** when a demo exists, or **Run the sample** with honest install requirements; **Use my repository** is secondary. Keep the article as supporting evidence. | No dead end at a private repository, no implied instant browser demo when only source installation exists. |
+| M3 | State the audience and prerequisites close to the CTA: solo developers with a GitHub repo and CI; Claude or Codex; local app, no Planestro account; agent usage billed by its provider; tested platform scope. | A visitor can judge fit, cost and setup before reading a long guide. |
+| M4 | Replace the abstract-only workflow panel with the actual first-task UI and three proof points: controlled integration, durable decisions, and human review/pause. | Each claim links to a visible example or concise documentation, with no absolute promise that CI catches every bug. |
+| M5 | Refresh screenshots to the current product, including current-state drawers, diffs, provider recovery and phone decisions. | Current screenshots are captioned as current; historical blog screenshots keep their dates and context. No private backlog text or credentials appear. |
+| M6 | Make README, quick start and product welcome follow the same demo/live routes and provider terminology. | Each advertised recipe is executed from a clean checkout on the tagged revision; code blocks are checked for drift. |
+| M7 | Add a short FAQ and visible source, license, support and release-status links. | Answer "Why not just my agent CLI?", "What does this cost?", "Can it push/merge?", "Can I pause?", "Where are my files?", "What if it stops?" and "Which platforms work?" without a deep manual search. |
+
+Suggested positioning to test: **"From backlog to tested merge. You approve the
+decisions."** Supporting copy should explain that Claude or Codex does the
+work while Planestro coordinates branches, PRs, CI and recoverable decisions.
+Avoid the unlimited-provider implication of "Any agent" unless the supported
+adapter contract warrants it. "Claude or Codex" is concrete and already useful.
+
+Lead with one real workflow and one case-study result whose evidence is dated
+and attributable. Keep the Hurricane Harrison article as proof of sustained
+use; do not make understanding a game's release schedule a prerequisite to
+understanding Planestro's availability. A visual flow builder, built-in editor,
+large integrations catalog or another chat shell is not the first competitive
+investment: a reliable, short path to a reviewed change is.
+
+## Security and operational qualifications for launch
+
+- **Keep the advertised launch path on loopback.** README background examples
+  still use `--host 0.0.0.0 --watch`. Replace those routine examples before
+  inviting newcomers. `lan_access` now filters socket peer addresses, but it
+  does not authenticate a person; an allowed private address or a local proxy
+  is not proof of trust. Explicit `--host` binding and `lan_access` filtering
+  are separate controls. Do not promise that all forwarding/proxy setups are
+  blocked. No account system is required for a local-only first release.
+- **Reconcile the network roadmap.** SECURITY.md still says an access token
+  is planned and points here. That is a future feature, not protection present
+  today. Decide whether authenticated remote use is in scope before marketing
+  phone/LAN access beyond a trusted private network.
+- **Document provider permission boundaries accurately.** Claude policies are
+  guardrails, not OS isolation. Codex has separate exec/app-server capabilities;
+  app-server can park a native command approval and use an exact one-time grant.
+  Broad statements that "Codex cannot ask" are now stale. Configured MCP services
+  and reviewed setup hooks also need their own trust explanation.
+- **Bound requests before buffering.** Both item and new orchestrator-chat upload
+  routes parse multipart data and materialize buffers before store-level limits.
+  Add total-body/file-count limits and bounded audition/media reads. This remains
+  hardening for the local trusted-operator release, and becomes more urgent if
+  network exposure is promoted. No new exploit was demonstrated by this audit.
+- **Backups and upgrades must be explicit.** A local Git history is not an
+  off-machine backup. Document an independent backup/private remote, migration
+  steps, and restoring both data and a compatible tool version. Current schema
+  is **7**; warn against opening upgraded data with an older checkout. Keep
+  consumer startup separate from `--watch` development/update behavior.
+- **Keep supply-chain checks routine.** Add dependency-update PRs, an advisory
+  check with an exception policy, and secret scanning. Keep Actions permissions
+  explicit and consider pinning actions by commit. Public-fork jobs must not get
+  privileged persistent runners or secrets. Current CI uses `ubuntu-latest`
+  and `pull_request`, not `pull_request_target`.
+
+## Publication gate
+
+Complete this short gate before changing visibility. The complete onboarding
+redesign and site redesign can follow a clearly labeled experimental release.
+
+- [x] Merge R1–R5's security/data-loss fixes; confirm the safeguards remain in the
+  current source. They are already merged, not waiting in the old review worktree.
+- [x] Resolve the previous dependency advisory inventory; fresh audit is clean.
+- [x] Repeat the redacted all-ref scan, including current PR refs (`05be427` mirror).
+- [ ] Review **new** issue/PR prose, uploaded media and Actions logs/artifacts since
+  October 3. Retain the prior owner decisions about historical identity/paths;
+  do not rewrite history just because old branches exist. Keep planning data
+  and pre-rewrite backups out of the public code repository.
+- [ ] Publish one correct experimental installation path: separate planning Git
+  repo, explicit verified base, correct provider instructions, loopback startup,
+  and mode-change restart. Document O3 workarounds until implemented.
+- [ ] State support/contribution expectations and supported Node/platform versions;
+  declare Node compatibility in package metadata. Clone/install/build is an
+  acceptable first distribution; the private workspace package flags do not
+  themselves block making GitHub source public.
+- [ ] Prepare required `check` status, force-push/deletion restrictions and security
+  reporting/scanning settings. If plan restrictions prevent setup while private,
+  apply and verify them at the visibility change before inviting contributions.
+  Confirm the vulnerability-reporting link in SECURITY.md actually works.
+- [ ] Pick coherent release/version language. Package metadata says **0.1.0**;
+  the site announces **v1.0.0** alongside Hurricane Harrison **v1.6.0**. Do not
+  silently undo that announced plan, but decide whether an experimental source
+  opening precedes it and explain the distinction consistently.
+- [ ] Record the release revision, CI, audit and scan evidence, accepted exceptions,
+  installation/update/backup instructions and known limitations in release notes.
+  Refresh checks on the actual release commit if it differs from this one.
+- [ ] Change repository visibility only on an explicit user instruction. Verify
+  anonymous clone, README links/images, sample install, required CI and private
+  reporting afterward. Repository publication must not expose a runtime port
+  or planning repository.
+
+## Additional gate before recommending live use broadly
+
+- [ ] Fresh-user Claude-only trial: small task → plan → approval → implementation
+  → held PR → CI → reviewed merge → cleanup.
+- [ ] Repeat for Codex app-server-only, with no Claude installation required.
+- [ ] Exercise one dependency-bearing project and a non-default-named base branch.
+- [ ] Pause and restart between steps; answer a persisted question/permission after
+  restart; confirm the instruction and selected provider survive.
+- [ ] Demonstrate a CI failure/recovery and a refusal to clean up unexpected local
+  work. Record CLI/SDK versions and which paths were live versus simulated.
+- [ ] Repeat the install/sample/first-task recipe on the release revision with a
+  new user. Run additional platforms before expanding support claims.
+
+Current compatibility declarations, not newly executed live certifications:
+Claude Code **2.1.284**, Agent SDK **0.3.251** (validated September 28);
+Codex CLI **0.154.0** (validated October 7), from
+[compat.ts](../packages/server/src/compat.ts). This audit spent no model quota
+and created no GitHub test repositories or PRs.
+
+## Marketing-site publication is a separate operation
+
+The site remains a static `site/` artifact, deployed as-is by the existing Pages
+workflow. Retain that simple architecture unless a specific product requirement
+justifies changing it.
+
+- [x] Existing homepage, quick start, blog and approved field note are present.
+- [ ] Configure Pages for Actions and deliberately set `PAGES_ENABLED=true`.
+  Current API access returned 404 and the variable was absent.
+- [ ] Configure/verify `planestro.com`, DNS and HTTPS; no `site/CNAME` is present.
+  DNS and registrar state were not inspected in this audit.
+- [ ] Test all four routes, direct article anchors, share images and mobile layout
+  at the domain root. Root-relative assets do not fit an unconfigured
+  `/planestro/` project subpath.
+- [ ] Change private-access/coming-soon notices only when access actually changes.
+  Preserve the article's approved historical copy and review its release notice
+  deliberately rather than rewriting the case study wholesale.
+
+## Suggested execution order
+
+1. **Correct the entry path:** O1–O4 documentation, supported-platform/auth wording,
+   restart instructions, loopback examples and release-version decision.
+2. **Open the source deliberately:** privacy review of new material, GitHub controls,
+   experimental release notes, exact-revision checks and anonymous verification.
+3. **Make first use reliable:** O3 initialization fixes, preflight, one-provider
+   setup, worktree preparation and a first PR held for review; run the live matrix.
+4. **Make first value obvious:** simplify new-task controls and the sample tour;
+   measure unassisted users; publish a current product demonstration and clear CTAs.
+5. **Optimize after evidence:** bundle splitting, packaging convenience, additional
+   platforms and deeper integrations. These are useful, but they should not delay
+   correcting the setup path or replace the first-use work.
