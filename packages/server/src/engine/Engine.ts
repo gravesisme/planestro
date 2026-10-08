@@ -22,7 +22,7 @@ export interface Engine {
    * `asItem`: the user approves, deliberately, a plan that reads as an epic breakdown (epicFlagOf), which is refused otherwise (#69).
    * `hold`: its pull request stays out of the merge queue until released, for this reason (#97).
    */
-  approvePlan(id: string, notes?: string, by?: 'user' | 'orchestrator', opts?: { asItem?: boolean; hold?: string; mcpBudget?: number }): Promise<void>;
+  approvePlan(id: string, notes?: string, by?: 'user' | 'orchestrator', opts?: { asItem?: boolean; hold?: string; mcpBudget?: number; syncFirst?: boolean }): Promise<void>;
   /** Make an item an epic or back while nothing has run for implementation (kindConversionRefusal). Returns what happened; throws why not. */
   convertKind(id: string, to: 'item' | 'epic', by?: 'user' | 'orchestrator', why?: string): Promise<string>;
   rejectPlan(id: string, message: string): Promise<void>;

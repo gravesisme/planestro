@@ -16,6 +16,8 @@ export function itemView(store: DataStore, item: StoredItem) {
     activity: parseActivity(item.file),
     derived: store.derived(item),
     park_hint: parkHintOf(store, item),
+    // What merged into its base since its plan was cut (#217): the approval card says approving syncs it first.
+    merged_since_cut: store.mergedSinceCut(item),
   };
 }
 
