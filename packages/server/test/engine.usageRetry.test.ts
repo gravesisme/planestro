@@ -53,11 +53,12 @@ async function setup(claude: Ports['agents']['claude']) {
   const ports: Ports = { mode: 'dry-run', git: new DryRunGitPort(world), gh: new DryRunGhPort(world), proc: new DryRunProcPort(world), agents: { claude } };
   engine = new LiveEngine(store, ports, () => {}, { sleep: async () => {}, tickMs: 30 });
   const item = store.createItem({ title: 'Out of usage', description: 'x' });
+  store.mutateItem(item.id, [{ set: { planner: 'opus-5' } }], 'user'); // the orchestrator wakes on Fable 5, which stays in usage
   store.transition(item.id, 'QUEUED', 'user');
   return { store, engine, id: item.id };
 }
 
-async function waitFor(pred: () => boolean, ms = 10000) { const t0 = Date.now(); while (!pred()) { if (Date.now() - t0 > ms) throw new Error('timeout waiting'); await sleep(15); } }
+async function waitFor(pred: () => boolean, ms = 10000) { const t0 = Date.now(); while (!pred()) { if (Date.now() - t0 > ms) throw new Error(`timeout waiting: ${JSON.stringify(store?.listItems().map((i) => ({ ...i.file.frontmatter, activity: i.file.sections.find((x) => x.title === 'Activity')?.body })))}`); await sleep(15); } }
 const fmOf = (s: DataStore, id: string) => s.getItem(id)!.file.frontmatter;
 const activityOf = (s: DataStore, id: string) => s.getItem(id)!.file.sections.find((x) => x.title === 'Activity')!.body;
 const needs = (s: DataStore, id: string) => s.derived(s.getItem(id)!).needs_you;
@@ -92,12 +93,13 @@ describe('a usage stop waits for its reset and is retried once (#296)', () => {
     expect(seen).toEqual([false]);
     expect(a.prompts).toHaveLength(2);
     expect(a.wakes.filter((w) => w.startsWith('blocked_'))).toEqual(['blocked_usage_exhausted']);
-    expect(activityOf(s, id)).toMatch(/waits for Fable 5's usage to reset/);
+    expect(activityOf(s, id)).toMatch(/waits for Opus 5's usage to reset/);
     expect(activityOf(s, id)).toMatch(/usage reset/);
   });
 
   it('a second exhaustion stops as before: triaged again, and never a second retry by itself', async () => {
-    const a = agents(() => true, async (w, n) => { if (n === 1) await w.tools('retry_at_reset').handler({ id: 'TP-1' }); });
+    const replies: string[] = [];
+    const a = agents(() => true, async (w) => { replies.push(await w.tools('retry_at_reset').handler({ id: 'TP-1' })); });
     const { store: s, engine: e, id } = await setup(a.claude);
     await e.start();
     await waitFor(() => dueOf(s, id) !== undefined);
@@ -106,6 +108,7 @@ describe('a usage stop waits for its reset and is retried once (#296)', () => {
     expect(fmOf(s, id).blocked_reason).toBe('usage_exhausted');
     expect(dueOf(s, id)).toBeUndefined();
     expect(needs(s, id)).toBe(true);
+    expect(replies[1]).toMatch(/^not possible: TP-1 was already retried once at a reset/);
     await e.tick(); await sleep(100);
     expect(a.prompts).toHaveLength(2);
   });

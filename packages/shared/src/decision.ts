@@ -113,7 +113,7 @@ export function describeAction(action: DecisionAction, lookup?: (id: string) => 
   }
   if (action.tool === 'wait_for_reset') {
     const it = lookup?.(action.args.id);
-    return `leaves ${action.args.id}${it ? ` "${it.title}"` : ''} blocked until its model's usage resets (with usage_guard.auto_resume on, it carries on by itself then)`;
+    return `leaves ${action.args.id}${it ? ` "${it.title}"` : ''} waiting, not needing you, until its model's usage resets; planestro then retries its step once by itself`;
   }
   if (action.tool === 'close_as_done') {
     const it = lookup?.(action.args.id);

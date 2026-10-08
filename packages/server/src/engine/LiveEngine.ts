@@ -131,6 +131,8 @@ const ATTACHABLE = /\.(png|jpe?g|gif|webp|svg|mp4|webm|mov)$/i;
 const READY_AFTER_PUSH_POLLS = 6;
 /** A guard-made pause resumes this long after its window's reset, so the first turn lands in the fresh window. */
 const USAGE_RESUME_GRACE_MS = 60_000;
+/** The op_data keys of retries the tick runs once at a due time. */
+type TimedRetry = 'transient_retry' | 'usage_retry';
 /** Two readings of one window whose resets differ by less than this are the same crossing. */
 const SAME_CROSSING_MS = 5 * 60_000;
 const MAX_TIMER_MS = 2 ** 31 - 1;
@@ -213,6 +215,7 @@ export class LiveEngine implements Engine {
       setItemFields: (id, fields) => this.orchestratorSetsFields(id, fields),
       recreateWorktree: (id, message) => this.recreateWorktree(id, message),
       retryOp: (id) => this.retryOp(id),
+      retryAtReset: (id, at) => this.retryAtReset(id, at, 'orchestrator'),
       rerunCi: (id) => this.rerunCi(id, 'orchestrator'),
       unskipMerge: (id) => this.orchestratorUnskips(id),
       busyWith: (id) => this.busyWith(id),
@@ -512,7 +515,7 @@ export class LiveEngine implements Engine {
       // Before admission, so an item a schedule submits starts on this pass.
       driveSchedules(this.store, new Date(Date.parse(this.now())), { submit: (id, why) => { this.submitAsUser(id, why); }, note: (l, m) => this.note(l, m) });
       this.drivePendingTurns();
-      this.driveTransientRetries();
+      this.driveTimedRetries();
       for (const item of this.store.listItems()) this.continueAfterProviderSwitch(item.id);
       this.reopenEpics();
       this.admit();
@@ -1608,6 +1611,8 @@ export class LiveEngine implements Engine {
     }
     // A turn that did something, or ended well, ends the run of one automatic retry (#241).
     if (!quietTransientFailure(result)) this.dropTransientRetry(id);
+    // So does one that ran on a model with usage for a retry at its reset (#296): a later usage stop may wait again.
+    if (result.subtype !== 'usage_exhausted' && result.subtype !== 'killed') this.dropTransientRetry(id, 'usage_retry');
     const completedData = { ...this.store.requireItem(id).file.frontmatter.op_data };
     if (!(result.subtype === 'killed' && this.stopping) && (completedData.active_turn as PendingTurn | undefined)?.key === intent.key) {
       delete completedData.active_turn;
@@ -1715,27 +1720,36 @@ export class LiveEngine implements Engine {
     this.block(id, reason, detail);
   }
 
-  private dropTransientRetry(id: string): void {
+  private dropTransientRetry(id: string, key: TimedRetry = 'transient_retry'): void {
     const cur = this.store.getItem(id)?.file.frontmatter;
-    if (cur?.op_data?.transient_retry === undefined) return;
-    const { transient_retry: _gone, ...rest } = cur.op_data;
+    if (cur?.op_data?.[key] === undefined) return;
+    const { [key]: _gone, ...rest } = cur.op_data;
     this.store.mutateItem(id, [{ set: { op_data: rest } }], 'engine');
   }
 
-  /** The retries blockOrRetry scheduled, once due. One that someone else already moved (an unblock, a take-over) is dropped without running. */
-  private driveTransientRetries(): void {
+  /**
+   * The retries scheduled for later, once due: blockOrRetry's (#241) and retryAtReset's at a usage reset (#296). One that
+   * someone else already moved (an unblock, a take-over, another stop) is dropped without running. Each runs once: the
+   * marker is spent (`retried_at`, no due time) before the retry, so the stop it may end in is an ordinary one.
+   */
+  private driveTimedRetries(): void {
     for (const item of this.store.listItems()) {
       const fm = item.file.frontmatter;
-      const r = fm.op_data?.transient_retry as { due_at?: string; reason?: string } | undefined;
-      if (!r?.due_at) continue;
-      const spend = () => this.store.mutateItem(item.id, [{ set: { op_data: { ...(this.store.requireItem(item.id).file.frontmatter.op_data ?? {}), transient_retry: { retried_at: this.now(), reason: r.reason } } } }], 'engine');
-      if (!fm.blocked || fm.taken_over) { this.dropTransientRetry(item.id); continue; }
-      if (Date.parse(r.due_at) > Date.now() || this.busyWith(item.id)) continue;
-      spend();
-      void this.retryOp(item.id, 'engine').then((said) => {
-        if (/^not now/.test(said)) { const cur = this.store.requireItem(item.id).file.frontmatter; this.store.mutateItem(item.id, [{ set: { op_data: { ...(cur.op_data ?? {}), transient_retry: r } } }], 'engine'); return; }
-        if (/^(not possible|nothing to retry)/.test(said)) { this.dropTransientRetry(item.id); this.block(item.id, r.reason ?? 'turn_error', `the automatic retry could not run: ${said}`); }
-      }).catch((e) => { this.dropTransientRetry(item.id); this.block(item.id, r.reason ?? 'turn_error', `the automatic retry failed: ${(e as Error).message}`); });
+      for (const key of ['transient_retry', 'usage_retry'] as const) {
+        const r = fm.op_data?.[key] as { due_at?: string; reason?: string; by?: string } | undefined;
+        if (!r?.due_at) continue;
+        const usage = key === 'usage_retry';
+        if (!fm.blocked || fm.taken_over || (usage && fm.blocked_reason !== 'usage_exhausted')) { this.dropTransientRetry(item.id, key); continue; }
+        if (Date.parse(r.due_at) > Date.now() || this.busyWith(item.id)) continue;
+        const reason = usage ? 'usage_exhausted' : r.reason;
+        this.store.mutateItem(item.id, [{ set: { op_data: { ...(this.store.requireItem(item.id).file.frontmatter.op_data ?? {}), [key]: { retried_at: this.now(), reason } } } },
+          ...(usage ? [{ activity: { actor: 'app', text: `usage reset (${r.due_at}): retrying the step it stopped, once` } } as ItemOp] : [])], 'engine');
+        void this.retryOp(item.id, 'engine', usage ? 'Your model\'s usage window has reset; carry on.' : undefined).then((said) => {
+          if (/^not now/.test(said)) { const cur = this.store.requireItem(item.id).file.frontmatter; this.store.mutateItem(item.id, [{ set: { op_data: { ...(cur.op_data ?? {}), [key]: r } } }], 'engine'); return; }
+          if (/^(not possible|nothing to retry)/.test(said)) { this.dropTransientRetry(item.id, key); this.block(item.id, reason ?? 'turn_error', `the automatic retry could not run: ${said}`); }
+        }).catch((e) => { this.dropTransientRetry(item.id, key); this.block(item.id, reason ?? 'turn_error', `the automatic retry failed: ${(e as Error).message}`); });
+        break;
+      }
     }
   }
 
@@ -3982,7 +3996,7 @@ export class LiveEngine implements Engine {
       ...(i === 0 ? { recommended: true } : {}),
       action: { tool: 'continue_on_account', args: { id, account: a.name } },
     }));
-    options.push({ label: 'Wait for the reset', description: `It stays blocked until ${requested.label}'s usage resets on ${account.label}${this.store.config.usage_guard.auto_resume ? ', then carries on by itself' : '; unblock it then'}.`, action: { tool: 'wait_for_reset', args: { id } } });
+    options.push({ label: 'Wait for the reset', description: `It waits until ${requested.label}'s usage resets on ${account.label}, then carries on by itself.`, action: { tool: 'wait_for_reset', args: { id } } });
     this.block(id, 'usage_exhausted', detail, 'user', undefined, {
       question: `${requested.label} is out of usage on ${account.label}. Carry on with another account?`.slice(0, 200),
       why: `${others.map((a) => a.label).join(', ')} can take this turn now; it spends that account's usage.`.slice(0, 400),
@@ -4013,6 +4027,38 @@ export class LiveEngine implements Engine {
     this.store.mutateItem(id, [{ set: { account: name } }, { activity: { actor: 'user', text: `continues on ${label}: its turns run on that account from here` } }], 'user', { commit: `${id}: continue on account ${name}` });
     await this.unblock(id, undefined, 'user');
     return `${id} continues on account ${name}`;
+  }
+
+  /**
+   * Retry once at the reset (#296, HH-441): a usage stop of an item already authorized to run waits, not needing anyone, until
+   * its model's recorded outage ends (plus the guard's minute; `at` only when later), then the tick retries its step once
+   * (driveTimedRetries, as #241's). Persisted in `op_data.usage_retry`, so nothing sleeps until then and a restart keeps it.
+   * Asked by the orchestrator from triage and by the user's "Wait for the reset"; a second exhaustion stops as before.
+   */
+  retryAtReset(id: string, at: string | undefined, by: 'user' | 'orchestrator'): string {
+    const fm = this.store.getItem(id)?.file.frontmatter;
+    if (!fm) return `not possible: there is no item ${id}`;
+    if (fm.taken_over) return `not possible: the user has taken ${id} over`;
+    if (fm.blocked_reason !== 'usage_exhausted') return `not possible: ${id} is not stopped for usage`;
+    const busy = this.busyWith(id); if (busy) return `not now: ${busy}`;
+    const spent = (fm.op_data?.usage_retry as { retried_at?: string } | undefined)?.retried_at;
+    if (spent && by === 'orchestrator') return `not possible: ${id} was already retried once at a reset (${spent}) and ran out of usage again; it is the user's call now`;
+    const wanted = at === undefined ? undefined : Date.parse(at);
+    if (wanted !== undefined && !Number.isFinite(wanted)) return `not recorded: at must be an ISO time, not "${at}"`;
+    const requested = findModel(this.store.config, fm.status === 'PLAN_IN_PROGRESS' ? fm.planner : fm.implementer);
+    const acct = requested ? this.accountFor(fm, requested) : undefined;
+    // When a model it may run on comes back: the earliest end among its chain's outages, on its account.
+    const view = acct && 'account' in acct ? unavailableView(this.store.local.model_unavailable, acct.account.name) : undefined;
+    const outs = requested ? (fm.allow_model_fallback === true ? fallbackChain(this.store.config, requested) : [requested]).map((m) => unavailableEntry(view, m.id, new Date(Date.now()))) : [];
+    const reset = outs.length && outs.every(Boolean) ? Math.min(...outs.map((o) => Date.parse(o!.until))) : undefined;
+    if (reset === undefined && wanted === undefined) return `not recorded: no outage is recorded for ${id}'s model any more, so nothing waits; retry_op runs its step now`;
+    const due = new Date(Math.max(wanted ?? 0, reset !== undefined ? reset + USAGE_RESUME_GRACE_MS : 0)).toISOString();
+    this.store.mutateItem(id, [
+      { set: { op_data: { ...(fm.op_data ?? {}), usage_retry: { due_at: due, by } } } },
+      { unset: ['triage'] },
+      { activity: { actor: by, text: `waits for ${requested?.label ?? 'its model'}'s usage to reset; planestro retries its step once at ${due}` } },
+    ], by, { commit: `${id}: retry at usage reset` });
+    return `${id} waits, not needing anyone, and planestro retries once at ${due}`;
   }
 
   /** Mark a model out of usage on this machine until its reset (or the default window); returns the time, for messages. */
@@ -4706,7 +4752,7 @@ export class LiveEngine implements Engine {
       : act?.tool === 'rerun_ci' ? await (async () => { const r = await this.rerunCi(act.args.id, 'user'); if (/^not (possible|now)/.test(r)) throw new Error(r); return r; })()
       : act?.tool === 'reopen_pr' ? await (async () => { const r = await this.reopenPr(act.args.id); if (/^not (possible|now)/.test(r)) throw new Error(r); return r; })()
       : act?.tool === 'continue_on_account' ? await this.continueOnAccount(act.args.id, act.args.account)
-      : act?.tool === 'wait_for_reset' ? (this.store.mutateItem(id, [Object.keys(rest).length ? { set: { awaiting_data: rest } } : { unset: ['awaiting_data'] }], 'user'), `${act.args.id} waits for its usage to reset`)
+      : act?.tool === 'wait_for_reset' ? (this.store.mutateItem(id, [Object.keys(rest).length ? { set: { awaiting_data: rest } } : { unset: ['awaiting_data'] }], 'user'), this.retryAtReset(act.args.id, undefined, 'user'))
       : act ? this.performAction(act, id) : undefined;
     if (ends && !decisionOf(this.store.requireItem(id).file.frontmatter)) {
       this.store.mutateItem(id, [{ activity: { actor: 'user', text: `decided: ${decision.question} → ${said} (done for you: ${done})` } }], 'user', { commit: `${id}: decision answered` });
