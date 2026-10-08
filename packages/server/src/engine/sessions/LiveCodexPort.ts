@@ -1,13 +1,13 @@
 import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gitWritableRoots } from './gitWritableRoots.ts';
 export { gitWritableRoots } from './gitWritableRoots.ts';
 import { budgetTokens } from '@planestro/shared';
 import { CodexAppServerPort, codexEnv } from './CodexAppServerPort.ts';
 import { projectSkills, skillsInPrompt } from './projectSkills.ts';
-import type { AgentPort, AgentTurnOptions, TurnOptions, CustomTurnOptions, TurnResult } from '../ports.ts';
+import type { AccountCredentials, AgentPort, AgentTurnOptions, TurnOptions, CustomTurnOptions, TurnResult } from '../ports.ts';
 
 /**
  * Worker turns on the Codex CLI (`codex exec`). Codex has no plan mode and no planestro tools, so it
@@ -88,6 +88,12 @@ export const IMAGE_TOOL_NOTE = [
 ].join('\n');
 
 
+/** The CODEX_HOME an exec turn runs with: a named account's own (#242), else planestro's. */
+export function codexHomeOf(account: AccountCredentials | undefined): string | undefined {
+  if (!account?.home) return process.env.CODEX_HOME;
+  return account.home.startsWith('~/') ? join(homedir(), account.home.slice(2)) : account.home;
+}
+
 export class LiveCodexPort implements AgentPort {
   private lastError?: string;
   /** `passthrough` reads the project's codex_env_passthrough at each turn, so a settings change needs no restart. */
@@ -124,7 +130,7 @@ export class LiveCodexPort implements AgentPort {
       // stdin MUST be ignored: given a pipe, `codex exec` waits on it forever. And `--` MUST end the
       // options: `-i` takes one or more files, so a prompt right after an image is read as another
       // image, and codex, finding no prompt, reads stdin — and gets nothing ("No prompt provided via stdin").
-      const child = spawn(this.codexBin, [...args, '--', prompt], { cwd: o.cwd, env: codexEnv(this.passthrough()), stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(this.codexBin, [...args, '--', prompt], { cwd: o.cwd, env: codexEnv(this.passthrough(), codexHomeOf(o.account)), stdio: ['ignore', 'pipe', 'pipe'] });
       const onAbort = () => { killed = true; child.kill('SIGTERM'); };
       if (o.signal?.aborted) onAbort(); else o.signal?.addEventListener('abort', onAbort, { once: true });
       let buf = '';

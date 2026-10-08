@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
-import { modelCapabilities, runnerTurnSettings, type ModelDef, type Runner, getSection, planToolsMissing, epicFlagOf, holdShapeOf, heldReasonOf, previewOf, type HoldFlag, partsSummary, serializeItemFile, serializeQuestionFile, parseThread, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent, parseActivity, usageTurnData, USAGE_TURN } from '@planestro/shared';
+import { modelCapabilities, runnerTurnSettings, type ModelDef, type Runner, getSection, planToolsMissing, epicFlagOf, holdShapeOf, heldReasonOf, previewOf, type HoldFlag, partsSummary, serializeItemFile, serializeQuestionFile, parseThread, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent, parseActivity, usageTurnData, USAGE_TURN, resolveAccount, guardKey, unavailableKey, unavailableView, sameSessionStore, DEFAULT_ACCOUNT } from '@planestro/shared';
 import { parkHint } from './parks.ts';
 import { precedents, rulingsFromJournal, worktreeFinder, worstOf } from './allowSuggest.ts';
 import { hostNote, keptPathsNote } from './hostNote.ts';
@@ -165,7 +165,7 @@ export interface OrchestratorHooks {
 }
 
 /** `total_usd`: the running total the conversation last reported; a resumed wake's cost is what it rose by (#64). */
-interface OrchState { runner?: Runner; model?: string; tool_contract?: string; intro_hash?: string; session_id?: string; started_at?: string; wakes_served: number; total_usd?: number }
+interface OrchState { runner?: Runner; account?: string; model?: string; tool_contract?: string; intro_hash?: string; session_id?: string; started_at?: string; wakes_served: number; total_usd?: number }
 
 /**
  * The judgment layer: one resumable Fable session, woken with a compact structured
@@ -250,15 +250,17 @@ export class Orchestrator {
   private unavailable(): boolean {
     const pick = this.modelForWake();
     const def = findModel(this.store.config, pick.model);
-    return Boolean(pick.exhaustedUntil || (def && unavailableEntry(this.store.local.model_unavailable, def.id, new Date())));
+    return Boolean(pick.accountMissing || pick.exhaustedUntil || (def && unavailableEntry(unavailableView(this.store.local.model_unavailable, pick.account), def.id, new Date())));
   }
+  /** Whether the usage guard of the account this wake would run on holds it (#242). */
+  private guarded(): boolean { const pick = this.modelForWake(); return Boolean(this.store.local.engine.provider_guards?.[guardKey(pick.runner, pick.account)]); }
 
   private async drain(): Promise<void> {
-    if (!this.enabled || this.unavailable() || this.running || this.stopped || this.pausedRef() || this.store.local.engine.provider_guards?.[this.modelForWake().runner]) return;
+    if (!this.enabled || this.unavailable() || this.running || this.stopped || this.pausedRef() || this.guarded()) return;
     if (!this.queue.some(due)) return;
     this.running = true;
     try {
-      while (this.queue.some(due) && !this.unavailable() && !this.stopped && !this.pausedRef() && !this.store.local.engine.provider_guards?.[this.modelForWake().runner]) {
+      while (this.queue.some(due) && !this.unavailable() && !this.stopped && !this.pausedRef() && !this.guarded()) {
         const batch = this.queue.filter(due);
         this.queue = this.queue.filter((e) => !due(e));
         this.inFlight = new Set(batch.flatMap((e) => (e.item ? [e.item] : [])));
@@ -307,13 +309,18 @@ export class Orchestrator {
    * Claude model string) or is a raw model string; with `allow_model_fallback`, a row that is out of
    * usage on this machine yields to its fallback chain, as a worker's turn does.
    */
-  modelForWake(now = new Date(Date.now())): { runner: Runner; model: string; label: string; def?: ModelDef; fellBackFrom?: string; sdkFallback?: string; exhaustedUntil?: string } {
+  modelForWake(now = new Date(Date.now())): { runner: Runner; model: string; label: string; def?: ModelDef; account?: string; accountMissing?: string; accountHome?: string; apiKeyEnv?: string; fellBackFrom?: string; sdkFallback?: string; exhaustedUntil?: string } {
     const cfg = this.store.config.orchestrator;
     const def = findModel(this.store.config, cfg.model);
     if (!def) return { runner: 'claude', model: cfg.model, label: cfg.model };
-    const pick = resolveTurnModel(this.store.config, def, { allow: cfg.allow_model_fallback, unavailable: this.store.local.model_unavailable, now });
+    // Its model row's account (#242): a name this machine lacks holds the wakes rather than bill the default login.
+    const acct = resolveAccount(this.store.local, def.runner ?? 'claude', { model: def.account });
+    const account = 'account' in acct ? acct.account : undefined;
+    const pick = resolveTurnModel(this.store.config, def, { allow: cfg.allow_model_fallback, unavailable: unavailableView(this.store.local.model_unavailable, account?.name), now });
     return {
       runner: pick.def.runner ?? 'claude', model: pick.model ?? cfg.model, label: pick.def.label, def: pick.def,
+      ...(account && account.name !== DEFAULT_ACCOUNT ? { account: account.name, ...(account.home ? { accountHome: account.home } : {}), ...(account.api_key_env ? { apiKeyEnv: account.api_key_env } : {}) } : {}),
+      ...('missing' in acct ? { accountMissing: acct.why } : account?.api_key_env && !process.env[account.api_key_env] ? { accountMissing: `account ${account.name}'s key variable ${account.api_key_env} is not set` } : {}),
       ...(pick.fellBackFrom ? { fellBackFrom: pick.fellBackFrom.label } : {}),
       ...(pick.sdkFallback ? { sdkFallback: pick.sdkFallback } : {}),
       ...(pick.exhaustedUntil ? { exhaustedUntil: pick.exhaustedUntil } : {}),
@@ -327,7 +334,7 @@ export class Orchestrator {
     let state = this.readState();
     const caps = modelCapabilities(findModel(this.store.config, pick.model) ?? { runner: pick.runner, external: false });
     const contract = caps.toolContract;
-    if ((state.runner ?? 'claude') !== pick.runner || (state.tool_contract && state.tool_contract !== contract)) state = { wakes_served: 0 };
+    if ((state.runner ?? 'claude') !== pick.runner || (state.tool_contract && state.tool_contract !== contract) || !sameSessionStore(this.store.local, state.account, pick.account)) state = { wakes_served: 0 };
     // Some runners keep the instructions a conversation started with when it is resumed (#246, verified live), so an edit
     // to the standing rules reaches them only in a fresh conversation. A state from before the hash resumes and records it.
     const intro = this.systemIntro();
@@ -352,6 +359,7 @@ export class Orchestrator {
     const result: TurnResult = await this.ports.agents[pick.runner]!.runCustomTurn!({
       signal: this.activeAbort?.signal,
       label: events.map((e) => e.type).join(','), cwd: this.store.codeRepoPath(), model, ...runnerTurnSettings(pick.def),
+      ...(pick.account ? { account: { name: pick.account, ...(pick.accountHome ? { home: pick.accountHome } : {}), ...(pick.apiKeyEnv ? { apiKeyEnv: pick.apiKeyEnv } : {}) } } : {}),
       ...(pick.sdkFallback ? { fallbackModel: pick.sdkFallback } : {}),
       permissionMode: 'dontAsk', prompt, resume: state.session_id, maxTurns: 30, ...(images.length ? { images } : {}),
       maxTokens: state.session_id ? cfg.budget_tokens_per_wake : cfg.budget_tokens_per_fresh_wake,
@@ -365,17 +373,17 @@ export class Orchestrator {
     // Every wake that ran is counted (#236), the ones retried below too: each was paid for.
     const spent = usageTurnData({ provider: pick.runner, model, role: 'orchestrator', op: 'orchestrator_wake', accounting: pick.def ? modelCapabilities(pick.def).accounting : pick.runner === 'claude' ? 'dollars' : 'tokens', result });
     if (spent) this.store.journal.append({ type: USAGE_TURN, actor: 'orchestrator', data: { ...spent } });
-    this.hooks.usageSeen?.(result.rateLimit, pick.runner);
+    this.hooks.usageSeen?.(result.rateLimit, guardKey(pick.runner, pick.account));
     if (result.subtype === 'usage_exhausted') {
       const def = findModel(this.store.config, model);
       const now = new Date(Date.now());
       const until = unavailableUntil(result.usageLimit?.resetsAt, now);
       if (def) {
-        this.store.updateLocal({ model_unavailable: markUnavailable(this.store.local.model_unavailable, def.id, { until, reason: result.usageLimit?.message ?? 'usage limit' }, now) });
-        this.store.journal.append({ type: 'model.unavailable', actor: 'orchestrator', data: { model: def.id, until: until.toISOString(), reason: result.usageLimit?.message ?? '' } });
+        this.store.updateLocal({ model_unavailable: markUnavailable(this.store.local.model_unavailable, unavailableKey(def.id, pick.account), { until, reason: result.usageLimit?.message ?? 'usage limit' }, now) });
+        this.store.journal.append({ type: 'model.unavailable', actor: 'orchestrator', data: { model: def.id, until: until.toISOString(), reason: result.usageLimit?.message ?? '', ...(pick.account ? { account: pick.account } : {}) } });
       }
       const root = findModel(this.store.config, cfg.model);
-      const another = root && cfg.allow_model_fallback && fallbackChain(this.store.config, root).some((m) => m.id !== def?.id && !unavailableEntry(this.store.local.model_unavailable, m.id, now));
+      const another = root && cfg.allow_model_fallback && fallbackChain(this.store.config, root).some((m) => m.id !== def?.id && !unavailableEntry(unavailableView(this.store.local.model_unavailable, pick.account), m.id, now));
       this.log('warn', `orchestrator: ${def?.label ?? model} is out of usage until ${until.toISOString()}${another && !retried ? '; retrying the wake on its fallback' : ''}`);
       if (another && !retried) return this.runWake(events, true);
     }
@@ -398,7 +406,7 @@ export class Orchestrator {
     this.lastOutcome = doneSummary ? `it ended with: ${doneSummary}` : result.isError ? `the wake failed: ${result.subtype}${result.error ? ` ${result.error}` : ''}` : '';
     const session = result.sessionId ?? state.session_id;
     const total = result.sessionTotalUsd ?? (session === state.session_id ? state.total_usd : undefined);
-    this.writeState({ runner: pick.runner, model, tool_contract: contract, intro_hash: introHash, session_id: session, started_at: state.started_at ?? isoLocal(), wakes_served: state.wakes_served + 1, ...(total !== undefined ? { total_usd: total } : {}) });
+    this.writeState({ runner: pick.runner, ...(pick.account ? { account: pick.account } : {}), model, tool_contract: contract, intro_hash: introHash, session_id: session, started_at: state.started_at ?? isoLocal(), wakes_served: state.wakes_served + 1, ...(total !== undefined ? { total_usd: total } : {}) });
     // What the Console's spend panel reads (#49): which items, which conversation (it resets on rotation), how big it has grown.
     const items = [...new Set(events.map((e) => e.item).filter((i): i is string => Boolean(i)))];
     this.store.journal.append({ type: 'orchestrator.done', actor: 'orchestrator', data: {

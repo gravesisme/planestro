@@ -193,6 +193,12 @@ export interface TurnTools {
 export interface PermissionRequest { tool: string; input: Record<string, unknown> }
 export type McpServerSpec = { type?: 'stdio'; command: string; args?: string[]; env?: Record<string, string> } | { type: 'http'; url: string; headers?: Record<string, string> };
 /** What every runner needs for a worker turn. */
+/**
+ * Where a named account's credential is (#242): `home` is its config folder (CLAUDE_CONFIG_DIR / CODEX_HOME, `~/` allowed),
+ * `apiKeyEnv` the variable in planestro's environment holding a Claude Console key. The key itself is read only by the port.
+ */
+export interface AccountCredentials { name: string; home?: string; apiKeyEnv?: string }
+
 export interface AgentTurnOptions {
   itemId: string;
   phase: TurnPhase;
@@ -216,6 +222,10 @@ export interface AgentTurnOptions {
   serviceTier?: CodexTier;
   /** Codex only (#238): deliver the worktree's `.claude/skills` through the turn (the row's `skills`). */
   skills?: boolean;
+  /** A named account (#242) to run under instead of the runner's default login; unset for the default. */
+  account?: AccountCredentials;
+  /** Other accounts' config folders (#242): secret, like ~/.ssh, for whatever the worker runs. */
+  secretDirs?: string[];
   maxTokens?: number;
   /** Persist and park, or consume an exact saved command grant before returning allow. */
   onApproval?(req: PermissionRequest): Promise<'allow' | void>;
@@ -341,6 +351,8 @@ export interface CustomTurnOptions {
   /** Codex only (#245), as for worker turns. */
   effort?: CodexEffort;
   serviceTier?: CodexTier;
+  /** As for worker turns (#242). */
+  account?: AccountCredentials;
   maxTurns?: number;
   maxTokens?: number;
   onApproval?(req: PermissionRequest): Promise<void>;

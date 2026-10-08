@@ -45,10 +45,10 @@ export class ScopedTools {
   }
 }
 
-/** Dedicated Codex home preserves threads while excluding personal settings and MCP servers. */
-export function isolatedCodexHome(path: string, inheritAuth = true): string {
+/** Dedicated Codex home preserves threads while excluding personal settings and MCP servers. `authFrom`: the login it is seeded from (a named account's home, #242). */
+export function isolatedCodexHome(path: string, inheritAuth = true, authFrom = process.env.CODEX_HOME ?? join(homedir(), '.codex')): string {
   mkdirSync(path, { recursive: true, mode: 0o700 });
-  const auth = join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'auth.json');
+  const auth = join(authFrom, 'auth.json');
   const destination = join(path, 'auth.json');
   if (inheritAuth && !existsSync(destination) && existsSync(auth)) {
     // Seed once: Codex owns refresh-token rotation in this home thereafter. Publish
@@ -117,6 +117,15 @@ export class Connection {
 
 export class CodexAppServerPort implements AgentPort {
   constructor(private readonly bin = 'codex', private readonly home = join(homedir(), '.planestro', 'codex'), private readonly inheritAuth = true, private readonly passthrough: () => readonly string[] = () => []) {}
+  /**
+   * The isolated home a turn's account gets (#242): the default login's, or one per named account beside it, seeded from
+   * that account's own CODEX_HOME. Each keeps its own threads, so a thread does not follow an item onto another account.
+   */
+  private homeFor(o: TurnOptions | CustomTurnOptions): { home: string; authFrom?: string } {
+    if (!o.account?.home) return { home: this.home };
+    const from = o.account.home.startsWith('~/') ? join(homedir(), o.account.home.slice(2)) : o.account.home;
+    return { home: `${this.home}-${o.account.name}`, authFrom: from };
+  }
   async runTurn(o: TurnOptions): Promise<TurnResult> {
     const result: TurnResult = { subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', tokens: 0 };
     // Reference reading passed the read-only live probe (2026-10-07). This does not
@@ -141,7 +150,8 @@ export class CodexAppServerPort implements AgentPort {
   private async run(o: TurnOptions | CustomTurnOptions, tools: CustomToolDef[], result: TurnResult, skills = ''): Promise<TurnResult> {
     const worker = 'itemId' in o;
     const readOnly = !worker || o.phase === 'plan';
-    const home = isolatedCodexHome(this.home, this.inheritAuth);
+    const at = this.homeFor(o);
+    const home = isolatedCodexHome(at.home, this.inheritAuth, at.authFrom);
     const rpc = new Connection(this.bin, home, home, this.passthrough());
     let scope: ScopedTools | undefined, thread: string | undefined, turn: string | undefined;
     let finish!: () => void;
