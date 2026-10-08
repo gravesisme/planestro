@@ -25,6 +25,7 @@ textarea { width: 100%; min-height: 120px; resize: vertical; font-family: ui-mon
 /* (cards carry .needs too, so the header count is always button.needs) */
 button.needs { border-color: var(--line); display: inline-flex; align-items: center; gap: 7px; } button.needs .dot { background: currentColor; } button.needs:not(.hot):not(.wait) .dot { opacity: .5; }
 button.needs.wait { border-color: var(--warn); color: var(--warn); font-weight: 700; } button.needs.safe { border-color: var(--ok); color: var(--ok); font-weight: 700; } button.needs.hot { border-color: var(--hot); color: var(--hot); font-weight: 700; }
+button.needs.on { background: var(--panel2); box-shadow: 0 0 0 1px var(--accent); } button.needs.on:not(.hot):not(.wait) { color: var(--accent); border-color: var(--accent); }
 .lever { background: #3a1d1d; border-color: var(--hot); color: #ffb3b3; font-weight: 700; letter-spacing: .3px; } .lever.paused { background: #1f3a24; border-color: var(--ok); color: #b9f5c4; }
 .usage-pill { border: 1px solid var(--warn); color: var(--warn); border-radius: 999px; padding: 2px 10px; font-size: 12px; font-weight: 700; white-space: nowrap; }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); } .dot.on { background: var(--ok); } .dot.off { background: var(--hot); }
@@ -204,6 +205,7 @@ html { -webkit-text-size-adjust: 100%; }
   .lanes .n { margin-left: 6px; font-weight: 400; font-size: 12px; color: var(--muted); }
   .toolbar { flex-wrap: nowrap; gap: 8px; margin-bottom: 6px; } .toolbar input[type=search] { min-width: 0; min-height: 38px; flex: 0 0 34%; padding: 4px 10px; border-radius: 999px; transition: flex-basis .15s; } .toolbar input[type=search]:focus { flex-basis: 62%; }
   .chips { display: flex; align-items: center; gap: 6px; flex: 1 1 0; min-width: 0; overflow-x: auto; margin-right: calc(-1 * var(--gutter)); padding-right: var(--gutter); scrollbar-width: none; } .chips::-webkit-scrollbar { display: none; } .chip { flex: none; padding: 4px 13px; }
+  .filter-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; font-size: 13px; } .filter-bar .chip { min-height: 32px; padding: 3px 11px; } .filter-bar button.link { min-height: 32px; }
   .fab { position: absolute; z-index: 11; right: max(14px, env(safe-area-inset-right)); bottom: calc(var(--tabbar-h) + var(--safe-b) + 14px); min-height: 50px; padding: 0 20px; border-radius: 999px; box-shadow: 0 6px 22px #000c; }
   .list:has(.stage), .card-list { padding-bottom: 60px; }
   .pipeline { position: sticky; top: -10px; z-index: 4; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 3px; margin: 0 calc(-1 * var(--gutter)) 12px; padding: 8px var(--gutter) 6px; background: var(--bg); border-bottom: 1px solid var(--line); }
@@ -288,6 +290,7 @@ html { -webkit-text-size-adjust: 100%; }
 .tag.yours, .pill.yours { color: var(--mine); border-color: var(--mine); }
 /* Priority (#194): high stands out (filled, so it never reads as a block), low recedes. */
 .tag.prio-high { background: var(--warn); color: #0b0d10; border-color: var(--warn); font-weight: 600; } .tag.prio-medium { color: var(--accent); border-color: var(--accent); } .tag.prio-low { color: var(--muted); border-style: dashed; }
+.board-empty { margin: 4px 0 10px; }
 .chip-sep { flex: none; width: 1px; align-self: stretch; margin: 2px 2px; background: var(--line); }
 .yours-panel { border: 1px solid var(--mine); background: color-mix(in srgb, var(--mine) 10%, var(--panel)); border-radius: var(--radius); padding: 12px; margin-bottom: 12px; }
 .yours-panel h2 { margin: 0 0 8px; font-size: 16px; color: var(--mine); display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; } .yours-panel .row { flex-wrap: wrap; } .drawer .yours-panel { margin: 8px 0; }
