@@ -61,9 +61,15 @@ export function isolatedCodexHome(path: string, inheritAuth = true): string {
   }
   return path;
 }
-function safeEnv(home: string): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { CODEX_HOME: home };
-  for (const key of ['PATH', 'HOME', 'USER', 'SHELL', 'TMPDIR', 'LANG', 'SYSTEMROOT']) if (process.env[key]) env[key] = process.env[key];
+/**
+ * The only environment a Codex process gets, on either transport: its commands inherit it, so planestro's
+ * GH_TOKEN, *_API_KEY, AWS_* never reach a worker (#228). `passthrough` is the project's codex_env_passthrough;
+ * the home is set last, so a listed CODEX_HOME cannot point an app-server back at the shared login.
+ */
+export function codexEnv(passthrough: readonly string[] = [], home = process.env.CODEX_HOME): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of ['PATH', 'HOME', 'USER', 'SHELL', 'TMPDIR', 'LANG', 'SYSTEMROOT', ...passthrough]) if (process.env[key] !== undefined) env[key] = process.env[key];
+  if (home) env.CODEX_HOME = home;
   return env;
 }
 
@@ -74,8 +80,8 @@ export class Connection {
   readonly closed: Promise<void>;
   handler: (message: Rpc) => void = () => {};
   stderr = '';
-  constructor(bin: string, home: string, cwd: string) {
-    this.child = spawn(bin, ['app-server', '--stdio', '-c', 'mcp_servers={}', '-c', 'features.apps=false', '-c', 'features.multi_agent=false', '-c', 'features.plugins=false', '-c', 'features.skill_mcp_dependency_install=false', '-c', 'features.skip_host_skill_discovery=true'], { cwd, env: safeEnv(home), stdio: 'pipe' });
+  constructor(bin: string, home: string, cwd: string, passthrough: readonly string[] = []) {
+    this.child = spawn(bin, ['app-server', '--stdio', '-c', 'mcp_servers={}', '-c', 'features.apps=false', '-c', 'features.multi_agent=false', '-c', 'features.plugins=false', '-c', 'features.skill_mcp_dependency_install=false', '-c', 'features.skip_host_skill_discovery=true'], { cwd, env: codexEnv(passthrough, home), stdio: 'pipe' });
     // Deliberately keep stdin open. It carries replies until the turn and tool work are over.
     createInterface({ input: this.child.stdout }).on('line', (line) => {
       let m: Rpc; try { m = JSON.parse(line); } catch { return; }
@@ -109,7 +115,7 @@ export class Connection {
 }
 
 export class CodexAppServerPort implements AgentPort {
-  constructor(private readonly bin = 'codex', private readonly home = join(homedir(), '.planestro', 'codex'), private readonly inheritAuth = true) {}
+  constructor(private readonly bin = 'codex', private readonly home = join(homedir(), '.planestro', 'codex'), private readonly inheritAuth = true, private readonly passthrough: () => readonly string[] = () => []) {}
   async runTurn(o: TurnOptions): Promise<TurnResult> {
     const result: TurnResult = { subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', tokens: 0 };
     // Reference reading passed the read-only live probe (2026-10-07). This does not
@@ -133,7 +139,7 @@ export class CodexAppServerPort implements AgentPort {
     const worker = 'itemId' in o;
     const readOnly = !worker || o.phase === 'plan';
     const home = isolatedCodexHome(this.home, this.inheritAuth);
-    const rpc = new Connection(this.bin, home, home);
+    const rpc = new Connection(this.bin, home, home, this.passthrough());
     let scope: ScopedTools | undefined, thread: string | undefined, turn: string | undefined;
     let finish!: () => void;
     const ended = new Promise<void>((r) => { finish = r; });

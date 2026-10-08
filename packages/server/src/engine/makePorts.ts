@@ -29,5 +29,5 @@ export function makePorts(mode: 'live' | 'dry-run', log: (m: string) => void, st
   }
   // Resolve the executable only when a Claude turn is actually selected.
   const claude = () => { const resolved = resolveClaudeBin(store.local.claude_bin); log(`Claude sessions run ${resolved.why}`); return new LiveClaudePort(resolved.bin, store.local.anthropic_api_key ?? process.env.ANTHROPIC_API_KEY); };
-  return { mode, git: new LiveGitPort(), gh: new LiveGhPort(), proc: new LiveProcPort(), agents: { claude: { runTurn: (o) => claude().runTurn(o), runCustomTurn: (o) => claude().runCustomTurn(o) }, codex: new LiveCodexPort(store.local.codex_bin) } };
+  return { mode, git: new LiveGitPort(), gh: new LiveGhPort(), proc: new LiveProcPort(), agents: { claude: { runTurn: (o) => claude().runTurn(o), runCustomTurn: (o) => claude().runCustomTurn(o) }, codex: new LiveCodexPort(store.local.codex_bin, [], () => store.config.codex_env_passthrough) } };
 }

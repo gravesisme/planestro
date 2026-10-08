@@ -120,6 +120,7 @@ dollar figures elsewhere carry a short hint.
 |---|---|---|
 | `permissions.allow` | `[]` | Extra allow rules (`Bash(npm test*)`, …) on top of the built-in ones. "Always allow" in the UI appends here. A rule ending in `@worktree` holds only while the command stays in the item's worktree (below). |
 | `permissions.deny` | `[]` | Extra deny patterns, checked before anything else. |
+| `codex_env_passthrough` | `[]` | Environment variable names a Codex worker's commands may see (#228). A Codex process, `exec` or `app-server`, starts with `PATH`, `HOME`, `USER`, `SHELL`, `TMPDIR`, `LANG` and its `CODEX_HOME` only, so `GH_TOKEN`, `*_API_KEY`, `AWS_*` and the like never reach a command it runs. List what the project's tools need (`HTTPS_PROXY`). Codex signs in from its home (`codex login`); an `OPENAI_API_KEY` in planestro's environment reaches it only if listed here. Read at each turn. |
 
 Pushes, `gh pr`, protected branches, branch and worktree management and force operations
 are denied in code (`engine/policy.ts`) whatever these say, and so are in-place shell edits
