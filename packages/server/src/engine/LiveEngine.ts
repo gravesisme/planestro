@@ -204,7 +204,7 @@ export class LiveEngine implements Engine {
       handPlanToUser: (id, reason) => this.handPlanToUser(id, `the orchestrator left it to you: ${reason}`),
       planReviewEnded: (id) => this.handPlanToUser(id, 'the orchestrator reviewed it without deciding'),
       permissionsDelegated: () => this.permissionsDelegated(),
-      decidePermission: (id, decision, reason) => this.orchestratorDecidesPermission(id, decision, reason),
+      decidePermission: (id, request, decision, reason) => this.orchestratorDecidesPermission(id, request, decision, reason),
       permissionReviewEnded: (id) => this.handPermissionToUser(id, 'the orchestrator looked at it without deciding'),
       handOff: (from, to, paths, note) => this.handOff(from, to, paths, note, 'orchestrator'),
       unblock: (id, message, syncFirst, fresh) => this.orchestratorUnblocks(id, message, syncFirst, fresh),
@@ -786,9 +786,16 @@ export class LiveEngine implements Engine {
     this.note('info', `${id}: permission needs your decision — ${why}`);
   }
 
-  private async orchestratorDecidesPermission(id: string, decision: 'allow' | 'deny' | 'ask_user', reason: string): Promise<string> {
+  private async orchestratorDecidesPermission(id: string, request: string, decision: 'allow' | 'deny' | 'ask_user', reason: string): Promise<string> {
     const fm = this.store.requireItem(id).file.frontmatter;
     if (fm.awaiting !== 'orchestrator' || fm.awaiting_data?.kind !== 'permission') return `nothing to decide: ${id} is not waiting on you for a permission`;
+    // #342: a newer park replaced the one judged; its ruling and reason must not land on a command nobody read.
+    const park = fm.awaiting_data.park;
+    if (typeof park === 'string' && park !== request.trim()) {
+      const input = (fm.awaiting_data.input ?? {}) as Record<string, unknown>;
+      const what = fm.awaiting_data.tool === 'Bash' ? `\`${String(input.command ?? '').slice(0, 300)}\`` : String(fm.awaiting_data.tool);
+      return `not applied: request ${request} is not the one parked on ${id}. The request parked now is ${park}, for ${what}. Judge that one and decide again with its request id.`;
+    }
     if (!this.permissionsDelegated()) { this.handPermissionToUser(id, 'permission requests are no longer delegated to the orchestrator'); return 'not permitted: the user decides permission requests'; }
     if (decision === 'ask_user') { this.handPermissionToUser(id, `the orchestrator left it to you: ${reason}`); return 'handed to the user'; }
     const refusal = decision === 'allow' ? permissionGrantRefusal(fm.awaiting_data as unknown as PermissionRequest) : undefined;

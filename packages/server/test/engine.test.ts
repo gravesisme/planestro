@@ -2786,10 +2786,12 @@ describe('permission requests delegated to the orchestrator', () => {
     return { ...ctx, id: item.id };
   }
   const fmOf = (s: DataStore, id: string) => s.getItem(id)!.file.frontmatter;
+  /** The request id the packet shows (#342). */
+  const requestOf = (prompt: string) => /Its request id: (\S+)/.exec(prompt)?.[1] ?? '';
 
   it('allows ordinary work without you: the session resumes with a one-shot pass and the item finishes', async () => {
     const needed: boolean[] = [];
-    const w = world(async (t) => { needed.push(store!.derived(store!.getItem('TP-1')!).needs_you); expect(await t('decide_permission').handler({ id: 'TP-1', decision: 'allow', reason: 'a harmless local check' })).toContain('allowed once'); });
+    const w = world(async (t, prompt) => { needed.push(store!.derived(store!.getItem('TP-1')!).needs_you); expect(await t('decide_permission').handler({ id: 'TP-1', request: requestOf(prompt), decision: 'allow', reason: 'a harmless local check' })).toContain('allowed once'); });
     const ctx = await begin(w.claude);
     await waitFor(() => status(ctx.store, ctx.id) === 'FINISHED', 8000);
     expect(needed).toEqual([false]);
@@ -2803,8 +2805,28 @@ describe('permission requests delegated to the orchestrator', () => {
     expect(ctx.store.journal.read({ item: ctx.id, type: 'tools.ran' }).map((e) => e.data?.ran)).toEqual([[{ tool: 'Bash', command: 'npm test', n: 2 }]]);
   });
 
+  it('a ruling binds to the request it was judged on: one parked over it is refused, then decided by its own id (#342)', async () => {
+    const replies: string[] = [];
+    const w = world(async (t, prompt) => {
+      const judged = requestOf(prompt);
+      expect(judged).toMatch(/^park-/);
+      // a second request parks on the item a moment later, while this one is being judged
+      const fm = store!.getItem('TP-1')!.file.frontmatter;
+      store!.mutateItem('TP-1', [{ set: { awaiting_data: { ...fm.awaiting_data, input: { command: './run_checks.sh' }, park: 'park-second' } } }], 'engine');
+      replies.push(String(await t('decide_permission').handler({ id: 'TP-1', request: judged, decision: 'allow', reason: 'a read-only runner query' })));
+      replies.push(String(await t('decide_permission').handler({ id: 'TP-1', request: 'park-second', decision: 'allow', reason: "the project's own checks" })));
+    });
+    const ctx = await begin(w.claude);
+    await waitFor(() => status(ctx.store, ctx.id) === 'FINISHED', 8000);
+    expect(replies[0]).toContain('not applied: request park-');
+    expect(replies[0]).toContain('The request parked now is park-second, for `./run_checks.sh`');
+    expect(replies[1]).toContain('allowed once');
+    expect(activityOf(ctx.store, ctx.id)).not.toContain('a read-only runner query');
+    expect(activityOf(ctx.store, ctx.id)).toContain("[orchestrator] permission allow (the project's own checks): Bash(./run_checks.sh)");
+  });
+
   it('asks you when it says so or decides nothing, and you answer as before', async () => {
-    const w = world(async (t) => { await t('decide_permission').handler({ id: 'TP-1', decision: 'ask_user', reason: 'writes outside the worktree' }); });
+    const w = world(async (t, prompt) => { await t('decide_permission').handler({ id: 'TP-1', request: requestOf(prompt), decision: 'ask_user', reason: 'writes outside the worktree' }); });
     const ctx = await begin(w.claude);
     await waitFor(() => fmOf(ctx.store, ctx.id).awaiting === 'permission');
     expect(ctx.store.derived(ctx.store.getItem(ctx.id)!).needs_you).toBe(true);
@@ -2823,7 +2845,7 @@ describe('permission requests delegated to the orchestrator', () => {
 
   it('a denial resumes the worker with the reason; after three denials on one item the requests come to you', async () => {
     let denials = 0;
-    const w = world(async (t) => { denials += 1; await t('decide_permission').handler({ id: 'TP-1', decision: 'deny', reason: 'use the project check script instead' }); }, { again: () => true });
+    const w = world(async (t, prompt) => { denials += 1; await t('decide_permission').handler({ id: 'TP-1', request: requestOf(prompt), decision: 'deny', reason: 'use the project check script instead' }); }, { again: () => true });
     const ctx = await begin(w.claude);
     await waitFor(() => fmOf(ctx.store, ctx.id).awaiting === 'permission', 8000);
     expect(denials).toBe(3);
