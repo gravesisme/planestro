@@ -495,9 +495,11 @@ export const Config = z.object({
     local_check_command: z.string().optional(),
     /** Text that marks a CI failure as a known flake (a check name, a message): the failed jobs are re-run once for that head before a fix turn is spent. */
     flaky_checks: z.array(z.string().min(1)).default([]),
+    /** Regular expressions that mark a red run's failed log as the infrastructure's (a results dir that vanished, a full disk), beside built-ins: re-run once, never a fix turn or a counted red; matched again, it blocks ci_infra (#219). */
+    infra_patterns: z.array(z.string().min(1).refine((v) => { try { new RegExp(v); return true; } catch { return false; } }, 'not a valid regular expression')).default([]),
     /** An item in review that nothing has moved for this long (no CI running, no session, no stop) wakes the orchestrator once per stall (#201). 0 = off. */
     stall_wake_min: z.number().min(0).default(30),
-  }).default({ mode: 'github', require_green_base: true, start_timeout_min: 10, timeout_min: 45, queue_timeout_min: 720, max_queued_runs: 0, draft_while_held: true, flaky_checks: [], stall_wake_min: 30 }),
+  }).default({ mode: 'github', require_green_base: true, start_timeout_min: 10, timeout_min: 45, queue_timeout_min: 720, max_queued_runs: 0, draft_while_held: true, flaky_checks: [], infra_patterns: [], stall_wake_min: 30 }),
   orchestrator: z.object({
     budget_tokens_per_wake: z.number().int().positive().default(50_000),
     budget_tokens_per_fresh_wake: z.number().int().positive().default(200_000),

@@ -65,3 +65,15 @@ export function namedInLog(log: string, path: string): boolean {
   const word = (w: string) => new RegExp(`(^|[^\\w./-])${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`).test(log);
   return log.includes(path) || word(name) || (stem.length >= 8 && word(stem));
 }
+
+/**
+ * A red run's failure that no code change can fix (#219, HH-327): matched against its failed log, these few are safe for
+ * any project; `ci.infra_patterns` adds the project's own. Regular expressions, read line by line (`m`).
+ */
+export const BUILTIN_INFRA_PATTERNS = ['No space left on device', 'The runner has received a shutdown signal', 'lost communication with the server'];
+
+/** The first infrastructure pattern the failed log matches, project patterns first; a pattern that is not a valid expression is skipped. */
+export function infraPatternIn(log: string, project: string[]): { pattern: string; source: 'ci.infra_patterns' | 'built in' } | undefined {
+  const all = [...project.map((p) => ({ pattern: p, source: 'ci.infra_patterns' as const })), ...BUILTIN_INFRA_PATTERNS.map((p) => ({ pattern: p, source: 'built in' as const }))];
+  return all.find(({ pattern }) => { try { return new RegExp(pattern, 'm').test(log); } catch { return false; } });
+}
