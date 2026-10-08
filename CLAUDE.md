@@ -77,6 +77,8 @@ nothing waits on a run that is not coming, and an item in review that nothing mo
 wakes the orchestrator once (`review_stalled`, #201).
 A red epic whose failed log names files its base changed since it last synced, and none of its own, is not blocked:
 `op_data.base_wait` waits for the base to move, merges it in and lets CI run once more (`driveBaseWaits`, #204).
+A red run whose failed log matches `ci.infra_patterns` (or a built-in: disk full, runner lost) is the runner's: re-run once
+under the same per-head `flake_rerun`, no fix turn, not counted; matched again it blocks `ci_infra`, naming the pattern (#219).
 A CI wait on a runner label that looks stalled or offline (`runners.ts`, read by the gh port's `runners`, cached 30 s; the
 orchestrator's `runner_status`, a worker's `runners_busy`) is said once per label: one banner and one `runner_stalled` wake for
 every item on it, never a triage each (`op_data.runner_stall`), and a runner taking a job again sends them back to CI (#216).

@@ -18,7 +18,7 @@ import { hostNote, keptPathsNote, cwdNote } from './hostNote.ts';
 import { Orchestrator } from './orchestrator.ts';
 import { NeedsYouWatch, type Wait } from './needsYou.ts';
 import { pngSize } from './placeholderPng.ts';
-import { findWorkflow, namedInLog, prSkippedByPaths } from './ciFilters.ts';
+import { findWorkflow, infraPatternIn, namedInLog, prSkippedByPaths } from './ciFilters.ts';
 import { quietTransientFailure } from './transient.ts';
 import { driveSchedules } from './schedules.ts';
 import { runnerStatusText, stallOf, recovered, type RunnerStall } from './runners.ts';
@@ -38,7 +38,7 @@ export interface EngineOptions { sleep?: (ms: number) => Promise<void>; tickMs?:
 const RESUMABLE_TURN_OPS = new Set(['planning_turn', 'implement_turn']);
 /** How many of one item's permission requests the orchestrator may refuse before they go to the user instead. */
 const MAX_ORCHESTRATOR_DENIALS = 3;
-const JUDGMENT_BLOCKS = ['turn_error', 'connection_lost', 'no_plan', 'no_commits', 'dirty_tree', 'sync_conflict', 'ci_red', 'ci_red_parked', 'ci_timeout', 'ci_blocked', 'ci_disagree', 'base_red', 'pr_closed_externally', 'merge_unverified', 'agent_blocked', 'engine_error'] as const;
+const JUDGMENT_BLOCKS = ['turn_error', 'connection_lost', 'no_plan', 'no_commits', 'dirty_tree', 'sync_conflict', 'ci_red', 'ci_red_parked', 'ci_infra', 'ci_timeout', 'ci_blocked', 'ci_disagree', 'base_red', 'pr_closed_externally', 'merge_unverified', 'agent_blocked', 'engine_error'] as const;
 /** The newest Activity line that says something moved: planestro, the session or a person, not the orchestrator's own notes (#201). */
 function lastMovingLine(activity: string): { ts: string; at: number; text: string } | undefined {
   const lines = activity.split('\n').filter((l) => l.startsWith('- '));
@@ -934,7 +934,12 @@ export class LiveEngine implements Engine {
       const lastRed = cur.op_data?.last_red as { runId?: number; sha?: string; attempt?: number } | undefined;
       if (cur.ci_result === 'red' || (lastRed?.runId === ci.runId && lastRed?.sha === remote && (ci.attempt ?? 1) <= (lastRed.attempt ?? 1))) return;
       this.store.mutateItem(id, [{ set: { ci_head_sha: remote } }], 'engine');
-      await this.onCiRed(id, this.store.journal.begin('held_ci', id, { pr: fm.pr, sha: remote }), remote, undefined, 'github', !epic);
+      const opId = this.store.journal.begin('held_ci', id, { pr: fm.pr, sha: remote });
+      // The infrastructure's red (#219) is re-run once here too, and its attempt read by the next poll.
+      const infra = await this.rerunIfInfra(id, opId, remote);
+      if (infra === 'blocked') return;
+      if (infra) { this.store.mutateItem(id, [{ set: { ci_result: 'pending' } }], 'engine'); this.store.journal.end(opId, id, 'aborted', { reason: 'infra_rerun' }); return; }
+      await this.onCiRed(id, opId, remote, undefined, 'github', !epic);
       return;
     }
     // Still running, or not started: a green (or red) from another head is not this head's verdict.
@@ -2270,10 +2275,17 @@ export class LiveEngine implements Engine {
     const canFix = this.store.derived(item).flavor === 'worker';
     const opId = this.store.journal.begin('ci_wait', id, { pr: fm.pr, sha: headSha });
     let verdict = await this.waitForCi(id, fm.branch, headSha, fm.pr, (fm.op_data?.ci_replaced as string | null | undefined) ?? null);
-    // A known flake is re-run once, for this same head, before anything else happens to it.
-    if (verdict === 'red' && canFix) {
-      const attempt = await this.rerunIfFlaky(id, headSha);
-      if (attempt) verdict = await this.waitForCi(id, fm.branch, headSha, fm.pr, null, attempt);
+    // A red on the infrastructure (#219) or on a known flake is re-run once, for this same head, before anything else happens to it.
+    if (verdict === 'red') {
+      const infra = await this.rerunIfInfra(id, opId, headSha);
+      if (infra === 'blocked') return;
+      if (infra) {
+        verdict = await this.waitForCi(id, fm.branch, headSha, fm.pr, null, infra);
+        if (verdict === 'red' && await this.rerunIfInfra(id, opId, headSha) === 'blocked') return;
+      } else if (canFix) {
+        const attempt = await this.rerunIfFlaky(id, headSha);
+        if (attempt) verdict = await this.waitForCi(id, fm.branch, headSha, fm.pr, null, attempt);
+      }
     }
     // Read after the wait, not before it: a setting changed in the meantime is the one that applies (#173).
     const cfg = this.store.config.ci;
@@ -2399,6 +2411,47 @@ export class LiveEngine implements Engine {
       { activity: { actor: 'app', text: `CI red for ${headSha.slice(0, 7)} on a known flaky check (${known}, ci.flaky_checks); re-running the failed jobs once before handing it to the session` } },
     ], 'engine', { commit: `${id}: re-run flaky CI` });
     return attempt;
+  }
+
+  /**
+   * A red run whose failed log matches an infrastructure pattern (`ci.infra_patterns` and the built-ins, #219) is the
+   * runner's, not the change's (HH-327: the check runner's results dir vanished from a shared $TMPDIR mid-suite, 401/401
+   * FAIL, and a fix turn was spent on it). Its failed jobs are re-run once for this head, under the same one-per-head
+   * `flake_rerun` marker as a known flake (#201), with no fix turn and no counted red. Matched again once that re-run is
+   * spent, it blocks ci_infra naming the pattern, for the orchestrator. Returns the attempt to wait for, 'blocked', or
+   * undefined when this red is not the infrastructure's.
+   */
+  private async rerunIfInfra(id: string, opId: string, headSha: string): Promise<number | 'blocked' | undefined> {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    const ci = fm.op_data?.ci as { runId?: number; url?: string; attempt?: number } | undefined;
+    if (!ci?.runId) return undefined;
+    const log = await this.ports.gh.runFailedLog(this.github, ci.runId, 120);
+    const hit = infraPatternIn(log, this.store.config.ci.infra_patterns);
+    if (!hit) return undefined;
+    const named = `${hit.pattern}, ${hit.source}`;
+    let why = 'planestro already re-ran its failed jobs once for this head';
+    if ((fm.op_data?.flake_rerun as { sha?: string } | undefined)?.sha !== headSha) {
+      try {
+        await this.ports.gh.rerunFailed(this.github, ci.runId);
+        const attempt = (ci.attempt ?? 1) + 1;
+        this.store.mutateItem(id, [
+          { set: { op_data: { ...(this.store.requireItem(id).file.frontmatter.op_data ?? {}), flake_rerun: { sha: headSha, runId: ci.runId, attempt, check: `infrastructure: ${hit.pattern}` } } } },
+          { activity: { actor: 'app', text: `CI red for ${headSha.slice(0, 7)} matches an infrastructure pattern (${named}); re-running the failed jobs once, with no fix turn and not counted as a code failure` } },
+        ], 'engine', { commit: `${id}: re-run CI after an infrastructure failure` });
+        return attempt;
+      } catch (e) { why = `its failed jobs could not be re-run (${(e as Error).message.replace(/\s+/g, ' ').slice(0, 200)})`; }
+    }
+    // Recorded as the head's red run, so rerun_ci can send it again once the runner is fixed; ci_failed_count is untouched.
+    const re = new RegExp(hit.pattern, 'm');
+    const line = log.split('\n').find((l) => re.test(l))?.trim() ?? '';
+    const cur = this.store.requireItem(id).file.frontmatter;
+    this.store.mutateItem(id, [
+      { unset: ['op', 'op_started_at'] },
+      { set: { ci_result: 'red', op_data: { ...(cur.op_data ?? {}), last_red: { runId: ci.runId, sha: headSha, ...(ci.attempt ? { attempt: ci.attempt } : {}) } } } },
+    ], 'engine');
+    this.store.journal.end(opId, id, 'failed', { reason: 'ci_infra', pattern: hit.pattern });
+    this.block(id, 'ci_infra', `CI run ${ci.runId} for ${headSha.slice(0, 7)}${ci.url ? ` (${ci.url})` : ''} matched the infrastructure pattern ${hit.pattern} again (${hit.source}), and ${why}${line ? `: "${line.slice(0, 300)}"` : ''}. The runner's failure, not the change's: fix the runner (disk, temp dir, service), then rerun_ci. If the pattern caught a real failure, unblock_item with what to fix`);
+    return 'blocked';
   }
 
   /** An untracked file `worktrees.byproducts` names: something the project's tools regenerate in any worktree (Godot's `.import` sidecars), never a session's work. */
