@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { budgetTokens, TurnTokenCounter } from '@planestro/shared';
+import { budgetTokens, TurnTokenCounter, codexSplit, emptySplit, splitMinus } from '@planestro/shared';
 import type { AgentPort, TurnOptions, CustomTurnOptions, CustomToolDef, TurnResult, UndeliveredReport } from '../ports.ts';
 import { workerTools } from './workerTools.ts';
 import { externalTools } from './externalTools.ts';
@@ -159,6 +159,7 @@ export class CodexAppServerPort implements AgentPort {
     let completed = false, stopped = false, serial = Promise.resolve();
     let counter = new TurnTokenCounter();
     let baseline = 0;
+    let splitBase = emptySplit();
     const drop = (error: string, tool?: string) => {
       result.connectionDrop ??= { error, at: new Date().toISOString(), ...(tool ? { tool } : {}) };
       if (worker) o.onConnectionDrop?.(result.connectionDrop);
@@ -178,9 +179,10 @@ export class CodexAppServerPort implements AgentPort {
       // Token/turn notifications are handled immediately, even while a tool is working.
       if (m.method === 'thread/tokenUsage/updated' && (p.threadId === thread || (!thread && p.threadId === o.resume))) {
         const u = p.tokenUsage;
-        if (!turn) { baseline = budgetTokens({ input_tokens: u.total.inputTokens, cached_input_tokens: u.total.cachedInputTokens, output_tokens: u.total.outputTokens }); counter = new TurnTokenCounter(baseline); }
+        if (!turn) { baseline = budgetTokens({ input_tokens: u.total.inputTokens, cached_input_tokens: u.total.cachedInputTokens, output_tokens: u.total.outputTokens }); counter = new TurnTokenCounter(baseline); splitBase = codexSplit(u.total); }
         else if (p.turnId === turn) {
           result.tokens = counter.update(u.total);
+          result.usage = splitMinus(codexSplit(u.total), splitBase);
           result.contextTokens = u.last?.totalTokens;
           if (o.maxTokens !== undefined && result.tokens >= o.maxTokens && !stopped) { result.subtype = 'token_cap'; result.isError = true; result.error = 'Token limit reached'; interrupt(); }
         }
@@ -276,7 +278,7 @@ export class CodexAppServerPort implements AgentPort {
       thread = started.thread.id; result.sessionId = thread;
       // Resumes emit the previous total before the new turn; read it explicitly as well.
       const usage = started.thread.tokenUsage?.total;
-      if (usage) counter = new TurnTokenCounter(budgetTokens({ input_tokens: usage.inputTokens, cached_input_tokens: usage.cachedInputTokens, output_tokens: usage.outputTokens }));
+      if (usage) { counter = new TurnTokenCounter(budgetTokens({ input_tokens: usage.inputTokens, cached_input_tokens: usage.cachedInputTokens, output_tokens: usage.outputTokens })); splitBase = codexSplit(usage); }
       const t = await rpc.request('turn/start', { threadId: thread, model: o.model, cwd: o.cwd, approvalPolicy: 'on-request', ...(o.effort ? { effort: o.effort } : {}), ...tier,
         sandboxPolicy: readOnly ? { type: 'readOnly', networkAccess: false } : { type: 'workspaceWrite', writableRoots, networkAccess: false, excludeTmpdirEnvVar: true, excludeSlashTmp: true },
         input: [{ type: 'text', text: o.prompt, text_elements: [] }, ...(o.images ?? []).map((path) => ({ type: 'localImage', path }))] });

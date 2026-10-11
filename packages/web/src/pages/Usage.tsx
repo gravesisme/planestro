@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import type { UsageGroup, UsageReport } from '@planestro/shared';
 import { api } from '../api.ts';
 import { setTitle } from '../tabBadge.ts';
-import { usageSeries, dayValues, niceTicks, formatValue, type UsageMeasure, type Series } from '../usageChart.ts';
+import { usageSeries, dayValues, niceTicks, formatValue, labelOf, type UsageMeasure, type Series } from '../usageChart.ts';
 
 // ---- usage over time (#236): what every turn and wake spent, per day, by provider, model or role ----
 // Facts the engine journals as each turn ends (`usage.turn`); nothing before them is rebuilt. #182's CI timing will share this page.
@@ -103,6 +103,7 @@ export function UsagePage() {
             <div><strong>${report.totals.usd.toFixed(2)}</strong><span>reported dollars</span></div>
             <div><strong>{formatValue(report.totals.tokens, 'tokens')}</strong><span>reported tokens</span></div>
             <div><strong>{report.totals.turns}</strong><span>turns and wakes</span></div>
+            {report.totals.cache_hit !== undefined && <div><strong>{pct(report.totals.cache_hit)}</strong><span>cache hits</span></div>}
           </div>
           {report.totals.turns === 0 ? <p className="muted">No turns in the last {days} days. Each worker turn and orchestrator wake is recorded here as it ends.</p> : <>
             <ul className="usage-legend">
@@ -118,8 +119,9 @@ export function UsagePage() {
               </div>}
             </>}
           </>}
-          <p className="small muted">{measure === 'usd' ? 'Dollars are what Claude reports for each turn; Codex reports tokens only.' : 'Tokens are what Codex reports (uncached input and output); Claude reports dollars.'} {since ? `Recorded from ${longDay(since)}: earlier turns are not counted.` : 'Spend from before per-turn recording is not counted.'}</p>
+          <p className="small muted">{measure === 'usd' ? 'Dollars are what Claude reports for each turn; Codex reports tokens only.' : 'Tokens are the work each turn paid for in full: uncached input, cache writes and output. Cache reads are counted below.'} {since ? `Recorded from ${longDay(since)}: earlier turns are not counted.` : 'Spend from before per-turn recording is not counted.'}</p>
         </section>
+        {report.totals.input + report.totals.cache_read + report.totals.cache_write + report.totals.output > 0 && <TokenSplitTable report={report} group={group} />}
         <section className="usage-section">
           <h3>Usage windows and pauses</h3>
           {report.events.length === 0 ? <p className="muted small">No usage-window crossings, outages or pauses in the last {days} days.</p> :
@@ -127,6 +129,27 @@ export function UsagePage() {
         </section>
       </>}
     </div>
+  );
+}
+
+const pct = (r: number) => `${Math.round(r * 100)}%`;
+
+/** Tokens by kind for each provider, model or role (#345), and how much of their input the cache served. */
+function TokenSplitTable({ report, group }: { report: UsageReport; group: UsageGroup }) {
+  const label = GROUPS.find((g) => g.key === group)!.label;
+  const rows = Object.entries(report.totals.by[group]).filter(([, c]) => c.input + c.cache_read + c.cache_write + c.output > 0).sort((a, b) => (b[1].input + b[1].cache_read + b[1].cache_write) - (a[1].input + a[1].cache_read + a[1].cache_write));
+  const t = (n: number) => formatValue(n, 'tokens');
+  return (
+    <section className="usage-section">
+      <h3>Tokens by kind</h3>
+      <div className="usage-table-wrap">
+        <table className="usage-table">
+          <thead><tr><th scope="col">{label}</th><th scope="col">Input</th><th scope="col">Cache read</th><th scope="col">Cache write</th><th scope="col">Output</th><th scope="col">Cache hits</th></tr></thead>
+          <tbody>{rows.map(([k, c]) => <tr key={k}><th scope="row">{labelOf(group, k)}</th><td>{t(c.input)}</td><td>{t(c.cache_read)}</td><td>{t(c.cache_write)}</td><td>{t(c.output)}</td><td>{c.cache_hit !== undefined ? pct(c.cache_hit) : '–'}</td></tr>)}</tbody>
+        </table>
+      </div>
+      <p className="small muted">Cache hits are cache reads over all input (uncached, cache read and cache write). Turns recorded before this split was kept count in the totals above, not here.</p>
+    </section>
   );
 }
 

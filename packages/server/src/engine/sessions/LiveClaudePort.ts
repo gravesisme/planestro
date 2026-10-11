@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, rmSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { extname, join } from 'node:path';
-import { KNOWN_USAGE_LIMIT_PREFIXES, USAGE_ERROR_CODES, isUsageLimitText, resetTime, worseRateLimit, type RateLimitSnapshot } from '@planestro/shared';
+import { KNOWN_USAGE_LIMIT_PREFIXES, USAGE_ERROR_CODES, isUsageLimitText, resetTime, worseRateLimit, type RateLimitSnapshot, emptySplit, splitPlus, splitBudgetTokens, type TokenSplit } from '@planestro/shared';
 import type { AccountCredentials, ClaudePort, TurnOptions, TurnResult, CustomTurnOptions, ResumeQuote, UndeliveredReport, ConnectionDrop } from '../ports.ts';
 import { PARKED_REFUSAL } from '../parks.ts';
 import { secretDenial, type SecretOptions } from '../secrets.ts';
@@ -445,6 +445,25 @@ export function noteContext(m: any, c: ContextSeen): void {
   else if (n(u.cache_creation?.ephemeral_5m_input_tokens) > 0) c.ttlS = 300;
 }
 
+/** The turn's token split, built from the stream: one reading per request (#345). */
+export interface TokensSeen { split: TokenSplit; ids: Set<string> }
+
+/**
+ * Feed one SDK message to the turn's token split. Exported for tests. A response streamed as several
+ * messages repeats its usage under one id, so each id counts once; subagents' requests are spend too and
+ * count. The result's own `usage` and `modelUsage` are not used: on a resume they are running totals (gotcha 14).
+ */
+export function noteTokens(m: any, t: TokensSeen): void {
+  if (m?.type !== 'assistant') return;
+  const u = m.message?.usage;
+  if (!u) return;
+  const id = typeof m.message?.id === 'string' ? m.message.id : undefined;
+  if (id) { if (t.ids.has(id)) return; t.ids.add(id); }
+  const n = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+  const ttl = n(u.cache_creation?.ephemeral_1h_input_tokens) > 0 ? 3600 : n(u.cache_creation?.ephemeral_5m_input_tokens) > 0 ? 300 : 0;
+  t.split = splitPlus(t.split, { input: n(u.input_tokens), cache_read: n(u.cache_read_input_tokens), cache_write: n(u.cache_creation_input_tokens), output: n(u.output_tokens), ...(ttl ? { cache_ttl_s: ttl } : {}) });
+}
+
 /** Human-readable one-liner for a tool call — the console is read by a person, not a parser. */
 function describeToolUse(name: string, input: Record<string, unknown>): string {
   const first = (v: unknown) => String(v ?? '').split('\n')[0].slice(0, 160);
@@ -556,6 +575,7 @@ async function consume(q: AsyncIterable<unknown>, result: TurnResult, onOutput: 
   let total: number | undefined;
   const usage: UsageSignals = {};
   const context: ContextSeen = {};
+  const tokens: TokensSeen = { split: emptySplit(), ids: new Set() };
   const calls = new Map<string, string>();
   try {
     for await (const m of q as AsyncIterable<any>) {
@@ -565,6 +585,7 @@ async function consume(q: AsyncIterable<unknown>, result: TurnResult, onOutput: 
       noteUsage(m, usage);
       noteToolFailures(m, calls, result);
       noteContext(m, context);
+      noteTokens(m, tokens);
       if (m.type === 'system' && m.subtype === 'init') result.sessionId = m.session_id;
       else if (m.type === 'assistant') {
         const said: string[] = [];
@@ -597,6 +618,7 @@ async function consume(q: AsyncIterable<unknown>, result: TurnResult, onOutput: 
   settleCost(result, total, resumed);
   if (context.tokens) result.contextTokens = context.tokens;
   if (context.ttlS) result.cacheTtlS = context.ttlS;
+  if (splitBudgetTokens(tokens.split) + tokens.split.cache_read > 0) result.usage = tokens.split;
   if (resumed?.quote) result.resumeQuote = resumed.quote;
   if (resumed?.declined) { result.subtype = 'resume_declined'; result.isError = false; result.error = undefined; result.costUsd = 0; result.text = ''; return; }
   if (usage.rateLimit) result.rateLimit = usage.rateLimit;

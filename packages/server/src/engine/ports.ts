@@ -1,5 +1,5 @@
 import { basename, matchesGlob } from 'node:path';
-import type { Runner, RateLimitSnapshot, CodexEffort, CodexTier } from '@planestro/shared';
+import type { Runner, RateLimitSnapshot, CodexEffort, CodexTier, TokenSplit } from '@planestro/shared';
 /**
  * Everything that touches the world goes through a port. `Live*` ports act; `DryRun*`
  * ports log `Would …` and keep an in-memory fake world so the pipeline still advances.
@@ -298,6 +298,8 @@ export interface TurnResult {
   resumeQuote?: ResumeQuote;
   /** Uncached input + output tokens, from runners that report tokens instead of dollars. */
   tokens?: number;
+  /** The turn's tokens by kind (#345), summed over every request it made, subagents included: journaled, never budgeted. */
+  usage?: TokenSplit;
   numTurns: number;
   text: string;
   /** The turn did something: the model said anything, called a tool or changed a file. A failure without it produced nothing (#241). */
