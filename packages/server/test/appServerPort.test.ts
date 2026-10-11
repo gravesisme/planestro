@@ -153,7 +153,7 @@ it('retains complete lost-report arguments and exposes a connection drop', async
 it('subtracts resumed totals, interrupts at its token cap, and restates the sandbox', async () => {
   const { root, log, port } = fixture('cap');
   const result = await port.runTurn(options(root, { resume: 'thread', maxTokens: 50 }));
-  expect(result.tokens).toBe(60); expect(result.subtype).toBe('token_cap');
+  expect(result.tokens).toBe(60); expect(result.usage).toEqual({ input: 50, cache_read: 50, cache_write: 0, output: 10 }); expect(result.subtype).toBe('token_cap');
   const records = readFileSync(log,'utf8');
   expect(records).toContain('"method":"thread/resume"'); expect(records).toContain('"sandbox":"workspace-write"');
 });

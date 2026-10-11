@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
+import { emptySplit } from '@planestro/shared';
 import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { noteUsage, classifyUsage, rateLimitSnapshot, type UsageSignals, noteToolFailures, InputGate, ReportWatch, DropWatch, noteContext, resumeQuoteOf, settleCost, lastCostState, resumeWatch, type ContextSeen } from '../src/engine/sessions/LiveClaudePort.ts';
+import { noteUsage, classifyUsage, rateLimitSnapshot, type UsageSignals, noteToolFailures, InputGate, ReportWatch, DropWatch, noteContext, noteTokens, type TokensSeen, resumeQuoteOf, settleCost, lastCostState, resumeWatch, type ContextSeen } from '../src/engine/sessions/LiveClaudePort.ts';
 import type { TurnResult, UndeliveredReport } from '../src/engine/ports.ts';
 
 const result = (over: Partial<TurnResult> = {}): TurnResult => ({ subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', ...over });
@@ -108,6 +109,16 @@ describe('what a resume costs and reports (#64)', () => {
     expect(c).toEqual({ tokens: 17_524, ttlS: 3600 });
     noteContext(assistant({ input_tokens: 8, cache_read_input_tokens: 19_795, cache_creation_input_tokens: 367, output_tokens: 1, cache_creation: { ephemeral_5m_input_tokens: 367 } }), c);
     expect(c).toEqual({ tokens: 20_171, ttlS: 300 });
+  });
+
+  it('the turn keeps its token split (#345): each response once, subagents included, cache writes with their TTL', () => {
+    const t: TokensSeen = { split: emptySplit(), ids: new Set() };
+    const msg = (id: string, usage: Record<string, unknown>, parent: string | null = null) => ({ type: 'assistant', parent_tool_use_id: parent, message: { id, content: [], usage } });
+    noteTokens(msg('m1', { input_tokens: 10, cache_read_input_tokens: 17_412, cache_creation_input_tokens: 98, output_tokens: 4, cache_creation: { ephemeral_1h_input_tokens: 98 } }), t);
+    noteTokens(msg('m1', { input_tokens: 10, cache_read_input_tokens: 17_412, cache_creation_input_tokens: 98, output_tokens: 4 }), t);
+    noteTokens(msg('m2', { input_tokens: 3, cache_read_input_tokens: 1000, cache_creation_input_tokens: 0, output_tokens: 50 }, 'toolu_1'), t);
+    noteTokens({ type: 'result', usage: { input_tokens: 9_999_999 } }, t);
+    expect(t.split).toEqual({ input: 13, cache_read: 18_412, cache_write: 98, cache_ttl_s: 3600, output: 54 });
   });
 
   it("a subagent's response never counts: its window is not what a resume sends again", () => {

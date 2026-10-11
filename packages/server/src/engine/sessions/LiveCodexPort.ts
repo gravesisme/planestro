@@ -4,7 +4,7 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gitWritableRoots } from './gitWritableRoots.ts';
 export { gitWritableRoots } from './gitWritableRoots.ts';
-import { budgetTokens } from '@planestro/shared';
+import { budgetTokens, codexSplit, emptySplit, splitPlus } from '@planestro/shared';
 import { CodexAppServerPort, codexEnv } from './CodexAppServerPort.ts';
 import { projectSkills, skillsInPrompt } from './projectSkills.ts';
 import type { AccountCredentials, AgentPort, AgentTurnOptions, TurnOptions, CustomTurnOptions, TurnResult } from '../ports.ts';
@@ -178,6 +178,7 @@ export class LiveCodexPort implements AgentPort {
     if (e.type === 'turn.completed' && e.usage) {
       const u = e.usage;
       result.tokens = (result.tokens ?? 0) + budgetTokens(u);
+      result.usage = splitPlus(result.usage ?? emptySplit(), codexSplit({ inputTokens: u.input_tokens, cachedInputTokens: u.cached_input_tokens, outputTokens: u.output_tokens }));
     }
     if (e.type === 'item.completed' && e.item?.type === 'agent_message' && e.item.text) result.text += `${e.item.text}\n`;
     if ((e.type === 'item.started' || e.type === 'item.completed') && e.item?.type && e.item.type !== 'reasoning') result.acted = true;
