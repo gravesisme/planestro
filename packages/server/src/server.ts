@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
+import { compress } from 'hono/compress';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { createNodeWebSocket } from '@hono/node-ws';
 import { existsSync, readFileSync } from 'node:fs';
@@ -55,6 +56,8 @@ export async function startServer(o: ServeOptions) {
   // Before every route, the WebSocket upgrade included: see guard.ts.
   app.use('*', requestGuard(allowedHosts(host, store.local.allowed_hosts), (l, m) => log(l, m), { lanOnly: store.local.lan_access }));
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
+  // The API's JSON only (the state payload runs to megabytes, too slow for a phone on slow Wi-Fi); never /ws or /mcp's streams.
+  app.use('/api/*', compress({ contentTypeFilter: /^application\/json/ }));
   app.route('/api', apiRoutes(store, engine, consoles));
   app.route('/attachments', attachmentRoutes(store));
   // The operator MCP endpoint (#175): read-only, for an MCP client registered at user scope; never a worker's.
