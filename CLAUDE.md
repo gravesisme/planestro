@@ -166,6 +166,9 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   persisted first (`op_data.fresh_brief`). `commit_paths` commits named dirty files with no turn.
   Every turn and wake that ran journals one `usage.turn` as it ends (provider, model, role, dollars or tokens as
   the runner reports them); the Usage page (`GET /usage`, #236) reads only those, never item totals (pre-#107 ones are inflated).
+  Each keeps the turn's token split (#345: `input`, `cache_read`, `cache_write` with `cache_ttl_s`, `output`, `context` at
+  its end), summed from the stream once per response, never from the result's running totals; `tokens` is the work paid in
+  full (input + cache write + output).
 - A report (`submit_plan`, `submit_breakdown`, `report_done`, `report_blocked`) whose call never reached planestro is applied
   from the turn's record (#167): the port keeps the session's last lost report with its arguments, the engine
   persists it in `op_data.outbox` and applies it through the same tool when the turn ends (or at the next start),
