@@ -63,6 +63,14 @@ export function isolatedCodexHome(path: string, inheritAuth = true, authFrom = p
   return path;
 }
 /**
+ * How to sign in again where an app-server turn reads its login: its own home, not ~/.codex, which it copied once
+ * and never reads again, so a plain `codex login` does not reach it.
+ */
+export function loginHint(home: string): string {
+  const shown = home.startsWith(homedir() + '/') ? `~/${home.slice(homedir().length + 1)}` : home;
+  return `Sign in for planestro with \`CODEX_HOME=${shown} codex login\` (a plain \`codex login\` signs in ~/.codex, which planestro does not read).`;
+}
+/**
  * The only environment a Codex process gets, on either transport: its commands inherit it, so planestro's
  * GH_TOKEN, *_API_KEY, AWS_* never reach a worker (#228). `passthrough` is the project's codex_env_passthrough;
  * the home is set last, so a listed CODEX_HOME cannot point an app-server back at the shared login.
@@ -195,7 +203,7 @@ export class CodexAppServerPort implements AgentPort {
           // Unauthorized was verified with an isolated, unauthenticated live fixture. Quota
           // error variants are not yet verified: do not turn unknown failures into usage data.
           result.subtype = p.turn.error.codexErrorInfo === 'unauthorized' || /401 Unauthorized/.test(p.turn.error.message ?? '') ? 'auth_required' : 'runner_error';
-          result.isError = true; result.error = p.turn.error.message;
+          result.isError = true; result.error = result.subtype === 'auth_required' ? `${p.turn.error.message} ${loginHint(home)}` : p.turn.error.message;
         }
         finish(); return;
       }

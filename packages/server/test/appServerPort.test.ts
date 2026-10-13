@@ -1,12 +1,12 @@
 import { it, expect, afterEach, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, statSync, readdirSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { execFileSync, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { gitWritableRoots } from '../src/engine/sessions/gitWritableRoots.ts';
-import { CodexAppServerPort, ScopedTools, isolatedCodexHome } from '../src/engine/sessions/CodexAppServerPort.ts';
+import { CodexAppServerPort, ScopedTools, isolatedCodexHome, loginHint } from '../src/engine/sessions/CodexAppServerPort.ts';
 import type { TurnOptions } from '../src/engine/ports.ts';
 import { quietTransientFailure } from '../src/engine/transient.ts';
 import { writeSkillsFixture } from './skillsFixture.ts';
@@ -60,6 +60,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
  if (m.method==='turn/start') {
   send({id:m.id,result:{turn:{id:'turn'}}});
   send({method:'turn/started',params:{threadId:'thread',turn:{id:'turn'}}});
+  if(mode==='unauthorized') { send({method:'turn/completed',params:{threadId:'thread',turn:{id:'turn',error:{message:'Your refresh token was revoked.',codexErrorInfo:'unauthorized'}}}}); return; }
   if(mode.endsWith('overloaded')) { if(mode==='command-overloaded') send({method:'item/started',params:{threadId:'thread',turnId:'turn',item:{type:'commandExecution',id:'cmd',command:'ls'}}}); send({method:'turn/completed',params:{threadId:'thread',turn:{id:'turn',error:{message:'serverOverloaded',codexErrorInfo:'serverOverloaded'}}}}); return; }
   if(mode==='cap') { send({method:'thread/tokenUsage/updated',params:{threadId:'thread',turnId:'turn',tokenUsage:{total:{inputTokens:200,cachedInputTokens:100,outputTokens:20},last:{totalTokens:120}}}}); return; }
   if(mode.startsWith('approval')) send({id:100,method:'item/commandExecution/requestApproval',params:{threadId:mode==='approval-foreign'?'other':'thread',turnId:'turn',command:'network command',cwd:${JSON.stringify(root)},environmentId:'local',...(mode==='approval-scope'?{additionalPermissions:{network:{enabled:true}}}:{})}});
@@ -181,6 +182,13 @@ it('reports whether a failed turn did anything, which decides the automatic retr
   const busy = await f.port.runTurn(options(f.root));
   expect(busy).toMatchObject({ subtype: 'runner_error', acted: true });
   expect(quietTransientFailure(busy)).toBe(false);
+});
+it('names the login command for the home the app-server reads, not ~/.codex', async () => {
+  const o = fixture('unauthorized');
+  const result = await o.port.runTurn(options(o.root));
+  expect(result).toMatchObject({ subtype: 'auth_required', isError: true });
+  expect(result.error).toBe(`Your refresh token was revoked. Sign in for planestro with \`CODEX_HOME=${join(o.root, 'home')} codex login\` (a plain \`codex login\` signs in ~/.codex, which planestro does not read).`);
+  expect(loginHint(join(homedir(), '.planestro', 'codex'))).toContain('`CODEX_HOME=~/.planestro/codex codex login`');
 });
 it('sends the model row\'s reasoning effort and service tier on every start, resume and turn (#245)', async () => {
   const { root, log, port } = fixture('worker');
