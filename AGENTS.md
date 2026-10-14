@@ -68,6 +68,10 @@ Between turns the same sync runs on demand (`Engine.syncWithBase`: the item's
 `sync_first`, `resume_after`, and plan approval before the implement turn
 starts unless `sync_first: false`, #217): never while a turn or op is live, pushed
 only if the branch is already on the remote, and a conflict goes to the session.
+A worker's rebase conflict is never the worker's integration step (HH-532): planestro leaves the rebase stopped at it
+(`op_data.rebase_continue`), the session edits only the conflicted files, and planestro continues the rebase, checks it
+(finished, clean, contains `origin/<base>`) and pushes it, or aborts it back to the old head and blocks `sync_conflict`;
+the same conflict at the same base tip is not handed to that session again without guidance (`rebase_declined`).
 The serial merge chain only syncs and merges; no CI wait ever runs inside it. A head
 that is not green yet leaves the chain (`op: awaiting_ci`), is polled beside it
 (`watchCi`) and comes back once green, so one item's CI never delays another's merge.
