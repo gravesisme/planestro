@@ -165,16 +165,34 @@ export function fallbackProblems(config: Pick<Config, 'models'>): string[] {
 }
 
 /**
- * MCP servers a plan calls on (`mcp__<server>__<tool>`) that its implementer's sessions do not get (#155, HH-338: a plan
+ * The MCP servers a text names (#366): by a tool (`mcp__<server>__<tool>`) or by the server's own name as a word, matched
+ * case-insensitively against `servers` (the ones configured on this machine or listed on a model). planestro is never one.
+ */
+export function mcpServersNamed(text: string, servers: readonly string[]): string[] {
+  const out = new Map<string, string>();
+  for (const m of text.matchAll(/\bmcp__([A-Za-z0-9-]+)__/g)) if (m[1].toLowerCase() !== 'planestro') out.set(m[1].toLowerCase(), servers.find((s) => s.toLowerCase() === m[1].toLowerCase()) ?? m[1]);
+  for (const s of servers) {
+    if (s.toLowerCase() === 'planestro' || out.has(s.toLowerCase())) continue;
+    if (new RegExp(`(?<![A-Za-z0-9])${s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9])`, 'i').test(text)) out.set(s.toLowerCase(), s);
+  }
+  return [...out.values()];
+}
+
+/**
+ * MCP servers a plan calls on that its implementer's sessions do not get (#155, HH-338: a plan
  * built on mcp__ElevenLabs__text_to_sound_effects went to Opus, which has no MCP servers, and the sound phase went undone).
  * Each with the models that do have it. planestro's own tools are never missing. Server names compare case-insensitively.
+ * A server the plan names only in words (`servers`: the machine's configured ones; the models' are always known) comes back
+ * with no tools (#366, HH-538: "generate the takes with ElevenLabs" went to a worker with no ElevenLabs, and nothing said so).
  */
-export function planToolsMissing(plan: string, implementer: Pick<ModelDef, 'mcp'> | undefined, models: readonly Pick<ModelDef, 'id' | 'mcp'>[]): { server: string; tools: string[]; models: string[] }[] {
+export function planToolsMissing(plan: string, implementer: Pick<ModelDef, 'mcp'> | undefined, models: readonly Pick<ModelDef, 'id' | 'mcp'>[], servers: readonly string[] = []): { server: string; tools: string[]; models: string[] }[] {
   const named = new Map<string, Set<string>>();
   for (const m of plan.matchAll(/\bmcp__([A-Za-z0-9-]+)__([A-Za-z0-9_-]+)/g)) {
     if (m[1].toLowerCase() === 'planestro') continue;
     const k = m[1]; if (!named.has(k)) named.set(k, new Set()); named.get(k)!.add(m[2]);
   }
+  const known = [...new Set([...servers, ...models.flatMap((m) => m.mcp)])];
+  for (const s of mcpServersNamed(plan, known)) if (![...named.keys()].some((k) => k.toLowerCase() === s.toLowerCase())) named.set(s, new Set());
   const has = (mdl: Pick<ModelDef, 'mcp'> | undefined, server: string) => (mdl?.mcp ?? []).some((x) => x.toLowerCase() === server.toLowerCase());
   return [...named].filter(([server]) => !has(implementer, server)).map(([server, tools]) => ({ server, tools: [...tools], models: models.filter((m) => has(m, server)).map((m) => m.id) }));
 }

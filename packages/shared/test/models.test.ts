@@ -99,6 +99,16 @@ describe('a plan that calls MCP tools its implementer lacks (#155, HH-338)', () 
     expect(planToolsMissing(plan, models[1], models).map((l) => l.server)).toEqual(['meshy']);
     expect(planToolsMissing('No tools named here.', models[0], models)).toEqual([]);
   });
+  it('also flags a server the plan names only in words, with no tools (#366, HH-538)', async () => {
+    const { planToolsMissing, mcpServersNamed } = await import('../src/models.ts');
+    const models = [{ id: 'opus-5-5', mcp: [] }, { id: 'sound', mcp: ['ElevenLabs'] }];
+    expect(planToolsMissing('Generate 24 takes with elevenlabs and audition them.', models[0], models)).toEqual([{ server: 'ElevenLabs', tools: [], models: ['sound'] }]);
+    expect(planToolsMissing('Generate 24 takes with ElevenLabs.', models[1], models)).toEqual([]);
+    // A configured server no model carries yet, and one the plan names both ways is listed once, with its tool.
+    expect(planToolsMissing('Use meshy. Then mcp__meshy__text_to_3d.', models[0], models, ['meshy'])).toEqual([{ server: 'meshy', tools: ['text_to_3d'], models: [] }]);
+    expect(mcpServersNamed('ElevenLabsX and planestro', ['ElevenLabs', 'planestro'])).toEqual([]);
+    expect(mcpServersNamed('mcp__ElevenLabs__x', ['elevenlabs'])).toEqual(['elevenlabs']);
+  });
 });
 
 describe("a plan's MCP budget line (#157)", () => {

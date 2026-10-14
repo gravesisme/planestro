@@ -441,3 +441,29 @@ describe('needs-you triage', () => {
     release();
   });
 });
+
+describe('a worker with no tool for a server another model has (#366, HH-538)', () => {
+  it("the triage packet says which servers the implementer carries and which models have the one named, not broken tooling", async () => {
+    let prompt = '';
+    const noTool = async (o: TurnOptions): Promise<TurnResult> => { await o.tools.report_blocked('I cannot generate the takes: this session has no ElevenLabs tool'); return { ...ok, blocked: 'no ElevenLabs tool' }; };
+    const a = agents({ firstTurn: noTool, orchestrate: async (w) => { if (w.label.startsWith('blocked_')) prompt = w.prompt; } });
+    const { store: s, engine: e, id } = await setup(a.claude, (y) => y.replace('  - { id: opus-5, label: Opus 5, claude_model: claude-opus-5 }\n', '  - { id: opus-5, label: Opus 5, claude_model: claude-opus-5 }\n  - { id: sfx, label: Sound worker, claude_model: claude-opus-5, mcp: [ElevenLabs] }\n'));
+    s.updateLocal({ mcp_servers: { ElevenLabs: { command: 'uvx', args: ['elevenlabs-mcp'] } } } as any);
+    await e.start();
+    await waitFor(() => prompt !== '');
+    expect(prompt).toContain('MCP servers (a fact planestro knows): its implementer opus-5 carries none. The item names ElevenLabs (models that have it: sfx).');
+    expect(prompt).toContain('Never file_for_maintainer for it.');
+  });
+
+  it('a plan that names the server in words is flagged at review for an implementer without it', async () => {
+    let prompt = '';
+    const plans = async (o: TurnOptions): Promise<TurnResult> => { const plan = '# Plan\n\nGenerate 24 takes with ElevenLabs and audition them.'; await o.tools.submit_plan(plan); return { ...ok, planSubmitted: plan }; };
+    const a = agents({ firstTurn: plans, orchestrate: async (w) => { if (w.label === 'plan_review') prompt = w.prompt; } });
+    const { store: s, engine: e } = await setup(a.claude, (y) => y.replace('  - { id: opus-5, label: Opus 5, claude_model: claude-opus-5 }\n', '  - { id: opus-5, label: Opus 5, claude_model: claude-opus-5 }\n  - { id: sfx, label: Sound worker, claude_model: claude-opus-5, mcp: [ElevenLabs] }\n'));
+    s.updateLocal({ mcp_servers: { ElevenLabs: { command: 'uvx', args: ['elevenlabs-mcp'] } } } as any);
+    await e.start();
+    await waitFor(() => prompt !== '');
+    expect(prompt).toContain('THE PLAN NAMES MCP SERVERS ITS IMPLEMENTER (opus-5) DOES NOT HAVE: ElevenLabs: models that have it: sfx.');
+    expect(prompt).not.toContain('THE PLAN USES TOOLS');
+  });
+});

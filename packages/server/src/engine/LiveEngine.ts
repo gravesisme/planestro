@@ -4,7 +4,7 @@ import { join, relative, isAbsolute, extname, basename, matchesGlob } from 'node
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { DEBUG_MARKER, debugMarkerRefusal, Audition, AuditionPicks, auditionProblem, takePathProblem, auditionPicksProblem, auditionPickLines, auditionNote, auditionComplete, auditionTakes, runnerTurnSettings, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem, usageTurnData, USAGE_TURN, stepDownDue, timeoutKilledIn, limitsLabel, type HostLoad, type UsageRole, type ModelDef, resolveAccount, accountList, guardKey, unavailableKey, unavailableView, sameSessionStore, DEFAULT_ACCOUNT, type Account } from '@planestro/shared';
+import { DEBUG_MARKER, mcpServersNamed, debugMarkerRefusal, Audition, AuditionPicks, auditionProblem, takePathProblem, auditionPicksProblem, auditionPickLines, auditionNote, auditionComplete, auditionTakes, runnerTurnSettings, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem, usageTurnData, USAGE_TURN, stepDownDue, timeoutKilledIn, limitsLabel, type HostLoad, type UsageRole, type ModelDef, resolveAccount, accountList, guardKey, unavailableKey, unavailableView, sameSessionStore, DEFAULT_ACCOUNT, type Account } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import { matchesPathPattern, type Checkpoint, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote, type CiQueue, type RunnerReport, type UndeliveredReport, type ConnectionDrop, type AccountCredentials } from './ports.ts';
@@ -1470,7 +1470,11 @@ export class LiveEngine implements Engine {
     const contract = modelCapabilities(def).toolContract;
     const saved = fm.agent_sessions?.[runner];
     // A conversation kept in another account's store (its own config folder, #242) is not there to resume.
-    const incompatible = saved && (saved.tool_contract !== contract || (modelCapabilities(def).roleBound && (saved.role === 'plan') !== (phase === 'plan')) || !sameSessionStore(this.store.local, saved.account, account.name));
+    // The MCP servers this turn offers (f5). Planning is read-only: a planner reads what the implementer will have in its
+    // prompt (withImplementer) and makes no paid call (#366; an app-server planner was refused them outright).
+    const offeredMcp = phase === 'plan' || !modelCapabilities(def).permissions ? [] : [...def.mcp].sort();
+    const toolsMoved = Boolean(saved && modelCapabilities(def).resumeKeepsTools && (saved.mcp ?? []).join('\n') !== offeredMcp.join('\n'));
+    const incompatible = saved && (saved.tool_contract !== contract || (modelCapabilities(def).roleBound && (saved.role === 'plan') !== (phase === 'plan')) || !sameSessionStore(this.store.local, saved.account, account.name) || toolsMoved);
     let resumeId = incompatible ? undefined : metered ? fm.session_id : saved?.session_id;
     // What the turn costs before it does anything (#64): a resume sends the whole conversation again.
     // One the item cannot pay for, or whose reload is above budget_usd_fresh_above, becomes a fresh
@@ -1497,7 +1501,7 @@ export class LiveEngine implements Engine {
       replaced = pending?.from_session ?? resumeId ?? saved?.session_id; resumeId = undefined;
       prompt = await this.freshBrief(id, task, phase);
       if (phase === 'plan') prompt += '\n\nThis is a planning turn. Do not implement. Submit the plan or epic breakdown, then end the turn.';
-      this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), fresh_brief: { ...pending, task, from_session: replaced } } } }, { activity: { actor: 'app', text: `starting a fresh ${def.label} conversation with a brief instead of resuming ${replaced?.slice(0, 8) ?? 'its own'}: ${path.why}` } }], 'engine');
+      this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), fresh_brief: { ...pending, task, from_session: replaced } } } }, { activity: { actor: 'app', text: `starting a fresh ${def.label} conversation with a brief instead of resuming ${replaced?.slice(0, 8) ?? 'its own'}: ${toolsMoved ? `that thread was started with MCP servers ${(saved?.mcp ?? []).join(', ') || 'none'} and ${def.label} now has ${offeredMcp.join(', ') || 'none'}; a resumed thread keeps the tools it started with` : path.why}` } }], 'engine');
     } else if (path.path === 'fresh') { replaced = resumeId; resumeId = undefined; }
     else if (opts.note && !opts.final) prompt = `${this.resumeNote(id, opts.note)}\n\n${prompt}`;
     // "Continue where you left off" presumes a conversation to continue. When there is none — the
@@ -1517,7 +1521,7 @@ export class LiveEngine implements Engine {
     // Tools from outside (f5): the model row names MCP servers, the machine-local file holds them with
     // their keys. A name with no server on this machine is a stop, not a session without its tools.
     const mcpServers: Record<string, McpServerSpec> = {};
-    for (const name of modelCapabilities(def).permissions ? def.mcp : []) {
+    for (const name of offeredMcp) {
       const spec = this.store.local.mcp_servers[name];
       if (!spec || (!spec.command && !spec.url)) { this.block(id, 'mcp_missing', `${def.label} names the MCP server "${name}", which planestro.local.yml on this machine does not define (mcp_servers.${name} needs a command or a url)`); return undefined; }
       if (spec.enabled === false) { this.block(id, 'mcp_missing', `${def.label} names the MCP server "${name}", which is turned off on this machine: turn it on in Settings → MCP servers, or take it off the model's mcp list`); return undefined; }
@@ -1670,6 +1674,8 @@ export class LiveEngine implements Engine {
       this.store.mutateItem(id, [{ set: { op_data: completedData } }], 'engine');
     }
     const after = this.store.requireItem(id).file.frontmatter;
+    // A resumed thread kept the servers it started with; a new one has this turn's (#366).
+    const threadMcp = resumeId && result.sessionId === resumeId ? saved?.mcp ?? [] : offeredMcp;
     const sessionNow = metered ? result.sessionId ?? after.session_id : result.sessionId ?? after.agent_sessions?.[runner]?.session_id;
     // A fresh conversation has its id: it is the item's from here on, and the brief's marker has done its work.
     const started = path.path === 'fresh' && result.sessionId !== undefined && result.sessionId !== replaced;
@@ -1679,7 +1685,7 @@ export class LiveEngine implements Engine {
     this.store.mutateItem(id, [
       { set: {
         ...(metered ? { session_id: sessionNow } : {}),
-        ...(result.sessionId ? { agent_sessions: { ...(after.agent_sessions ?? {}), [runner]: { session_id: result.sessionId, model: def.id, role: phase, tool_contract: contract, ...(modelCapabilities(def).transport ? { transport: modelCapabilities(def).transport } : {}), ...(account.name !== DEFAULT_ACCOUNT ? { account: account.name } : {}) } } } : {}),
+        ...(result.sessionId ? { agent_sessions: { ...(after.agent_sessions ?? {}), [runner]: { session_id: result.sessionId, model: def.id, role: phase, tool_contract: contract, ...(modelCapabilities(def).transport ? { transport: modelCapabilities(def).transport } : {}), ...(account.name !== DEFAULT_ACCOUNT ? { account: account.name } : {}), ...(modelCapabilities(def).resumeKeepsTools ? { mcp: threadMcp } : {}) } } } : {}),
         ...(context ? { session_context: context } : {}),
         ...(started && (after.op_data?.fresh_brief || freshPlan) ? { op_data: opDataAfter } : {}),
         cost_usd: Math.round(((after.cost_usd ?? 0) + result.costUsd) * 10000) / 10000, turns: (after.turns ?? 0) + result.numTurns,
@@ -5509,6 +5515,11 @@ export class LiveEngine implements Engine {
     const lines = [`## Who implements this plan`, '', `${impl.label} (\`${impl.id}\`, ${runner} runner) carries out the approved plan, not you.${impl.description ? ` ${impl.description}` : ''}`];
     // Paid tools (#157): the plan states what they will cost in calls, and a person approves that number.
     if (impl.mcp.length) lines.push('', `It has ${impl.mcp.join(', ')} (MCP), and each call there costs money. State in the plan, under a line that starts \`MCP budget:\`, how many ${impl.mcp.join(' / ')} calls the work needs in all, generations and retries included, with a sentence of why. ${impl.user_approves_plans ? 'The user approves that number with the plan; past it the calls are refused.' : 'Past it the calls are refused.'}`);
+    // A request that names a server its implementer lacks (#366, HH-538: "generate the takes with ElevenLabs" planned for a
+    // worker with no ElevenLabs): the planner says which tools it calls, so approval can see the implementer cannot.
+    const known = [...new Set([...Object.keys(this.store.local.mcp_servers ?? {}), ...this.store.config.models.flatMap((m) => m.mcp)])];
+    const lacking = mcpServersNamed(`${getSection(this.store.requireItem(id).file, 'Description')}\n${getSection(this.store.requireItem(id).file, 'Notes')}`, known).filter((s) => !impl.mcp.some((x) => x.toLowerCase() === s.toLowerCase()));
+    if (lacking.length) lines.push('', `The request names ${lacking.join(', ')} (MCP), which ${impl.label} does not have. If the work calls ${lacking.length > 1 ? 'them' : 'it'}, name each tool it calls in the plan as \`mcp__<server>__<tool>\` and state, under a line that starts \`MCP budget:\`, how many calls the work needs in all: approval then shows that the implementer must change to a model that has ${lacking.length > 1 ? 'them' : 'it'}. Do not plan around ${lacking.length > 1 ? 'them' : 'it'} (no placeholder assets, no other route to the service).`);
     if (fm.planner !== fm.implementer) lines.push('', `You are writing the brief it follows. Plan for what ${impl.label} can do${runner === 'claude' ? '' : ', and do not plan to do its work yourself (for example drawing images in code because you cannot generate them)'}: name the files it must produce, the checks that prove them, and anything it must not touch.`);
     return `${rendered}\n\n${lines.join('\n')}`;
   }
