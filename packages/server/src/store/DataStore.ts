@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync, existsSync, mkdirSync, unlinkSync, statSync, writeFileSync } from 'node:fs';
 import { join, basename, relative } from 'node:path';
+import { createHash } from 'node:crypto';
 import type YAML from 'yaml';
 import { planReviewByDefault,
   parseItemFile, serializeItemFile, setSection, appendActivity, getSection, idNumber, slugify,
@@ -91,6 +92,15 @@ const EDIT_COMMIT_DELAY_MS = 30_000;
  * the file, applies ops, writes atomically, journals, broadcasts, and commits when the
  * change is semantic. Files are the truth; the in-memory index is a cache.
  */
+/**
+ * Bodies (sha256 of the trimmed body) of shipped prompts that were replaced because what they told a session was wrong, by
+ * prompt name. refreshRetiredPrompts brings a data dir's untouched copy of one up to the shipped prompt.
+ * rebase-conflict: told the worker to fetch and rebase itself, against its own rules and a sandbox with no network (HH-532).
+ */
+const RETIRED_PROMPT_BODIES: Record<string, string[]> = {
+  'rebase-conflict': ['3b868d163e28783dd271e700b8e135f6b6a603b4c2d808aec39efa8c384f2eb2'],
+};
+
 export class DataStore {
   readonly config: Config;
   readonly local: LocalConfig;
@@ -125,6 +135,7 @@ export class DataStore {
     for (const d of ['items', 'prompts', 'releases', 'questions', 'schedules']) for (const f of cleanStaleTemps(join(dataDir, d))) opts.log?.('warn', `removed stale temp file ${d}/${f}`);
     store.load();
     await store.commitHandEdits();
+    if (!store.readOnly) store.refreshRetiredPrompts();
     if (!store.readOnly) store.settleQuestions();
     return store;
   }
@@ -799,6 +810,26 @@ export class DataStore {
       if (!files.length) return `${head}\n  - no file list was recorded for it; look at the base branch`;
       return [head, ...files.slice(0, 40).map((f) => `  - ${f.change} \`${f.path}\`${size(f) ? ` (${size(f)})` : ''}`), ...(files.length > 40 ? [`  - …and ${files.length - 40} more`] : [])].join('\n');
     }).join('\n');
+  }
+
+  /**
+   * A data dir's copy of a prompt is its own once seeded, so a shipped prompt that changed what it tells a session never
+   * reached it. A copy whose body is exactly a retired shipped one (RETIRED_PROMPT_BODIES: never edited by the project) is
+   * brought up to the shipped prompt at startup, committed; an edited copy is left alone.
+   */
+  refreshRetiredPrompts(): void {
+    for (const [name, retired] of Object.entries(RETIRED_PROMPT_BODIES)) {
+      const p = this.prompts.get(name);
+      if (!p) continue;
+      const hash = createHash('sha256').update(p.file.body.trim()).digest('hex');
+      if (!retired.includes(hash)) continue;
+      let shipped: string;
+      try { shipped = readFileSync(new URL(`../../prompts/${name}.md`, import.meta.url), 'utf8'); } catch { continue; }
+      const file = parsePromptFile(shipped);
+      if (file.body.trim() === p.file.body.trim()) continue;
+      this.putPrompt(file, 'engine');
+      this.log('info', `prompts/${name}.md was a retired shipped version, never edited here; updated it to the shipped one`);
+    }
   }
 
   /**

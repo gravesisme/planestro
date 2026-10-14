@@ -98,3 +98,38 @@ describe('the lines a worktree adds that hold a marker (#240)', () => {
     expect(await port.addedLinesWith(wt, 'origin/trunk', 'planestro:debug-')).toEqual([]);
   });
 });
+
+describe('a rebase left stopped for a session, and continued by planestro (HH-532)', () => {
+  it('stops at the conflict, refuses markers and edits to other files, then continues to a rebase that contains the base', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'planestro-held-rebase-'));
+    const origin = join(root, 'origin.git'), repo = join(root, 'repo');
+    git(root, 'init', '-q', '--bare', '-b', 'trunk', origin);
+    git(root, 'clone', '-q', origin, repo);
+    writeFileSync(join(repo, 'a.ts'), 'one\n'); writeFileSync(join(repo, 'c.ts'), 'c\n');
+    git(repo, 'add', '-A'); git(repo, 'commit', '-q', '-m', 'init'); git(repo, 'push', '-q', 'origin', 'HEAD:trunk');
+    const port = new LiveGitPort();
+    const wt = join(root, 'wt');
+    await port.worktreeAdd(repo, wt, 'fix', 'origin/trunk');
+    writeFileSync(join(wt, 'a.ts'), 'branch\n'); writeFileSync(join(wt, 'b.ts'), 'b\n');
+    git(wt, 'add', '-A'); git(wt, 'commit', '-q', '-m', 'branch change');
+    const before = git(wt, 'rev-parse', 'HEAD').trim();
+    writeFileSync(join(repo, 'a.ts'), 'base\n'); git(repo, 'commit', '-q', '-am', 'base change'); git(repo, 'push', '-q', 'origin', 'HEAD:trunk');
+    await port.fetch(repo);
+    const r = await port.rebase(wt, 'origin/trunk', [], { stop: true });
+    expect(r).toMatchObject({ ok: false, stopped: true, conflicts: ['a.ts'] });
+    expect(r.stepFiles!.sort()).toEqual(['a.ts', 'b.ts']);
+    expect(await port.inProgressOp(wt)).toBe('rebase');
+    const step = { conflicts: r.conflicts, files: r.stepFiles!, head: r.head };
+    expect((await port.continueRebase(wt, [], step)).state).toBe('markers');
+    writeFileSync(join(wt, 'a.ts'), 'base\nbranch\n'); writeFileSync(join(wt, 'c.ts'), 'changed on the way\n');
+    expect(await port.continueRebase(wt, [], step)).toMatchObject({ state: 'outside', files: ['c.ts'] });
+    writeFileSync(join(wt, 'c.ts'), 'c\n');
+    const done = await port.continueRebase(wt, [], step);
+    expect(done.state).toBe('done');
+    expect(await port.inProgressOp(wt)).toBeNull();
+    expect(done.head).not.toBe(before);
+    expect(await port.isAncestor(wt, 'origin/trunk', 'HEAD')).toBe(true);
+    expect(git(wt, 'show', 'HEAD:a.ts')).toBe('base\nbranch\n');
+    expect(git(wt, 'status', '--porcelain')).toBe('');
+  });
+});

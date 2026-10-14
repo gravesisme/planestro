@@ -17,7 +17,7 @@ type Tool = (name: string) => { handler(a: Record<string, unknown>): Promise<str
  * Sync with base (dogfood p29): a worker branch is brought up to date between turns, deterministically.
  * `hold` makes worker turns wait until released, so a live turn can be observed.
  */
-async function setup(opts: { orchestrate?: (tools: Tool) => Promise<void>; hold?: Promise<void>; conflictSession?: (o: TurnOptions) => Promise<Partial<TurnResult>> } = {}) {
+async function setup(opts: { orchestrate?: (tools: Tool) => Promise<void>; hold?: Promise<void>; conflictSession?: (o: TurnOptions) => Promise<Partial<TurnResult>>; turn?: (o: TurnOptions, world: FakeWorld) => Promise<Partial<TurnResult> | undefined> } = {}) {
   const { dataDir, codeRepo } = makeFixture();
   mkdirSync(join(codeRepo, '.git', 'info'), { recursive: true });
   const cfg = join(dataDir, 'planestro.yml');
@@ -32,6 +32,8 @@ async function setup(opts: { orchestrate?: (tools: Tool) => Promise<void>; hold?
     async runTurn(o: TurnOptions): Promise<TurnResult> {
       prompts.push({ phase: o.phase, prompt: o.prompt, behind: world.behind.get(o.cwd) ?? 1 });
       if (opts.conflictSession && o.prompt.startsWith('You are resolving one merge conflict')) return { sessionId: 'conflict', subtype: 'success', isError: false, costUsd: 1.25, numTurns: 3, text: '', ...(await opts.conflictSession(o)) };
+      const over = await opts.turn?.(o, world);
+      if (over) return { sessionId: o.resume ?? 's-art', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', ...over };
       if (opts.hold) await opts.hold; return inner.runTurn(o);
     },
     async runCustomTurn(o: CustomTurnOptions): Promise<TurnResult> {
@@ -143,18 +145,22 @@ describe('sync with base (p29)', () => {
     expect(ctx.log.filter((l) => l.includes(`git rebase origin/trunk in ${other.cwd}`)).length).toBe(0);
   });
 
-  it('a conflict is aborted and goes to the session with the rebase-conflict prompt', async () => {
+  it('a conflict is left stopped for the session, which edits only the files; planestro continues and pushes it, then the session carries on (HH-532)', async () => {
     const ctx = await setup();
-    const { id } = worker(ctx);
+    const { id, cwd } = worker(ctx, { pushed: true });
     await ctx.engine.start();
     ctx.world.conflictArmed = true;
     const r = await ctx.engine.syncWithBase(id);
-    expect(r).toMatch(/^conflict: rebasing .* onto origin\/trunk conflicted in src\/conflicted\.ts; .*Handed to the session/);
-    await waitFor(() => ctx.prompts.length === 1);
+    expect(r).toMatch(/^conflict: rebasing .* onto origin\/trunk conflicted in src\/conflicted\.ts; it is left stopped at the conflict\. Handed to the session/);
+    await waitFor(() => ctx.prompts.length >= 2);
     expect(ctx.prompts[0].phase).toBe('fix');
     expect(ctx.prompts[0].prompt).toContain('src/conflicted.ts');
-    expect(ctx.prompts[0].prompt).toContain('carry on with your work');
-    expect(ctx.store.getItem(id)!.file.frontmatter.blocked).toBeUndefined();
+    expect(ctx.prompts[0].prompt).not.toMatch(/git fetch|git rebase origin|git push/);
+    expect(ctx.log).toContain(`Would git add && git rebase --continue in ${cwd}`);
+    expect(ctx.log.some((l) => l.startsWith('Would git push --force-with-lease origin tp/'))).toBe(true);
+    expect(ctx.prompts[1].prompt).toContain('planestro finished rebasing your branch onto origin/trunk');
+    expect(ctx.prompts[1].prompt).toContain('Carry on with your work');
+    expect(ctx.store.getItem(id)!.file.frontmatter.op_data?.rebase_continue).toBeUndefined();
   });
 
   describe('generated files (#63)', () => {
@@ -185,8 +191,8 @@ describe('sync with base (p29)', () => {
       const r = await ctx.engine.syncWithBase(ctx.id);
       expect(r).toMatch(/^conflict: .*conflicted in resources\/i18n\/messages\.pot; .*Handed to the session/);
       expect(ctx.log.some((l) => l.startsWith('Would git reset --hard'))).toBe(true);
-      expect(activityOf(ctx.store, ctx.id)).toMatch(/exited 1: godot: not found; the sync was undone/);
-      await waitFor(() => ctx.prompts.length === 1);
+      expect(activityOf(ctx.store, ctx.id)).toMatch(/exited 1: godot: not found; the sync was undone and rebased again, left stopped at the conflict/);
+      await waitFor(() => ctx.prompts.length >= 1);
       expect(ctx.prompts[0].prompt).toContain(POT);
     });
 
@@ -534,15 +540,19 @@ describe('sync with base (p29)', () => {
       expect(off.prompts[0].behind).toBe(1);
     });
 
-    it('a conflict goes to the session as the first thing it sees, with the plan to implement after', async () => {
+    it('a conflict goes to the session as the first thing it sees, and the plan to implement comes once planestro has finished the rebase', async () => {
       const ctx = await planReady();
       ctx.world.conflictArmed = true;
       await ctx.engine.approvePlan(ctx.id, undefined, 'user', { syncFirst: true });
-      await waitFor(() => ctx.prompts.length >= 1);
+      await waitFor(() => ctx.prompts.length >= 2);
       expect(ctx.prompts[0].phase).toBe('implement');
-      expect(ctx.prompts[0].prompt.indexOf('src/conflicted.ts')).toBeGreaterThanOrEqual(0);
-      expect(ctx.prompts[0].prompt.indexOf('src/conflicted.ts')).toBeLessThan(ctx.prompts[0].prompt.indexOf('Once the rebase is done, start on this'));
+      expect(ctx.prompts[0].prompt).toContain('src/conflicted.ts');
+      expect(ctx.prompts[0].prompt).not.toContain('Now start on this');
       expect(ctx.prompts[0].behind).toBe(1);
+      expect(ctx.prompts[1].phase).toBe('implement');
+      expect(ctx.prompts[1].behind).toBe(0);
+      expect(ctx.prompts[1].prompt).toContain('planestro finished rebasing your branch');
+      expect(ctx.prompts[1].prompt).toContain('Now start on this');
       expect(ctx.store.getItem(ctx.id)!.file.frontmatter.blocked).toBeUndefined();
     });
 
@@ -581,5 +591,123 @@ describe('sync with base (p29)', () => {
       const packet: string = (ctx.engine.orchestrator as any).renderPacket({ type: 'plan_review', item: w.id });
       expect(packet).toContain(`Merged into trunk since it was planned: ${after.id}`);
     });
+  });
+});
+
+describe('a pull request whose rebase conflicts: planestro holds the rebase and the session edits only the files (HH-532)', () => {
+  /** A worker item driven to its pull request; its merge-step rebase conflicts once. `turn` answers the fix turns. */
+  async function inReview(turn?: (o: TurnOptions, world: FakeWorld) => Promise<Partial<TurnResult> | undefined>) {
+    const seen: { prompt: string; midRebase: boolean; ciHead?: string }[] = [];
+    let ctx!: Awaited<ReturnType<typeof setup>>;
+    let id = '';
+    ctx = await setup({
+      turn: async (o, world) => {
+        if (o.phase === 'implement') { world.conflictArmed = true; return undefined; }
+        if (o.phase !== 'fix') return undefined;
+        seen.push({ prompt: o.prompt, midRebase: world.stoppedRebases.has(o.cwd), ciHead: ctx.store.getItem(id)!.file.frontmatter.ci_head_sha });
+        return turn ? turn(o, world) : undefined;
+      },
+    });
+    const item = ctx.store.createItem({ title: 'Grapple copy', description: 'x' });
+    id = item.id;
+    ctx.store.transition(id, 'QUEUED', 'user');
+    await ctx.engine.start();
+    await waitFor(() => ctx.store.getItem(id)!.file.frontmatter.status === 'PLAN_READY');
+    await ctx.engine.approvePlan(id, undefined, 'user', { syncFirst: false });
+    return { ...ctx, id, seen, fm: () => ctx.store.getItem(id)!.file.frontmatter };
+  }
+
+  it('the conflict turn has no fetch, rebase or push step; planestro left the worktree mid-rebase, then continues, pushes with a lease and validates the new head', async () => {
+    const ctx = await inReview();
+    await waitFor(() => ctx.fm().status === 'FINISHED', 8000);
+    expect(ctx.seen).toHaveLength(1);
+    expect(ctx.seen[0].midRebase).toBe(true);
+    expect(ctx.seen[0].prompt).toContain('src/conflicted.ts');
+    expect(ctx.seen[0].prompt).not.toMatch(/git fetch|fetch origin|git rebase origin|git push/);
+    const activity = activityOf(ctx.store, ctx.id);
+    expect(activity).toContain('rebase onto origin/trunk (fffffff) conflicted in src/conflicted.ts; handing to the session');
+    expect(activity).toContain('planestro continued the rebase onto origin/trunk (fffffff) and checked it');
+    expect(activity).toContain('Re-entering the merge pipeline, which pushes it with a lease and waits for CI on the new head');
+    // The PR merges at the head CI ran for after the push, never the head before the conflict.
+    const merge = ctx.log.find((l) => l.startsWith('Would gh pr merge 100'))!;
+    expect(merge).toBeDefined();
+    expect(merge).not.toContain(ctx.seen[0].ciHead!);
+    expect(activity.indexOf('Re-entering the merge pipeline')).toBeLessThan(activity.indexOf('rebased onto trunk@fffffff and pushed'));
+  });
+
+  it('a later commit that stops on its own conflict goes back to the session as another round', async () => {
+    const ctx = await inReview(async (_o, world) => { if (!world.continueOutcomes.length && !(world as any).scripted) { (world as any).scripted = true; world.continueOutcomes.push({ state: 'stopped', files: ['src/other.ts'], stepFiles: ['src/other.ts'] }); } return undefined; });
+    await waitFor(() => ctx.fm().status === 'FINISHED', 8000);
+    expect(ctx.seen).toHaveLength(2);
+    expect(ctx.seen[1].prompt).toContain('stopped again at a later commit');
+    expect(ctx.seen[1].prompt).toContain('src/other.ts');
+    expect(ctx.seen[1].midRebase).toBe(true);
+  });
+
+  it('a session that blocks: the rebase is aborted, the branch is as it was, it blocks sync_conflict once, and a retry without guidance does not loop back to it', async () => {
+    const ctx = await inReview(async (o) => { await o.tools.report_blocked('The two grapple cooldowns truly contradict: which one wins?'); return { blocked: 'The two grapple cooldowns truly contradict: which one wins?' }; });
+    await waitFor(() => ctx.fm().blocked_reason === 'sync_conflict');
+    expect(ctx.log.some((l) => l.startsWith('Would git rebase --abort'))).toBe(true);
+    expect(ctx.fm().op_data?.rebase_continue).toBeUndefined();
+    expect(ctx.fm().op_data?.needs_session_rebase).toBe(false);
+    expect(activityOf(ctx.store, ctx.id)).toContain('the held rebase onto origin/trunk was not kept: the session could not resolve it');
+    // retry_op as the orchestrator would: the same base conflicts again, and it is a person's now.
+    ctx.world.conflictArmed = true;
+    expect(await ctx.engine.retryOp(ctx.id, 'orchestrator')).toMatch(/^retrying: it re-enters the merge pipeline/);
+    await waitFor(() => ctx.fm().blocked_reason === 'sync_conflict' && activityOf(ctx.store, ctx.id).includes('already could not resolve this conflict at this base tip'));
+    expect(ctx.seen).toHaveLength(1);
+    // With guidance it goes to the session again, carrying it.
+    ctx.world.conflictArmed = true;
+    expect(await ctx.engine.retryOp(ctx.id, 'orchestrator', 'Keep the 10 s cooldown from the base; it is the designer\'s.')).toMatch(/^retrying/);
+    await waitFor(() => ctx.seen.length === 2);
+    expect(ctx.seen[1].prompt).toContain('Guidance for this conflict');
+    expect(ctx.seen[1].prompt).toContain('Keep the 10 s cooldown from the base');
+  });
+
+  it('conflict markers left in a file are not continued: the branch goes back and it blocks sync_conflict', async () => {
+    const ctx = await inReview(async (_o, world) => { world.continueOutcomes.push({ state: 'markers', files: ['src/conflicted.ts'] }); return undefined; });
+    await waitFor(() => ctx.fm().blocked_reason === 'sync_conflict');
+    expect(activityOf(ctx.store, ctx.id)).toContain('it left conflict markers in src/conflicted.ts');
+    expect(ctx.log.some((l) => l.startsWith('Would git rebase --abort'))).toBe(true);
+  });
+
+  it('unblock_item with sync_first on a pull request stopped on its conflict re-enters the pipeline instead of refusing', async () => {
+    const ctx = await inReview(async (o) => { if (!(o as any).again) { await o.tools.report_blocked('needs a decision'); return { blocked: 'needs a decision' }; } return undefined; });
+    await waitFor(() => ctx.fm().blocked_reason === 'sync_conflict');
+    ctx.world.conflictArmed = true;
+    const r = await ctx.engine.syncWithBase(ctx.id, { by: 'orchestrator', unblock: { message: 'Take both rows.' } });
+    expect(r).toMatch(/^in review, so the merge pipeline syncs it: retrying/);
+    expect(r).not.toContain('retry_op re-enters it');
+    await waitFor(() => ctx.seen.length === 2);
+    expect(ctx.seen[1].prompt).toContain('Take both rows.');
+  });
+});
+
+describe('the conflict prompt and the worker rules agree (HH-532)', () => {
+  const shipped = (name: string) => readFileSync(new URL(`../prompts/${name}.md`, import.meta.url), 'utf8');
+  it('the conflict turn never asks for a fetch, a rebase of its own or a push; both runners\' rules leave the rebase to planestro', () => {
+    const conflict = shipped('rebase-conflict');
+    expect(conflict).not.toMatch(/`git (fetch|rebase|push)/);
+    expect(conflict).toContain('You need no git commands');
+    expect(conflict).toContain('{{conflict_hint}}');
+    for (const rules of [shipped('worker-system'), shipped('worker-system-codex')]) {
+      expect(rules).toMatch(/planestro owns every integration operation/);
+      expect(rules).toMatch(/When planestro stops one of its rebases at a conflict, it hands you the conflicted files to edit/);
+    }
+    expect(shipped('worker-system-codex')).toMatch(/do not try to push or fetch/);
+  });
+
+  it("a data dir's untouched copy of the retired conflict prompt is brought up to the shipped one at startup; an edited copy is kept", async () => {
+    const { dataDir } = makeFixture();
+    const path = join(dataDir, 'prompts', 'rebase-conflict.md');
+    const retired = `---\nschema: 1\nname: rebase-conflict\nkind: template\nrole: rebase_conflict\ntitle: Rebase conflict\ndescription: Sent when planestro's rebase of the worker branch onto its base hits conflicts.\n---\nplanestro tried to rebase \`{{item.branch}}\` onto the latest \`{{base_branch}}\` ({{base_sha}}) and hit conflicts in:\n\n\`\`\`\n{{conflict_files}}\n\`\`\`\n\nThe rebase was aborted; your worktree {{worktree}} is unchanged. Please resolve this yourself, because you know the intent of the change:\n\n1. \`git fetch origin\` and \`git rebase origin/{{base_branch}}\` in your worktree, resolving each conflict so both the base's changes and yours survive.\n2. Re-run the project's relevant checks.\n3. Finish the rebase (\`git rebase --continue\`), leave the tree clean, and call \`report_done\` with a summary of how you resolved it. Do not push — planestro pushes.\n`;
+    writeFileSync(path, retired);
+    store = await DataStore.open(dataDir);
+    expect(readFileSync(path, 'utf8')).toContain('You need no git commands');
+    store.close();
+    const edited = retired.replace('Re-run the project', 'Re-run all of the project');
+    writeFileSync(path, edited);
+    store = await DataStore.open(dataDir);
+    expect(readFileSync(path, 'utf8')).toBe(edited);
   });
 });
