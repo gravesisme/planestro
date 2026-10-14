@@ -410,6 +410,7 @@ function ModelsCtl({ state }: { state: State }) {
                 {m.hold_for_review && <span className="chip">holds PRs for your review</span>}
                 {m.engine_commits && <span className="chip">planestro commits for it</span>}
                 {runner === 'codex' && m.skills && <span className="chip">project skills</span>}
+                {runner === 'codex' && m.native_images && <span className="chip">image tool</span>}
                 {m.mcp.length > 0 && <span className="chip">MCP: {m.mcp.join(', ')}{m.mcp_calls_per_item ? ` (≤${m.mcp_calls_per_item} calls)` : ''}</span>}
               </h4>
               <div className="facts">
@@ -448,7 +449,7 @@ function ModelDialog({ cfg, model, mcpNames, onClose }: { cfg: Config; model?: M
     if (!id || !m.label?.trim()) { complain('A model needs an id and a label'); return; }
     if (!model && cfg.models.some((x) => x.id === id)) { complain(`There is already a model ${id}`); return; }
     const codex = runner === 'codex';
-    const body: Partial<ModelDef> = { ...m, id, claude_model: codex ? undefined : m.claude_model, codex_model: codex ? m.codex_model : undefined, codex_effort: codex ? m.codex_effort : undefined, codex_tier: codex ? m.codex_tier : undefined, skills: codex ? m.skills : undefined };
+    const body: Partial<ModelDef> = { ...m, id, claude_model: codex ? undefined : m.claude_model, codex_model: codex ? m.codex_model : undefined, codex_effort: codex ? m.codex_effort : undefined, codex_tier: codex ? m.codex_tier : undefined, skills: codex ? m.skills : undefined, native_images: codex && m.codex_transport === 'app-server' ? m.native_images : undefined };
     if (await act(() => api.putModel(id, body))) onClose();
   };
   return (
@@ -468,6 +469,7 @@ function ModelDialog({ cfg, model, mcpNames, onClose }: { cfg: Config; model?: M
         <label>When out of usage <select value={m.fallback ?? ''} onChange={(e) => set({ fallback: e.target.value || undefined })}><option value="">Block (no fallback)</option>{fallbacks.map((x) => <option key={x.id} value={x.id}>Fall back to {x.label}</option>)}</select></label>
         <label className="check"><input type="checkbox" checked={m.hold_for_review ?? false} onChange={(e) => set({ hold_for_review: e.target.checked })} /> Hold its pull requests for your review</label>
         <label className="check"><input type="checkbox" checked={m.engine_commits ?? false} onChange={(e) => set({ engine_commits: e.target.checked })} /> planestro commits for it (a sandbox that cannot write git's files)</label>
+        {runner === 'codex' && m.codex_transport === 'app-server' && <label className="check"><input type="checkbox" checked={m.native_images ?? false} onChange={(e) => set({ native_images: e.target.checked || undefined })} /> Give its implement turns the built-in image tool <span className="muted">(exec rows always have it)</span></label>}
         {runner === 'codex' && <label className="check"><input type="checkbox" checked={m.skills ?? false} onChange={(e) => set({ skills: e.target.checked })} /> Give its workers the project's skills <span className="muted">(.claude/skills)</span></label>}
         <label className="check"><input type="checkbox" checked={m.external ?? false} onChange={(e) => set({ external: e.target.checked })} /> External: not run by planestro, its items are only watched</label>
         {(runner === 'claude' || m.codex_transport === 'app-server') && <fieldset><legend className="small muted">MCP servers its sessions get {servers.length ? '' : '(none on this machine: add one under Access → MCP servers)'}</legend>

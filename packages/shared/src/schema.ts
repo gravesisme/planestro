@@ -357,6 +357,8 @@ export const ModelDef = z.object({
   codex_tier: z.enum(CODEX_TIERS, { error: 'a service tier is default or priority (the tiers Codex offers)' }).optional(),
   /** Give this Codex row's workers the project's `.claude/skills` from their worktree, through the turn (#238). Claude rows load them already. */
   skills: z.boolean().optional(),
+  /** App-server only: turn the built-in image generator on for this row's implement and fix turns (it is off on every other app-server turn). Exec rows always have it. */
+  native_images: z.boolean().optional(),
   /** One line on what the model is for. The epic planner routes children by it. */
   description: z.string().optional(),
   /** Hold this model's pull requests before merge until a person releases them (art is reviewed by eye). */
@@ -399,9 +401,9 @@ export function modelCapabilities(m: Pick<ModelDef, 'runner' | 'external' | 'cod
     resumeKeepsInstructions: !claude };
 }
 /** What a row asks of a Codex turn beyond its model (#245). Nothing for a Claude row. */
-export function runnerTurnSettings(m: Pick<ModelDef, 'runner' | 'codex_effort' | 'codex_tier' | 'skills'> | undefined): { effort?: CodexEffort; serviceTier?: CodexTier; skills?: true } {
+export function runnerTurnSettings(m: Pick<ModelDef, 'runner' | 'codex_effort' | 'codex_tier' | 'skills' | 'native_images'> | undefined): { effort?: CodexEffort; serviceTier?: CodexTier; skills?: true; nativeImages?: true } {
   if (!m || (m.runner ?? 'claude') !== 'codex') return {};
-  return { ...(m.codex_effort ? { effort: m.codex_effort } : {}), ...(m.codex_tier ? { serviceTier: m.codex_tier } : {}), ...(m.skills ? { skills: true as const } : {}) };
+  return { ...(m.codex_effort ? { effort: m.codex_effort } : {}), ...(m.codex_tier ? { serviceTier: m.codex_tier } : {}), ...(m.skills ? { skills: true as const } : {}), ...(m.native_images ? { nativeImages: true as const } : {}) };
 }
 export function canPlan(m: Pick<ModelDef, 'runner' | 'external' | 'codex_transport'>): boolean { return modelCapabilities(m).plan; }
 

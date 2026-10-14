@@ -255,3 +255,31 @@ it('a row without skills gets neither the index nor read_skill (#238)', async ()
   expect(start.dynamicTools.map((t: any) => t.name)).not.toContain('read_skill');
   expect(start.developerInstructions).not.toContain('Project skills');
 });
+it('turns the image tool on only for a native_images row\'s implement turns, fresh and resumed, approvals unchanged (HH-540)', async () => {
+  const { root, log, port } = fixture('worker');
+  for (const resume of [undefined, 'thread']) expect((await port.runTurn(options(root, { resume, nativeImages: true }))).isError).toBe(false);
+  const records = readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  const threads = records.filter((r) => ['thread/start', 'thread/resume'].includes(r.method));
+  expect(threads.map((r) => r.method)).toEqual(['thread/start', 'thread/resume']);
+  for (const r of threads) {
+    expect(r.params).toMatchObject({ sandbox: 'workspace-write', approvalPolicy: 'on-request', config: { 'features.image_generation': true } });
+    expect(r.params.developerInstructions).toContain('## Your image tool');
+    expect(r.params.developerInstructions).toContain('$CODEX_HOME/generated_images');
+    expect(r.params.developerInstructions).not.toContain('Native image work is not enabled');
+  }
+  for (const r of records.filter((r) => r.method === 'turn/start')) expect(r.params.approvalPolicy).toBe('on-request');
+});
+it('keeps the image tool off without native_images, fresh and resumed, and on every plan turn even with it (HH-540)', async () => {
+  const { root, log, port } = fixture('worker');
+  for (const resume of [undefined, 'thread']) await port.runTurn(options(root, { resume }));
+  const plan = fixture('plan');
+  await plan.port.runTurn(options(plan.root, { phase: 'plan', permissionMode: 'plan', nativeImages: true }));
+  const records = [log, plan.log].flatMap((f) => readFileSync(f, 'utf8').trim().split('\n').map((l) => JSON.parse(l)));
+  const threads = records.filter((r) => ['thread/start', 'thread/resume'].includes(r.method));
+  expect(threads).toHaveLength(3);
+  for (const r of threads) {
+    expect(r.params.config['features.image_generation']).toBe(false);
+    expect(r.params.developerInstructions).toContain('Native image work is not enabled for this transport.');
+    expect(r.params.developerInstructions).not.toContain('## Your image tool');
+  }
+});

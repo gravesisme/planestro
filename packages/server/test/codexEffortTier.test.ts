@@ -17,6 +17,7 @@ it('only a Codex row contributes effort and tier to a turn (#245)', () => {
   expect(runnerTurnSettings(ModelDef.parse({ id: 'a', label: 'A', claude_model: 'x', codex_effort: 'high' }))).toEqual({});
   expect(runnerTurnSettings(undefined)).toEqual({});
   expect(runnerTurnSettings(ModelDef.parse({ id: 'c', label: 'C', runner: 'codex', skills: true }))).toEqual({ skills: true });   // #238
+  expect(runnerTurnSettings(ModelDef.parse({ id: 'c', label: 'C', runner: 'codex', codex_transport: 'app-server', native_images: true }))).toEqual({ nativeImages: true });   // HH-540
 });
 
 it('a worker turn carries its model row\'s reasoning effort and service tier (#245)', async () => {

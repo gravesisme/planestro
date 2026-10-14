@@ -7,6 +7,7 @@ export { gitWritableRoots } from './gitWritableRoots.ts';
 import { budgetTokens, codexSplit, emptySplit, splitPlus } from '@planestro/shared';
 import { CodexAppServerPort, codexEnv } from './CodexAppServerPort.ts';
 import { projectSkills, skillsInPrompt } from './projectSkills.ts';
+import { IMAGE_TOOL_NOTE } from './imageToolNote.ts';
 import type { AccountCredentials, AgentPort, AgentTurnOptions, TurnOptions, CustomTurnOptions, TurnResult } from '../ports.ts';
 
 /**
@@ -75,17 +76,8 @@ export function classifyFailure(stderr: string): { subtype: string; error: strin
   return { subtype: 'error_during_execution', error: tail || 'codex exited with an error and no message' };
 }
 
-/**
- * The image tool's own staging, said by the runner that has it (HH-274): workers read "write nothing outside the
- * worktree" as covering the folder the built-in generator saves into, and blocked on their first generation. A
- * data dir's copy of worker-system-codex predates this, so it rides with every turn here rather than in the prompt library.
- */
-export const IMAGE_TOOL_NOTE = [
-  '## Your image tool',
-  '',
-  '- The built-in image generator saves what it makes in its own folder ($CODEX_HOME/generated_images). That is the tool working as it always does, not a write of yours: it is allowed, and it never needs anyone\'s approval.',
-  '- Copy each image you keep into the worktree: the final file at the path the plan names, raw generations under tmp/ when the plan asks for them. "Nothing outside the worktree" is about what your commands write.',
-].join('\n');
+/** The image tool's own staging (HH-274), told on every exec turn; shared with app-server rows that set `native_images`. */
+export { IMAGE_TOOL_NOTE };
 
 
 /** The CODEX_HOME an exec turn runs with: a named account's own (#242), else planestro's. */

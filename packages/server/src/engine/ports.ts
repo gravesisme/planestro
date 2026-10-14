@@ -220,6 +220,8 @@ export interface AgentTurnOptions {
   serviceTier?: CodexTier;
   /** Codex only (#238): deliver the worktree's `.claude/skills` through the turn (the row's `skills`). */
   skills?: boolean;
+  /** Codex app-server only: the built-in image generator is on for this implement or fix turn (the row's `native_images`). Exec turns always have it. */
+  nativeImages?: boolean;
   /** A named account (#242) to run under instead of the runner's default login; unset for the default. */
   account?: AccountCredentials;
   /** Other accounts' config folders (#242): secret, like ~/.ssh, for whatever the worker runs. */
