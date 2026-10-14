@@ -127,6 +127,8 @@ export const ItemFrontmatter = z.object({
     transport: z.enum(['exec', 'app-server']).optional(),
     /** The account it ran under (#242), unset for the runner's default login: another account resumes it only from the same store. */
     account: z.string().optional(),
+    /** The MCP servers its thread was started with (#366): an app-server thread keeps the tools it started with, so a different set needs a fresh one. */
+    mcp: z.array(z.string()).optional(),
   })).optional(),
   /**
    * What the conversation in `session_id` held when its last turn ended (#64): its window, its
@@ -398,7 +400,9 @@ export function modelCapabilities(m: Pick<ModelDef, 'runner' | 'external' | 'cod
     plan: !m.external && tools, orchestrate: !m.external && tools,
     implement: !m.external, permissions: tools, accounting: claude ? 'dollars' as const : 'tokens' as const,
     /** A resumed Codex thread keeps the developer instructions it started with (#246, verified live): new ones need a fresh conversation. */
-    resumeKeepsInstructions: !claude };
+    resumeKeepsInstructions: !claude,
+    /** And the tools (#366): an app-server thread is resumed without its dynamic tools, so a model's MCP servers are the ones it started with. */
+    resumeKeepsTools: !claude && m.codex_transport === 'app-server' };
 }
 /** What a row asks of a Codex turn beyond its model (#245). Nothing for a Claude row. */
 export function runnerTurnSettings(m: Pick<ModelDef, 'runner' | 'codex_effort' | 'codex_tier' | 'skills' | 'native_images'> | undefined): { effort?: CodexEffort; serviceTier?: CodexTier; skills?: true; nativeImages?: true } {

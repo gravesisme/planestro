@@ -4,6 +4,38 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { operatorMcpUrl } from '../../routes/mcp.ts';
 import { listInstances } from '../../instances.ts';
 import type { McpServerSpec, TurnOptions, CustomToolDef } from '../ports.ts';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+
+const EXT: Record<string, string> = { 'audio/mpeg': 'mp3', 'audio/mp3': 'mp3', 'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/ogg': 'ogg', 'audio/flac': 'flac', 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'application/pdf': 'pdf' };
+
+/**
+ * A tool result as the Codex worker reads it (#366): text as text, and media (images, audio, binary resources) saved to a
+ * file with its path in its place, never a base64 string in the conversation. Files go under the system temp folder,
+ * readable from the sandbox; the worker copies what it keeps into its worktree.
+ */
+export async function toolText(result: Record<string, unknown>, server: string, dir = join(tmpdir(), 'planestro-mcp', server)): Promise<string> {
+  const parts: string[] = [];
+  const save = async (base64: string, mime?: string) => {
+    await mkdir(dir, { recursive: true });
+    const file = join(dir, `${randomUUID()}.${(mime && EXT[mime]) ?? 'bin'}`);
+    await writeFile(file, Buffer.from(base64, 'base64'));
+    return `[${mime ?? 'binary'} saved to ${file}; copy it into the worktree to keep it]`;
+  };
+  for (const c of Array.isArray(result.content) ? result.content as Record<string, any>[] : []) {
+    if (c.type === 'text') parts.push(String(c.text ?? ''));
+    else if ((c.type === 'image' || c.type === 'audio') && typeof c.data === 'string') parts.push(await save(c.data, c.mimeType));
+    else if (c.type === 'resource' && c.resource) parts.push(typeof c.resource.text === 'string' ? c.resource.text : typeof c.resource.blob === 'string' ? await save(c.resource.blob, c.resource.mimeType) : String(c.resource.uri ?? ''));
+    else if (c.type === 'resource_link') parts.push(`[${c.name ?? 'resource'}: ${c.uri}]`);
+    else parts.push(JSON.stringify(c));
+  }
+  if (!parts.length && result.structuredContent !== undefined) parts.push(JSON.stringify(result.structuredContent));
+  // The protocol's older shape (2024-10-07) carried the whole result as `toolResult`.
+  if (!parts.length && result.toolResult !== undefined) parts.push(JSON.stringify(result.toolResult));
+  return parts.join('\n') || '(no content)';
+}
 
 /** Parent-owned clients; credentials are never copied to the Codex process. */
 export async function externalTools(o: TurnOptions, onPark: () => void = () => {}): Promise<{ tools: CustomToolDef[]; close(): Promise<void> }> {
@@ -32,7 +64,10 @@ export async function externalTools(o: TurnOptions, onPark: () => void = () => {
               if (decision.action === 'park') onPark();
               if (decision.action !== 'allow') return decision.action === 'deny' ? decision.message : 'Recorded by planestro — end this turn';
               const result = await client.callTool({ name: tool.name, arguments: args });
-              return JSON.stringify(result);
+              const text = await toolText(result, name);
+              // A failed call is the tool's failure, not a success carrying an error message (#366).
+              if (result.isError) throw new Error(`${name} reported an error: ${text}`);
+              return text;
             } });
         }
         cursor = page.nextCursor;

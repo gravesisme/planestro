@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
 import YAML from 'yaml';
 import { z } from 'zod';
-import { modelCapabilities, runnerTurnSettings, type ModelDef, type Runner, getSection, planToolsMissing, epicFlagOf, holdShapeOf, heldReasonOf, previewOf, type HoldFlag, partsSummary, serializeItemFile, serializeQuestionFile, parseThread, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent, parseActivity, usageTurnData, USAGE_TURN, resolveAccount, guardKey, unavailableKey, unavailableView, sameSessionStore, DEFAULT_ACCOUNT } from '@planestro/shared';
+import { modelCapabilities, runnerTurnSettings, type ModelDef, type Runner, getSection, planToolsMissing, mcpServersNamed, epicFlagOf, holdShapeOf, heldReasonOf, previewOf, type HoldFlag, partsSummary, serializeItemFile, serializeQuestionFile, parseThread, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent, parseActivity, usageTurnData, USAGE_TURN, resolveAccount, guardKey, unavailableKey, unavailableView, sameSessionStore, DEFAULT_ACCOUNT } from '@planestro/shared';
 import { parkHint, permissionGrantRefusal } from './parks.ts';
 import { precedents, rulingsFromJournal, worktreeFinder, worstOf } from './allowSuggest.ts';
 import { hostNote, keptPathsNote } from './hostNote.ts';
@@ -493,9 +493,20 @@ export class Orchestrator {
         if (since.length) lines.push(`Merged since its worktree was cut: ${since.map((d) => `${d!.id} (${d!.merged_at!.slice(0, 16).replace('T', ' ')})`).join(', ')}. Its branch does not have that work yet: sync it (sync_with_base, or unblock_item with sync_first: true) before it resumes.`);
         const desc = getSection(item.file, 'Description'); if (desc) lines.push(`Description:\n${desc.slice(0, 1200)}`);
         const plan = getSection(item.file, 'Plan'); if (plan) lines.push(`Approved/submitted plan:\n${plan.slice(0, 2000)}`);
-        // A fact code knows (#155): the plan calls MCP tools its implementer's sessions will not have.
-        const lacks = e.type === 'plan_review' ? planToolsMissing(plan, findModel(this.store.config, fm.implementer), this.store.config.models) : [];
-        if (lacks.length) lines.push(`THE PLAN USES TOOLS ITS IMPLEMENTER (${fm.implementer}) DOES NOT HAVE: ${lacks.map((l) => `MCP server ${l.server} (${l.tools.join(', ')}): ${l.models.length ? `models that have it: ${l.models.join(', ')}` : 'no model in this project has it (planestro.local.yml mcp_servers and a model\'s mcp)'}`).join('; ')}. Do not approve it as is: set_item_fields implementer to a model that has it, or request_plan_changes without that tool, or, when no model has it, ask the user.`);
+        // A fact code knows (#155): the plan calls MCP tools its implementer's sessions will not have, or names such a server (#366).
+        const servers = Object.keys(this.store.local.mcp_servers ?? {});
+        const implDef = findModel(this.store.config, fm.implementer);
+        const lacks = e.type === 'plan_review' ? planToolsMissing(plan, implDef, this.store.config.models, servers) : [];
+        const whoHas = (l: { models: string[] }) => l.models.length ? `models that have it: ${l.models.join(', ')}` : 'no model in this project has it (planestro.local.yml mcp_servers and a model\'s mcp)';
+        const calls = lacks.filter((l) => l.tools.length), mentions = lacks.filter((l) => !l.tools.length);
+        if (calls.length) lines.push(`THE PLAN USES TOOLS ITS IMPLEMENTER (${fm.implementer}) DOES NOT HAVE: ${calls.map((l) => `MCP server ${l.server} (${l.tools.join(', ')}): ${whoHas(l)}`).join('; ')}. Do not approve it as is: set_item_fields implementer to a model that has it, or request_plan_changes without that tool, or, when no model has it, ask the user.`);
+        if (mentions.length) lines.push(`THE PLAN NAMES MCP SERVERS ITS IMPLEMENTER (${fm.implementer}) DOES NOT HAVE: ${mentions.map((l) => `${l.server}: ${whoHas(l)}`).join('; ')}. If the work calls them (generating, fetching or uploading through them), its worker will find no such tool: set_item_fields implementer to a model that has it before approving, or request_plan_changes asking the plan to name the tools it calls and state its MCP budget. If it only mentions them, approve as usual.`);
+        // And, when the item stopped (#366, HH-538): which servers its implementer carries, so "no X tool" reads as the wrong model, not broken tooling.
+        if (e.type !== 'plan_review' && (fm.blocked || fm.triage)) {
+          const recent = getSection(item.file, 'Activity').split('\n').slice(-12).join('\n');
+          const missing = mcpServersNamed(`${desc}\n${plan}\n${recent}`, [...new Set([...servers, ...this.store.config.models.flatMap((m) => m.mcp)])]).filter((s) => !(implDef?.mcp ?? []).some((x) => x.toLowerCase() === s.toLowerCase()));
+          if (missing.length) lines.push(`MCP servers (a fact planestro knows): its implementer ${fm.implementer} carries ${implDef?.mcp.length ? implDef.mcp.join(', ') : 'none'}. The item names ${missing.map((s) => { const has = this.store.config.models.filter((m) => m.mcp.some((x) => x.toLowerCase() === s.toLowerCase())).map((m) => m.id); return `${s} (${has.length ? `models that have it: ${has.join(', ')}` : 'no model in this project has it'})`; }).join(', ')}. A worker that says it has no such tool is on the wrong model, not facing broken tooling: set_item_fields implementer to a model that has it and unblock_item (a spend the user authorised stands); when no model has it, ask the user. Never file_for_maintainer for it.`);
+        }
         const activity = getSection(item.file, 'Activity').split('\n').slice(-8).join('\n'); if (activity) lines.push(`Recent activity:\n${activity}`);
         if (fm.parts?.length) lines.push(`Parts, as the worker itself reports them (${partsSummary(fm.parts)}). Quote this; never summarise the state of the work from memory or prose:\n${fm.parts.map((p) => `- ${p.name}: ${p.state}${p.reason ? ` — ${p.reason}` : ''}`).join('\n')}`);
         if (e.type === 'plan_review') {
