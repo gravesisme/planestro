@@ -557,14 +557,17 @@ describe('resume when other items merge (p14)', () => {
     expect(activityOf(store, art)).toContain('it was waiting for PR #470, closed without merging');
   });
 
-  it('a rebase conflict on resume goes to a fix turn that also carries the message', async () => {
+  it('a rebase conflict on resume goes to a fix turn, and the message follows once the rebase is finished', async () => {
     const { store, engine, flag, art, prompts } = await parked({ conflict: true });
     await engine.resumeAfter(art, [flag], 'Now wire the flag in.');
     store.mutateItem(flag, [{ set: { status: 'FINISHED' } }], 'engine');
-    await waitFor(() => prompts.length === 1);
+    await waitFor(() => prompts.length >= 2);
     expect(prompts[0].phase).toBe('fix');
     expect(prompts[0].prompt).toContain('src/conflicted.ts');
-    expect(prompts[0].prompt).toContain('Now wire the flag in.');
+    expect(prompts[0].prompt).not.toContain('Now wire the flag in.');
+    // The message is what the session does once planestro has finished the rebase with its resolution (HH-532).
+    expect(prompts[1].prompt).toContain('planestro finished rebasing your branch');
+    expect(prompts[1].prompt).toContain('Now wire the flag in.');
   });
 
   it('an item it waits for that is deleted blocks it, with the message kept; nonsense is refused', async () => {

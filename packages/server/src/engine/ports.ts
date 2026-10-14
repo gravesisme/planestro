@@ -10,7 +10,13 @@ export interface WorktreeEntry { path: string; head: string; branch?: string; ba
  * `tookBase`: conflicted files the sync resolved by taking the base's copy (a `takeBase` pattern named them, #63).
  * `refused`: nothing conflicted (`conflicts` is empty); git would not overwrite files in the worktree, `paths` (#212).
  */
-export interface RebaseResult { ok: boolean; conflicts: string[]; head: string; tookBase?: string[]; refused?: { paths: string[]; message: string } }
+export interface RebaseResult { ok: boolean; conflicts: string[]; head: string; tookBase?: string[]; refused?: { paths: string[]; message: string }; stopped?: boolean; stepFiles?: string[] }
+/**
+ * Where `continueRebase` left a rebase planestro stopped for a session (HH-532): `done` (no rebase in progress any more),
+ * `stopped` at the next commit's conflict in `files`, `markers` left in `files`, `outside` (the session changed `files`,
+ * which no conflict named), or `failed` with git's `message`. `tookBase` as RebaseResult's, for the steps it continued.
+ */
+export interface ContinueResult { state: 'done' | 'stopped' | 'markers' | 'outside' | 'failed'; files: string[]; head: string; stepFiles?: string[]; tookBase?: string[]; message?: string }
 
 /** A path pattern as the worktree settings use them: without `/` it matches the file name at any depth, with `/` the path from the root. */
 export function matchesPathPattern(path: string, pattern: string): boolean {
@@ -51,7 +57,18 @@ export interface GitPort {
   aheadBehind(cwd: string, base: string, head: string): Promise<{ ahead: number; behind: number }>;
   /** Rebase `cwd`'s HEAD onto `onto`; on conflict the rebase is aborted and the files listed. */
   /** With `takeBase`, a conflict only in files those patterns match is resolved with the base's copy and the sync goes on. */
-  rebase(cwd: string, onto: string, takeBase?: string[]): Promise<RebaseResult>;
+  /**
+   * With `stop`, a conflict is not aborted: the rebase is left stopped at it (`stopped: true`) for a session to resolve,
+   * and `stepFiles` lists what that commit changes so far, the conflicted files among them (HH-532).
+   */
+  rebase(cwd: string, onto: string, takeBase?: string[], opts?: { stop?: boolean }): Promise<RebaseResult>;
+  /**
+   * Carry on a rebase left stopped at a conflict, after a session edited the conflicted files: refused while a conflicted
+   * file still has conflict markers or the step changes a file it did not when it stopped (`step.files`); otherwise each
+   * step is staged and continued (a step left empty is skipped), a later conflict only in `takeBase` files takes the
+   * base's copy, and any other stops it again. A HEAD past `step.head` means the session continued it itself.
+   */
+  continueRebase(cwd: string, takeBase: string[], step: { conflicts: string[]; files: string[]; head: string }): Promise<ContinueResult>;
   /** Merge `ref` into `cwd`'s HEAD (integration branches merge, never rebase); aborted on conflict. */
   merge(cwd: string, ref: string, takeBase?: string[]): Promise<RebaseResult>;
   /** Put the worktree back on `sha` (its own earlier head, after a sync that has to be undone). */

@@ -14,7 +14,7 @@ Git scope
 - Target base branch: {{base_branch}}
 - Release branch: {{repo.release_branch}}
 
-Do not modify, check out, merge into, push to, or otherwise alter the project's protected branches (the target base, the release branch, or any other branch). Your writable Git scope is your assigned worker branch inside your worktree. planestro owns every integration operation: pushing, opening pull requests, rebasing, waiting for CI, merging and cleanup. Never run `git push`, `gh pr`, or check out another branch — if you believe one of those is needed, say so via `report_blocked` instead.
+Do not modify, check out, merge into, push to, or otherwise alter the project's protected branches (the target base, the release branch, or any other branch). Your writable Git scope is your assigned worker branch inside your worktree. planestro owns every integration operation: pushing, opening pull requests, rebasing, waiting for CI, merging and cleanup. Never run `git push`, `gh pr`, or check out another branch — if you believe one of those is needed, say so via `report_blocked` instead. When planestro stops one of its rebases at a conflict, it hands you the conflicted files to edit; that is the only integration step that is yours, and the rebase itself (fetching, continuing, pushing) stays planestro's.
 
 Communicating with planestro
 - The backlog item file is {{item.file}} — read it if you need context, but never edit it. Use the planestro tools instead:

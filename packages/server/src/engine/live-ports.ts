@@ -5,13 +5,18 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, renameSync, copyFileSync, u
 import { join, dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { matchesPathPattern } from './ports.ts';
-import type { GitPort, GhPort, ProcPort, WorktreeEntry, RebaseResult, CiStatus, CiQueue, PrInfo, ChangedFile, IssueInfo, PrClosure, RunnerReport, RunnerInfo, OpenJob, WorktreeSnapshot, Checkpoint } from './ports.ts';
+import type { GitPort, GhPort, ProcPort, WorktreeEntry, RebaseResult, ContinueResult, CiStatus, CiQueue, PrInfo, ChangedFile, IssueInfo, PrClosure, RunnerReport, RunnerInfo, OpenJob, WorktreeSnapshot, Checkpoint } from './ports.ts';
 
 const execFileP = promisify(execFile);
 
 /** The files a stopped rebase or merge left unmerged. */
 async function unmerged(cwd: string): Promise<string[]> {
   return (await git(cwd, ['diff', '--name-only', '--diff-filter=U'], true)).stdout.split('\n').filter(Boolean);
+}
+
+/** What the commit a rebase stopped on changes against HEAD, in the index or the tree, unmerged paths included (HH-532). */
+async function stepFiles(cwd: string): Promise<string[]> {
+  return [...new Set([...(await git(cwd, ['diff', '--name-only', 'HEAD'], true)).stdout.split('\n'), ...(await unmerged(cwd))].filter(Boolean))];
 }
 
 /**
@@ -254,13 +259,15 @@ export class LiveGitPort implements GitPort {
     const [behind, ahead] = (await git(cwd, ['rev-list', '--left-right', '--count', `${base}...${head}`])).stdout.trim().split(/\s+/).map(Number);
     return { ahead, behind };
   }
-  async rebase(cwd: string, onto: string, takeBase: string[] = []): Promise<RebaseResult> {
+  async rebase(cwd: string, onto: string, takeBase: string[] = [], opts: { stop?: boolean } = {}): Promise<RebaseResult> {
     let r = await git(cwd, ['rebase', onto], true);
     const took = new Set<string>();
     // Each replayed commit can stop on its own conflict; in a rebase `--ours` is the base being rebased onto (#63).
     for (let step = 0; r.code !== 0 && step < 500; step++) {
       const conflicts = await unmerged(cwd);
       if (!(await takeSide(cwd, conflicts, takeBase, '--ours'))) {
+        // Left stopped for a session to resolve (HH-532): only a real conflict, never a refusal (nothing is in progress then).
+        if (opts.stop && conflicts.length) return { ok: false, conflicts, head: await this.revParse(cwd, 'HEAD'), stopped: true, stepFiles: await stepFiles(cwd), ...(took.size ? { tookBase: [...took] } : {}) };
         await git(cwd, ['rebase', '--abort'], true);
         return { ok: false, conflicts, head: await this.revParse(cwd, 'HEAD'), ...(conflicts.length ? {} : { refused: refusalOf(r.stderr) }) };
       }
@@ -271,6 +278,40 @@ export class LiveGitPort implements GitPort {
     }
     if (r.code !== 0) { await git(cwd, ['rebase', '--abort'], true); return { ok: false, conflicts: [...took], head: await this.revParse(cwd, 'HEAD') }; }
     return { ok: true, conflicts: [], head: await this.revParse(cwd, 'HEAD'), ...(took.size ? { tookBase: [...took] } : {}) };
+  }
+  async continueRebase(cwd: string, takeBase: string[], step: { conflicts: string[]; files: string[]; head: string }): Promise<ContinueResult> {
+    const took = new Set<string>();
+    const tookBase = () => (took.size ? { tookBase: [...took] } : {});
+    let { conflicts, files } = step;
+    for (let n = 0; n < 500; n++) {
+      const head = await this.revParse(cwd, 'HEAD');
+      if ((await this.inProgressOp(cwd)) !== 'rebase') return { state: 'done', files: [], head, ...tookBase() };
+      // The session continued the rebase itself and it stopped again at a later commit: that commit's conflict is a new one.
+      if (n === 0 && head !== step.head) {
+        const now = await unmerged(cwd);
+        if (now.length) return { state: 'stopped', files: now, stepFiles: await stepFiles(cwd), head, ...tookBase() };
+        files = await stepFiles(cwd); conflicts = files;
+      }
+      // What this step changes now, against what it changed when it stopped (the commit's own auto-merged files included).
+      const changed = await stepFiles(cwd);
+      const outside = changed.filter((f) => !files.includes(f) && !conflicts.includes(f));
+      if (outside.length) return { state: 'outside', files: outside, head, ...tookBase() };
+      const marked = conflicts.filter((f) => { try { return /^(<{7}|>{7})( |$)/m.test(readFileSync(join(cwd, f), 'utf8')); } catch { return false; } });
+      if (marked.length) return { state: 'markers', files: marked, head, ...tookBase() };
+      if (changed.length) await git(cwd, ['add', '-A', '--', ...changed]);
+      // A step left empty by the resolution is already in the base: skipped, as the sync's own loop does.
+      const staged = (await git(cwd, ['diff', '--cached', '--quiet'], true)).code !== 0;
+      const r = staged ? await git(cwd, ['-c', 'core.editor=true', 'rebase', '--continue'], true) : await git(cwd, ['rebase', '--skip'], true);
+      if (r.code === 0) continue;
+      const next = await unmerged(cwd);
+      if (!next.length) {
+        if ((await this.inProgressOp(cwd)) !== 'rebase') continue;
+        return { state: 'failed', files: [], head: await this.revParse(cwd, 'HEAD'), message: (r.stderr || r.stdout).trim().split('\n').slice(-3).join(' ').slice(0, 300), ...tookBase() };
+      }
+      if (await takeSide(cwd, next, takeBase, '--ours')) { next.forEach((f) => took.add(f)); conflicts = []; files = await stepFiles(cwd); continue; }
+      return { state: 'stopped', files: next, stepFiles: await stepFiles(cwd), head: await this.revParse(cwd, 'HEAD'), ...tookBase() };
+    }
+    return { state: 'failed', files: [], head: await this.revParse(cwd, 'HEAD'), message: 'the rebase did not finish in 500 steps', ...tookBase() };
   }
   async merge(cwd: string, ref: string, takeBase: string[] = []): Promise<RebaseResult> {
     const r = await git(cwd, ['merge', '--no-edit', ref], true);

@@ -1,6 +1,6 @@
 import { placeholderPng } from './placeholderPng.ts';
 import { matchesPathPattern } from './ports.ts';
-import type { GitPort, GhPort, ProcPort, ClaudePort, AgentPort, AgentTurnOptions, WorktreeEntry, WorktreeSnapshot, Checkpoint, RebaseResult, CiStatus, PrInfo, PrClosure, IssueInfo, RunnerReport, TurnOptions, TurnResult, CustomTurnOptions } from './ports.ts';
+import type { GitPort, GhPort, ProcPort, ClaudePort, AgentPort, AgentTurnOptions, WorktreeEntry, WorktreeSnapshot, Checkpoint, RebaseResult, ContinueResult, CiStatus, PrInfo, PrClosure, IssueInfo, RunnerReport, TurnOptions, TurnResult, CustomTurnOptions } from './ports.ts';
 
 /**
  * An in-memory world so a dry run advances end to end: worktrees, branches, PRs whose CI
@@ -50,6 +50,12 @@ export class FakeWorld {
   conflictArmed = this.ciMode === 'conflict-once';
   /** The files a simulated conflict is in. */
   conflictFiles: string[] = ['src/conflicted.ts'];
+  /** Rebases left stopped at a conflict for a session (HH-532), by worktree: the files it stopped in. */
+  stoppedRebases = new Map<string, string[]>();
+  /** What the next continueRebase calls report, in order (a test's script); empty: the rebase finishes. */
+  continueOutcomes: Partial<ContinueResult>[] = [];
+  /** Worktrees whose conflict a sync resolved by taking the base's copy: undone (reset), the same rebase conflicts again, as git's would. */
+  conflictTaken = new Set<string>();
   /**
    * Files git would not overwrite (#212): a sync is refused while one of them is dirty in the worktree (a tracked
    * change is `src/fake.ts`), as git refuses it. `refuseArmed` refuses the next sync once, over files it names none of.
@@ -161,7 +167,7 @@ export class DryRunGitPort implements GitPort {
   async commitAll(cwd: string, message: string, _leave: string[] = []) { this.say(`git add -A && git commit -m "${message.split('\n')[0]}" (in ${cwd})`); this.w.dirty.delete(cwd); this.w.commits.set(cwd, (this.w.commits.get(cwd) ?? 0) + 1); const wt = this.w.worktrees.get(cwd); const head = this.w.sha(); if (wt) wt.head = head; return head; }
   async aheadBehind(cwd: string) { return { ahead: this.w.commits.get(cwd) ?? 0, behind: this.w.behind.get(cwd) ?? 1 }; }
   /** A simulated conflict in `w.conflictFiles`: taken from the base when every one of them is a takeBase pattern's (#63). */
-  private conflict(cwd: string, what: string, takeBase: string[]): RebaseResult | undefined {
+  private conflict(cwd: string, what: string, takeBase: string[], stop = false): RebaseResult | undefined {
     const dirt = [...(this.w.dirty.has(cwd) ? ['src/fake.ts'] : []), ...(this.w.untracked.get(cwd) ?? [])];
     const over = this.w.refuseFor.filter((p) => dirt.includes(p));
     if (over.length || this.w.refuseArmed) {
@@ -175,12 +181,18 @@ export class DryRunGitPort implements GitPort {
     if (takeBase.length && files.every((f) => takeBase.some((p) => matchesPathPattern(f, p)))) {
       this.say(`${what} in ${cwd} → CONFLICT in ${files.join(', ')} (simulated); took the base's copy`);
       const wt = this.w.worktrees.get(cwd); const head = this.w.sha(); if (wt) wt.head = head; this.w.behind.set(cwd, 0);
+      this.w.conflictTaken.add(cwd);
       return { ok: true, conflicts: [], head, tookBase: [...files] };
+    }
+    if (stop) {
+      this.say(`${what} in ${cwd} → CONFLICT (simulated); left stopped for the session`);
+      this.w.stoppedRebases.set(cwd, [...files]);
+      return { ok: false, conflicts: [...files], head: this.w.worktrees.get(cwd)?.head ?? '', stopped: true, stepFiles: [...files] };
     }
     this.say(`${what} in ${cwd} → CONFLICT (simulated)`);
     return { ok: false, conflicts: [...files], head: this.w.worktrees.get(cwd)?.head ?? '' };
   }
-  async resetHard(cwd: string, sha: string) { this.say(`git reset --hard ${sha.slice(0, 7)} (in ${cwd})`); const wt = this.w.worktrees.get(cwd); if (wt) wt.head = sha; this.w.regenerated.delete(cwd); this.w.dirty.delete(cwd); }
+  async resetHard(cwd: string, sha: string) { this.say(`git reset --hard ${sha.slice(0, 7)} (in ${cwd})`); const wt = this.w.worktrees.get(cwd); if (wt) wt.head = sha; this.w.regenerated.delete(cwd); this.w.dirty.delete(cwd); if (this.w.conflictTaken.delete(cwd)) { this.w.conflictArmed = true; this.w.behind.set(cwd, 1); } }
   async commitPaths(cwd: string, paths: string[], message: string) {
     this.say(`git commit -m "${message.split('\n')[0]}" -- ${paths.join(' ')} (in ${cwd})`);
     // What was named is committed: the fake's one tracked change, and any untracked file among them.
@@ -190,8 +202,8 @@ export class DryRunGitPort implements GitPort {
     this.w.commits.set(cwd, (this.w.commits.get(cwd) ?? 0) + 1);
     const wt = this.w.worktrees.get(cwd); const head = this.w.sha(); if (wt) wt.head = head; return head;
   }
-  async rebase(cwd: string, onto: string, takeBase: string[] = []): Promise<RebaseResult> {
-    const c = this.conflict(cwd, `git rebase ${onto}`, takeBase); if (c) return c;
+  async rebase(cwd: string, onto: string, takeBase: string[] = [], opts: { stop?: boolean } = {}): Promise<RebaseResult> {
+    const c = this.conflict(cwd, `git rebase ${onto}`, takeBase, opts.stop); if (c) return c;
     this.say(`git rebase ${onto} in ${cwd}`); const wt = this.w.worktrees.get(cwd); const head = this.w.sha(); if (wt) wt.head = head; this.w.behind.set(cwd, 0); return { ok: true, conflicts: [], head };
   }
   async merge(cwd: string, ref: string, takeBase: string[] = []): Promise<RebaseResult> {
@@ -201,8 +213,22 @@ export class DryRunGitPort implements GitPort {
     if (ref !== `origin/${wt?.branch}`) this.w.behind.set(cwd, 0);
     return { ok: true, conflicts: [], head };
   }
-  async inProgressOp() { return null; }
-  async abortInProgress() {}
+  async continueRebase(cwd: string): Promise<ContinueResult> {
+    const wt = this.w.worktrees.get(cwd);
+    if (!this.w.stoppedRebases.has(cwd)) return { state: 'done', files: [], head: wt?.head ?? '' };
+    const scripted = this.w.continueOutcomes.shift();
+    if (scripted && scripted.state && scripted.state !== 'done') {
+      this.say(`git rebase --continue in ${cwd} → ${scripted.state} (simulated)`);
+      if (scripted.state === 'stopped') this.w.stoppedRebases.set(cwd, scripted.files ?? this.w.conflictFiles);
+      return { files: [], head: wt?.head ?? '', ...scripted } as ContinueResult;
+    }
+    this.say(`git add && git rebase --continue in ${cwd}`);
+    this.w.stoppedRebases.delete(cwd);
+    const head = this.w.sha(); if (wt) wt.head = head; this.w.behind.set(cwd, 0);
+    return { state: 'done', files: [], head, ...(scripted?.tookBase ? { tookBase: scripted.tookBase } : {}) };
+  }
+  async inProgressOp(cwd?: string) { return cwd && this.w.stoppedRebases.has(cwd) ? 'rebase' as const : null; }
+  async abortInProgress(cwd?: string) { if (cwd && this.w.stoppedRebases.delete(cwd)) this.say(`git rebase --abort (in ${cwd})`); }
   private setRemote(branch: string, sha: string) {
     const previous = this.w.remoteBranches.get(branch);
     if (previous && previous !== sha && this.w.headLagPolls > 0) this.w.staleHeads.set(branch, { sha: previous, polls: this.w.headLagPolls });

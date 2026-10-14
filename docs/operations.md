@@ -14,6 +14,10 @@ review: all of it is in the item file.
 (or its LAN address). **There is no authentication**: anyone on that network can approve plans and
 start agents, so only do it on a network you trust.
 
+The API's JSON is gzipped for any client that accepts it (the board's first load is several
+megabytes on a large backlog: 18.9 MB down to 4.3 MB on one of 499 items), so a phone on slow Wi-Fi
+still loads it. The WebSocket and the MCP endpoint are never compressed.
+
 Under 840px the same UI rearranges for one hand: tabs along the bottom (Board, Icebox and Done
 share the first one), the pause lever still in the header, and the board as a single scroll under a
 strip of its seven stages — tap a stage to jump to it; an amber one holds a decision waiting on you, a red one something blocked.
