@@ -109,12 +109,17 @@ describe('DataStore', () => {
     expect(store.derived(store.getItem(epic.id)!).children).toEqual([child.id]);
     expect(store.derived(store.getItem(epic.id)!).flavor).toBe('epic');
     expect(() => store!.deleteItem(epic.id)).toThrow(/children/);
+    const toolsColor = store.config.category_colors.Tools;
+    expect(toolsColor).toMatch(/^#[0-9a-f]{6}$/);
     expect(store.renameCategory('Tools', 'Tooling')).toBe(0);
     expect(store.config.categories).toContain('Tooling');
+    expect(store.config.category_colors).toMatchObject({ Tooling: toolsColor });
+    expect(store.config.category_colors.Tools).toBeUndefined();
     store.mutateItem(child.id, [{ set: { category: 'Tooling' } }], 'user');
     expect(store.removeCategory('Tooling', 'Game')).toBe(1);
     expect(store.getItem(child.id)!.file.frontmatter.category).toBe('Game');
     expect(store.config.categories).not.toContain('Tooling');
+    expect(store.config.category_colors.Tooling).toBeUndefined();
   });
 
   it('prompts can be created and favorited; the favorite key is true or absent, and a title with a colon survives', async () => {

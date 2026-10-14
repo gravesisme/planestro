@@ -23,6 +23,23 @@ export function itemView(store: DataStore, item: StoredItem) {
   };
 }
 
+/** The newest Activity lines a summary keeps: the preview drawer shows six. */
+export const SUMMARY_ACTIVITY = 6;
+
+/**
+ * An item as /api/state lists it. A done or iceboxed item is a summary (`summary: true`): its Description and Notes (the
+ * board searches them), its newest Activity, and no Plan, Activity text or `delivered`; the page asks /api/items/:id for the
+ * rest when it is opened. Their full text made the state 19 MB on HH (460 finished items), which a resumed iPhone web app
+ * cut short and could not read. The Activity section's text is never listed: `activity` holds it parsed.
+ */
+export function listedItemView(store: DataStore, item: StoredItem) {
+  const v = itemView(store, item);
+  const sections = { ...v.sections, Activity: '' };
+  if (v.derived.lane === 'board') return { ...v, sections };
+  const { delivered: _delivered, ...frontmatter } = v.frontmatter;
+  return { ...v, frontmatter, sections: { ...sections, Plan: '' }, activity: v.activity.slice(-SUMMARY_ACTIVITY), summary: true as const };
+}
+
 /** A Codex approval as the card shows it: whether allow is possible, and if not why and what can be done (#297). Derived, never persisted. */
 function codexApprovalView<T extends { awaiting_data?: Record<string, unknown> }>(fm: T): T {
   const refusal = permissionGrantRefusal({ tool: 'CodexApproval', input: (fm.awaiting_data?.input ?? {}) as Record<string, unknown> });
@@ -132,7 +149,7 @@ export function stateView(store: DataStore, engine: { mode: string; paused: bool
     config: store.config,
     local: publicLocal(store.local),
     permissions: permissionsView(store),
-    items: store.listItems().map((i) => itemView(store, i)),
+    items: store.listItems().map((i) => listedItemView(store, i)),
     prompts: store.listPrompts().map(promptView),
     releases: store.listReleases().map((r) => releaseView(store, r)),
     schedules: store.listSchedules().map((x) => scheduleView(x)),

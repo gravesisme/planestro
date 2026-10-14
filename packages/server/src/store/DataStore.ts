@@ -968,6 +968,8 @@ export class DataStore {
     this.updateConfig((doc) => {
       const cats = (doc.get('categories') as YAML.YAMLSeq).toJSON() as string[];
       doc.set('categories', cats.map((c) => (c === from ? to : c)));
+      const color = doc.getIn(['category_colors', from]);
+      if (color !== undefined) { doc.deleteIn(['category_colors', from]); doc.setIn(['category_colors', to], color); }
       if (doc.getIn(['defaults', 'category']) === from) doc.setIn(['defaults', 'category'], to);
     }, `config: rename category ${from} → ${to} (${affected.length} items)`);
     return affected.length;
@@ -981,6 +983,7 @@ export class DataStore {
     this.updateConfig((doc) => {
       const cats = (doc.get('categories') as YAML.YAMLSeq).toJSON() as string[];
       doc.set('categories', cats.filter((c) => c !== name));
+      if (doc.hasIn(['category_colors', name])) doc.deleteIn(['category_colors', name]);
       if (doc.getIn(['defaults', 'category']) === name) doc.setIn(['defaults', 'category'], reassignTo);
     }, `config: remove category ${name} (${affected.length} items → ${reassignTo})`);
     return affected.length;

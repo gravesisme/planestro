@@ -10,6 +10,12 @@ normal sandbox; permanent rules and broader network/filesystem grants are not
 supported. A changed command asks again. This uses the protocol's per-command
 [`accept` decision](https://learn.chatgpt.com/docs/app-server#command-execution-approvals).
 
+App-server turns run with the built-in image generator off. A row with
+`native_images: true` turns it on for implement and fix turns (never planning or the
+orchestrator) and gets the same image-tool note exec art workers get. That is the one
+Codex setup with both image generation and Allow once; exec has the tool but no approval
+channel (its effective policy is `never`).
+
 planestro runs implement and fix turns on the Codex CLI for any model with
 `runner: codex` (see [Agents](agents.md)). The port is
 `packages/server/src/engine/sessions/LiveCodexPort.ts`; everything it does was established

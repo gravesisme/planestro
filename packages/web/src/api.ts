@@ -43,6 +43,8 @@ export interface ItemView {
   park_hint?: { shape: string; parks: number; rule: string } | null;
   /** Items merged into its base since its plan was cut (#217): approving syncs the branch with the base first. */
   merged_since_cut?: string[];
+  /** Set on a done or iceboxed item in /api/state: no Plan, Activity text or `delivered`, and only its newest Activity. `useFullItem` loads the rest. */
+  summary?: true;
   derived: { lane: 'board' | 'icebox' | 'done'; needs_you: boolean; external: boolean; flavor: 'worker' | 'epic' | 'external'; base_branch?: string; base_branch_error?: string; deps_satisfied: boolean; children: string[] };
 }
 export interface ReviewImage { path: string; change: 'added' | 'modified' | 'deleted'; bytes?: number; width?: number; height?: number; kind?: 'image' | 'audio' | 'model' | 'text' }
@@ -120,6 +122,7 @@ export const api = {
   patchItem: (id: string, body: { fields?: Record<string, unknown>; sections?: Record<string, string> }) => req<ItemView>('PATCH', `/api/items/${id}`, body),
   deleteItem: (id: string) => req<{ ok: true }>('DELETE', `/api/items/${id}`),
   move: (id: string, op: 'top' | 'bottom' | 'before' | 'after' | 'icebox' | 'backlog', ref?: string) => req<ItemView>('POST', `/api/items/${id}/move`, { op, ref }),
+  item: (id: string) => req<ItemView>('GET', `/api/items/${id}`),
   itemConsole: (id: string) => req<{ lines: string[] }>('GET', `/api/items/${id}/console`),
   transitions: (id: string) => req<{ to: Status; label: string }[]>('GET', `/api/items/${id}/transitions`),
   transition: (id: string, to: Status, reason?: string) => req<ItemView>('POST', `/api/items/${id}/transition`, { to, reason }),
@@ -178,7 +181,7 @@ export const api = {
   importMcpServers: (pick?: string[]) => req<{ local: LocalConfig; added: string[] }>('POST', '/api/config/mcp-servers/import', { pick }),
   markModelUnavailable: (id: string, until: string, reason?: string) => req<{ local: LocalConfig }>('PUT', `/api/models/${encodeURIComponent(id)}/unavailable`, { until, reason }),
   clearModelUnavailable: (id: string) => req<{ local: LocalConfig }>('DELETE', `/api/models/${encodeURIComponent(id)}/unavailable`),
-  categories: (body: Record<string, string>) => req<{ config: Config; affected: number }>('POST', '/api/config/categories', body),
+  categories: (body: { op: 'add'; name: string; color?: string } | { op: 'rename'; from: string; to: string } | { op: 'remove'; name: string; reassign_to: string } | { op: 'default' | 'color'; name: string; color?: string }) => req<{ config: Config; affected: number }>('POST', '/api/config/categories', body),
   pause: () => req<{ paused: boolean }>('POST', '/api/engine/pause'),
   drain: () => req<{ draining: boolean; idle: boolean; running: string[] }>('POST', '/api/engine/drain'),
   undrain: () => req<{ draining: boolean; idle: boolean; running: string[] }>('DELETE', '/api/engine/drain'),

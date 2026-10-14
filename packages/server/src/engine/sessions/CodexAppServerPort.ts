@@ -12,6 +12,7 @@ import { externalTools } from './externalTools.ts';
 import { gitWritableRoots } from './gitWritableRoots.ts';
 import { commandGrant } from './nativeApproval.ts';
 import { projectSkills, skillIndex, readSkillTool } from './projectSkills.ts';
+import { IMAGE_TOOL_NOTE } from './imageToolNote.ts';
 
 export const CODEX_TOOL_CONTRACT = 'app-server-v1';
 const REPORTS = new Set(['submit_plan', 'submit_breakdown', 'report_done', 'report_blocked']);
@@ -61,6 +62,14 @@ export function isolatedCodexHome(path: string, inheritAuth = true, authFrom = p
     } finally { if (existsSync(temporary)) unlinkSync(temporary); }
   }
   return path;
+}
+/**
+ * How to sign in again where an app-server turn reads its login: its own home, not ~/.codex, which it copied once
+ * and never reads again, so a plain `codex login` does not reach it.
+ */
+export function loginHint(home: string): string {
+  const shown = home.startsWith(homedir() + '/') ? `~/${home.slice(homedir().length + 1)}` : home;
+  return `Sign in for planestro with \`CODEX_HOME=${shown} codex login\` (a plain \`codex login\` signs in ~/.codex, which planestro does not read).`;
 }
 /**
  * The only environment a Codex process gets, on either transport: its commands inherit it, so planestro's
@@ -128,8 +137,8 @@ export class CodexAppServerPort implements AgentPort {
   }
   async runTurn(o: TurnOptions): Promise<TurnResult> {
     const result: TurnResult = { subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', tokens: 0 };
-    // Reference reading passed the read-only live probe (2026-10-07). This does not
-    // enable image creation/editing: features.image_generation is always false below.
+    // Reference reading passed the read-only live probe (2026-10-07). Image creation/editing stays off
+    // unless the row sets native_images, and then only for an implement or fix turn (HH-540).
     const bridge = await externalTools(o, () => { result.parked = 'permission'; });
     try {
       // The project's skills (#238): an index now, each one's text read from the worktree when asked.
@@ -150,6 +159,7 @@ export class CodexAppServerPort implements AgentPort {
   private async run(o: TurnOptions | CustomTurnOptions, tools: CustomToolDef[], result: TurnResult, skills = ''): Promise<TurnResult> {
     const worker = 'itemId' in o;
     const readOnly = !worker || o.phase === 'plan';
+    const images = !readOnly && (o as TurnOptions).nativeImages === true;
     const at = this.homeFor(o);
     const home = isolatedCodexHome(at.home, this.inheritAuth, at.authFrom);
     const rpc = new Connection(this.bin, home, home, this.passthrough());
@@ -195,7 +205,7 @@ export class CodexAppServerPort implements AgentPort {
           // Unauthorized was verified with an isolated, unauthenticated live fixture. Quota
           // error variants are not yet verified: do not turn unknown failures into usage data.
           result.subtype = p.turn.error.codexErrorInfo === 'unauthorized' || /401 Unauthorized/.test(p.turn.error.message ?? '') ? 'auth_required' : 'runner_error';
-          result.isError = true; result.error = p.turn.error.message;
+          result.isError = true; result.error = result.subtype === 'auth_required' ? `${p.turn.error.message} ${loginHint(home)}` : p.turn.error.message;
         }
         finish(); return;
       }
@@ -268,7 +278,7 @@ export class CodexAppServerPort implements AgentPort {
       // Effort has no thread/start or thread/resume field: the config key carries it there, `effort` on the turn (#245).
       const tier = o.serviceTier ? { serviceTier: o.serviceTier } : {};
       const params = { model: o.model, allowProviderModelFallback: false, cwd: o.cwd, sandbox: readOnly ? 'read-only' : 'workspace-write', approvalPolicy: 'on-request', ...tier,
-        config: { web_search: 'disabled', ...(o.effort ? { model_reasoning_effort: o.effort } : {}), 'sandbox_workspace_write.writable_roots': writableRoots, mcp_servers: disabled, 'features.apps': false, 'features.multi_agent': false, 'features.plugins': false, 'features.image_generation': false, 'features.skill_mcp_dependency_install': false, 'features.skip_host_skill_discovery': true }, developerInstructions: `${o.systemAppend}\n\nApp-server tool contract: use the provided dynamic tools to report; a final text message does not submit a report. Use ask_question for a worker question. During planning do not edit or commit. During implementation use apply_patch for file edits. Keep scratch files inside the worktree. Native image work is not enabled for this transport.${skills ? `\n\n${skills}` : ''}`,
+        config: { web_search: 'disabled', ...(o.effort ? { model_reasoning_effort: o.effort } : {}), 'sandbox_workspace_write.writable_roots': writableRoots, mcp_servers: disabled, 'features.apps': false, 'features.multi_agent': false, 'features.plugins': false, 'features.image_generation': images, 'features.skill_mcp_dependency_install': false, 'features.skip_host_skill_discovery': true }, developerInstructions: `${o.systemAppend}\n\nApp-server tool contract: use the provided dynamic tools to report; a final text message does not submit a report. Use ask_question for a worker question. During planning do not edit or commit. During implementation use apply_patch for file edits. Keep scratch files inside the worktree. ${images ? `\n\n${IMAGE_TOOL_NOTE}` : 'Native image work is not enabled for this transport.'}${skills ? `\n\n${skills}` : ''}`,
         ...(o.resume ? { threadId: o.resume } : { dynamicTools: tools.map((t) => ({ type: 'function', name: t.name, description: t.description, inputSchema: t.inputSchema ?? z.toJSONSchema(z.strictObject(t.schema as z.ZodRawShape)) })) }) };
       const started = await rpc.request(o.resume ? 'thread/resume' : 'thread/start', params);
       if (o.model && started.model !== o.model) throw new Error(`Requested model ${o.model} was replaced with ${started.model}`);

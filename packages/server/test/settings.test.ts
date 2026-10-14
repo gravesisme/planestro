@@ -46,6 +46,24 @@ describe('Settings writes (#83)', () => {
     expect(yml().releases.sections).toEqual([{ title: 'Store copy', max_chars: 4000, carry: true }, { title: 'Notes' }]);
   });
 
+  it('a category gets a suggested color when added; its color changes only to a #rrggbb, only for a category that exists', async () => {
+    const { send, yml, lastCommit } = await setup();
+    const used = Object.values(yml().category_colors as Record<string, string>);
+    expect(used).toHaveLength(yml().categories.length);
+    let r = await send('POST', '/config/categories', { op: 'add', name: 'Audio' });
+    expect(r.status).toBe(200);
+    expect(yml().category_colors.Audio).toMatch(/^#[0-9a-f]{6}$/);
+    expect(used).not.toContain(yml().category_colors.Audio);
+    r = await send('POST', '/config/categories', { op: 'color', name: 'Audio', color: '#FFEE00' });
+    expect(r.status).toBe(200);
+    expect(yml().category_colors.Audio).toBe('#ffee00');
+    expect(lastCommit()).toBe('config: category Audio color #ffee00');
+    expect((await send('POST', '/config/categories', { op: 'color', name: 'Audio', color: 'red' })).status).toBe(400);
+    expect((await send('POST', '/config/categories', { op: 'color', name: 'Nope', color: '#000000' })).status).toBe(400);
+    r = await send('POST', '/config/categories', { op: 'add', name: 'Video', color: '#123456' });
+    expect(yml().category_colors.Video).toBe('#123456');
+  });
+
   it('null or an empty string clears a key back to its default', async () => {
     const { send, yml, lastCommit } = await setup();
     await send('PUT', '/config', { ci: { local_check_command: 'npm run build' } });
@@ -64,6 +82,7 @@ describe('Settings writes (#83)', () => {
     await refused({ ci: { nope: 1 } }, /ci\.nope: not a setting/);
     await refused({ models: [] }, /models: not changed from here/);
     await refused({ categories: ['A'] }, /categories: not changed from here/);
+    await refused({ category_colors: { Game: '#000000' } }, /category_colors: not/);
     await refused({ permissions: { allow: ['Bash(ls*)', ' '] } }, /an entry is empty/);
     await refused({ permissions: { deny: ['Bash(rm*)', 'Bash(rm*)'] } }, /listed twice/);
     await refused({ permissions: { allow: 'Bash(ls*)' } }, /expected a list/);
@@ -114,6 +133,12 @@ describe('Settings writes (#83)', () => {
     expect(r.status).toBe(200);
     expect(yml().models.find((m: { id: string }) => m.id === 'codex-fast')).toMatchObject({ skills: true });
     await refused('PUT', '/config/models/opus-5', { label: 'Opus 5', claude_model: 'claude-opus-5', skills: true }, /only a Codex model.*skills/);
+    // The image tool on app-server (HH-540): an app-server row's switch; exec always has it, Claude never.
+    r = await send('PUT', '/config/models/codex-fast', { label: 'Codex fast', runner: 'codex', codex_model: 'gpt-x', codex_transport: 'app-server', native_images: true });
+    expect(r.status).toBe(200);
+    expect(yml().models.find((m: { id: string }) => m.id === 'codex-fast')).toMatchObject({ codex_transport: 'app-server', native_images: true });
+    await refused('PUT', '/config/models/codex-fast', { label: 'Codex fast', runner: 'codex', codex_model: 'gpt-x', native_images: true }, /native_images is for a Codex app-server row/);
+    await refused('PUT', '/config/models/opus-5', { label: 'Opus 5', claude_model: 'claude-opus-5', native_images: true }, /native_images is for a Codex app-server row/);
     expect((await send('DELETE', '/config/models/codex-fast')).status).toBe(200);
     await refused('PUT', '/config/models/opus-5', { id: 'opus-6', label: 'x', claude_model: 'c' }, /id cannot change/);
     await refused('PUT', '/config/models/bad id', { label: 'x', claude_model: 'c' }, /letters, digits/);

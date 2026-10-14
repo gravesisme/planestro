@@ -25,6 +25,7 @@ import { ActivityList } from '../components/ActivityList.tsx';
 import { prepareUpload } from '../uploadImage.ts';
 import { setTitle as setTabTitle } from '../tabBadge.ts';
 import { useLandOnWait } from '../deepLink.ts';
+import { useFullItem } from '../fullItem.ts';
 
 function useAutosave(id: string, section: 'Description' | 'Notes' | 'Plan', initial: string) {
   const [text, setText] = useState(initial);
@@ -38,7 +39,7 @@ export function ItemPage() {
   const { id = '' } = useParams();
   const nav = useNavigate();
   const state = useStore((s) => s.state);
-  const item = state?.items.find((i) => i.id === id);
+  const item = useFullItem(id);
   const [transitions, setTransitions] = useState<{ to: Status; label: string }[]>([]);
   useEffect(() => { if (item) void api.transitions(id).then(setTransitions).catch(() => setTransitions([])); }, [id, item?.frontmatter.status]);
   if (!state) return <p className="muted">Loading…</p>;

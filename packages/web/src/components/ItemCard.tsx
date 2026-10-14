@@ -7,6 +7,7 @@ import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { agentStateOf } from '../agentState.ts';
 import { confirmMove } from './QuickActions.tsx';
+import { CategoryTag } from './CategoryTag.tsx';
 import { afterChoices, columnOf, stepMove } from '../reorder.ts';
 import { connectionDropOf, decisionOf, heldReasonOf, previewOf, waitsFor } from '@planestro/shared';
 
@@ -38,7 +39,7 @@ export function ItemCard({ item, sortable = true, onSelect, selection }: {
           {selection ? <label className="provider-card-check"><input type="checkbox" checked={selection.checked} onChange={(e) => selection.onChange(e.target.checked)} /><span>{heading}</span></label> : <div>{heading}</div>}
           {fm.awaiting === 'review' && <div className="checker card-thumb"><img src={`/api/items/${item.id}/thumb?v=${encodeURIComponent(fm.updated_at)}`} alt="" onError={(e) => { (e.currentTarget.parentElement as HTMLElement).hidden = true; }} /></div>}
           <div className="meta">
-            <span className="tag">{fm.category}</span>
+            <CategoryTag name={fm.category} />
             {fm.priority && <span className={`tag prio-${fm.priority}`} title={`${fm.priority} priority`}>{fm.priority}</span>}
             {fm.kind === 'epic' && <span className="tag epic">EPIC {children.length ? `${merged}/${children.length}` : ''}</span>}
             {fm.parent && <span className="tag">↳ {fm.parent}</span>}

@@ -1,13 +1,14 @@
 import { Link } from 'react-router';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   SETTINGS, SETTINGS_TABS, canPlan, fallbackChain, fallbackProblems, findModel, getPath, looksOneOff, settingChanged, settingDefault, shownNumber, storedNumber, suggestedAllowRules, unavailableEntry,
-  RUNNERS, CODEX_EFFORTS, type Config, type ModelDef, type ReleaseSectionDef, type SettingDef, type SettingsTabId,
+  RUNNERS, CODEX_EFFORTS, categoryColors, suggestCategoryColor, type Config, type ModelDef, type ReleaseSectionDef, type SettingDef, type SettingsTabId,
 } from '@planestro/shared';
 import { api, type McpImportCandidate, type McpServerBody, type State } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { DesktopNotifications } from '../components/DesktopNotifications.tsx';
 import { ActionButton } from '../components/ActionButton.tsx';
+import { CategoryTag } from '../components/CategoryTag.tsx';
 
 /**
  * Settings (issue #83): tabs by what you are deciding, every row rendered from the shared registry
@@ -337,21 +338,42 @@ function CommandsCtl({ def, value }: { def: SettingDef; value: Record<string, st
   );
 }
 
+/** A color well that previews while it is dragged and saves once, when the pick is committed (the native change event). */
+function ColorWell({ value, label, onPreview, onCommit }: { value: string; label: string; onPreview: (c: string) => void; onCommit: (c: string) => void }) {
+  const ref = useRef<HTMLInputElement>(null);
+  const commit = useRef(onCommit); commit.current = onCommit;
+  useEffect(() => {
+    const el = ref.current; if (!el) return;
+    const on = () => commit.current(el.value);
+    el.addEventListener('change', on);
+    return () => el.removeEventListener('change', on);
+  }, []);
+  return <input ref={ref} type="color" className="color-well" aria-label={label} title={label} value={value} onChange={(e) => onPreview(e.target.value)} />;
+}
+
 function CategoriesCtl({ cfg }: { cfg: Config }) {
   const [newCat, setNewCat] = useState('');
+  const colors = categoryColors(cfg);
+  const [preview, setPreview] = useState<Record<string, string>>({});
+  const suggested = suggestCategoryColor(newCat.trim(), Object.values(colors));
+  const [newColor, setNewColor] = useState<string | undefined>();
+  const colorOf = (c: string) => preview[c] ?? colors[c];
   return (
     <div className="setting-list">
       {cfg.categories.map((c) => (
         <div className="li" key={c}>
-          <span className="grow">{c}{cfg.defaults.category === c && <span className="chip ok" style={{ marginLeft: 6 }}>default</span>}</span>
+          <ColorWell value={colorOf(c)} label={`Color of ${c}`} onPreview={(v) => setPreview((p) => ({ ...p, [c]: v }))}
+            onCommit={(v) => { void act(() => api.categories({ op: 'color', name: c, color: v })).finally(() => setPreview(({ [c]: _, ...rest }) => rest)); }} />
+          <span className="grow"><CategoryTag name={c} color={colorOf(c)} />{cfg.defaults.category === c && <span className="chip ok" style={{ marginLeft: 6 }}>default</span>}</span>
           {cfg.defaults.category !== c && <ActionButton className="small" working="Saving…" onAct={() => act(() => api.categories({ op: 'default', name: c }))}>Make default</ActionButton>}
           <ActionButton className="small" working="Renaming…" onAct={() => { const to = prompt(`Rename "${c}" to:`, c); if (to && to !== c) return act(() => api.categories({ op: 'rename', from: c, to })); }}>Rename</ActionButton>
           <ActionButton className="small danger" aria-label={`Remove ${c}`} title="Remove" disabled={cfg.categories.length < 2} working="" onAct={() => { const rest = cfg.categories.filter((x) => x !== c); const to = prompt(`Remove "${c}". Move its items to which category?\n${rest.join(', ')}`, rest[0]); if (to && rest.includes(to)) return act(() => api.categories({ op: 'remove', name: c, reassign_to: to })); }}>×</ActionButton>
         </div>
       ))}
       <form className="li add" onSubmit={(e) => e.preventDefault()}>
+        <ColorWell value={newColor ?? suggested} label="Color of the new category" onPreview={setNewColor} onCommit={setNewColor} />
         <input placeholder="New category" aria-label="New category" value={newCat} onChange={(e) => setNewCat(e.target.value)} />
-        <ActionButton className="small" type="submit" disabled={!newCat.trim()} working="Adding…" onAct={() => act(() => api.categories({ op: 'add', name: newCat.trim() })).then((r) => { if (r) setNewCat(''); })}>Add</ActionButton>
+        <ActionButton className="small" type="submit" disabled={!newCat.trim()} working="Adding…" onAct={() => act(() => api.categories({ op: 'add', name: newCat.trim(), color: newColor ?? suggested })).then((r) => { if (r) { setNewCat(''); setNewColor(undefined); } })}>Add</ActionButton>
       </form>
     </div>
   );
@@ -410,6 +432,7 @@ function ModelsCtl({ state }: { state: State }) {
                 {m.hold_for_review && <span className="chip">holds PRs for your review</span>}
                 {m.engine_commits && <span className="chip">planestro commits for it</span>}
                 {runner === 'codex' && m.skills && <span className="chip">project skills</span>}
+                {runner === 'codex' && m.native_images && <span className="chip">image tool</span>}
                 {m.mcp.length > 0 && <span className="chip">MCP: {m.mcp.join(', ')}{m.mcp_calls_per_item ? ` (≤${m.mcp_calls_per_item} calls)` : ''}</span>}
               </h4>
               <div className="facts">
@@ -448,7 +471,7 @@ function ModelDialog({ cfg, model, mcpNames, onClose }: { cfg: Config; model?: M
     if (!id || !m.label?.trim()) { complain('A model needs an id and a label'); return; }
     if (!model && cfg.models.some((x) => x.id === id)) { complain(`There is already a model ${id}`); return; }
     const codex = runner === 'codex';
-    const body: Partial<ModelDef> = { ...m, id, claude_model: codex ? undefined : m.claude_model, codex_model: codex ? m.codex_model : undefined, codex_effort: codex ? m.codex_effort : undefined, codex_tier: codex ? m.codex_tier : undefined, skills: codex ? m.skills : undefined };
+    const body: Partial<ModelDef> = { ...m, id, claude_model: codex ? undefined : m.claude_model, codex_model: codex ? m.codex_model : undefined, codex_effort: codex ? m.codex_effort : undefined, codex_tier: codex ? m.codex_tier : undefined, skills: codex ? m.skills : undefined, native_images: codex && m.codex_transport === 'app-server' ? m.native_images : undefined };
     if (await act(() => api.putModel(id, body))) onClose();
   };
   return (
@@ -468,6 +491,7 @@ function ModelDialog({ cfg, model, mcpNames, onClose }: { cfg: Config; model?: M
         <label>When out of usage <select value={m.fallback ?? ''} onChange={(e) => set({ fallback: e.target.value || undefined })}><option value="">Block (no fallback)</option>{fallbacks.map((x) => <option key={x.id} value={x.id}>Fall back to {x.label}</option>)}</select></label>
         <label className="check"><input type="checkbox" checked={m.hold_for_review ?? false} onChange={(e) => set({ hold_for_review: e.target.checked })} /> Hold its pull requests for your review</label>
         <label className="check"><input type="checkbox" checked={m.engine_commits ?? false} onChange={(e) => set({ engine_commits: e.target.checked })} /> planestro commits for it (a sandbox that cannot write git's files)</label>
+        {runner === 'codex' && m.codex_transport === 'app-server' && <label className="check"><input type="checkbox" checked={m.native_images ?? false} onChange={(e) => set({ native_images: e.target.checked || undefined })} /> Give its implement turns the built-in image tool <span className="muted">(exec rows always have it)</span></label>}
         {runner === 'codex' && <label className="check"><input type="checkbox" checked={m.skills ?? false} onChange={(e) => set({ skills: e.target.checked })} /> Give its workers the project's skills <span className="muted">(.claude/skills)</span></label>}
         <label className="check"><input type="checkbox" checked={m.external ?? false} onChange={(e) => set({ external: e.target.checked })} /> External: not run by planestro, its items are only watched</label>
         {(runner === 'claude' || m.codex_transport === 'app-server') && <fieldset><legend className="small muted">MCP servers its sessions get {servers.length ? '' : '(none on this machine: add one under Access → MCP servers)'}</legend>

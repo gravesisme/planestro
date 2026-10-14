@@ -17,6 +17,8 @@ import { ChildrenTable, epicChildren } from './EpicChildren.tsx';
 import { ActivityList } from './ActivityList.tsx';
 import { decisionOf, findModel, modelCapabilities } from '@planestro/shared';
 import { isActiveItem, nowOf, phaseTrack } from '../drawerNow.ts';
+import { useFullItem } from '../fullItem.ts';
+import { CategoryTag } from './CategoryTag.tsx';
 
 const LIVE_STATUSES = ['PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW', 'MERGED'];
 const shortStamp = (at: string) => at.slice(5, 16).replace('T', ' ');
@@ -24,7 +26,7 @@ const shortStamp = (at: string) => at.slice(5, 16).replace('T', ' ');
 /** Single-click preview of a board item, with a link to the full details view. */
 export function PreviewDrawer({ id, onClose }: { id: string; onClose: () => void }) {
   const state = useStore((s) => s.state);
-  const item = state?.items.find((i) => i.id === id);
+  const item = useFullItem(id);
   const [descOpen, setDescOpen] = useState(false);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -115,7 +117,7 @@ export function PreviewDrawer({ id, onClose }: { id: string; onClose: () => void
         {session && <span className="pill">session {session.busy ? 'running' : 'idle'}</span>}
       </div>
       <p className="small muted" style={{ margin: '4px 0' }}>
-        {fm.category}{fm.priority ? ` · ${fm.priority} priority` : ''} · {fm.planner}{fm.implementer !== fm.planner ? ` → ${fm.implementer}` : ''}
+        <CategoryTag name={fm.category} />{fm.priority ? ` · ${fm.priority} priority` : ''} · {fm.planner}{fm.implementer !== fm.planner ? ` → ${fm.implementer}` : ''}
         {fm.branch ? <> · <code>{fm.branch}</code></> : null}
         {fm.pr ? <> · <a href={`https://github.com/${state!.config.code_repo.github}/pull/${fm.pr}`} target="_blank" rel="noreferrer">PR #{fm.pr}</a>{fm.ci_result ? ` (CI ${fm.ci_result})` : ''}</> : null}
       </p>

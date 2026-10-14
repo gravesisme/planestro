@@ -29,7 +29,7 @@ Codex native sandbox requests are recorded and immediately declined so no proces
 - Finished, merged and iceboxed items are outside this screen's unfinished backlog.
 - An unavailable destination model cannot be selected.
 
-Existing art workers keep their model and `exec` transport. If an item is already implementing or in review, changing only its planner affects future planning; it does not start another turn or save an old task for that future plan. The bulk switch can change their planner, but never silently moves their implementation or existing PR to the general-purpose Codex transport. App-server image generation and image-to-image are not enabled.
+Existing art workers keep their model and `exec` transport. If an item is already implementing or in review, changing only its planner affects future planning; it does not start another turn or save an old task for that future plan. The bulk switch can change their planner, but never silently moves their implementation or existing PR to the general-purpose Codex transport. App-server image generation is off unless the row sets `native_images: true` ([Configuration](configuration.md)): then its implement and fix turns get the built-in image tool and Allow once together. Moving an art row from exec to app-server starts its items on a fresh thread (the tool contract changes); their worktrees, including `tmp/`, are kept.
 
 ## Budgets and usage pauses
 

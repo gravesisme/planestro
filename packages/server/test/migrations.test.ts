@@ -30,12 +30,24 @@ describe('migrations', () => {
     writeFileSync(path, yaml);
     const cfg = join(dataDir, 'planestro.yml');
     writeFileSync(cfg, readFileSync(cfg, 'utf8').replace(`schema_version: ${SCHEMA_VERSION}`, 'schema_version: 3'));
-    expect((await migrate(dataDir)).applied).toEqual([4, 5, 6, 7, 8]);
+    expect((await migrate(dataDir)).applied).toEqual([4, 5, 6, 7, 8, 9]);
     store = await DataStore.open(dataDir, { lock: false });
     expect(store.requireItem(item.id).file.frontmatter).toMatchObject({ session_id: 'old-claude', cost_usd: 4, agent_sessions: { codex: { session_id: 'old-art', transport: 'exec', tool_contract: 'exec-v1' } } });
     expect(readFileSync(path, 'utf8')).toContain('Keep this context');
     store.close();
     expect((await migrate(dataDir)).applied).toEqual([]);
+  });
+  it('schema 9 suggests a distinct color for each category without one and keeps the ones set', async () => {
+    const { dataDir } = makeFixture({ git: false });
+    const cfg = join(dataDir, 'planestro.yml');
+    writeFileSync(cfg, readFileSync(cfg, 'utf8').replace(`schema_version: ${SCHEMA_VERSION}`, 'schema_version: 8').replace(/^category_colors:\n(?:  .*\n)+/m, 'category_colors:\n  Game: "#ff0000"\n'));
+    expect((await migrate(dataDir)).applied).toEqual([9]);
+    const store = await DataStore.open(dataDir, { lock: false });
+    const colors = store.config.category_colors;
+    expect(colors.Game).toBe('#ff0000');
+    expect(Object.keys(colors).sort()).toEqual([...store.config.categories].sort());
+    expect(new Set(Object.values(colors)).size).toBe(store.config.categories.length);
+    store.close();
   });
   it('an older dir migrates forward and stamps the version', async () => {
     const { dataDir } = makeFixture({ git: false });
@@ -43,7 +55,7 @@ describe('migrations', () => {
     writeFileSync(cfg, readFileSync(cfg, 'utf8').replace(`schema_version: ${SCHEMA_VERSION}`, 'schema_version: 0'));
     const r = await migrate(dataDir);
     expect(r.from).toBe(0);
-    expect(r.applied).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(r.applied).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
     expect(currentVersion(dataDir)).toBe(SCHEMA_VERSION);
     expect(readFileSync(cfg, 'utf8')).toContain('# planestro project config'); // comments preserved
   });
@@ -55,7 +67,7 @@ describe('migrations', () => {
     expect(before.readOnly).toBe(true); // an older dir is never rewritten behind the user's back
     before.close();
     const r = await migrate(dataDir);
-    expect(r.applied).toEqual([2, 3, 4, 5, 6, 7, 8]); // and 3, which finds no questions to import
+    expect(r.applied).toEqual([2, 3, 4, 5, 6, 7, 8, 9]); // and 3, which finds no questions to import
     const text = readFileSync(cfg, 'utf8');
     expect(text).toContain('max_local_jobs: 4');
     expect(text).not.toContain('godot');
