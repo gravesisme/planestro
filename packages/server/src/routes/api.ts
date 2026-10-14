@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { managedAttachmentPath } from '../store/managedAttachments.ts';
 import { existsSync, readFileSync } from 'node:fs';
 import YAML from 'yaml';
-import { allowedTransitions, parsePromptFile, RenderError, STATUSES, PRIORITIES, type Priority, PROMPT_KINDS, RELEASE_STATUSES, KINDS, markUnavailable, CHAT_ATTACHMENTS_DIR, type Status, type Actor, usageReport, dayBefore, USAGE_REPORT_TYPES, isoLocal } from '@planestro/shared';
+import { allowedTransitions, parsePromptFile, RenderError, STATUSES, PRIORITIES, type Priority, PROMPT_KINDS, RELEASE_STATUSES, KINDS, markUnavailable, CHAT_ATTACHMENTS_DIR, type Status, type Actor, usageReport, dayBefore, USAGE_REPORT_TYPES, isoLocal, HEX_COLOR, suggestCategoryColor } from '@planestro/shared';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Engine } from '../engine/Engine.ts';
 import type { ConsoleBuffer } from '../store/ConsoleBuffer.ts';
@@ -437,13 +437,23 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   api.post('/config/categories', async (c) => {
     try {
       const body = z.discriminatedUnion('op', [
-        z.object({ op: z.literal('add'), name: z.string().min(1) }),
+        z.object({ op: z.literal('add'), name: z.string().min(1), color: z.string().regex(HEX_COLOR, 'a #rrggbb color').optional() }),
         z.object({ op: z.literal('rename'), from: z.string().min(1), to: z.string().min(1) }),
         z.object({ op: z.literal('remove'), name: z.string().min(1), reassign_to: z.string().min(1) }),
         z.object({ op: z.literal('default'), name: z.string().min(1) }),
+        z.object({ op: z.literal('color'), name: z.string().min(1), color: z.string().regex(HEX_COLOR, 'a #rrggbb color') }),
       ]).parse(await c.req.json());
       let affected = 0;
-      if (body.op === 'add') store.updateConfig((doc) => { const cats = (doc.get('categories') as YAML.YAMLSeq).toJSON() as string[]; if (!cats.includes(body.name)) doc.set('categories', [...cats, body.name]); }, `config: add category ${body.name}`);
+      if (body.op === 'add') store.updateConfig((doc) => {
+        const cats = (doc.get('categories') as YAML.YAMLSeq).toJSON() as string[];
+        if (cats.includes(body.name)) return;
+        doc.set('categories', [...cats, body.name]);
+        doc.setIn(['category_colors', body.name], (body.color ?? suggestCategoryColor(body.name, Object.values(store.config.category_colors))).toLowerCase());
+      }, `config: add category ${body.name}`);
+      else if (body.op === 'color') {
+        if (!store.config.categories.includes(body.name)) throw new Error(`unknown category ${body.name}`);
+        store.updateConfig((doc) => { doc.setIn(['category_colors', body.name], body.color.toLowerCase()); }, `config: category ${body.name} color ${body.color.toLowerCase()}`);
+      }
       else if (body.op === 'rename') affected = store.renameCategory(body.from, body.to);
       else if (body.op === 'remove') affected = store.removeCategory(body.name, body.reassign_to);
       else store.updateConfig((doc) => { doc.setIn(['defaults', 'category'], body.name); }, `config: default category ${body.name}`);

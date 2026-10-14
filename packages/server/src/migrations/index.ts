@@ -1,4 +1,4 @@
-import { SCHEMA_VERSION, QUESTION_SECTIONS, canonicalTimestamp, isoLocal, parseItemFile, serializeQuestionFile, setQuestionSection, appendThread, type QuestionFile } from '@planestro/shared';
+import { SCHEMA_VERSION, categoryColors, QUESTION_SECTIONS, canonicalTimestamp, isoLocal, parseItemFile, serializeQuestionFile, setQuestionSection, appendThread, type QuestionFile } from '@planestro/shared';
 import YAML from 'yaml';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -10,6 +10,17 @@ export interface Migration { version: number; describe: string; up(dataDir: stri
 
 /** Ordered by version; each `up` takes the dir from version-1 to version. */
 export const MIGRATIONS: Migration[] = [
+  { version: 9, describe: 'each category has a tag color (category_colors), suggested for the categories that have none', up(dataDir, log) {
+    const path = join(dataDir, CONFIG_FILE);
+    const doc = YAML.parseDocument(readFileSync(path, 'utf8'));
+    const categories = (doc.get('categories') as YAML.YAMLSeq | undefined)?.toJSON() as string[] | undefined;
+    if (!categories?.length) return;
+    const stored = ((doc.get('category_colors') as YAML.YAMLMap | undefined)?.toJSON() ?? {}) as Record<string, string>;
+    const added = Object.entries(categoryColors({ categories, category_colors: stored })).filter(([c]) => stored[c] === undefined);
+    for (const [c, color] of added) doc.setIn(['category_colors', c], color);
+    if (added.length) atomicWrite(path, doc.toString({ lineWidth: 0 }));
+    log(`  suggested a color for ${added.length} categor${added.length === 1 ? 'y' : 'ies'}`);
+  } },
   { version: 8, describe: 'an item imported from a GitHub issue carries source: {github_issue, closes?}', up() { /* A new item key; nothing to rewrite. Older readers must not drop source, which keeps an issue from being imported twice. */ } },
   { version: 7, describe: 'schedules (schedules/<name>.md) file an item at each cron slot; an item filed by one carries scheduled_from', up() { /* A new file type and item key; nothing to rewrite. Older readers must not drop scheduled_from, which keeps a slot from being filed twice. */ } },
   { version: 6, describe: 'an item can wait on an audition of takes the user picks from (awaiting: audition)', up() { /* A new awaiting value; existing items are unchanged. Older readers must not open an item parked on one. */ } },

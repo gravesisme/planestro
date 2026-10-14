@@ -5,7 +5,7 @@
 import { z } from 'zod';
 import { parseCron, validTimeZone } from './cron.ts';
 
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 export const STATUSES = [
   'NOT_YET_SUBMITTED', 'QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY',
@@ -450,6 +450,8 @@ export const Config = z.object({
     auto_approve_plan: z.boolean().default(false),
   }),
   categories: z.array(z.string().min(1)).min(1),
+  /** A background color per category (`#rrggbb`), for its tag on the board; the text on it is chosen to contrast (contrastText). A category missing one is given a suggestion. */
+  category_colors: z.record(z.string(), z.string().regex(/^#[0-9a-fA-F]{6}$/, 'a #rrggbb color')).default({}),
   /** Per-item spend ceiling across all of its turns; a turn starts with what remains. */
   budget_usd_per_item: z.number().positive().default(25),
   /** What one planning turn may spend: a planner that researches for $97 without handing in a plan (HH-162) is stopped here and asked for the plan it has. */

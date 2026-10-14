@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, copyFileSync, writeFileSync, appendFileSync } from 'node:fs';
 import { join, resolve, relative, basename } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { SCHEMA_VERSION } from '@planestro/shared';
+import { SCHEMA_VERSION, categoryColors } from '@planestro/shared';
 import { CONFIG_FILE, TOOL_VERSION, registerProject } from './config.ts';
 import { isoLocal } from '@planestro/shared';
 import { assertSafePlanningGit, ensurePlanningIgnores, safePlanningPaths, planningStagePaths } from './store/planningGitSafety.ts';
@@ -87,6 +87,9 @@ defaults:
   category: ${yamlStr(categories.at(-1)!)}
 categories:
 ${categories.map((c) => `  - ${yamlStr(c)}`).join('\n')}
+# Each category's tag color on the board (Settings → Categories); the text on it is picked to contrast.
+category_colors:
+${Object.entries(categoryColors({ categories })).map(([c, color]) => `  ${yamlStr(c)}: "${color}"`).join('\n')}
 concurrency:
   max_sessions: 3
   max_local_jobs: 1

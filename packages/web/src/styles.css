@@ -585,3 +585,8 @@ input.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 .status-popover dl.concurrency-signals { margin: 12px 0 6px; gap: 4px 12px; } .concurrency-signals dd { text-align: right; overflow-wrap: anywhere; }
 .concurrency-reasons { margin: 4px 0; padding-left: 18px; font-size: 12px; } .concurrency-reasons.warn { color: var(--warn); }
 .concurrency-last { margin-top: 8px; } .concurrency-last p { margin: 0 0 6px; }
+
+/* A category tag in its own color (category_colors); its text color is set inline to contrast with it. */
+.tag.cat { font-weight: 500; display: inline-block; }
+.color-well, .setting-list .li.add input.color-well { flex: none; width: 22px; height: 22px; padding: 0; border: 1px solid var(--line); border-radius: 4px; background: none; cursor: pointer; }
+.color-well::-webkit-color-swatch-wrapper { padding: 2px; } .color-well::-webkit-color-swatch { border: 0; border-radius: 2px; } .color-well::-moz-color-swatch { border: 0; border-radius: 2px; }
