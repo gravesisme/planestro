@@ -1590,6 +1590,20 @@ export class LiveEngine implements Engine {
             this.store.mutateItem(id, [{ set: { op_data: data } }, { activity: { actor: 'app', text: 'one-shot command approval consumed' } }], 'engine', { commit: `${id}: consume command approval` });
             return 'allow';
           }
+          // A person's allow rule answers an app-server runner's command as it answers a Claude worker's Bash (HH-535: seven Blender
+          // renders, each a park, an orchestrator wake and a card). Only one complete local command in this worktree, its
+          // shell launcher unwrapped, nothing denying any form of it, and only rules a person wrote: planestro's defaults
+          // are for commands a sandbox would run anyway, and this one runs outside it.
+          const native = modelCapabilities(def).transport === 'app-server' ? commandGrant(req) : undefined;
+          if (native && native.cwd === cwd) {
+            const forms = commandForms(native.command);
+            const rule = forms.some((command) => policy.deny({ tool: 'Bash', input: { command } })) ? undefined
+              : this.store.permissionRules().allow.find((r) => allowedByRules({ tool: 'Bash', input: { command: forms.at(-1)! } }, [r], cwd, { readOnly: phase === 'plan' }));
+            if (rule) {
+              this.store.mutateItem(id, [{ activity: { actor: 'app', text: `allowed by rule ${rule}: ${forms.at(-1)!.slice(0, 300)}` } }], 'engine');
+              return 'allow';
+            }
+          }
           const park = this.recordPark(id, 'permission', String(req.input.command ?? req.tool), this.permissionsDelegated() ? 'orchestrator' : 'user');
           this.store.mutateItem(id, [{ set: { awaiting: 'permission', awaiting_data: { tool: req.tool, input: req.input, grantable: !permissionGrantRefusal(req), requested_at: this.now(), park } } }, { activity: { actor: 'app', text: 'Runner permission request recorded; turn ended for a decision' } }], 'engine', { commit: `${id}: awaiting permission` });
         }, permissionMode: phase === 'plan' ? 'plan' : 'acceptEdits', prompt, resume: resumeId, images,
