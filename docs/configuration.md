@@ -113,6 +113,7 @@ instead of your login. A `planestro.local.yml` that still has `anthropic_api_key
 | `defaults.allow_model_fallback` | `false` | New items start with **allow fallback model** ticked; an epic's children inherit the epic's setting. |
 | `defaults.auto_approve_plan` | `false` | New items start with **let the orchestrator approve the plan** ticked (the New item dialog, the orchestrator's `create_item`, an epic's children), except art models that require your approval or use legacy exec. General Codex app-server models can delegate plan review. Untick it on any item. Only matters while `orchestrator.may_approve_plans` is on. |
 | `categories` | — | The list items choose from. Rename and remove in Settings, which reassigns items. |
+| `category_colors` | suggested | Each category's tag color on the board, `Name: "#rrggbb"`. A new category gets an unused color from a palette (schema 9 gave every existing one a color); pick another in Settings → Categories. The tag's text is dark or white, whichever contrasts more with the color. |
 
 ### Budgets and concurrency
 

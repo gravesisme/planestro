@@ -133,9 +133,9 @@ describe('schema 3 migration', () => {
     before.close();
 
     const r = await migrate(dataDir);
-    expect(r.applied).toEqual([3, 4, 5, 6, 7, 8]);
+    expect(r.applied).toEqual([3, 4, 5, 6, 7, 8, 9]);
     expect(readdirSync(join(dataDir, 'questions')).sort()).toEqual(['Q-1.md', 'Q-2.md', 'Q-3.md', 'Q-4.md']);
-    expect(git(dataDir, 'log', '-1', '--format=%s')).toBe('planestro: migrate schema 2 → 8\n');
+    expect(git(dataDir, 'log', '-1', '--format=%s')).toBe('planestro: migrate schema 2 → 9\n');
     expect(git(dataDir, 'status', '--porcelain', '--', 'questions', 'planestro.yml')).toBe('');
 
     const s2 = await DataStore.open(dataDir);
