@@ -20,7 +20,7 @@ it('enforces external permission/call budgets before forwarding, scopes calls, a
   let used = 0, parked = false;
   const bridge = await externalTools({ ...base, onPermission: async () => ++used <= 1 ? { action: 'allow' } : { action: 'park' } }, () => { parked = true; });
   const scope = new ScopedTools('thread', 'turn', bridge.tools);
-  const request = { threadId: 'thread', turnId: 'turn', callId: 'one', tool: 'mcp__service__create', arguments: { prompt: 'synthetic' } };
+  const request = { threadId: 'thread', turnId: 'turn', callId: 'one', tool: 'service__create', arguments: { prompt: 'synthetic' } };
   await scope.call(request); await scope.call(request);
   expect(calls.forwarded).toBe(1); expect(used).toBe(1);
   expect(await scope.call({ ...request, callId: 'two' })).toContain('Recorded by planestro');
@@ -38,13 +38,13 @@ it.each(['http://0.0.0.0:4300/mcp', 'http://0:4300/mcp', 'http://[::]:4300/mcp',
 it('does not offer external services to a read-only planner or expose operator tools', async () => {
   await expect(externalTools({ ...base, phase: 'plan' })).rejects.toThrow('read-only');
   const bridge = await externalTools({ ...base, onPermission: async () => ({ action: 'deny', message: 'Denied' }) });
-  expect(bridge.tools.map((t) => t.name)).toEqual(['mcp__service__create']);
+  expect(bridge.tools.map((t) => t.name)).toEqual(['service__create']);
   await bridge.close();
 });
 it("returns the tool's text, and a tool error as a failed call rather than a success (#366)", async () => {
   const bridge = await externalTools({ ...base, onPermission: async () => ({ action: 'allow' }) });
   const scope = new ScopedTools('thread', 'turn', bridge.tools);
-  const request = { threadId: 'thread', turnId: 'turn', callId: 'one', tool: 'mcp__service__create', arguments: { prompt: 'synthetic' } };
+  const request = { threadId: 'thread', turnId: 'turn', callId: 'one', tool: 'service__create', arguments: { prompt: 'synthetic' } };
   expect(await scope.call(request)).toBe('created');
   calls.result = { isError: true, content: [{ type: 'text', text: 'quota exceeded' }] };
   await expect(scope.call({ ...request, callId: 'two' })).rejects.toThrow('service reported an error: quota exceeded');
@@ -61,4 +61,17 @@ it('saves media to a file and names it, never base64 in the conversation (#366)'
   expect(text).toContain('Generated 1 take');
   expect(text).toContain('[take: file:///x.mp3]');
   expect(await toolText({ content: [], structuredContent: { ok: 1 } }, 'service', dir)).toBe('{"ok":1}');
+});
+it("offers Codex names it accepts, never its reserved mcp__ prefix, and asks planestro under the MCP name (#366, Codex 0.162)", async () => {
+  const asked: string[] = [];
+  const bridge = await externalTools({ ...base, onPermission: async (r) => { asked.push(r.tool); return { action: 'allow' }; } });
+  expect(bridge.tools.every((t) => t.name !== 'mcp' && !t.name.startsWith('mcp__') && /^[A-Za-z0-9_-]{1,128}$/.test(t.name))).toBe(true);
+  const scope = new ScopedTools('thread', 'turn', bridge.tools);
+  await scope.call({ threadId: 'thread', turnId: 'turn', callId: 'one', tool: 'service__create', arguments: { prompt: 'x' } });
+  expect(asked).toEqual(['mcp__service__create']);
+  scope.close(); await bridge.close();
+  const { dynamicName } = await import('../src/engine/sessions/externalTools.ts');
+  expect(dynamicName('mcp', 'x', [])).toBe('ext_mcp__x');
+  expect(dynamicName('svc', 'a.b c', [])).toBe('svc__a_b_c');
+  expect(dynamicName('svc', 'a.b', [{ name: 'svc__a_b' }])).toBe('svc__a_b_2');
 });

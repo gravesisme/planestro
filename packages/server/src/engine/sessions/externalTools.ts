@@ -37,6 +37,16 @@ export async function toolText(result: Record<string, unknown>, server: string, 
   return parts.join('\n') || '(no content)';
 }
 
+/** The name a Codex thread is offered for an MCP tool: `<server>__<tool>`, never `mcp`/`mcp__…` (reserved), unique, ≤128 of [A-Za-z0-9_-]. */
+export function dynamicName(server: string, tool: string, taken: readonly { name: string }[]): string {
+  let base = `${server}__${tool}`.replace(/[^A-Za-z0-9_-]/g, '_');
+  if (base === 'mcp' || base.startsWith('mcp__')) base = `ext_${base}`;
+  base = base.slice(0, 120);
+  let name = base;
+  for (let n = 2; taken.some((t) => t.name === name); n++) name = `${base}_${n}`;
+  return name;
+}
+
 /** Parent-owned clients; credentials are never copied to the Codex process. */
 export async function externalTools(o: TurnOptions, onPark: () => void = () => {}): Promise<{ tools: CustomToolDef[]; close(): Promise<void> }> {
   const clients: Client[] = [];
@@ -57,8 +67,12 @@ export async function externalTools(o: TurnOptions, onPark: () => void = () => {
       do {
         const page = await client.listTools({ cursor });
         for (const tool of page.tools) {
+          // planestro's name for the call (permissions, the call cap, plans) is the MCP one; Codex reserves `mcp` and
+          // `mcp__…` for its own servers and refuses a thread that offers them (#366, HH-538 on 0.162), so the
+          // thread is offered `<server>__<tool>`, held to the Responses API's identifier rules.
           const fullName = `mcp__${name}__${tool.name}`;
-          tools.push({ name: fullName, description: tool.description ?? tool.name, schema: {}, inputSchema: tool.inputSchema,
+          const offered = dynamicName(name, tool.name, tools);
+          tools.push({ name: offered, description: `${tool.description ?? tool.name} (MCP server ${name}, tool ${tool.name})`, schema: {}, inputSchema: tool.inputSchema,
             handler: async (args) => {
               const decision = await o.onPermission({ tool: fullName, input: args });
               if (decision.action === 'park') onPark();
