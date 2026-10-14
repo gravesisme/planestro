@@ -114,6 +114,12 @@ describe('Settings writes (#83)', () => {
     expect(r.status).toBe(200);
     expect(yml().models.find((m: { id: string }) => m.id === 'codex-fast')).toMatchObject({ skills: true });
     await refused('PUT', '/config/models/opus-5', { label: 'Opus 5', claude_model: 'claude-opus-5', skills: true }, /only a Codex model.*skills/);
+    // The image tool on app-server (HH-540): an app-server row's switch; exec always has it, Claude never.
+    r = await send('PUT', '/config/models/codex-fast', { label: 'Codex fast', runner: 'codex', codex_model: 'gpt-x', codex_transport: 'app-server', native_images: true });
+    expect(r.status).toBe(200);
+    expect(yml().models.find((m: { id: string }) => m.id === 'codex-fast')).toMatchObject({ codex_transport: 'app-server', native_images: true });
+    await refused('PUT', '/config/models/codex-fast', { label: 'Codex fast', runner: 'codex', codex_model: 'gpt-x', native_images: true }, /native_images is for a Codex app-server row/);
+    await refused('PUT', '/config/models/opus-5', { label: 'Opus 5', claude_model: 'claude-opus-5', native_images: true }, /native_images is for a Codex app-server row/);
     expect((await send('DELETE', '/config/models/codex-fast')).status).toBe(200);
     await refused('PUT', '/config/models/opus-5', { id: 'opus-6', label: 'x', claude_model: 'c' }, /id cannot change/);
     await refused('PUT', '/config/models/bad id', { label: 'x', claude_model: 'c' }, /letters, digits/);
