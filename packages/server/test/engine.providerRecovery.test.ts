@@ -349,3 +349,27 @@ it('resumes after permission rulings without charging turns against the cap (#29
   expect(store.requireItem(id).file.frontmatter.blocked_reason).toBe('turn_budget');
   expect(ctx.calls).toHaveLength(6);
 });
+
+it("answers a Codex command from the person's allow rules, as for Claude's Bash; denials, other folders and defaults still park (HH-535)", async () => {
+  const blender = `/Applications/Blender.app/Contents/MacOS/Blender --background tmp/rig.blend --python tmp/render_09.py`;
+  const seen: unknown[] = [];
+  let reqs: { tool: string; input: Record<string, unknown> }[] = [];
+  const ctx = await setup(async (o) => {
+    for (const r of reqs) seen.push(await o.onApproval!(r));
+    return { ...success, parked: 'permission' };
+  });
+  store.updateConfig((d) => { d.setIn(['permissions', 'allow'], [...store.config.permissions.allow, 'Bash(/Applications/Blender.app/Contents/MacOS/Blender --background *)@worktree']); }, 'config: blender rule');
+  const ask = (command: string, cwd = ctx.codeRepo) => ({ tool: 'CodexApproval', input: { method: 'item/commandExecution/requestApproval', command, cwd } });
+  reqs = [
+    ask(`/bin/zsh -lc '${blender}'`),                              // the rule, behind Codex's launcher: allowed now
+    ask(`/bin/zsh -lc '${blender} && git push origin worker'`),    // a hard denial in the same command: parks
+    ask(`/bin/zsh -lc '${blender}'`, '/outside'),                  // not this worktree: parks
+    ask(`/bin/zsh -lc 'git status'`),                              // only planestro's defaults cover it: parks
+  ];
+  const id = ctx.item({ implementer: 'codex-general' });
+  await (engine as any).runTurnFor(id, 'implement', 'Render iteration 09');
+  expect(seen).toEqual(['allow', undefined, undefined, undefined]);
+  const activity = (await import('@planestro/shared')).getSection(store.requireItem(id).file, 'Activity');
+  expect(activity).toContain(`allowed by rule Bash(/Applications/Blender.app/Contents/MacOS/Blender --background *)@worktree: ${blender}`);
+  expect(store.requireItem(id).file.frontmatter.awaiting).toBe('permission');
+});
