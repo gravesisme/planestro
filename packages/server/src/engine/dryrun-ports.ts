@@ -401,6 +401,9 @@ export class DryRunClaudePort implements ClaudePort {
     const onQuestion = /^Event: question_message\nQuestion (Q-\d+)/m.exec(o.prompt)?.[1];
     const replyOn = o.mcpTools.find((t) => t.name === 'reply_on_question');
     if (onQuestion && replyOn) await replyOn.handler({ id: onQuestion, text: '(dry-run) I would weigh your answer against the item and carry it out. Switch to live mode for a real reply.' });
+    // The daily efficiency audit (#348): one recommendation, named after the digest's costliest item.
+    const recommend = o.mcpTools.find((t) => t.name === 'file_recommendation');
+    if (recommend) { const top = /^## Costliest items\n- (\S+): (.*)$/m.exec(o.prompt); await recommend.handler({ key: top ? `${top[1]}-cost` : 'dry-run', what: top ? `(dry-run) ${top[1]} cost the most` : '(dry-run) nothing stood out', evidence: top?.[2] ?? 'the digest', change: '(dry-run) switch to live mode for a real recommendation', saving: 'unknown' }); }
     const done = o.mcpTools.find((t) => t.name === 'done_with_wake');
     if (done) await done.handler({ summary: approved.length ? `dry-run: approved ${approved.join(', ')}` : 'dry-run: reviewed the wake, no action needed' });
     return { sessionId: o.resume ?? `dryrun-orch-${this.w.sha().slice(-6)}`, subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: 'wake handled (dry-run)' };

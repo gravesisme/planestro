@@ -21,6 +21,7 @@ import { pngSize } from './placeholderPng.ts';
 import { findWorkflow, infraPatternIn, namedInLog, prSkippedByPaths } from './ciFilters.ts';
 import { quietTransientFailure, patchRejected, PATCH_REJECTED_RETRY } from './transient.ts';
 import { driveSchedules } from './schedules.ts';
+import { auditSlotDue, runEfficiencyAudit } from './efficiencyAudit.ts';
 import { runnerStatusText, stallOf, recovered, type RunnerStall } from './runners.ts';
 import { recordCiResult, recentCi, lastConcurrencyChange, rollbackConcurrency, hostLoad, limitsOf } from '../concurrency.ts';
 import { HeavyLock, ciOnSharedHost, heavyRedirects, heavyAllowRules, took } from './heavyRuns.ts';
@@ -289,7 +290,8 @@ export class LiveEngine implements Engine {
     if (this.timer) clearInterval(this.timer);
     if (this.reconcileTimer) clearInterval(this.reconcileTimer);
     for (const t of this.turns.values()) t.abort.abort();
-    await Promise.allSettled([...this.jobs.values(), orchestratorStopped]);
+    this.auditAbort?.abort();
+    await Promise.allSettled([...this.jobs.values(), orchestratorStopped, this.auditing]);
   }
   /** The lever by hand. A manual pause is the user's: the usage guard never resumes it. */
   pause(): void { this.setPaused(true, 'user'); this.note('warn', 'AUTOMATION PAUSED — running steps finish, nothing new starts'); }
@@ -554,6 +556,7 @@ export class LiveEngine implements Engine {
       this.orchestrator.kick();
       // Before admission, so an item a schedule submits starts on this pass.
       driveSchedules(this.store, new Date(Date.parse(this.now())), { submit: (id, why) => { this.submitAsUser(id, why); }, note: (l, m) => this.note(l, m) });
+      this.driveEfficiencyAudit();
       this.drivePendingTurns();
       this.driveTimedRetries();
       for (const item of this.store.listItems()) this.continueAfterProviderSwitch(item.id);
@@ -3823,6 +3826,21 @@ export class LiveEngine implements Engine {
 
   // ---- heavy local runs (#218) ----
   private readonly heavyLock = new HeavyLock();
+  /** The daily efficiency audit in flight (#348): one at a time, off the tick. */
+  private auditing?: Promise<unknown>;
+  private auditAbort?: AbortController;
+  /** Its slot, once due, while automation runs and its model has usage: a model out of usage waits for the next tick. */
+  private driveEfficiencyAudit(): void {
+    if (this.auditing || this.stopping) return;
+    const slot = auditSlotDue(this.store, new Date(Date.parse(this.now())));
+    if (!slot) return;
+    const pick = this.orchestrator.modelForWake();
+    if (pick.exhaustedUntil || this.guarded(pick.runner, pick.account)) return;
+    const abort = new AbortController(); this.auditAbort = abort;
+    this.auditing = runEfficiencyAudit({ store: this.store, agents: this.ports.agents, orchestrator: this.orchestrator, log: (l, m) => this.note(l, m), signal: abort.signal }, slot)
+      .catch((e) => this.note('error', `efficiency audit: ${(e as Error).message}`))
+      .finally(() => { this.auditing = undefined; });
+  }
   /** Each item's test-run records still being written (their tree is read first), in order (#347). */
   private readonly testRunWrites = new Map<string, Promise<void>>();
 
