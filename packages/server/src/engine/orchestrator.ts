@@ -388,7 +388,9 @@ export class Orchestrator {
       onOutput: (t) => this.emit({ type: 'engine.log', level: 'info', message: `[orchestrator] ${t.slice(0, 300)}` }),
     });
     // Every wake that ran is counted (#236), the ones retried below too: each was paid for.
-    const spent = usageTurnData({ provider: pick.runner, model, role: 'orchestrator', op: 'orchestrator_wake', accounting: pick.def ? modelCapabilities(pick.def).accounting : pick.runner === 'claude' ? 'dollars' : 'tokens', result });
+    // The items the wake was about carry its cost in the efficiency report (#346).
+    const items = [...new Set(events.map((e) => e.item).filter((i): i is string => Boolean(i)))];
+    const spent = usageTurnData({ provider: pick.runner, model, role: 'orchestrator', op: 'orchestrator_wake', accounting: pick.def ? modelCapabilities(pick.def).accounting : pick.runner === 'claude' ? 'dollars' : 'tokens', stage: 'orchestrator', resumed: Boolean(state.session_id), items, result });
     if (spent) this.store.journal.append({ type: USAGE_TURN, actor: 'orchestrator', data: { ...spent } });
     this.hooks.usageSeen?.(result.rateLimit, guardKey(pick.runner, pick.account));
     if (result.subtype === 'usage_exhausted') {
@@ -425,7 +427,6 @@ export class Orchestrator {
     const total = result.sessionTotalUsd ?? (session === state.session_id ? state.total_usd : undefined);
     this.writeState({ runner: pick.runner, ...(pick.account ? { account: pick.account } : {}), model, tool_contract: contract, intro_hash: introHash, session_id: session, started_at: state.started_at ?? isoLocal(), wakes_served: state.wakes_served + 1, ...(total !== undefined ? { total_usd: total } : {}) });
     // What the Console's spend panel reads (#49): which items, which conversation (it resets on rotation), how big it has grown.
-    const items = [...new Set(events.map((e) => e.item).filter((i): i is string => Boolean(i)))];
     this.store.journal.append({ type: 'orchestrator.done', actor: 'orchestrator', data: {
       events: events.map((e) => e.type), summary: doneSummary || (result.isError ? `(failed: ${result.subtype}) ${result.error ?? ''}` : result.text.slice(-300)), cost: result.costUsd, runner: pick.runner, tokens: result.tokens, token_cap: state.session_id ? cfg.budget_tokens_per_wake : cfg.budget_tokens_per_fresh_wake, subtype: result.subtype,
       ...(items.length ? { items } : {}), ...(session ? { session } : {}), wake: state.wakes_served + 1, ...(state.session_id ? {} : { fresh: true }), model: pick.label,

@@ -106,9 +106,10 @@ describe('what a resume costs and reports (#64)', () => {
   it("the conversation's window is its last response's: input, cache read, cache write and output", () => {
     const c: ContextSeen = {};
     noteContext(assistant({ input_tokens: 10, cache_read_input_tokens: 17_412, cache_creation_input_tokens: 98, output_tokens: 4, cache_creation: { ephemeral_1h_input_tokens: 98, ephemeral_5m_input_tokens: 0 } }), c);
-    expect(c).toEqual({ tokens: 17_524, ttlS: 3600 });
+    expect(c).toEqual({ tokens: 17_524, ttlS: 3600, start: 17_520 });
     noteContext(assistant({ input_tokens: 8, cache_read_input_tokens: 19_795, cache_creation_input_tokens: 367, output_tokens: 1, cache_creation: { ephemeral_5m_input_tokens: 367 } }), c);
-    expect(c).toEqual({ tokens: 20_171, ttlS: 300 });
+    // The first response's input stays the turn's start (#346): what it carried before its first tool call.
+    expect(c).toEqual({ tokens: 20_171, ttlS: 300, start: 17_520 });
   });
 
   it('the turn keeps its token split (#345): each response once, subagents included, cache writes with their TTL', () => {
