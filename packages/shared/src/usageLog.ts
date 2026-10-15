@@ -30,11 +30,34 @@ export interface UsageTurn {
   output?: number;
   /** The conversation's window at the turn's end: what a resume reloads. */
   context?: number;
+  /**
+   * The window of the turn's first response (#346): what the session carried before its first tool call. For a turn that
+   * started a conversation it is the startup weight (instructions, tool definitions, the prompt); for a resume, the reload.
+   */
+  start_context?: number;
+  /** The turn resumed a conversation (false: it started one). Unset on entries from before #346. */
+  resumed?: boolean;
+  /** Which part of an item's run it was (#346); unset on older entries, read from `op` then (`usageStage`). */
+  stage?: UsageStage;
+  /** An orchestrator wake's items: the ones its events were about (#346), its cost shared among them. */
+  items?: string[];
   subtype: string;
 }
 
+/** The part of an item's run a turn belongs to (#346): CI and review fixes are worker turns once the PR is open. */
+export type UsageStage = 'planning' | 'implementation' | 'fix' | 'conflict' | 'orchestrator';
+export const USAGE_STAGES: UsageStage[] = ['planning', 'implementation', 'fix', 'conflict', 'orchestrator'];
+/** A turn's stage: as recorded, else from its op (an implement turn recorded before #346 counts as implementation). */
+export function usageStage(u: Pick<UsageTurn, 'stage' | 'op' | 'role'>): UsageStage {
+  if (u.stage) return u.stage;
+  if (u.role === 'orchestrator' || u.op === 'orchestrator_wake') return 'orchestrator';
+  if (u.op === 'planning_turn' || u.role === 'planner') return 'planning';
+  if (u.op === 'conflict_session') return 'conflict';
+  return 'implementation';
+}
+
 /** The entry's data for one finished turn, or undefined when nothing ran (a deferred or declined turn). */
-export function usageTurnData(t: { provider: string; model: string; role: UsageRole; op: string; accounting: 'dollars' | 'tokens'; result: { subtype: string; costUsd: number; tokens?: number; numTurns: number; usage?: TokenSplit; contextTokens?: number } }): UsageTurn | undefined {
+export function usageTurnData(t: { provider: string; model: string; role: UsageRole; op: string; accounting: 'dollars' | 'tokens'; stage?: UsageStage; resumed?: boolean; items?: string[]; result: { subtype: string; costUsd: number; tokens?: number; numTurns: number; usage?: TokenSplit; contextTokens?: number; startContextTokens?: number } }): UsageTurn | undefined {
   const r = t.result;
   if (r.subtype === 'deferred' || r.subtype === 'resume_declined') return undefined;
   const u = r.usage;
@@ -46,6 +69,10 @@ export function usageTurnData(t: { provider: string; model: string; role: UsageR
     ...(tokens ? { tokens } : {}),
     ...(u ? { input: u.input, cache_read: u.cache_read, cache_write: u.cache_write, ...(u.cache_ttl_s ? { cache_ttl_s: u.cache_ttl_s } : {}), output: u.output } : {}),
     ...(r.contextTokens ? { context: r.contextTokens } : {}),
+    ...(r.startContextTokens ? { start_context: r.startContextTokens } : {}),
+    ...(t.resumed !== undefined ? { resumed: t.resumed } : {}),
+    ...(t.stage ? { stage: t.stage } : {}),
+    ...(t.items?.length ? { items: t.items } : {}),
     subtype: r.subtype,
   };
 }

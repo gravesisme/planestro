@@ -428,7 +428,7 @@ export function lastCostState(path: string | undefined, tailBytes = 512 * 1024):
 }
 
 /** What the next resume of this conversation reloads, from the responses as they stream. */
-export interface ContextSeen { tokens?: number; ttlS?: number }
+export interface ContextSeen { tokens?: number; ttlS?: number; start?: number }
 
 /**
  * Feed one SDK message to the context reading. Exported for tests. Only the conversation's own
@@ -441,6 +441,9 @@ export function noteContext(m: any, c: ContextSeen): void {
   const n = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0);
   const tokens = n(u.input_tokens) + n(u.cache_read_input_tokens) + n(u.cache_creation_input_tokens) + n(u.output_tokens);
   if (tokens > 0) c.tokens = tokens;
+  // The first response's input is what the session carried before it did anything (#346).
+  const input = tokens - n(u.output_tokens);
+  if (c.start === undefined && input > 0) c.start = input;
   if (n(u.cache_creation?.ephemeral_1h_input_tokens) > 0) c.ttlS = 3600;
   else if (n(u.cache_creation?.ephemeral_5m_input_tokens) > 0) c.ttlS = 300;
 }
@@ -617,6 +620,7 @@ async function consume(q: AsyncIterable<unknown>, result: TurnResult, onOutput: 
   reports?.end();
   settleCost(result, total, resumed);
   if (context.tokens) result.contextTokens = context.tokens;
+  if (context.start) result.startContextTokens = context.start;
   if (context.ttlS) result.cacheTtlS = context.ttlS;
   if (splitBudgetTokens(tokens.split) + tokens.split.cache_read > 0) result.usage = tokens.split;
   if (resumed?.quote) result.resumeQuote = resumed.quote;

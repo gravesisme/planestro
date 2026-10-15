@@ -28,6 +28,7 @@ import { useLandOnWait } from '../deepLink.ts';
 import { useFullItem } from '../fullItem.ts';
 import { WaitShortcut, promptReleaseHold } from '../components/WaitShortcut.tsx';
 import { SectionNav } from '../components/SectionNav.tsx';
+import { EfficiencyPanel } from '../components/EfficiencyPanel.tsx';
 import { ImageZoom, ReviewGallery, isImageAttachment } from '../components/ReviewImages.tsx';
 
 function useAutosave(id: string, section: 'Description' | 'Notes' | 'Plan', initial: string) {
@@ -283,6 +284,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           </div>
           <form className="row" onSubmit={(e) => e.preventDefault()}><input className="grow" placeholder="Reference a path (absolute, or relative to the code repo) — never copied" value={refPath} onChange={(e) => setRefPath(e.target.value)} /><ActionButton type="submit" disabled={!refPath.trim()} working="Adding…" onAct={() => act(() => api.referenceAttachment(item.id, refPath.trim())).then((r) => { if (r) setRefPath(''); })}>Add reference</ActionButton></form>
         </div>
+        <div className="section" id="efficiency" data-nav="Efficiency"><h2>Efficiency</h2><EfficiencyPanel id={item.id} version={fm.updated_at} /></div>
         <div className="section" id="activity" data-nav="Activity"><h2>Activity <span className="small muted">· newest first</span></h2><ActivityList entries={item.activity} /></div>
       </div>
       <aside className="sidebar section">

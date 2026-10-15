@@ -175,7 +175,10 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   the runner reports them); the Usage page (`GET /usage`, #236) reads only those, never item totals (pre-#107 ones are inflated).
   Each keeps the turn's token split (#345: `input`, `cache_read`, `cache_write` with `cache_ttl_s`, `output`, `context` at
   its end), summed from the stream once per response, never from the result's running totals; `tokens` is the work paid in
-  full (input + cache write + output).
+  full (input + cache write + output). The per-item efficiency report (#346: the item's **Efficiency** panel,
+  `GET /items/:id/efficiency`, the Usage page's 7-day ranking, `GET /usage/items`) reads the same entries: each carries its
+  `stage` (planning, implementation, fix once the PR is open, conflict), `resumed` and `start_context` (the first response's
+  window: a new conversation's startup weight), and a wake its `items`, which share its cost.
 - A report (`submit_plan`, `submit_breakdown`, `report_done`, `report_blocked`) whose call never reached planestro is applied
   from the turn's record (#167): the port keeps the session's last lost report with its arguments, the engine
   persists it in `op_data.outbox` and applies it through the same tool when the turn ends (or at the next start),

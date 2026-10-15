@@ -317,6 +317,8 @@ export interface TurnResult {
   sessionTotalUsd?: number;
   /** Tokens in the window of the conversation's last response: what resuming it reloads. */
   contextTokens?: number;
+  /** The input window of the turn's first response (#346): the startup weight of a new conversation, the reload of a resumed one. */
+  startContextTokens?: number;
   /** How long the runner's cache writes live, in seconds: a resume within it reads the context instead of writing it. */
   cacheTtlS?: number;
   /** The CLI's quote for this resume, when it gave one. */

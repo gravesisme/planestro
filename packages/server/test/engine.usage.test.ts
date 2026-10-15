@@ -46,11 +46,19 @@ describe('per-turn usage (#236)', () => {
     await engine.approvePlan(item.id);
     await waitFor(() => ['IN_REVIEW', 'MERGED', 'FINISHED'].includes(store.requireItem(item.id).file.frontmatter.status));
     const turns = usage(store).filter((e) => e.item === item.id).map((e) => e.data as unknown as UsageTurn);
-    expect(turns[0]).toMatchObject({ provider: 'claude', role: 'planner', op: 'planning_turn', usd: 0.25, subtype: 'success' });
-    expect(turns[1]).toMatchObject({ provider: 'claude', role: 'worker', op: 'implement_turn', usd: 1.5 });
+    expect(turns[0]).toMatchObject({ provider: 'claude', role: 'planner', op: 'planning_turn', usd: 0.25, subtype: 'success', stage: 'planning', resumed: false });
+    expect(turns[1]).toMatchObject({ provider: 'claude', role: 'worker', op: 'implement_turn', usd: 1.5, stage: 'implementation' });
     expect(turns[0].model).toBeTruthy();
-    await (engine.orchestrator as any).runWake([{ type: 'user_message', data: { text: 'hello' } }]);
-    expect(usage(store).at(-1)!.data).toMatchObject({ provider: 'claude', role: 'orchestrator', op: 'orchestrator_wake', usd: 0.1 });
+    await (engine.orchestrator as any).runWake([{ type: 'user_message', data: { text: 'hello' } }, { type: 'review_stalled', item: item.id }]);
+    expect(usage(store).at(-1)!.data).toMatchObject({ provider: 'claude', role: 'orchestrator', op: 'orchestrator_wake', usd: 0.1, stage: 'orchestrator', items: [item.id] });
+    // The item's efficiency (#346): its turns by stage, and the wake that was about it.
+    const eff = await (await apiRoutes(store, engine).request(`/items/${item.id}/efficiency`)).json();
+    // The engine woke the orchestrator about it on its way too: each wake about it adds its $0.10.
+    const wakes = usage(store).filter((e) => (e.data as unknown as UsageTurn).items?.includes(item.id)).length;
+    expect(eff).toMatchObject({ item: item.id, turns: 2, wakes, stages: { planning: { usd: 0.25 }, implementation: { usd: 1.5 }, orchestrator: { turns: wakes } } });
+    expect(eff.usd).toBeCloseTo(1.75 + wakes * 0.1, 2);
+    const ranked = await (await apiRoutes(store, engine).request('/usage/items?days=7')).json();
+    expect(ranked.items[0]).toMatchObject({ item: item.id, usd: eff.usd });
   });
 
   it('a token-accounted runner records its tokens and no dollars', async () => {

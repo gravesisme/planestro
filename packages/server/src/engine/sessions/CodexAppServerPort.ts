@@ -195,6 +195,7 @@ export class CodexAppServerPort implements AgentPort {
           result.tokens = counter.update(u.total);
           result.usage = splitMinus(codexSplit(u.total), splitBase);
           result.contextTokens = u.last?.totalTokens;
+          if (result.startContextTokens === undefined && u.last?.inputTokens) result.startContextTokens = u.last.inputTokens;
           if (o.maxTokens !== undefined && result.tokens >= o.maxTokens && !stopped) { result.subtype = 'token_cap'; result.isError = true; result.error = 'Token limit reached'; interrupt(); }
         }
         return;
