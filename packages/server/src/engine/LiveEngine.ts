@@ -4334,7 +4334,7 @@ export class LiveEngine implements Engine {
   private orchestratorSetsFields(id: string, fields: Record<string, unknown>): string {
     const item = this.store.requireItem(id);
     const refused = Object.keys(fields ?? {}).filter((k) => !(ORCHESTRATOR_FIELDS as readonly string[]).includes(k));
-    if (refused.length) return `not permitted: ${refused.join(', ')}. You may set only ${ORCHESTRATOR_FIELDS.join(', ')}; nothing was changed.`;
+    if (refused.length) return `not permitted: ${refused.join(', ')}. You may set only ${ORCHESTRATOR_FIELDS.join(', ')}; nothing was changed.${refused.includes('mcp_budget') ? ' An MCP budget is the user\'s: ask_user_decision with an option that carries set_mcp_budget (the number the plan states), and their tap sets it.' : ''}`;
     if (!Object.keys(fields ?? {}).length) return 'no fields given';
     const set: Record<string, unknown> = {}; const unset: string[] = [];
     for (const [k, v] of Object.entries(fields)) {
@@ -4703,6 +4703,10 @@ export class LiveEngine implements Engine {
   private raiseTooSmall(fm: ItemFrontmatter, options: DecisionOption[]): string | undefined {
     // A fresh conversation changes context, not the item's cumulative budget counters.
     const needed = fm.blocked_reason === 'turn_budget' ? 'raise_budget_turns' : fm.blocked_reason === 'token_budget' ? 'raise_budget_tokens' : undefined;
+    // An MCP budget is only for an implementer that has MCP servers to spend it on (#371).
+    const mcp = findModel(this.store.config, fm.implementer)?.mcp ?? [];
+    const noMcp = options.find((o) => o.set_mcp_budget !== undefined && !mcp.length);
+    if (noMcp) return `option "${noMcp.label}" sets an MCP budget, but ${fm.id}'s implementer (${fm.implementer ?? 'none'}) has no MCP servers to spend it on.`;
     for (const o of options) {
       if (needed && (o.raise_budget_usd !== undefined || o.raise_budget_turns !== undefined || o.raise_budget_tokens !== undefined || o.fresh) && o[needed] === undefined) return `option "${o.label}" cannot clear ${fm.blocked_reason}: include ${needed}; dollars and fresh sessions do not extend this limit.`;
       for (const [key, cap, used] of [['raise_budget_turns', this.budgetOf(fm).turns, fm.agent_turns ?? 0], ['raise_budget_tokens', this.budgetOf(fm).tokens, fm.tokens ?? 0]] as const) {
@@ -4874,7 +4878,10 @@ export class LiveEngine implements Engine {
     }
     const raisedTurns = chosen?.raise_budget_turns !== undefined ? Math.max(this.budgetOf(fm).turns, fm.agent_turns ?? 0) + chosen.raise_budget_turns : undefined;
     const raisedTokens = chosen?.raise_budget_tokens !== undefined ? Math.max(this.budgetOf(fm).tokens, fm.tokens ?? 0) + chosen.raise_budget_tokens : undefined;
-    const raisedUnits = [raisedTurns !== undefined ? `turn budget raised to ${raisedTurns}` : '', raisedTokens !== undefined ? `token budget raised to ${raisedTokens}` : ''].filter(Boolean).join('; ');
+    // The user's tap is the spend's authorization (#371): the plan's MCP calls, set on the item as they read it on the card.
+    const mcpBudget = chosen?.set_mcp_budget;
+    const mcpTo = mcpBudget !== undefined ? `MCP budget set to ${mcpBudget} call${mcpBudget === 1 ? '' : 's'} to ${findModel(this.store.config, fm.implementer)?.mcp.join(', ') || 'its MCP servers'} (mcp_budget)` : '';
+    const raisedUnits = [raisedTurns !== undefined ? `turn budget raised to ${raisedTurns}` : '', raisedTokens !== undefined ? `token budget raised to ${raisedTokens}` : '', mcpTo].filter(Boolean).join('; ');
     const raisedTo = raise ? Math.round((Math.max(this.budgetOf(fm).usd, fm.cost_usd ?? 0) + raise) * 100) / 100 : undefined;
     this.store.mutateItem(id, [
       Object.keys(rest).length ? { set: { awaiting_data: rest } } : { unset: ['awaiting_data'] },
@@ -4882,9 +4889,10 @@ export class LiveEngine implements Engine {
       ...(raisedTo !== undefined ? [{ set: { budget_usd: raisedTo } } as ItemOp] : []),
       ...(raisedTurns !== undefined ? [{ set: { budget_turns: raisedTurns } } as ItemOp] : []),
       ...(raisedTokens !== undefined ? [{ set: { budget_tokens: raisedTokens } } as ItemOp] : []),
+      ...(mcpBudget !== undefined ? [{ set: { mcp_budget: mcpBudget } } as ItemOp] : []),
       { activity: { actor: 'user', text: `decided: ${decision.question} → ${said}${raisedTo !== undefined ? ` (budget raised to $${raisedTo})` : ''}${raisedUnits ? ` (${raisedUnits})` : ''}${done ? ` (done for you: ${done})` : ''}` } },
     ], 'user', { commit: `${id}: decision answered` });
-    this.store.journal.append({ type: 'orchestrator.decision_answered', item: id, actor: 'user', data: { question: decision.question, choice: choice ?? null, text: text ?? null, ...(raisedTo !== undefined ? { budget_raised_to: raisedTo } : {}), ...(raisedTurns !== undefined ? { budget_turns_raised_to: raisedTurns } : {}), ...(raisedTokens !== undefined ? { budget_tokens_raised_to: raisedTokens } : {}), ...(done ? { action: chosen!.action!.tool, action_result: done } : {}) } });
+    this.store.journal.append({ type: 'orchestrator.decision_answered', item: id, actor: 'user', data: { question: decision.question, choice: choice ?? null, text: text ?? null, ...(raisedTo !== undefined ? { budget_raised_to: raisedTo } : {}), ...(raisedTurns !== undefined ? { budget_turns_raised_to: raisedTurns } : {}), ...(raisedTokens !== undefined ? { budget_tokens_raised_to: raisedTokens } : {}), ...(mcpBudget !== undefined ? { mcp_budget: mcpBudget } : {}), ...(done ? { action: chosen!.action!.tool, action_result: done } : {}) } });
     const doneNote = done ? `Already done by planestro, as the user: ${done}. Do not do it again. ` : '';
     const raisedNote = (raisedTo !== undefined ? `The item's budget is already raised to $${raisedTo} (budget_usd); nothing else needs changing. ` : '') + (raisedUnits ? `Already applied: ${raisedUnits}. ` : '');
     if (carry) { this.wakeOrchestrator('decision_answered', id, { question: decision.question, answer: said, options: decision.options.map((o) => `${o.label}: ${o.description}`).join(' | '), ...(raisedNote ? { budget: `${raisedNote}Resume it with unblock_item${fresh ? ' and fresh: true, as the option promised' : ''}.` } : fresh ? { budget: 'The option promised a fresh session: unblock_item with fresh: true and the instruction as its message.' } : {}), ...(done ? { action: `${doneNote}What is left is this item's own stop.` } : {}) }); return; }

@@ -11,6 +11,11 @@ export interface DecisionOption {
   /** Additional allowance above the greater of the current cap and usage. Fresh sessions do not reset usage. */
   raise_budget_turns?: number;
   raise_budget_tokens?: number;
+  /**
+   * Answering with this option sets the item's MCP call budget (`mcp_budget`, calls per MCP server) to this many (#371):
+   * a plan's paid calls start on the user's tap, never on the orchestrator's word alone.
+   */
+  set_mcp_budget?: number;
   /** Carrying this option out resumes the item in a fresh conversation with a brief, not its old one (#64): a small raise is then enough. */
   fresh?: boolean;
   /** Answering with this option has planestro do this as the user (#73): the answer is the authorization, with no second round in the chat. */
@@ -147,12 +152,12 @@ export function validateDecision(input: DecisionInput): { ok: true; value: Omit<
   if (!why) return { ok: false, error: 'say why in one sentence' };
   if (why.length > L.why) return { ok: false, error: `the why is ${why.length} characters; one sentence, under ${L.why}` };
   const raw = input.options ?? [];
-  const options: DecisionOption[] = raw.map((o) => ({ label: String(o.label ?? '').trim(), description: String(o.description ?? '').trim(), ...(o.recommended ? { recommended: true } : {}), ...(o.raise_budget_usd !== undefined ? { raise_budget_usd: Number(o.raise_budget_usd) } : {}), ...(o.raise_budget_turns !== undefined ? { raise_budget_turns: Number(o.raise_budget_turns) } : {}), ...(o.raise_budget_tokens !== undefined ? { raise_budget_tokens: Number(o.raise_budget_tokens) } : {}), ...(o.fresh ? { fresh: true } : {}) }));
+  const options: DecisionOption[] = raw.map((o) => ({ label: String(o.label ?? '').trim(), description: String(o.description ?? '').trim(), ...(o.recommended ? { recommended: true } : {}), ...(o.raise_budget_usd !== undefined ? { raise_budget_usd: Number(o.raise_budget_usd) } : {}), ...(o.raise_budget_turns !== undefined ? { raise_budget_turns: Number(o.raise_budget_turns) } : {}), ...(o.raise_budget_tokens !== undefined ? { raise_budget_tokens: Number(o.raise_budget_tokens) } : {}), ...(o.set_mcp_budget !== undefined ? { set_mcp_budget: Number(o.set_mcp_budget) } : {}), ...(o.fresh ? { fresh: true } : {}) }));
   if (options.length < L.minOptions || options.length > L.maxOptions) return { ok: false, error: `give ${L.minOptions}–${L.maxOptions} options (you gave ${options.length})` };
   if (options.some((o) => !o.label)) return { ok: false, error: 'every option needs a label' };
   const raise = options.find((o) => o.raise_budget_usd !== undefined && !(Number.isFinite(o.raise_budget_usd) && o.raise_budget_usd! > 0 && o.raise_budget_usd! <= L.maxRaiseUsd));
   if (raise) return { ok: false, error: `option "${raise.label.slice(0, 30)}": raise_budget_usd must be a number of dollars between 0 and ${L.maxRaiseUsd}` };
-  for (const o of options) for (const key of ['raise_budget_turns', 'raise_budget_tokens'] as const) {
+  for (const o of options) for (const key of ['raise_budget_turns', 'raise_budget_tokens', 'set_mcp_budget'] as const) {
     if (o[key] !== undefined && (!Number.isSafeInteger(o[key]) || o[key]! <= 0)) return { ok: false, error: `option "${o.label.slice(0, 30)}": ${key} must be a positive safe integer` };
   }
   const long = options.find((o) => o.label.length > L.label || o.description.length > L.description);
@@ -164,7 +169,7 @@ export function validateDecision(input: DecisionInput): { ok: true; value: Omit<
   for (const [i, o] of options.entries()) {
     const given = (raw[i] as { action?: unknown }).action;
     if (given === undefined || given === null) continue;
-    if (o.raise_budget_usd !== undefined || o.raise_budget_turns !== undefined || o.raise_budget_tokens !== undefined || o.fresh) return { ok: false, error: `option "${o.label.slice(0, 30)}" has both ${o.raise_budget_usd !== undefined ? 'raise_budget_usd' : o.raise_budget_turns !== undefined ? 'raise_budget_turns' : o.raise_budget_tokens !== undefined ? 'raise_budget_tokens' : 'fresh'} and an action: an option does one thing` };
+    if (o.raise_budget_usd !== undefined || o.raise_budget_turns !== undefined || o.raise_budget_tokens !== undefined || o.set_mcp_budget !== undefined || o.fresh) return { ok: false, error: `option "${o.label.slice(0, 30)}" has both ${o.raise_budget_usd !== undefined ? 'raise_budget_usd' : o.raise_budget_turns !== undefined ? 'raise_budget_turns' : o.raise_budget_tokens !== undefined ? 'raise_budget_tokens' : o.set_mcp_budget !== undefined ? 'set_mcp_budget' : 'fresh'} and an action: an option does one thing` };
     const action = parseAction(given);
     if ('error' in action) return { ok: false, error: `option "${o.label.slice(0, 30)}": ${action.error}` };
     o.action = action.value;
