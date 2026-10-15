@@ -1,8 +1,8 @@
-import { Link } from 'react-router';
+import { Link, useLocation } from 'react-router';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   SETTINGS, SETTINGS_TABS, canPlan, fallbackChain, fallbackProblems, findModel, getPath, looksOneOff, settingChanged, settingDefault, shownNumber, storedNumber, suggestedAllowRules, unavailableEntry,
-  RUNNERS, CODEX_EFFORTS, categoryColors, suggestCategoryColor, type Config, type ModelDef, type ReleaseSectionDef, type SettingDef, type SettingsTabId,
+  RUNNERS, CODEX_EFFORTS, RELEASE_SECTION_PRESETS, applySectionPreset, sectionPresetOf, categoryColors, suggestCategoryColor, type Config, type ModelDef, type ReleaseSectionDef, type SettingDef, type SettingsTabId,
 } from '@planestro/shared';
 import { api, type McpImportCandidate, type McpServerBody, type State } from '../api.ts';
 import { act, useStore } from '../store.ts';
@@ -18,13 +18,17 @@ import { modeNote } from '../engineMode.ts';
  * as `config: …`; planestro.local.yml is this machine's and never committed.
  */
 const TAB_KEY = 'planestro.settings.tab';
-const readTab = (): SettingsTabId => { try { const t = localStorage.getItem(TAB_KEY); if (SETTINGS_TABS.some((x) => x.id === t)) return t as SettingsTabId; } catch { /* private window */ } return 'project'; };
+/** A link may name the tab (`?tab=data`) and the row (`#setting-releases.sections`), as the release page's Customize does (#376). */
+const linkedTab = (): SettingsTabId | undefined => { const t = new URLSearchParams(location.search).get('tab'); return SETTINGS_TABS.some((x) => x.id === t) ? t as SettingsTabId : undefined; };
+const readTab = (): SettingsTabId => { const linked = linkedTab(); if (linked) return linked; try { const t = localStorage.getItem(TAB_KEY); if (SETTINGS_TABS.some((x) => x.id === t)) return t as SettingsTabId; } catch { /* private window */ } return 'project'; };
 
 export function SettingsPage() {
   const state = useStore((s) => s.state);
   const [tab, setTabState] = useState<SettingsTabId>(readTab);
   const [q, setQ] = useState('');
   const [onlyChanged, setOnlyChanged] = useState(false);
+  const { hash } = useLocation();
+  useEffect(() => { if (hash.startsWith('#setting-') && state) document.getElementById(decodeURIComponent(hash.slice(1)))?.scrollIntoView({ block: 'start' }); }, [hash, Boolean(state)]);
   if (!state) return <p className="muted">Loading…</p>;
   const setTab = (t: SettingsTabId) => { setTabState(t); setQ(''); setOnlyChanged(false); try { localStorage.setItem(TAB_KEY, t); } catch { /* remembered for this visit only */ } };
 
@@ -143,7 +147,7 @@ function SettingRow({ def, value, changed, state }: { def: SettingDef; value: un
   const dflt = defaultText(def);
   const flag = rowFlag(def, state);
   return (
-    <div className={`settings-row ${wide ? 'wide' : ''}`}>
+    <div className={`settings-row ${wide ? 'wide' : ''}`} id={`setting-${def.key}`}>
       <div>
         <div className="label">{def.label}{changed && <span className="chip changed">changed</span>}{flag && <span className="chip warn">{flag}</span>}</div>
         {def.summary && <div className="sum">{def.summary}</div>}
@@ -387,8 +391,18 @@ function SectionsCtl({ def, value }: { def: SettingDef; value: ReleaseSectionDef
   const rows = draft ?? value;
   const edit = (i: number, patch: Partial<ReleaseSectionDef>) => setDraft(rows.map((s, j) => (j === i ? { ...s, ...patch } : s)));
   const move = (i: number, by: number) => { const next = [...rows]; const [s] = next.splice(i, 1); next.splice(i + by, 0, s); setDraft(next); };
+  // A preset is a starting point (#376): it fills the draft, keeping the headings it shares with what is saved, and the
+  // headings it drops are listed before saving (their text stays in the release files, shown after these sections).
+  const saved = sectionPresetOf(value);
+  const dropped = draft ? value.map((s) => s.title).filter((t) => !rows.some((r) => r.title.trim().toLowerCase() === t.trim().toLowerCase())) : [];
   return (
     <div className="sections-editor" data-dirty={draft ? 'true' : undefined}>
+      <div className="row small">
+        <label>Start from a preset <select value="" aria-label="Release section preset" onChange={(e) => { const p = RELEASE_SECTION_PRESETS.find((x) => x.id === e.target.value); if (p) setDraft(applySectionPreset(value, p.sections).sections); }}>
+          <option value="">{saved ? `${RELEASE_SECTION_PRESETS.find((p) => p.id === saved)!.name} (in use)` : 'pick one…'}</option>
+          {RELEASE_SECTION_PRESETS.map((p) => <option key={p.id} value={p.id} title={p.summary}>{p.name} — {p.sections.map((s) => s.title).join(', ')}</option>)}
+        </select></label>
+      </div>
       {rows.map((s, i) => (
         <div className="section-row" key={i}>
           <input className="grow" value={s.title} placeholder="Heading" aria-label={`Section ${i + 1} heading`} onChange={(e) => edit(i, { title: e.target.value })} />
@@ -402,6 +416,7 @@ function SectionsCtl({ def, value }: { def: SettingDef; value: ReleaseSectionDef
           </span>
         </div>
       ))}
+      {dropped.length > 0 && <p className="small warn-text" role="status">Not in the new set: {dropped.join(', ')}. Releases keep their text under {dropped.length === 1 ? 'that heading' : 'those headings'}, shown after these sections.</p>}
       <div className="row">
         <button className="small" onClick={() => setDraft([...rows, { title: '', carry: false }])}>Add a section</button>
         <span className="grow" />

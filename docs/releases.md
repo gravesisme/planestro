@@ -47,12 +47,29 @@ section in place (sections save when they lose focus, like an item's).
 ## Sections are the project's
 
 What a release needs written down depends on where it ships, so the sections come from
-`releases.sections` in `planestro.yml`, in order:
+`releases.sections` in `planestro.yml`, in order. Without the key a project gets **Release notes**
+and **Notes**; every release page says which sections it has, with a **Customize →** link to
+Settings → Data → Release sections.
+
+Settings starts you from a preset, which you then edit like any other list:
+
+| Preset | Sections |
+|---|---|
+| Plain (the default) | Release notes, Notes |
+| Changelog | Added, Changed, Fixed, Removed, Notes ([Keep a Changelog](https://keepachangelog.com)) |
+| iOS App Store | What's New (4000), Subtitle (30), Promotional text (170), Keywords (100), Description (4000), Notes |
+| Google Play | Release notes (500), Short description (80), Full description (4000), Notes |
+
+Applying one keeps your releases' text: a heading the project already has keeps its spelling
+(and so its text), and headings the preset drops are listed before you save. Their text stays in
+the files, shown after the configured sections.
+
+The store presets show what the per-section keys are for. The iOS App Store one, as YAML:
 
 ```yaml
 releases:
   sections:
-    - { title: Release notes, max_chars: 4000 }
+    - { title: "What's New", max_chars: 4000 }
     - { title: Subtitle, max_chars: 30, carry: true }
     - { title: Promotional text, max_chars: 170, carry: true }
     - { title: Keywords, max_chars: 100, carry: true }
@@ -66,8 +83,7 @@ releases:
   copy rarely changes between versions; release notes always do.
 - `hint` is one line under the heading.
 
-Without the key a project gets **Release notes** and **Notes**. A heading added to one file by
-hand is kept and shown after the configured ones.
+A heading added to one file by hand is kept and shown after the configured ones.
 
 Every section has a **copy** button, and **Copy all** puts the whole release on the clipboard as
 one markdown document.
