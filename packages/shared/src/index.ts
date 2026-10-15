@@ -22,6 +22,7 @@ export * from './decision.ts';
 export * from './usage.ts';
 export * from './usageLog.ts';
 export * from './efficiency.ts';
+export * from './testRuns.ts';
 export * from './resume.ts';
 export * from './settings.ts';
 export * from './loop.ts';

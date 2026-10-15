@@ -287,6 +287,8 @@ export interface ClaudeTurnExtras {
   onUndelivered?(report: UndeliveredReport | undefined): void;
   /** The first sign in this turn that the session lost its connection to planestro (#167, HH-377), as soon as the port sees it. */
   onConnectionDrop?(drop: ConnectionDrop): void;
+  /** Each Bash command that ran (not refused, not interrupted), with whether it exited 0 and how long it took (#347). Claude runner only. */
+  onCommandRan?(run: { command: string; ok: boolean; ms: number }): void;
 }
 /** A report the session made whose call was lost on the way to planestro (sdk-notes gotcha 11), with the arguments it was made with. */
 export interface UndeliveredReport { tool: 'submit_plan' | 'submit_breakdown' | 'report_done' | 'report_blocked'; args: Record<string, unknown>; error: string }
