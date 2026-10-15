@@ -2560,15 +2560,15 @@ export class LiveEngine implements Engine {
    * What proved a merge green (#180): the run for this exact head (`op_data.ci`, which a later head's run replaces), or the
    * local gate, or a change the project's CI does not run for; with the head, the base tip it was synced onto and the merge commit.
    */
-  private validationPointer(id: string, headSha: string, baseSha: string, merged?: string): NonNullable<ItemFrontmatter['validated_by']> {
+  private validationPointer(id: string, headSha: string, baseSha?: string, merged?: string): NonNullable<ItemFrontmatter['validated_by']> {
     const od = this.store.requireItem(id).file.frontmatter.op_data ?? {};
     const run = od.ci as { runId?: number; url?: string; attempt?: number; sha?: string } | undefined;
     const gate = run?.runId && run.sha === headSha ? { run_id: run.runId, ...(run.attempt ? { attempt: run.attempt } : {}), ...(run.url ? { url: run.url } : {}) }
       : od.local_green === headSha ? { gate: 'local' as const } : od.ci_not_run === headSha ? { gate: 'not_run' as const } : { gate: 'unknown' as const };
-    return { ...gate, head: headSha, base: baseSha, ...(merged ? { merge: merged } : {}) };
+    return { ...gate, head: headSha, ...(baseSha ? { base: baseSha } : {}), ...(merged ? { merge: merged } : {}) };
   }
 
-  private async merge(id: string, opId: string, base: string, headSha: string, baseSha: string): Promise<void> {
+  private async merge(id: string, opId: string, base: string, headSha: string, baseSha?: string): Promise<void> {
     const fm = this.store.requireItem(id).file.frontmatter;
     // Commits made after the review touch something the reviewer never saw: held for the orchestrator to accept or send back (#74).
     const extra = fm.ci_head_sha ? await this.outsideApprovedScope(id, fm.ci_head_sha) : [];
@@ -2605,7 +2605,7 @@ export class LiveEngine implements Engine {
       { transition: { to: 'MERGED', actor: 'engine' } },
       { set: { merged_at: view.mergedAt ? isoLocal(new Date(view.mergedAt)) : this.now(), validated_by: validated, op_data: { ...(this.store.requireItem(id).file.frontmatter.op_data ?? {}), merge_commit: view.mergeCommit } } },
       { unset: ['op', 'op_started_at'] },
-      { activity: { actor: 'app', text: `merged PR #${fm.pr} into ${base}${view.mergeCommit ? ` (${view.mergeCommit.slice(0, 7)})` : ''}; validated by ${evidence} on ${headSha.slice(0, 7)} over ${base}@${baseSha.slice(0, 7)}` } },
+      { activity: { actor: 'app', text: `merged PR #${fm.pr} into ${base}${view.mergeCommit ? ` (${view.mergeCommit.slice(0, 7)})` : ''}; validated by ${evidence} on ${headSha.slice(0, 7)}${baseSha ? ` over ${base}@${baseSha.slice(0, 7)}` : ''}` } },
     ], 'engine', { commit: `${id}: merge` });
     this.store.journal.end(opId, id, 'ok', { merged: true, validated_by: validated });
     this.note('info', `${id}: PR #${fm.pr} merged into ${base}`);

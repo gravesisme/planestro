@@ -186,7 +186,7 @@ export const ItemFrontmatter = z.object({
   /** What this item's branch changed, recorded from git as it merged — so items that waited on it can be told, long after the branch is gone. */
   delivered: z.array(z.object({ path: z.string(), change: z.enum(['added', 'modified', 'deleted']), bytes: z.number().optional(), width: z.number().optional(), height: z.number().optional() })).optional(),
   /** What proved the merge green (#180): the CI run for the head that merged (or `gate`: the local gate, a change CI does not run for), the head, the base tip it was synced onto, the merge commit. */
-  validated_by: z.object({ run_id: z.number().int().optional(), attempt: z.number().int().optional(), url: z.string().optional(), gate: z.enum(['local', 'not_run', 'unknown']).optional(), head: z.string(), base: z.string(), merge: z.string().optional() }).optional(),
+  validated_by: z.object({ run_id: z.number().int().optional(), attempt: z.number().int().optional(), url: z.string().optional(), gate: z.enum(['local', 'not_run', 'unknown']).optional(), head: z.string(), base: z.string().optional(), merge: z.string().optional() }).optional(),
   blocked: z.boolean().optional(),
   blocked_reason: z.string().optional(),
   cost_usd: z.number().nonnegative().optional(),
