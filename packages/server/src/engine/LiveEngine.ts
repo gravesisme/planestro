@@ -5736,7 +5736,10 @@ export class LiveEngine implements Engine {
    * the old approved set and holds the same paths again. Paths it cannot read are not approved blind: the hold stays.
    */
   private async orchestratorUnskips(id: string): Promise<string> {
-    const scoped = Boolean(this.store.requireItem(id).file.frontmatter.op_data?.approved_scope);
+    const fm = this.store.requireItem(id).file.frontmatter;
+    // A hold that waits on a person (the user's Approve and hold, review.hold_into, a loop's review) is theirs to release (#339).
+    if (fm.skip_merge && fm.hold_waits_on === 'person') return `not permitted: ${id}'s hold waits on the user${heldReasonOf(fm) ? ` (${heldReasonOf(fm)})` : ''}, so only they release it, with Release hold on its page. Nothing was changed. To put it to them, ask with ask_user.`;
+    const scoped = Boolean(fm.op_data?.approved_scope);
     const scope = scoped ? await this.changedPaths(id).catch(() => undefined) : undefined;
     if (scoped && !scope) return 'not returned: its changed paths could not be read, so releasing it would not approve them; try again';
     this.store.mutateItem(id, [{ unset: ['skip_merge'] }, { set: { ci_result: 'pending', op_data: this.releasedOpData(id, scope) } }, { activity: { actor: 'orchestrator', text: 'returned to the merge queue' } }], 'orchestrator', { commit: `${id}: unskip merge` });
