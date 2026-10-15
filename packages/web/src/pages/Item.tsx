@@ -26,6 +26,7 @@ import { prepareUpload } from '../uploadImage.ts';
 import { setTitle as setTabTitle } from '../tabBadge.ts';
 import { useLandOnWait } from '../deepLink.ts';
 import { useFullItem } from '../fullItem.ts';
+import { WaitShortcut, promptReleaseHold } from '../components/WaitShortcut.tsx';
 
 function useAutosave(id: string, section: 'Description' | 'Notes' | 'Plan', initial: string) {
   const [text, setText] = useState(initial);
@@ -126,13 +127,15 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
         <Link className="back phone-only" to={d.lane === 'icebox' ? '/icebox' : d.lane === 'done' ? '/done' : '/'}>‹ {d.lane === 'icebox' ? 'Icebox' : d.lane === 'done' ? 'Done' : 'Board'}</Link>
         <h1><span className="title-id">{item.id}</span><textarea ref={titleBox} rows={1} aria-label="Title" value={title} onChange={(e) => setTitle(e.target.value.replace(/\n/g, ' '))} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } }} onBlur={() => title.trim() && title !== fm.title && field({ title: title.trim() })} /></h1>
         <DecisionCard item={item} />
-        <div className="controls"><ActionGroup>
+        {/* the header row stays in view (wide screens), with what the item waits on you for first among its actions (#373) */}
+        <div className="controls item-actions"><ActionGroup>
           <span className="pill">{statusLabel(fm.status)}</span>
           {fm.blocked && <span className="pill blocked">BLOCKED{fm.blocked_reason ? ` · ${fm.blocked_reason}` : ''}</span>}
           {fm.awaiting && <span className={`pill ${d.needs_you ? 'await' : ''}`}>{decisionOf(fm) ? 'your decision' : `awaiting ${fm.awaiting.replace(/_/g, ' ')}`}</span>}
           {fm.triage && <span className="pill triage">orchestrator triaging</span>}
           {fm.taken_over && <span className="pill yours">yours · by hand</span>}
           {fm.op && <span className="pill">{fm.op.replace(/_/g, ' ')}</span>}
+          <WaitShortcut item={item} />
           <TakeOverButton item={item} />
           <UndoTurnButton item={item} open={undoing} onOpen={() => setUndoing(true)} />
           <DiscardButton item={item} open={discarding} onOpen={() => setDiscarding(true)} />
@@ -236,7 +239,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
             {heldFor && <p className="small" style={{ marginTop: 0 }}><b>Held:</b> {heldFor}</p>}
             {preview && <p className="small" style={{ marginTop: 0 }}><b>Preview:</b> <a href={preview.url} target="_blank" rel="noreferrer">{preview.url}</a> <span className="muted">({preview.sha.slice(0, 7)})</span></p>}
             {fm.op_data?.pr_draft ? <p className="small">The pull request is a <b>draft</b> while it is held: its session's commits are pushed, but CI waits. Releasing the hold syncs the branch, marks the PR ready, and CI runs once, on the head that merges.</p> : <p className="small">CI for the pushed head: <b>{fm.ci_result ?? 'pending'}</b>{fm.ci_head_sha ? ` (${fm.ci_head_sha.slice(0, 7)})` : ''}. While it is held, its session's commits are still pushed and a red run still goes to the session to fix; it just does not merge. Releasing it sends it back through sync and CI before it merges.</p>}
-            <div className="row"><ActionButton className="primary" working="Releasing…" onAct={() => { const n = prompt(`Let ${item.id} merge? Optional note for the log:`); if (n !== null) return act(() => api.releaseHold(item.id, n || undefined)); }}>Release hold</ActionButton></div>
+            <div className="row"><ActionButton className="primary" working="Releasing…" onAct={() => promptReleaseHold(item.id)}>Release hold</ActionButton></div>
           </div>
         )}
 

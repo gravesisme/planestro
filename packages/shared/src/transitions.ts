@@ -143,6 +143,18 @@ export function needsYou(fm: Pick<ItemFrontmatter, 'blocked' | 'awaiting' | 'tri
   return fm.status === 'IN_REVIEW' && Boolean(fm.skip_merge) && fm.op !== 'implement_turn';
 }
 
+/** What a person is waited on for (#224); also the fragment of the item link (`/items/:id#plan`, #226) and the item page's header shortcut (#373). */
+export type WaitKind = 'plan' | 'breakdown' | 'permission' | 'question' | 'audition' | 'review' | 'decision' | 'blocked' | 'hold';
+const WAIT_KIND_OF: Record<string, WaitKind> = { plan_approval: 'plan', breakdown_approval: 'breakdown', permission: 'permission', question: 'question', audition: 'audition', review: 'review', user: 'decision' };
+
+/** The wait this item is, or undefined when it does not need you (the same answer as the board's `needs_you`). */
+export function waitKindOf(fm: Parameters<typeof needsYou>[0] & Pick<ItemFrontmatter, 'awaiting_data'>): WaitKind | undefined {
+  if (!needsYou(fm)) return undefined;
+  const awaited = fm.awaiting ? WAIT_KIND_OF[fm.awaiting] : undefined;
+  const decided = Boolean((fm.awaiting_data as Record<string, unknown> | undefined)?.decision);
+  return awaited && !(awaited === 'decision' && fm.blocked && !decided) ? awaited : fm.blocked ? 'blocked' : awaited ?? 'hold';
+}
+
 export function isDone(status: Status): boolean {
   return status === 'MERGED' || status === 'FINISHED';
 }
