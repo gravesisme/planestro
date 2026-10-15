@@ -240,7 +240,8 @@ in:
   (off by default), files a new item (title, description, kind, category,
   priority) to Not yet submitted, marked `created_by: operator_mcp`. It cannot
   submit, edit or approve anything: starting the work is still yours.
-- Item actions, with the same opt-in: `unblock_item` (id, message, fresh),
+- Item actions, with `operator_mcp.allow_actions: true` (a separate opt-in,
+  off by default, so filing items never grants acting on them): `unblock_item` (id, message, fresh),
   `send_message`, `answer_question` (each question to its answer),
   `answer_decision` (an option's label and/or words; an option that carries an
   action stays on the board), `decide_permission` (deny; allow once only with

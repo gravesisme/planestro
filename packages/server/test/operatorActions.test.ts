@@ -6,17 +6,17 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { DataStore } from '../src/store/DataStore.ts';
 import { LiveEngine } from '../src/engine/LiveEngine.ts';
 import { FakeWorld, DryRunGitPort, DryRunGhPort, DryRunProcPort, DryRunClaudePort } from '../src/engine/dryrun-ports.ts';
-import { operatorServer, OPERATOR_READ_TOOLS, OPERATOR_TOOLS } from '../src/routes/mcp.ts';
+import { operatorServer, OPERATOR_READ_TOOLS, OPERATOR_WRITE_TOOLS, OPERATOR_ACTION_TOOLS } from '../src/routes/mcp.ts';
 import type { Ports } from '../src/engine/ports.ts';
 import { makeFixture, sleep } from './helpers.ts';
 
 // #365: a supervising session acts on items through the operator MCP, not the board's HTTP API: the same engine calls,
-// behind operator_mcp.allow_writes, and its Activity lines say [operator], never [user].
+// behind operator_mcp.allow_actions (not allow_writes, which only files items), and its Activity lines say [operator], never [user].
 
 let store: DataStore | undefined; let engine: LiveEngine | undefined; let client: Client | undefined;
 afterEach(async () => { await client?.close(); await engine?.stop(); store?.close(); store = undefined; engine = undefined; client = undefined; });
 
-async function setup(writes = true) {
+async function setup(actions = true, writes = false) {
   const { dataDir } = makeFixture();
   delete process.env.PLANESTRO_DRYRUN_CI;
   store = await DataStore.open(dataDir, { emit: () => {} });
@@ -24,6 +24,7 @@ async function setup(writes = true) {
   const ports: Ports = { mode: 'dry-run', git: new DryRunGitPort(world), gh: new DryRunGhPort(world), proc: new DryRunProcPort(world), agents: { claude: new DryRunClaudePort(world) } };
   engine = new LiveEngine(store, ports, () => {}, { sleep: async () => {}, tickMs: 50 });
   mkdirSync(join(store.codeRepoPath(), '.git', 'info'), { recursive: true });
+  if (actions) store.updateConfig((d) => { d.setIn(['operator_mcp', 'allow_actions'], true); });
   if (writes) store.updateConfig((d) => { d.setIn(['operator_mcp', 'allow_writes'], true); });
   return { store, engine };
 }
@@ -49,21 +50,21 @@ async function planned(s: DataStore, e: LiveEngine, title: string) {
 }
 
 describe('operator MCP item actions (#365)', () => {
-  it('with writes off, none of them is listed and a call is an unknown tool', async () => {
-    const { store, engine } = await setup(false);
+  it('with actions off, none of them is listed and a call is an unknown tool, even with writes on', async () => {
+    const { store, engine } = await setup(false, true);
     const c = await connect(store, engine);
-    expect((await c.listTools()).tools.map((t) => t.name).sort()).toEqual([...OPERATOR_READ_TOOLS].sort());
+    expect((await c.listTools()).tools.map((t) => t.name).sort()).toEqual([...OPERATOR_READ_TOOLS, ...OPERATOR_WRITE_TOOLS].sort());
     const item = store.createItem({ title: 'Blocked', description: 'x' });
     store.mutateItem(item.id, [{ set: { blocked: true, blocked_reason: 'agent_blocked' } }], 'engine');
     await expect(c.callTool({ name: 'unblock_item', arguments: { id: item.id } })).resolves.toMatchObject({ isError: true });
     expect(fmOf(store, item.id).blocked).toBe(true);
   });
 
-  it('with writes on, every action is listed, with validated input', async () => {
+  it('with actions on, every action is listed, with validated input, and create_item is not', async () => {
     const { store, engine } = await setup();
     const c = await connect(store, engine);
     const { tools } = await c.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual([...OPERATOR_TOOLS].sort());
+    expect(tools.map((t) => t.name).sort()).toEqual([...OPERATOR_READ_TOOLS, ...OPERATOR_ACTION_TOOLS].sort());
     // Plan approval, merges and discards stay on the board.
     for (const name of ['approve_plan', 'merge', 'discard_item', 'close_as_done']) expect(tools.map((t) => t.name)).not.toContain(name);
     const bad = await c.callTool({ name: 'send_message', arguments: { id: 'TP-1', message: '' } });

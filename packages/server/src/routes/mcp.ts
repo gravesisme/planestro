@@ -14,9 +14,10 @@ import { allowedHosts, hostnameOf } from '../guard.ts';
 // `/mcp` on the running server: the backlog for whoever operates planestro from an MCP client
 // (Claude Code, Codex, Cursor), registered at user scope. Read-only, unless the project sets
 // `operator_mcp.allow_writes`: then `create_item` too, which files to NOT_YET_SUBMITTED and nothing
-// more (#232): submitting stays the user's word (#73). With it come the item actions a supervising
-// session needs (#365), each through the same engine call as the board's route and written to
-// Activity as `[operator]`, not `[user]`; plan approval, merges and discards stay on the board. It is a different thing from
+// more (#232): submitting stays the user's word (#73). `operator_mcp.allow_actions`, a separate opt-in,
+// adds the item actions a supervising session needs (#365), each through the same engine call as the
+// board's route and written to Activity as `[operator]`, not `[user]`; plan approval, merges and
+// discards stay on the board. It is a different thing from
 // the in-process `planestro` server each worker and the orchestrator get (submit_plan, report_done,
 // …), and must never reach them: workers never touch planning state (invariant 1). They run with
 // strictMcpConfig (Claude) or --ignore-user-config (Codex), so a user-scope registration is not
@@ -24,10 +25,12 @@ import { allowedHosts, hostnameOf } from '../guard.ts';
 
 /** The tools this endpoint always offers. */
 export const OPERATOR_READ_TOOLS = ['list_items', 'get_item', 'get_state'] as const;
-/** Listed only with `operator_mcp.allow_writes` (#232, #365); off, they are unknown tools. */
-export const OPERATOR_WRITE_TOOLS = ['create_item', 'unblock_item', 'send_message', 'answer_question', 'answer_decision', 'decide_permission', 'sync_item', 'rerun_ci'] as const;
+/** Listed only with `operator_mcp.allow_writes` (#232); off, they are unknown tools. */
+export const OPERATOR_WRITE_TOOLS = ['create_item'] as const;
+/** Listed only with `operator_mcp.allow_actions` (#365); off, they are unknown tools. */
+export const OPERATOR_ACTION_TOOLS = ['unblock_item', 'send_message', 'answer_question', 'answer_decision', 'decide_permission', 'sync_item', 'rerun_ci'] as const;
 /** Every tool this endpoint can offer; operatorMcp.test.ts pins that a worker session gets none of them. */
-export const OPERATOR_TOOLS = [...OPERATOR_READ_TOOLS, ...OPERATOR_WRITE_TOOLS] as const;
+export const OPERATOR_TOOLS = [...OPERATOR_READ_TOOLS, ...OPERATOR_WRITE_TOOLS, ...OPERATOR_ACTION_TOOLS] as const;
 
 /** Whether a URL is some planestro server's operator endpoint: `/mcp` on a host and port a recorded instance serves, or any loopback `/mcp` on a known port. */
 export function operatorMcpUrl(url: string, instances: (Pick<Instance, 'port'> & Partial<Pick<Instance, 'host' | 'url'>>)[] = [], aliases: readonly string[] = []): boolean {
@@ -112,8 +115,9 @@ type ActingEngine = Engine & {
 
 export function operatorServer(store: DataStore, engine: Engine): McpServer {
   // Read per request (the server is made per request), so turning the key off in Settings takes effect at once.
-  const writes = store.config.operator_mcp.allow_writes;
-  const server = new McpServer({ name: 'planestro', version: TOOL_VERSION }, { instructions: `The backlog of ${store.config.project.name} (${store.dataDir}), ${writes ? 'with create_item, which files a new item for the user to submit, and item actions (unblock_item, send_message, answer_question, answer_decision, decide_permission, sync_item, rerun_ci) that act as the board does, recorded in Activity as [operator]' : 'read-only'}. get_state for the overview, list_items to find items, get_item for one.` });
+  const { allow_writes: writes, allow_actions: actions } = store.config.operator_mcp;
+  const offers = [writes && 'create_item, which files a new item for the user to submit', actions && 'item actions (unblock_item, send_message, answer_question, answer_decision, decide_permission, sync_item, rerun_ci) that act as the board does, recorded in Activity as [operator]'].filter(Boolean).join(', and ');
+  const server = new McpServer({ name: 'planestro', version: TOOL_VERSION }, { instructions: `The backlog of ${store.config.project.name} (${store.dataDir}), ${offers ? `with ${offers}` : 'read-only'}. get_state for the overview, list_items to find items, get_item for one.` });
   server.registerTool('list_items', {
     description: 'List backlog items, one summary line each (id, title, kind, status, priority, epic, blocked reason, awaiting, needs_you, PR and CI). Filters combine.',
     inputSchema: {
@@ -162,7 +166,7 @@ export function operatorServer(store: DataStore, engine: Engine): McpServer {
       return json(itemSummary(store, item));
     } catch (e) { return { ...json({ error: (e as Error).message }), isError: true }; }
   });
-  if (writes) registerItemActions(server, store, engine as ActingEngine);
+  if (actions) registerItemActions(server, store, engine as ActingEngine);
   return server;
 }
 
