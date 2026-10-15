@@ -649,8 +649,12 @@ export const Config = z.object({
     idle_after_min: z.number().min(0).default(2),
   }).default({ idle_after_min: 2 }),
   /** Where the orchestrator's notes about planestro are filed as issues (#231), `owner/repo`; unset, **File as issue** is not offered. Not the project's own repo, unless planestro is the project. */
-  /** The operator MCP endpoint (`/mcp`, #175): `allow_writes` lists `create_item`, which files to NOT_YET_SUBMITTED only (#232). */
-  operator_mcp: z.object({ allow_writes: z.boolean().default(false) }).default({ allow_writes: false }),
+  /**
+   * The operator MCP endpoint (`/mcp`, #175): `allow_writes` lists `create_item`, which files to NOT_YET_SUBMITTED only (#232), and the
+   * item actions a supervising session needs (#365: unblock, message, answer, sync, re-run CI). `allow_permissions` lets it allow a parked
+   * permission request once; off, it may only deny one.
+   */
+  operator_mcp: z.object({ allow_writes: z.boolean().default(false), allow_permissions: z.boolean().default(false) }).default({ allow_writes: false, allow_permissions: false }),
   feedback: z.object({ issue_repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, 'owner/repo').optional() }).default({}),
   /** Importing the project's GitHub issues as items (#231): with none selected, every open issue with this label is imported. */
   issues: z.object({ import_label: z.string().min(1).optional() }).default({}),

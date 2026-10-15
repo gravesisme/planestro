@@ -81,7 +81,8 @@ export function setSection(file: ItemFile, title: SectionTitle | string, body: s
   if (s) s.body = text; else file.sections.push({ title, body: text });
 }
 
-export type ActivityActor = 'user' | 'app' | 'orchestrator' | 'worker';
+/** `operator`: the user's own supervising session, through the operator MCP (#365). */
+export type ActivityActor = 'user' | 'app' | 'orchestrator' | 'worker' | 'operator';
 
 /** Append one bullet to `# Activity`: `- <ts> [actor] text` (single line; newlines become spaces). */
 export function appendActivity(file: ItemFile, actor: ActivityActor, text: string, when: string = isoLocal()): void {

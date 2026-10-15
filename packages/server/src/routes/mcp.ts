@@ -2,8 +2,8 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
-import { STATUSES, PRIORITIES, KINDS } from '@planestro/shared';
-import type { DataStore, StoredItem } from '../store/DataStore.ts';
+import { STATUSES, PRIORITIES, KINDS, decisionOf } from '@planestro/shared';
+import { actingAs, type DataStore, type StoredItem } from '../store/DataStore.ts';
 import type { Engine } from '../engine/Engine.ts';
 import { TOOL_VERSION } from '../config.ts';
 import { listInstances, readInstance, pgidOf, uptime, type Instance } from '../instances.ts';
@@ -14,7 +14,9 @@ import { allowedHosts, hostnameOf } from '../guard.ts';
 // `/mcp` on the running server: the backlog for whoever operates planestro from an MCP client
 // (Claude Code, Codex, Cursor), registered at user scope. Read-only, unless the project sets
 // `operator_mcp.allow_writes`: then `create_item` too, which files to NOT_YET_SUBMITTED and nothing
-// more (#232): submitting stays the user's word (#73). It is a different thing from
+// more (#232): submitting stays the user's word (#73). With it come the item actions a supervising
+// session needs (#365), each through the same engine call as the board's route and written to
+// Activity as `[operator]`, not `[user]`; plan approval, merges and discards stay on the board. It is a different thing from
 // the in-process `planestro` server each worker and the orchestrator get (submit_plan, report_done,
 // …), and must never reach them: workers never touch planning state (invariant 1). They run with
 // strictMcpConfig (Claude) or --ignore-user-config (Codex), so a user-scope registration is not
@@ -22,8 +24,8 @@ import { allowedHosts, hostnameOf } from '../guard.ts';
 
 /** The tools this endpoint always offers. */
 export const OPERATOR_READ_TOOLS = ['list_items', 'get_item', 'get_state'] as const;
-/** Listed only with `operator_mcp.allow_writes` (#232); off, they are unknown tools. */
-export const OPERATOR_WRITE_TOOLS = ['create_item'] as const;
+/** Listed only with `operator_mcp.allow_writes` (#232, #365); off, they are unknown tools. */
+export const OPERATOR_WRITE_TOOLS = ['create_item', 'unblock_item', 'send_message', 'answer_question', 'answer_decision', 'decide_permission', 'sync_item', 'rerun_ci'] as const;
 /** Every tool this endpoint can offer; operatorMcp.test.ts pins that a worker session gets none of them. */
 export const OPERATOR_TOOLS = [...OPERATOR_READ_TOOLS, ...OPERATOR_WRITE_TOOLS] as const;
 
@@ -96,11 +98,22 @@ function stateSummary(store: DataStore, engine: Engine) {
 const json = (v: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(v, null, 2) }] });
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 const FILES = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
+/** An item action (#365): it may start a session, push a branch or re-run CI, so it reaches past the backlog's files. */
+const ACTS = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true };
+/** What the engine answers in words when it declines (`not now: …`), said back as an error. */
+const DECLINED = /^(not now|not possible|refused|nothing to)/;
+
+/** The engine calls the board's routes make that are not on every engine (MockEngine has none of them). */
+type ActingEngine = Engine & {
+  unblock?: (id: string, message?: string, by?: 'user', opts?: { fresh?: boolean }) => Promise<void>;
+  syncWithBase?: (id: string, opts?: { by?: 'user' }) => Promise<string>;
+  answerDecision?: (id: string, answer: { choice?: string; text?: string }) => Promise<void>;
+};
 
 export function operatorServer(store: DataStore, engine: Engine): McpServer {
   // Read per request (the server is made per request), so turning the key off in Settings takes effect at once.
   const writes = store.config.operator_mcp.allow_writes;
-  const server = new McpServer({ name: 'planestro', version: TOOL_VERSION }, { instructions: `The backlog of ${store.config.project.name} (${store.dataDir}), ${writes ? 'read-only but for create_item, which files a new item for the user to submit' : 'read-only'}. get_state for the overview, list_items to find items, get_item for one.` });
+  const server = new McpServer({ name: 'planestro', version: TOOL_VERSION }, { instructions: `The backlog of ${store.config.project.name} (${store.dataDir}), ${writes ? 'with create_item, which files a new item for the user to submit, and item actions (unblock_item, send_message, answer_question, answer_decision, decide_permission, sync_item, rerun_ci) that act as the board does, recorded in Activity as [operator]' : 'read-only'}. get_state for the overview, list_items to find items, get_item for one.` });
   server.registerTool('list_items', {
     description: 'List backlog items, one summary line each (id, title, kind, status, priority, epic, blocked reason, awaiting, needs_you, PR and CI). Filters combine.',
     inputSchema: {
@@ -149,7 +162,77 @@ export function operatorServer(store: DataStore, engine: Engine): McpServer {
       return json(itemSummary(store, item));
     } catch (e) { return { ...json({ error: (e as Error).message }), isError: true }; }
   });
+  if (writes) registerItemActions(server, store, engine as ActingEngine);
   return server;
+}
+
+/**
+ * The item actions (#365), each the engine call its board route makes, run as the user but written to Activity as `[operator]`
+ * (actingAs) and journaled once (`operator_mcp.action`), so a supervising session's unblock never reads as the designer's click.
+ */
+function registerItemActions(server: McpServer, store: DataStore, engine: ActingEngine): void {
+  const id = z.string().describe('The item id, e.g. HH-143');
+  const act = async (tool: string, itemId: string, args: Record<string, unknown>, fn: () => Promise<string | void>) => {
+    try {
+      if (!store.getItem(itemId)) throw new Error(`no item ${itemId}`);
+      const said = await actingAs('operator', fn);
+      store.journal.append({ type: 'operator_mcp.action', item: itemId, actor: 'operator', data: { tool, ...args } });
+      return json({ ...(said ? { said } : {}), item: itemSummary(store, store.requireItem(itemId)) });
+    } catch (e) { return { ...json({ error: (e as Error).message }), isError: true }; }
+  };
+  const said = (r: string) => { if (DECLINED.test(r)) throw new Error(r); return r; };
+
+  server.registerTool('unblock_item', {
+    description: "Unblock an item, as the board's Unblock does. Without a message it carries on from where it stopped (opens the PR, re-enters the merge pipeline, resumes the session); with one, the message goes to its session as a decision. `fresh` gives the message to a new conversation.",
+    inputSchema: { id, message: z.string().optional().describe('What the session should do now'), fresh: z.boolean().optional().describe('Start a fresh conversation for the message') },
+    annotations: ACTS,
+  }, ({ id: itemId, message, fresh }) => act('unblock_item', itemId, { ...(message ? { message } : {}), ...(fresh ? { fresh } : {}) }, async () => {
+    if (engine.unblock) await engine.unblock(itemId, message, 'user', { fresh });
+    else store.mutateItem(itemId, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data'] }, { activity: { actor: 'user', text: `unblocked${message ? `: ${message}` : ''}` } }], 'user', { commit: `${itemId}: unblock` });
+  }));
+  server.registerTool('send_message', {
+    description: "Send a message to an item's session, as the board's message box does: it resumes the session, or is queued for it while a turn runs or it waits on a question.",
+    inputSchema: { id, message: z.string().trim().min(1).describe('The message, in Markdown') },
+    annotations: ACTS,
+  }, ({ id: itemId, message }) => act('send_message', itemId, { message }, () => engine.message(itemId, message)));
+  server.registerTool('answer_question', {
+    description: "Answer the questions an item's session parked on (awaiting: question), each question's text to its answer, as the board's answer form does. The session resumes with them.",
+    inputSchema: { id, answers: z.record(z.string(), z.string().min(1)).refine((a) => Object.keys(a).length > 0, 'at least one answer').describe('Each question, as asked, to its answer') },
+    annotations: ACTS,
+  }, ({ id: itemId, answers }) => act('answer_question', itemId, { answers }, () => engine.respond(itemId, { kind: 'question', answers })));
+  server.registerTool('answer_decision', {
+    description: "Answer the decision card an item waits on: one of its option labels, your own words where it allows them, or both, as the board's card does. An option that carries an action (filing or submitting an item, a discard) is the user's to pick on the board.",
+    inputSchema: { id, choice: z.string().optional().describe('The label of the option picked, exactly'), text: z.string().optional().describe('Your answer in words') },
+    annotations: ACTS,
+  }, ({ id: itemId, choice, text }) => act('answer_decision', itemId, { ...(choice ? { choice } : {}), ...(text ? { text } : {}) }, async () => {
+    if (!engine.answerDecision) throw new Error('decisions need the live engine');
+    // An option's action is performed as the user when it is picked: never on an operator session's word (#73).
+    const option = decisionOf(store.requireItem(itemId).file.frontmatter)?.options.find((o) => o.label === choice?.trim());
+    if (option?.action) throw new Error(`"${option.label}" carries an action (${option.action.tool}); pick it on the board`);
+    await engine.answerDecision(itemId, { choice, text });
+  }));
+  server.registerTool('decide_permission', {
+    description: `Decide the permission request an item's session parked on: deny it (with a reason the session reads)${store.config.operator_mcp.allow_permissions ? ', or allow it once' : '. Allowing needs operator_mcp.allow_permissions, which is off'}. Never adds an allow rule: that stays on the board.`,
+    inputSchema: { id, decision: z.enum(['allow', 'deny']).describe('allow: this request once; deny: refuse it'), reason: z.string().optional().describe('Why, for the session') },
+    annotations: ACTS,
+  }, ({ id: itemId, decision, reason }) => act('decide_permission', itemId, { decision, ...(reason ? { reason } : {}) }, async () => {
+    // Read per call, like allow_writes: turning it off applies at once.
+    if (decision === 'allow' && !store.config.operator_mcp.allow_permissions) throw new Error('allowing a permission request needs operator_mcp.allow_permissions; it is off, so allow it on the board, or deny it');
+    await engine.respond(itemId, { kind: 'permission', decision, ...(reason ? { reason } : {}) });
+  }));
+  server.registerTool('sync_item', {
+    description: "Bring an item's branch up to date with its base between turns, as the board's Sync with base does. A conflict goes to the session.",
+    inputSchema: { id },
+    annotations: ACTS,
+  }, ({ id: itemId }) => act('sync_item', itemId, {}, async () => {
+    if (!engine.syncWithBase) throw new Error('syncing a branch needs the live engine');
+    return said(await engine.syncWithBase(itemId, { by: 'user' }));
+  }));
+  server.registerTool('rerun_ci', {
+    description: "Re-run the head's red or cancelled CI run, as the board's Re-run CI does; its new attempt is the verdict that counts.",
+    inputSchema: { id },
+    annotations: ACTS,
+  }, ({ id: itemId }) => act('rerun_ci', itemId, {}, async () => said(await engine.rerunCi(itemId, 'user'))));
 }
 
 /** Streamable HTTP, stateless: a server and transport per request, JSON responses (nothing here streams). */
