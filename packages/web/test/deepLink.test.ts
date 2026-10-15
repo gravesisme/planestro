@@ -58,7 +58,7 @@ describe('deep links that open straight to the decision (#226)', () => {
   ])("the item page holds the panel a '#%s' link names, marked as waiting on you", (kind, fields) => {
     const { kind: notified, markup } = page(fields);
     expect(notified).toBe(kind); // the fragment the server's notification uses
-    expect(markup).toMatch(new RegExp(`<div[^>]* id="${kind}" data-wait="true"`));
+    expect(markup).toMatch(new RegExp(`<div[^>]* id="${kind}"[^>]* data-wait="true"`));
     // The header row names it too (#373), before Take over…: a held PR is released from there, anything else is a jump.
     const header = markup.slice(markup.indexOf('item-actions'), markup.indexOf('Take over'));
     expect(header).toContain(kind === 'hold' ? '>Release hold</button>' : `>Jump to: ${WAIT_LABEL[kind as WaitKind]}</button>`);

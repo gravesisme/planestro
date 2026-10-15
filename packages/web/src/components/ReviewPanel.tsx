@@ -37,7 +37,7 @@ export function ReviewPanel({ item, compact = false }: { item: ItemView; compact
   useEffect(() => { let live = true; api.reviewImages(item.id).then((r) => { if (live) setImages(r); }).catch(() => { if (live) setImages([]); }); return () => { live = false; }; }, [item.id, fm.updated_at, fm.status]);
   // Still reading the branch (#159): say so where the files will be, so nobody leaves before they show up.
   if (!awaiting && images === null && fm.branch && ['IN_PROGRESS', 'IN_REVIEW'].includes(fm.status)) return (
-    <div className="section review-loading" aria-busy="true">
+    <div className="section review-loading" id="files" data-nav="Files to review" aria-busy="true">
       <h2 style={{ margin: '0 0 8px' }}><span>Files to review on this branch</span></h2>
       <p className="small muted row"><span className="spinner" aria-hidden="true" /> Reading the branch for the files it changed…</p>
     </div>
@@ -72,7 +72,7 @@ export function ReviewPanel({ item, compact = false }: { item: ItemView; compact
     );
   };
   return (
-    <div className={awaiting ? 'approval' : 'section'} id={awaiting ? 'review' : undefined} data-wait={awaiting || undefined}>
+    <div className={awaiting ? 'approval' : 'section'} id={awaiting ? 'review' : 'files'} data-nav={`${merged ? 'Files changed' : 'Files to review'} · ${images?.length ?? 0}`} data-wait={awaiting || undefined}>
       <h2 style={{ margin: '0 0 8px' }}>
         <span>{awaiting ? 'Waiting for your review before it merges' : merged ? `Files changed${fm.pr ? ` by PR #${fm.pr}` : ''} · ${images?.length ?? 0}` : `Files to review on this branch · ${images?.length ?? 0}`}</span>
         {texts.length > 0 && <button className="small" onClick={() => setSplit(!sideBySide)}>{sideBySide ? 'side by side — show unified' : 'unified — show side by side'}</button>}

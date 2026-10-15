@@ -27,6 +27,7 @@ import { setTitle as setTabTitle } from '../tabBadge.ts';
 import { useLandOnWait } from '../deepLink.ts';
 import { useFullItem } from '../fullItem.ts';
 import { WaitShortcut, promptReleaseHold } from '../components/WaitShortcut.tsx';
+import { SectionNav } from '../components/SectionNav.tsx';
 
 function useAutosave(id: string, section: 'Description' | 'Notes' | 'Plan', initial: string) {
   const [text, setText] = useState(initial);
@@ -97,6 +98,8 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
   const upload = (files: File[]) => { for (const f of files) void act(async () => api.uploadAttachment(item.id, await prepareUpload(f, maxBytes))); };
   const onPaste = (e: React.ClipboardEvent) => { const f = [...e.clipboardData.files][0]; if (f) { e.preventDefault(); upload([f]); } };
   const picker = useRef<HTMLInputElement>(null);
+  /** The page's main column: the section nav lists what it renders (#374). */
+  const main = useRef<HTMLDivElement>(null);
   // Item ↔ epic while nothing has run for implementation (#69, HH-198); the rule is the server's, shared.
   const other = fm.kind === 'epic' ? 'item' : 'epic';
   const convertible = !session && !kindConversionRefusal(fm, other, d.children.length);
@@ -123,7 +126,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
 
   return (
     <div className="item-page" onPaste={onPaste}>
-      <div>
+      <div ref={main}>
         <Link className="back phone-only" to={d.lane === 'icebox' ? '/icebox' : d.lane === 'done' ? '/done' : '/'}>‹ {d.lane === 'icebox' ? 'Icebox' : d.lane === 'done' ? 'Done' : 'Board'}</Link>
         <h1><span className="title-id">{item.id}</span><textarea ref={titleBox} rows={1} aria-label="Title" value={title} onChange={(e) => setTitle(e.target.value.replace(/\n/g, ' '))} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } }} onBlur={() => title.trim() && title !== fm.title && field({ title: title.trim() })} /></h1>
         <DecisionCard item={item} />
@@ -149,6 +152,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
         </ActionGroup></div>
         {undoing && <UndoTurnPanel item={item} onClose={() => setUndoing(false)} />}
         {discarding && <DiscardPanel item={item} onClose={() => setDiscarding(false)} />}
+        <SectionNav root={main} variant="select" />
         <div className="controls">
           <label>category <select value={fm.category} onChange={(e) => field({ category: e.target.value })}>{state.config.categories.map((c) => <option key={c}>{c}</option>)}</select></label>
           <label title="Each column, and the queue, takes high before medium before low before none; rank orders items within a priority">priority <select value={fm.priority ?? ''} onChange={(e) => field({ priority: e.target.value || null })}><option value="">none</option>{PRIORITIES.map((p) => <option key={p}>{p}</option>)}</select></label>
@@ -184,7 +188,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
         <WaitingPanel item={item} />
         {fm.status === 'PLAN_READY' && fm.kind === 'epic' && <BreakdownPanel item={item} />}
         {fm.status === 'PLAN_READY' && fm.kind !== 'epic' && (
-          <div className="approval" id="plan" data-wait={fm.awaiting === 'orchestrator' ? undefined : true}>
+          <div className="approval" id="plan" data-nav="Plan under review" data-wait={fm.awaiting === 'orchestrator' ? undefined : true}>
             <h2 style={{ margin: '0 0 8px' }}>{fm.awaiting === 'orchestrator' ? 'The orchestrator is reviewing this plan' : 'Plan needs your approval'}</h2>
             {fm.awaiting === 'orchestrator' && <p className="small" style={{ marginTop: 0 }}>You asked it to decide: it approves, sends the plan back with fixes ({fm.plan_revisions ?? 0} of {orch.max_plan_revisions} rounds used), or leaves it to you. You can still decide yourself below.</p>}
             {fm.op_data?.plan_amended ? <p className="small"><span className="tag ok">amended by the orchestrator</span> it sent the plan back to fold this in, so what you approve is complete: <i>{String(fm.op_data.plan_amended)}</i></p> : null}
@@ -214,12 +218,12 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
             <div className="row"><ActionGroup>{statedHold && <ActionButton className="primary" disabled={!holdText.trim() || needsBudget} working="Approving…" onAct={() => act(() => api.approvePlan(item.id, approval || undefined, false, holdText, paid ? mcpCalls : undefined))}>Approve and hold the PR</ActionButton>}{!epicShaped && <ActionButton className={statedHold ? '' : 'primary'} disabled={needsBudget} title={needsBudget ? 'Set its MCP budget first' : statedHold ? 'Without the hold: its pull request merges as soon as CI is green' : undefined} working="Approving…" onAct={() => act(() => api.approvePlan(item.id, approval || undefined, false, undefined, paid ? mcpCalls : undefined))}>Approve &amp; implement</ActionButton>}{canClose && <ActionButton title={CLOSE_HINT} working="Closing…" onAct={closeAsDone}>Already done — close…</ActionButton>}{fm.awaiting === 'plan_approval' && state.config.orchestrator.may_approve_plans && !implementerDef?.user_approves_plans && <ActionButton title="Hand it to the orchestrator to review and approve, as a delegated plan: for one that came back to you without a decision" working="Handing over…" onAct={() => act(() => api.reviewPlanAgain(item.id))}>Ask the orchestrator to review</ActionButton>}<span className="grow" /><input className="grow" placeholder="What should change?" value={reject} onChange={(e) => setReject(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && reject.trim()) { e.preventDefault(); (e.currentTarget.nextElementSibling as HTMLButtonElement | null)?.click(); } }} /* Enter presses the button beside it, through its guard */ /><ActionButton className="danger" disabled={!reject.trim()} working="Sending…" onAct={() => act(() => api.rejectPlan(item.id, reject))}>Request changes</ActionButton></ActionGroup></div>
           </div>
         )}
-        {fm.parts?.length ? <PartsStrip parts={fm.parts} /> : null}
-        {fm.loop && <div className="section"><h2>Loop · {fm.loop_state ? `${fm.loop_state.passing}/${fm.loop_state.total} passing` : 'not started'}</h2><div className="small">{fm.loop_state ? loopLine(fm.loop_state, fm.loop.max_iterations) : `no iteration reported yet; ${fm.loop.max_iterations} allowed`}{loopGreen(fm.loop_state) && <> · <b>green</b></>}</div>{fm.loop.goal && <div className="muted small">goal: {fm.loop.goal}</div>}</div>}
+        {fm.parts?.length ? <div id="parts" data-nav="Parts"><PartsStrip parts={fm.parts} /></div> : null}
+        {fm.loop && <div className="section" id="loop" data-nav="Loop"><h2>Loop · {fm.loop_state ? `${fm.loop_state.passing}/${fm.loop_state.total} passing` : 'not started'}</h2><div className="small">{fm.loop_state ? loopLine(fm.loop_state, fm.loop.max_iterations) : `no iteration reported yet; ${fm.loop.max_iterations} allowed`}{loopGreen(fm.loop_state) && <> · <b>green</b></>}</div>{fm.loop.goal && <div className="muted small">goal: {fm.loop.goal}</div>}</div>}
         <AwaitingPanels item={item} />
         <ReviewPanel item={item} />
         {drop && (
-          <div className="approval">
+          <div className="approval" id="connection" data-nav="Lost connection">
             <h2 style={{ margin: '0 0 8px' }}>Lost connection to planestro</h2>
             <p className="small" style={{ marginTop: 0 }}>At {drop.at.slice(0, 19).replace('T', ' ')}{drop.tool ? <>, on <code>{drop.tool}</code></> : null}: <code>{drop.error}</code></p>
             <p className="small">The session's planestro calls and permission requests may not have arrived. A report it made is applied from the turn's record when the turn ends; if none could be, the item stops as <code>connection_lost</code> and the orchestrator reads the session's last message. This clears after a turn that runs with its connection.</p>
@@ -227,14 +231,14 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           </div>
         )}
         {fm.status === 'IN_PROGRESS' && fm.skip_merge && (
-          <div className="approval">
+          <div className="approval" id="pr-hold" data-nav="Its pull request will be held">
             <h2 style={{ margin: '0 0 8px' }}>Its pull request will be held</h2>
             <p className="small">{heldFor ? <><b>Held:</b> {heldFor}. </> : null}The work goes on as usual. Its pull request is opened and its CI is read, but it does not merge until you release the hold.</p>
             <div className="row"><ActionButton working="Dropping the hold…" onAct={() => { const n = prompt(`Drop the hold on ${item.id}, so its pull request merges as usual? Optional note for the log:`); if (n !== null) return act(() => api.releaseHold(item.id, n || undefined)); }}>Drop the hold</ActionButton></div>
           </div>
         )}
         {fm.status === 'IN_REVIEW' && fm.skip_merge && (
-          <div className="approval" id="hold" data-wait={d.needs_you || undefined}>
+          <div className="approval" id="hold" data-nav="Held out of the merge queue" data-wait={d.needs_you || undefined}>
             <h2 style={{ margin: '0 0 8px' }}>Held out of the merge queue</h2>
             {heldFor && <p className="small" style={{ marginTop: 0 }}><b>Held:</b> {heldFor}</p>}
             {preview && <p className="small" style={{ marginTop: 0 }}><b>Preview:</b> <a href={preview.url} target="_blank" rel="noreferrer">{preview.url}</a> <span className="muted">({preview.sha.slice(0, 7)})</span></p>}
@@ -243,11 +247,11 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           </div>
         )}
 
-        <div className="section"><h2>Description</h2><textarea value={desc.text} onChange={(e) => desc.setText(e.target.value)} onBlur={desc.save} /><div className="small muted">{desc.dirty ? 'unsaved — saves on blur' : ' '}</div></div>
-        <div className="section"><h2>Notes</h2><textarea value={notes.text} onChange={(e) => notes.setText(e.target.value)} onBlur={notes.save} style={{ minHeight: 80 }} /></div>
-        <div className="section"><h2>Plan <ActionButton className="small" working="Saving…" onAct={async () => { if (editPlan) await plan.save(); setEditPlan(!editPlan); }}>{editPlan ? 'done' : 'edit'}</ActionButton></h2>{editPlan ? <textarea value={plan.text} onChange={(e) => plan.setText(e.target.value)} onBlur={plan.save} style={{ minHeight: 200 }} /> : <Markdown text={item.sections.Plan} />}</div>
+        <div className="section" id="description" data-nav="Description"><h2>Description</h2><textarea value={desc.text} onChange={(e) => desc.setText(e.target.value)} onBlur={desc.save} /><div className="small muted">{desc.dirty ? 'unsaved — saves on blur' : ' '}</div></div>
+        <div className="section" id="notes" data-nav="Notes"><h2>Notes</h2><textarea value={notes.text} onChange={(e) => notes.setText(e.target.value)} onBlur={notes.save} style={{ minHeight: 80 }} /></div>
+        <div className="section" id="plan-text" data-nav="Plan"><h2>Plan <ActionButton className="small" working="Saving…" onAct={async () => { if (editPlan) await plan.save(); setEditPlan(!editPlan); }}>{editPlan ? 'done' : 'edit'}</ActionButton></h2>{editPlan ? <textarea value={plan.text} onChange={(e) => plan.setText(e.target.value)} onBlur={plan.save} style={{ minHeight: 200 }} /> : <Markdown text={item.sections.Plan} />}</div>
         {fm.kind === 'epic' && (
-          <div className="section"><h2>Children · {children.filter((c) => ['MERGED', 'FINISHED'].includes(c.frontmatter.status)).length}/{children.length} merged
+          <div className="section" id="children" data-nav={`Children · ${children.length}`}><h2>Children · {children.filter((c) => ['MERGED', 'FINISHED'].includes(c.frontmatter.status)).length}/{children.length} merged
             <span><ActionGroup>
               {/* a childless epic's branch would sit idle (dogfood p56, LM-2) */}{fm.status === 'NOT_YET_SUBMITTED' && children.length > 0 && <ActionButton className="small" working="Opening…" onAct={() => act(() => api.epicAction(item.id, 'open'))}>Open epic branch</ActionButton>}{' '}
               {fm.status === 'IN_PROGRESS' && <ActionButton className="small" working="Syncing…" onAct={() => act(() => api.epicAction(item.id, 'sync'))}>Sync with {d.base_branch}</ActionButton>}{' '}
@@ -259,14 +263,14 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
             {!children.length && <p className="muted small">No children yet — plan the breakdown, add them from a list, or create items with this epic as their parent.</p>}
           </div>
         )}
-        <div className="section"><h2>Session</h2>
+        <div className="section" id="session" data-nav="Session"><h2>Session</h2>
           {session ? <p>{session.busy ? 'running' : 'idle'} · {session.model} · {session.op ?? ''}<br /><span className="small muted">{session.last_output}</span></p> : <p className="muted small">No live session. {fm.session_id ? `Parked session ${fm.session_id.slice(0, 8)}… resumes when needed.` : 'Nothing has run for this item yet.'}</p>}
           {fm.session_id && !session && <p className="small muted">Open in a terminal (pauses planestro's use of it while attached): <code>claude --resume {fm.session_id}</code> <button className="small" onClick={() => void navigator.clipboard.writeText(`claude --resume ${fm.session_id}`)}>copy</button></p>}
           <form className="row" onSubmit={(e) => e.preventDefault()}><input className="grow" placeholder={fm.taken_over ? 'You have this item: hand it back to talk to its session' : 'Message to the session (queued for its next turn)'} disabled={!!fm.taken_over} value={msg} onChange={(e) => setMsg(e.target.value)} /><ActionButton type="submit" disabled={!msg.trim() || !!fm.taken_over} working="Sending…" onAct={() => act(() => api.message(item.id, msg)).then((r) => { if (r) setMsg(''); })}>Send</ActionButton></form>
-          <h2 style={{ marginTop: 12 }}>Console</h2>
+          <h2 style={{ marginTop: 12 }} id="console" data-nav="Console">Console</h2>
           <ItemConsole id={item.id} />
         </div>
-        <div className="section"><h2>Attachments</h2>
+        <div className="section" id="attachments" data-nav={`Attachments · ${fm.attachments.length}`}><h2>Attachments</h2>
           <ul className="attachments">{fm.attachments.map((a) => <li key={a.path}>{a.kind === 'managed' && /\.(png|jpe?g|gif|webp)$/i.test(a.path) && <img src={`/${a.path}`} alt="" />}<code>{a.path}</code><span className="tag">{a.kind}</span>{a.kind === 'managed' && <a href={`/${a.path}`} target="_blank" rel="noreferrer">open</a>}<ActionButton className="small" working="Removing…" onAct={() => act(() => api.removeAttachment(item.id, a.path))}>remove</ActionButton></li>)}</ul>
           <div className="row">
             <button className="small" onClick={() => picker.current?.click()}>Attach photo or file…</button>
@@ -275,7 +279,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           </div>
           <form className="row" onSubmit={(e) => e.preventDefault()}><input className="grow" placeholder="Reference a path (absolute, or relative to the code repo) — never copied" value={refPath} onChange={(e) => setRefPath(e.target.value)} /><ActionButton type="submit" disabled={!refPath.trim()} working="Adding…" onAct={() => act(() => api.referenceAttachment(item.id, refPath.trim())).then((r) => { if (r) setRefPath(''); })}>Add reference</ActionButton></form>
         </div>
-        <div className="section"><h2>Activity <span className="small muted">· newest first</span></h2><ActivityList entries={item.activity} /></div>
+        <div className="section" id="activity" data-nav="Activity"><h2>Activity <span className="small muted">· newest first</span></h2><ActivityList entries={item.activity} /></div>
       </div>
       <aside className="sidebar section">
         <dl>
@@ -303,6 +307,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           {(['created_at', 'updated_at', 'queued_at', 'started_at', 'plan_ready_at', 'plan_approved_at', 'pr_created_at', 'merged_at', 'finished_at', 'iceboxed_at'] as const).map((k) => fm[k] ? <Fragment key={k}><dt>{k.replace('_at', '')}</dt><dd>{fm[k]!.slice(0, 19).replace('T', ' ')}</dd></Fragment> : null)}
         </dl>
         <div className="row" style={{ marginTop: 12 }}><ActionButton className="danger small" working="Deleting…" onAct={() => { if (confirm(`Delete ${item.id}?`)) return act(() => api.deleteItem(item.id)).then(onDeleted); }}>Delete item</ActionButton></div>
+        <SectionNav root={main} variant="list" />
       </aside>
     </div>
   );
