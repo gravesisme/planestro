@@ -33,7 +33,7 @@ export function BlockedPanel({ item, compact = false }: { item: ItemView; compac
     : fm.status === 'IN_REVIEW' && reason === 'pr_closed_externally' && !!fm.pr ? <ActionButton title="Reopens the pull request on GitHub and goes back to waiting for its CI, on the head it has. For a close nobody meant, such as a closing keyword in another merge." working="Reopening…" onAct={() => act(() => api.reopenPr(item.id))}>Reopen and resume</ActionButton>
     : fm.status === 'IN_REVIEW' && /^ci_(red|infra)/.test(reason) && !!fm.op_data?.last_red && <ActionButton title="Re-runs the failed jobs of this head's red CI run: for a flake, when nothing in the branch needs fixing. The new attempt's verdict is the one that counts." working="Re-running…" onAct={() => act(() => api.rerunCi(item.id))}>Re-run failed CI jobs</ActionButton>;
   if (fm.triage) return (
-    <div className="blocked-panel triaging" id="blocked">
+    <div className="blocked-panel triaging" id="blocked" data-nav="Blocked: the orchestrator is on it">
       <TriageNote item={item} />
       {detail && <details className="decision-details"><summary>details</summary><p className="blocked-said">{detail}</p></details>}
       {!compact && <div className="row"><ActionGroup>{rerun}<UsageProviderSwitch item={item} /><ActionButton working="Unblocking…" onAct={unblock}>Unblock it myself…</ActionButton>{fresh}</ActionGroup></div>}

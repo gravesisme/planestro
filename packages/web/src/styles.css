@@ -596,3 +596,9 @@ input.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 .tag.cat { font-weight: 500; display: inline-block; }
 .color-well, .setting-list .li.add input.color-well { flex: none; width: 22px; height: 22px; padding: 0; border: 1px solid var(--line); border-radius: 4px; background: none; cursor: pointer; }
 .color-well::-webkit-color-swatch-wrapper { padding: 2px; } .color-well::-webkit-color-swatch { border: 0; border-radius: 2px; } .color-well::-moz-color-swatch { border: 0; border-radius: 2px; }
+
+/* A long item page's sections (#374): a sticky list under the details on a wide screen, a select at the top on a phone. */
+.section-nav { position: sticky; top: 72px; display: grid; gap: 1px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); max-height: calc(100vh - 96px); overflow-y: auto; font-size: 13px; }
+.section-nav a { padding: 3px 8px; border-left: 2px solid transparent; border-radius: 0 4px 4px 0; color: var(--muted); } .section-nav a:hover { color: var(--text); background: var(--panel2); }
+.section-nav a.wait { color: var(--warn); border-left-color: var(--warn); font-weight: 600; }
+.section-jump { width: 100%; margin: 4px 0 10px; }
