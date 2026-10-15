@@ -150,3 +150,19 @@ describe('setting regenerated files aside (p17)', () => {
     expect(unstaged.refused!.message).toMatch(/unstaged changes/);
   });
 });
+
+describe('a worktree folder git no longer lists (#356)', () => {
+  it('setAsideLeftover moves the files left in it, removes the empty folders, and keeps a folder that holds a .git', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'planestro-leftover-'));
+    const left = join(root, 'wt'); const dest = join(root, 'aside');
+    mkdirSync(join(left, 'tmp/empty'), { recursive: true }); writeFileSync(join(left, 'CLAUDE.md'), 'rules\n');
+    const port = new LiveGitPort();
+    expect(await port.setAsideLeftover(left, dest)).toEqual(['CLAUDE.md']);
+    expect(existsSync(left)).toBe(false);
+    expect(readFileSync(join(dest, 'CLAUDE.md'), 'utf8')).toBe('rules\n');
+    expect(await port.setAsideLeftover(left, dest)).toBeUndefined();
+    mkdirSync(left); writeFileSync(join(left, '.git'), 'gitdir: elsewhere\n'); writeFileSync(join(left, 'a.txt'), 'a');
+    await expect(port.setAsideLeftover(left, dest)).rejects.toThrow(/holds a \.git; kept it/);
+    expect(existsSync(join(left, 'a.txt'))).toBe(true);
+  });
+});

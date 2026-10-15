@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { statfs } from 'node:fs/promises';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, renameSync, copyFileSync, unlinkSync, lstatSync, readdirSync, readFileSync, statSync, constants as fsConstants } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, renameSync, copyFileSync, unlinkSync, rmdirSync, lstatSync, readdirSync, readFileSync, statSync, constants as fsConstants } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { matchesPathPattern } from './ports.ts';
@@ -195,6 +195,23 @@ export class LiveGitPort implements GitPort {
     });
   }
   async worktreeRemove(repo: string, path: string, force: boolean) { if (existsSync(path)) await git(repo, ['worktree', 'remove', ...(force ? ['--force'] : []), path]); }
+  async setAsideLeftover(path: string, dest: string) {
+    if (!existsSync(path)) return undefined;
+    if (existsSync(join(path, '.git'))) throw new Error(`${path} is not listed by git worktree list but holds a .git; kept it`);
+    const files: string[] = []; const dirs: string[] = [];
+    const walk = (rel: string) => {
+      for (const name of readdirSync(join(path, rel))) {
+        const r = rel ? join(rel, name) : name;
+        if (lstatSync(join(path, r)).isDirectory()) { walk(r); dirs.push(r); } else files.push(r);
+      }
+    };
+    walk('');
+    await this.moveAside(path, files, dest);
+    // Only empty folders are left: rmdir refuses anything else, so nothing is deleted that held a file.
+    for (const d of dirs) rmdirSync(join(path, d));
+    rmdirSync(path);
+    return files;
+  }
   async worktreePrune(repo: string) { await git(repo, ['worktree', 'prune']); }
   async worktreeList(repo: string): Promise<WorktreeEntry[]> {
     const out = (await git(repo, ['worktree', 'list', '--porcelain'])).stdout;
