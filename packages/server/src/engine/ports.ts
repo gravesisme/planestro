@@ -127,6 +127,13 @@ export type CiState = 'none' | 'pending' | 'success' | 'failure' | 'cancelled' |
 /** `queued` (pending only): the run is waiting for a runner and no job has started, so it is not using its time yet (#170). */
 /** `timedOut` (cancelled only): GitHub called the run a failure though its jobs only ended cancelled, as a job past its `timeout-minutes` does (#330). */
 export interface CiStatus { state: CiState; runId?: number; url?: string; sha?: string; startedAt?: string; attempt?: number; queued?: boolean; timedOut?: boolean }
+/**
+ * One attempt of a CI run, timed as GitHub reports it (#179): when the run was created, when this attempt was queued
+ * (`run_started_at`), when it ended, and each job as GitHub names it, with no interpretation. `runner` is set only on
+ * a job a runner took, so a job that never left the queue has no start that counts.
+ */
+export interface CiJobTiming { name: string; status?: string; conclusion?: string; created_at?: string; started_at?: string; completed_at?: string; runner?: string }
+export interface CiAttemptTiming { attempt: number; status?: string; conclusion?: string; created_at?: string; queued_at?: string; first_job_started_at?: string; completed_at?: string; jobs: CiJobTiming[] }
 /** Runs of the CI workflow across the repository that are waiting for a runner, and running (#170). */
 export interface CiQueue { queued: number; running: number }
 /** A self-hosted runner as GitHub lists it for the repository, or its organization (#216). */
@@ -159,6 +166,8 @@ export interface GhPort {
   rerunFailed(repo: string, runId: number): Promise<void>;
   /** Re-run every job of a run: a cancelled run, which has no failed jobs to re-run (HH-321). */
   rerunAll(repo: string, runId: number): Promise<void>;
+  /** One attempt of a run with its jobs, timed (#179). Optional: a port without it records no timing. */
+  runTiming?(repo: string, runId: number, attempt: number): Promise<CiAttemptTiming>;
   mergePr(repo: string, number: number, opts: { headSha: string }): Promise<'merged' | 'head_moved'>;
   /** Close a pull request without merging it, with a comment saying why (#135). */
   closePr(repo: string, number: number, comment: string): Promise<void>;

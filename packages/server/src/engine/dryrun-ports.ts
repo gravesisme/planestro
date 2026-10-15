@@ -1,6 +1,6 @@
 import { placeholderPng } from './placeholderPng.ts';
 import { matchesPathPattern } from './ports.ts';
-import type { GitPort, GhPort, ProcPort, ClaudePort, AgentPort, AgentTurnOptions, WorktreeEntry, WorktreeSnapshot, Checkpoint, RebaseResult, ContinueResult, CiStatus, PrInfo, PrClosure, IssueInfo, RunnerReport, TurnOptions, TurnResult, CustomTurnOptions } from './ports.ts';
+import type { GitPort, GhPort, ProcPort, ClaudePort, AgentPort, AgentTurnOptions, WorktreeEntry, WorktreeSnapshot, Checkpoint, RebaseResult, ContinueResult, CiStatus, CiAttemptTiming, PrInfo, PrClosure, IssueInfo, RunnerReport, TurnOptions, TurnResult, CustomTurnOptions } from './ports.ts';
 
 /**
  * An in-memory world so a dry run advances end to end: worktrees, branches, PRs whose CI
@@ -314,6 +314,10 @@ export class DryRunGhPort implements GhPort {
     for (const p of this.w.prs.values()) { p.attempt = (p.attempt ?? 1) + 1; p.polls = 0; p.staleFailures = this.w.rerunLagPolls; if (this.w.rerunFailsAgain) { p.failOnce = true; this.w.rerunFailsAgain = false; } }
   }
   async rerunAll(_repo: string, runId: number) { this.say(`gh run rerun ${runId}`); for (const p of this.w.prs.values()) if (p.cancelled) { p.cancelled = false; p.attempt = (p.attempt ?? 1) + 1; p.polls = 0; } }
+  async runTiming(_repo: string, runId: number, attempt: number): Promise<CiAttemptTiming> {
+    const t = (min: number) => new Date(Date.UTC(2026, 0, 1, 0, min)).toISOString();
+    return { attempt, status: 'completed', conclusion: runId === 3 ? 'success' : runId === 5 ? 'cancelled' : 'failure', created_at: t(0), queued_at: t(attempt * 10), first_job_started_at: t(attempt * 10 + 2), completed_at: t(attempt * 10 + 5), jobs: [{ name: 'test', status: 'completed', created_at: t(attempt * 10), started_at: t(attempt * 10 + 2), completed_at: t(attempt * 10 + 5), runner: 'fake-runner' }] };
+  }
   async previewUrl(_repo: string, sha: string): Promise<string | null> { return this.w.previews.get(sha) ?? null; }
   async issueList(_repo: string, opts: { limit: number; state?: 'open' | 'all'; label?: string }): Promise<IssueInfo[]> {
     return this.w.issues.filter((i) => (opts.state !== 'open' || i.state === 'OPEN') && (!opts.label || i.labels?.includes(opts.label))).sort((a, b) => b.number - a.number).slice(0, opts.limit);

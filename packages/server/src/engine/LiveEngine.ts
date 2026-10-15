@@ -2415,7 +2415,7 @@ export class LiveEngine implements Engine {
     }
     this.store.mutateItem(id, [{ set: { ci_head_sha: headSha, ci_result: 'green' } }, { activity: { actor: 'app', text: `${synced}; CI is green for it` } }], 'engine');
     if (this.parkIfHeld(id, opId)) return;
-    await this.merge(id, opId, base, headSha);
+    await this.merge(id, opId, base, headSha, baseSha);
   }
 
   /**
@@ -2429,7 +2429,11 @@ export class LiveEngine implements Engine {
     if (view.headRefOid !== sha) return false;
     const od = this.store.requireItem(id).file.frontmatter.op_data;
     if (od?.ci_green === sha || od?.local_green === sha) return true;
-    return (await this.ports.gh.ciForSha(this.github, branch, sha, this.ciWorkflow)).state === 'success';
+    const ci = await this.ports.gh.ciForSha(this.github, branch, sha, this.ciWorkflow);
+    if (ci.state !== 'success') return false;
+    // The run that proved this head green, for the merge's evidence pointer (#180).
+    if (ci.runId) this.store.mutateItem(id, [{ set: { op_data: { ...(this.store.requireItem(id).file.frontmatter.op_data ?? {}), ci: { runId: ci.runId, url: ci.url, sha, ...(ci.attempt ? { attempt: ci.attempt } : {}) } } } }], 'engine');
+    return true;
   }
 
   /**
@@ -2446,17 +2450,23 @@ export class LiveEngine implements Engine {
     const headSha = fm.ci_head_sha;
     const canFix = this.store.derived(item).flavor === 'worker';
     const opId = this.store.journal.begin('ci_wait', id, { pr: fm.pr, sha: headSha });
-    let verdict = await this.waitForCi(id, fm.branch, headSha, fm.pr, (fm.op_data?.ci_replaced as string | null | undefined) ?? null);
+    // Each wait's end leaves the run's timing on the item and on this op's end, whichever path ends it (#179).
+    const wait = async (previousSha: string | null, minAttempt?: number) => {
+      const v = await this.waitForCi(id, fm.branch!, headSha, fm.pr!, previousSha, minAttempt);
+      if (v !== 'stopping') await this.noteCiTiming(id, opId, headSha);
+      return v;
+    };
+    let verdict = await wait((fm.op_data?.ci_replaced as string | null | undefined) ?? null);
     // A red on the infrastructure (#219) or on a known flake is re-run once, for this same head, before anything else happens to it.
     if (verdict === 'red') {
       const infra = await this.rerunIfInfra(id, opId, headSha);
       if (infra === 'blocked') return;
       if (infra) {
-        verdict = await this.waitForCi(id, fm.branch, headSha, fm.pr, null, infra);
+        verdict = await wait(null, infra);
         if (verdict === 'red' && await this.rerunIfInfra(id, opId, headSha) === 'blocked') return;
       } else if (canFix) {
         const attempt = await this.rerunIfFlaky(id, headSha);
-        if (attempt) verdict = await this.waitForCi(id, fm.branch, headSha, fm.pr, null, attempt);
+        if (attempt) verdict = await wait(null, attempt);
       }
     }
     // Read after the wait, not before it: a setting changed in the meantime is the one that applies (#173).
@@ -2500,6 +2510,34 @@ export class LiveEngine implements Engine {
     await this.mergeJob(id);
   }
 
+  /**
+   * The timing of the run a CI wait ended on (#179): each attempt's creation, queue, first job start and end, its jobs as
+   * GitHub names them, and the re-runs planestro or a person asked for on this head, with why. Kept in `op_data.ci_timing`
+   * and on the wait's `op.end` (`timing`); `ci.result` stays the per-attempt verdict, joined to it by run id and attempt.
+   * Read once the wait is over, never while it polls; a port or run it cannot read records what it has.
+   */
+  private async noteCiTiming(id: string, opId: string, headSha: string): Promise<void> {
+    const fm = this.store.getItem(id)?.file.frontmatter;
+    const run = fm?.op_data?.ci as { runId?: number; url?: string; attempt?: number; sha?: string } | undefined;
+    if (!fm || !run?.runId || (run.sha && run.sha !== headSha)) return;
+    const od = fm.op_data ?? {};
+    const reruns: Record<string, unknown>[] = [];
+    if (od.ci_cancel_rerun === headSha) reruns.push({ reason: 'cancelled', by: 'app' });
+    const flake = od.flake_rerun as { sha?: string; attempt?: number; check?: string } | undefined;
+    if (flake?.sha === headSha) reruns.push({ reason: flake.check?.startsWith('infrastructure') ? 'infrastructure' : flake.check === 'no change from the session' ? 'same_red' : 'flaky', by: 'app', ...(flake.attempt ? { attempt: flake.attempt } : {}), ...(flake.check ? { check: flake.check } : {}) });
+    const asked = od.ci_rerun as { sha?: string; attempt?: number; by?: string } | undefined;
+    if (asked?.sha === headSha && !(asked.by === 'app' && flake?.sha === headSha && flake.attempt === asked.attempt)) reruns.push({ reason: 'rerun_ci', by: asked.by ?? 'user', ...(asked.attempt ? { attempt: asked.attempt } : {}) });
+    const last = run.attempt ?? 1;
+    const attempts: unknown[] = [];
+    if (this.ports.gh.runTiming) for (let n = Math.max(1, last - 4); n <= last; n++) {
+      const t = await this.ports.gh.runTiming(this.github, run.runId, n).catch(() => undefined);
+      if (t) attempts.push(t);
+    }
+    const timing = { run_id: run.runId, attempt: last, head: headSha, ...(run.url ? { url: run.url } : {}), attempts, reruns };
+    this.store.mutateItem(id, [{ set: { op_data: { ...(this.store.requireItem(id).file.frontmatter.op_data ?? {}), ci_timing: timing } } }], 'engine');
+    this.store.journal.note(opId, { timing });
+  }
+
   /** Green, but a hold, block or question landed while CI ran: the verdict is kept and nothing merges. Returns whether it parked. */
   private parkIfHeld(id: string, opId: string): boolean {
     const latest = this.store.requireItem(id).file.frontmatter;
@@ -2518,7 +2556,19 @@ export class LiveEngine implements Engine {
   }
 
   /** 4. merge, inside the chain, on a head the chain has just seen green on the base tip. */
-  private async merge(id: string, opId: string, base: string, headSha: string): Promise<void> {
+  /**
+   * What proved a merge green (#180): the run for this exact head (`op_data.ci`, which a later head's run replaces), or the
+   * local gate, or a change the project's CI does not run for; with the head, the base tip it was synced onto and the merge commit.
+   */
+  private validationPointer(id: string, headSha: string, baseSha: string, merged?: string): NonNullable<ItemFrontmatter['validated_by']> {
+    const od = this.store.requireItem(id).file.frontmatter.op_data ?? {};
+    const run = od.ci as { runId?: number; url?: string; attempt?: number; sha?: string } | undefined;
+    const gate = run?.runId && run.sha === headSha ? { run_id: run.runId, ...(run.attempt ? { attempt: run.attempt } : {}), ...(run.url ? { url: run.url } : {}) }
+      : od.local_green === headSha ? { gate: 'local' as const } : od.ci_not_run === headSha ? { gate: 'not_run' as const } : { gate: 'unknown' as const };
+    return { ...gate, head: headSha, base: baseSha, ...(merged ? { merge: merged } : {}) };
+  }
+
+  private async merge(id: string, opId: string, base: string, headSha: string, baseSha: string): Promise<void> {
     const fm = this.store.requireItem(id).file.frontmatter;
     // Commits made after the review touch something the reviewer never saw: held for the orchestrator to accept or send back (#74).
     const extra = fm.ci_head_sha ? await this.outsideApprovedScope(id, fm.ci_head_sha) : [];
@@ -2549,13 +2599,15 @@ export class LiveEngine implements Engine {
     }
     const view = await this.ports.gh.prView(this.github, fm.pr!);
     if (view.state !== 'MERGED') { this.store.journal.end(opId, id, 'failed', { state: view.state }); this.block(id, 'merge_unverified', `gh reported the merge but PR #${fm.pr} is ${view.state}`); return; }
+    const validated = this.validationPointer(id, headSha, baseSha, view.mergeCommit);
+    const evidence = validated.run_id ? `CI run ${validated.run_id}${validated.url ? ` (${validated.url})` : ''}` : validated.gate === 'local' ? 'the local gate' : validated.gate === 'not_run' ? 'no CI run (CI does not run for this change)' : 'a CI verdict with no run on record';
     this.store.mutateItem(id, [
       { transition: { to: 'MERGED', actor: 'engine' } },
-      { set: { merged_at: view.mergedAt ? isoLocal(new Date(view.mergedAt)) : this.now(), op_data: { ...(fm.op_data ?? {}), merge_commit: view.mergeCommit } } },
+      { set: { merged_at: view.mergedAt ? isoLocal(new Date(view.mergedAt)) : this.now(), validated_by: validated, op_data: { ...(this.store.requireItem(id).file.frontmatter.op_data ?? {}), merge_commit: view.mergeCommit } } },
       { unset: ['op', 'op_started_at'] },
-      { activity: { actor: 'app', text: `merged PR #${fm.pr} into ${base}${view.mergeCommit ? ` (${view.mergeCommit.slice(0, 7)})` : ''}` } },
+      { activity: { actor: 'app', text: `merged PR #${fm.pr} into ${base}${view.mergeCommit ? ` (${view.mergeCommit.slice(0, 7)})` : ''}; validated by ${evidence} on ${headSha.slice(0, 7)} over ${base}@${baseSha.slice(0, 7)}` } },
     ], 'engine', { commit: `${id}: merge` });
-    this.store.journal.end(opId, id, 'ok', { merged: true });
+    this.store.journal.end(opId, id, 'ok', { merged: true, validated_by: validated });
     this.note('info', `${id}: PR #${fm.pr} merged into ${base}`);
     this.wakeOrchestrator('pr_merged', id);
     this.announce('on_merge', `${id} merged`, `PR #${fm.pr} merged into ${base}: ${fm.title}`, id);
@@ -3073,7 +3125,7 @@ export class LiveEngine implements Engine {
       this.ciSeen.set(id, { state: ci.state, at: Date.now() });
       this.sawCi(id, ci);
       const elapsedMin = (this.ciNow() - started) / 60_000;
-      if (ci.runId && ci.state !== 'skipped') { sawRun = true; const cur = this.store.requireItem(id).file.frontmatter; const seen = cur.op_data?.ci as { runId?: number; attempt?: number } | undefined; if (seen?.runId !== ci.runId || seen?.attempt !== ci.attempt) this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), ci: { runId: ci.runId, url: ci.url, ...(ci.attempt ? { attempt: ci.attempt } : {}) } } } }], 'engine'); }
+      if (ci.runId && ci.state !== 'skipped') { sawRun = true; const cur = this.store.requireItem(id).file.frontmatter; const seen = cur.op_data?.ci as { runId?: number; attempt?: number; sha?: string } | undefined; if (seen?.runId !== ci.runId || seen?.attempt !== ci.attempt || seen?.sha !== sha) this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), ci: { runId: ci.runId, url: ci.url, sha, ...(ci.attempt ? { attempt: ci.attempt } : {}) } } } }], 'engine'); }
       if (ci.state === 'success') return 'green';
       // A re-run keeps its run id: until its attempt shows up, the completed run is the old verdict.
       const stale = need > 0 && (ci.attempt ?? 0) < need;

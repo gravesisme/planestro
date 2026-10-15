@@ -24,8 +24,13 @@ export class Journal {
   }
 
   end(opId: string, item: string | undefined, outcome: 'ok' | 'failed' | 'aborted', data: Record<string, unknown> = {}): void {
-    this.append({ type: 'op.end', item, actor: 'engine', data: { op_id: opId, outcome, ...data } });
+    const noted = this.notes.get(opId); this.notes.delete(opId);
+    this.append({ type: 'op.end', item, actor: 'engine', data: { op_id: opId, outcome, ...noted, ...data } });
   }
+
+  /** Data for an open op's `op.end`, whichever path ends it (#179: a CI wait's run timing). A later note replaces an earlier one. */
+  note(opId: string, data: Record<string, unknown>): void { this.notes.set(opId, data); }
+  private readonly notes = new Map<string, Record<string, unknown>>();
 
   /** Entries in chronological order; `since` filters by timestamp text (ISO compare works for same-offset text). */
   read(opts: { since?: string; item?: string; type?: string; limit?: number } = {}): JournalEntry[] {
