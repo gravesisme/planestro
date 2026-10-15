@@ -6,6 +6,11 @@ export function isUnread(note: { ts: string; links?: { issues: unknown[]; handle
   return note.ts > seen && !(note.links && (note.links.issues.length > 0 || note.links.handled));
 }
 
+/** The header's unread count: nothing (0) for anything but a list, so one bad response costs the badge, never the page (#350). */
+export function unreadNoteCount(notes: unknown, seen: string): number {
+  return Array.isArray(notes) ? notes.filter((n) => isUnread(n, seen)).length : 0;
+}
+
 /**
  * What the planestro feedback list shows (#220), from notes oldest first, newest first: every unread note (`isUnread`),
  * at least a page in all, and a page more of read ones for each of `pages` past the first. `older` is how many read

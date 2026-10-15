@@ -8,7 +8,7 @@ import { setTitle, setNeeds } from './tabBadge.ts';
 import { setNotificationNavigate } from './desktopNotify.ts';
 import { TO_WAIT } from './deepLink.ts';
 import { runningItems, runningLabel } from './agentState.ts';
-import { isUnread } from './noteWindow.ts';
+import { unreadNoteCount } from './noteWindow.ts';
 import { ActionButton } from './components/ActionButton.tsx';
 import { ConcurrencyControl } from './components/ConcurrencyControl.tsx';
 
@@ -62,7 +62,7 @@ export function App() {
   const runnerStalls = state?.engine.runner_stalls ?? [];
   const statusWarning = paused || restart?.draining || guards.length > 0 || (state?.engine.ci_queue?.queued ?? 0) > 0 || runnerStalls.length > 0;
   const notes = useStore((s) => s.notes); const notesSeen = useStore((s) => s.notesSeen);
-  const unreadNotes = notes.filter((n) => isUnread(n, notesSeen)).length;
+  const unreadNotes = unreadNoteCount(notes, notesSeen);
   return (
     <div className="app">
       {updateReady && <button className="banner warn" style={{ border: 0, borderRadius: 0, textAlign: 'left' }} onClick={() => location.reload()}>planestro was updated — click to reload (held back so nothing you were typing is lost)</button>}

@@ -104,10 +104,19 @@ export function isState(s: unknown): s is State {
   return typeof v === 'object' && v !== null && typeof v.config?.project?.name === 'string' && Array.isArray(v.items);
 }
 
-async function req<T>(method: string, url: string, body?: unknown, raw?: BodyInit): Promise<T> {
+/** A response whose body could not be read (cut off by a restart or a dropped connection, #350): the request failed, and asking again may work. */
+export class UnreadableResponse extends Error { readonly retryable = true; }
+
+export async function req<T>(method: string, url: string, body?: unknown, raw?: BodyInit): Promise<T> {
   const res = await fetch(url, { method, headers: raw ? undefined : { 'content-type': 'application/json' }, body: raw ?? (body === undefined ? undefined : JSON.stringify(body)) });
-  const data = await res.json().catch(() => ({}));
+  let text: string | undefined;
+  try { text = await res.text(); } catch { /* cut off mid-body */ }
+  let data: unknown = {};
+  let unreadable = text === undefined;
+  if (text?.trim()) try { data = JSON.parse(text); } catch { unreadable = true; }
   if (!res.ok) throw new Error((data as { error?: string }).error ?? `${res.status} ${res.statusText}`);
+  // Never `{}` in place of what the caller asked for: one bad answer would reach a list as an object (#350).
+  if (unreadable) throw new UnreadableResponse(`the server sent an unreadable answer to ${method} ${url}; it will be asked again`);
   return data as T;
 }
 
