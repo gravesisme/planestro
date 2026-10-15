@@ -59,7 +59,7 @@ export const OPERATIONAL_KEYS = [
   'pr_created_at', 'merged_at', 'finished_at', 'iceboxed_at',
   'branch', 'worktree', 'pr', 'session_id', 'agent_sessions', 'session_context', 'awaiting', 'awaiting_data', 'triage', 'resume_after', 'taken_over',
   'op', 'op_started_at', 'op_data', 'plan_revisions', 'ci_head_sha', 'ci_result', 'ci_failed_count',
-  'merge_order', 'skip_merge', 'hold_reason', 'hold_waits_on', 'review_hold', 'loop_state', 'delivered', 'parts', 'blocked', 'blocked_reason', 'cost_usd', 'turns', 'agent_turns', 'tokens',
+  'merge_order', 'skip_merge', 'hold_reason', 'hold_waits_on', 'review_hold', 'loop_state', 'delivered', 'validated_by', 'parts', 'blocked', 'blocked_reason', 'cost_usd', 'turns', 'agent_turns', 'tokens',
   'imported_from', 'dates_estimated', 'scheduled_from', 'created_by',
 ] as const;
 export const DERIVED_KEYS = ['base_branch', 'lane', 'external', 'children', 'deps_satisfied', 'needs_you'] as const;
@@ -185,6 +185,8 @@ export const ItemFrontmatter = z.object({
   loop_state: z.object({ iteration: z.number().int().nonnegative(), passing: z.number().int().nonnegative(), total: z.number().int().nonnegative(), line: z.string().optional(), at: ts }).passthrough().optional(),
   /** What this item's branch changed, recorded from git as it merged — so items that waited on it can be told, long after the branch is gone. */
   delivered: z.array(z.object({ path: z.string(), change: z.enum(['added', 'modified', 'deleted']), bytes: z.number().optional(), width: z.number().optional(), height: z.number().optional() })).optional(),
+  /** What proved the merge green (#180): the CI run for the head that merged (or `gate`: the local gate, a change CI does not run for), the head, the base tip it was synced onto, the merge commit. */
+  validated_by: z.object({ run_id: z.number().int().optional(), attempt: z.number().int().optional(), url: z.string().optional(), gate: z.enum(['local', 'not_run', 'unknown']).optional(), head: z.string(), base: z.string().optional(), merge: z.string().optional() }).optional(),
   blocked: z.boolean().optional(),
   blocked_reason: z.string().optional(),
   cost_usd: z.number().nonnegative().optional(),

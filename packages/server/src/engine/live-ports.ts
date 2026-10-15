@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, renameSync, copyFileSync, u
 import { join, dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { matchesPathPattern } from './ports.ts';
-import type { GitPort, GhPort, ProcPort, WorktreeEntry, RebaseResult, ContinueResult, CiStatus, CiQueue, PrInfo, ChangedFile, IssueInfo, PrClosure, RunnerReport, RunnerInfo, OpenJob, WorktreeSnapshot, Checkpoint } from './ports.ts';
+import type { GitPort, GhPort, ProcPort, WorktreeEntry, RebaseResult, ContinueResult, CiStatus, CiAttemptTiming, CiJobTiming, CiQueue, PrInfo, ChangedFile, IssueInfo, PrClosure, RunnerReport, RunnerInfo, OpenJob, WorktreeSnapshot, Checkpoint } from './ports.ts';
 
 const execFileP = promisify(execFile);
 
@@ -417,6 +417,23 @@ export function ciFromRuns(runs: any[], sha: string): CiStatus {
   return { ...base, state: 'failure' };
 }
 
+/**
+ * A run attempt and its jobs from GitHub's REST API, timed (#179). A job's `started_at` is set even while it is queued,
+ * so only jobs a runner took count towards the first start; names and conclusions are kept as GitHub reports them.
+ */
+export function attemptTiming(run: any, jobs: any[], attempt: number): CiAttemptTiming {
+  const js: CiJobTiming[] = jobs.map((j) => ({ name: String(j.name), ...(j.status ? { status: j.status } : {}), ...(j.conclusion ? { conclusion: j.conclusion } : {}), ...(j.created_at ? { created_at: j.created_at } : {}), ...(j.started_at ? { started_at: j.started_at } : {}), ...(j.completed_at ? { completed_at: j.completed_at } : {}), ...(j.runner_name ? { runner: String(j.runner_name) } : {}) }));
+  const starts = js.filter((j) => j.runner && j.started_at).map((j) => j.started_at!).sort();
+  return {
+    attempt: run.run_attempt ?? attempt,
+    ...(run.status ? { status: run.status } : {}), ...(run.conclusion ? { conclusion: run.conclusion } : {}),
+    ...(run.created_at ? { created_at: run.created_at } : {}), ...(run.run_started_at ? { queued_at: run.run_started_at } : {}),
+    ...(starts[0] ? { first_job_started_at: starts[0] } : {}),
+    ...(run.status === 'completed' && run.updated_at ? { completed_at: run.updated_at } : {}),
+    jobs: js,
+  };
+}
+
 /** A job conclusion that did not fail the run: it succeeded, or it never ran. */
 const ok = (c: string | null | undefined) => !c || c === 'success' || c === 'skipped' || c === 'neutral';
 /**
@@ -520,6 +537,11 @@ export class LiveGhPort implements GhPort {
   }
   async rerunFailed(repo: string, runId: number) { await gh(['run', 'rerun', String(runId), '--repo', repo, '--failed']); }
   async rerunAll(repo: string, runId: number) { await gh(['run', 'rerun', String(runId), '--repo', repo]); }
+  async runTiming(repo: string, runId: number, attempt: number): Promise<CiAttemptTiming> {
+    const path = `repos/${repo}/actions/runs/${runId}/attempts/${attempt}`;
+    const [run, jobs] = await Promise.all([ghRead(['api', path]).then((v) => JSON.parse(v)), ghRead(['api', `${path}/jobs?per_page=100`]).then((v) => (JSON.parse(v).jobs ?? []) as any[])]);
+    return attemptTiming(run, jobs, attempt);
+  }
   async previewUrl(repo: string, sha: string): Promise<string | null> {
     const deployments = JSON.parse(await ghRead(['api', `repos/${repo}/deployments?sha=${sha}&per_page=5`])) as { id: number }[];
     for (const d of deployments.slice(0, 3)) {
