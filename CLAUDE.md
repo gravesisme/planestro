@@ -48,6 +48,8 @@ Evaluate every change against these; they are the architecture.
    collide with ones the base now tracks are moved aside to `.displaced/`,
    not deleted: `clearForSync`. Untracked files the project names in
    `worktrees.byproducts` are never dirt: cleanup sets them aside the same way.
+   A folder git no longer lists as a worktree, holding no `.git`, is a leftover:
+   cleanup moves its files there too and goes on to the branches (#356).
    A sync git refuses over local changes is not a conflict: untracked files it
    names are set aside and it runs once more, else `dirty_tree`. An epic's own
    `merge-<id>` worktree is cleared before merging: tips logged, its changes

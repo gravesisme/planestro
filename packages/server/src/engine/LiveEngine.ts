@@ -3138,6 +3138,19 @@ export class LiveEngine implements Engine {
     return `set aside ${what.join(' and ')} before removing the worktree: ${dest}`;
   }
 
+  /**
+   * A merged item's worktree folder that git no longer lists (#356: a `git worktree remove` that dropped the registration
+   * and left files behind, so every retry failed with "is not a working tree"). Unlisted and holding no `.git`, it is not a
+   * worktree any more: its files are moved to `.displaced/`, never deleted (invariant 7), and the empty folder goes.
+   */
+  private async setAsideLeftover(id: string, cwd: string): Promise<void> {
+    const dest = this.displacedDir(id);
+    const files = await this.ports.git.setAsideLeftover(cwd, dest);
+    if (!files) return;
+    const n = files.length;
+    this.store.mutateItem(id, [{ activity: { actor: 'app', text: `the worktree ${cwd} was already unregistered in git; ${n ? `moved the ${n} file${n === 1 ? '' : 's'} left in it to ${dest} (${files.slice(0, 12).join(', ')}${n > 12 ? ', …' : ''}) and ` : ''}removed the empty folder` } }], 'engine');
+  }
+
   /** What is set aside when a worktree goes: keep_on_remove, and what copy_to_checkout copies (a copy keeps its original too). */
   private keptPaths(): string[] {
     const w = this.store.config.worktrees;
@@ -3203,14 +3216,20 @@ export class LiveEngine implements Engine {
       if (view.state !== 'MERGED' || stranded.length) { this.store.journal.end(opId, id, 'aborted', { reason: 'unverifiable', stranded }); this.block(id, 'cleanup_unverifiable', view.state !== 'MERGED' ? `PR #${fm.pr} is ${view.state}; nothing was deleted` : `cannot prove ${stranded.join(', ')} reachable from origin/${base}; nothing was deleted`); return; }
       const { clean } = cwd && worktrees.some((w) => w.path === cwd) ? await this.worktreeDirt(cwd) : { clean: true };
       if (!clean) { this.store.journal.end(opId, id, 'aborted', { reason: 'dirty' }); this.block(id, 'cleanup_dirty', 'the worktree has uncommitted changes after the merge; remove it by hand or discard them'); return; }
-      if (cwd) {
+      if (cwd && !worktrees.some((w) => w.path === cwd)) await this.setAsideLeftover(id, cwd);
+      else if (cwd) {
         let copied: string | undefined;
         try { copied = await this.copyToCheckout(cwd); }
         catch (e) { this.store.journal.end(opId, id, 'aborted', { reason: 'copy_failed' }); this.block(id, 'cleanup_dirty', `copying ${this.store.config.worktrees.copy_to_checkout.join(', ')} into the main checkout failed (${(e as Error).message.replace(/\s+/g, ' ').slice(0, 200)}); nothing was removed`); return; }
         if (copied) this.store.mutateItem(id, [{ activity: { actor: 'app', text: copied } }], 'engine');
         const kept = await this.setAsideBeforeRemove(id, cwd);
         if (kept) this.store.mutateItem(id, [{ activity: { actor: 'app', text: kept } }], 'engine');
-        await this.ports.git.worktreeRemove(this.repo, cwd, false);
+        try { await this.ports.git.worktreeRemove(this.repo, cwd, false); }
+        catch (e) {
+          // Git can drop the registration and still fail to delete the folder (#356): unlisted now, what is left is a leftover.
+          if ((await this.ports.git.worktreeList(this.repo)).some((w) => w.path === cwd)) throw e;
+          await this.setAsideLeftover(id, cwd);
+        }
       }
       await this.ports.git.worktreePrune(this.repo);
       await this.ports.git.deleteLocalBranch(this.repo, fm.branch!, localTip);

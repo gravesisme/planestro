@@ -41,6 +41,8 @@ export class FakeWorld {
   ignored = new Map<string, string[]>();
   /** Files present in a main checkout, by its path: what copy_to_checkout copied there (#72), or a test put there. */
   checkout = new Map<string, Set<string>>();
+  /** Folders git no longer lists as worktrees, with the files left in them (#356: a half-done `git worktree remove`). */
+  leftovers = new Map<string, string[]>();
   /** Issues of the feedback repo (#231): what issueList reports and issueCreate adds to. */
   issues: IssueInfo[] = [];
   nextIssue = 1;
@@ -150,6 +152,7 @@ export class DryRunGitPort implements GitPort {
   async worktreeAddDetached(_repo: string, path: string, ref: string) { this.say(`git worktree add --detach ${path} ${ref}`); this.w.worktrees.set(path, { path, head: this.w.sha() }); }
   async worktreeAdd(_repo: string, path: string, branch: string, startRef: string) { this.say(`git worktree add -b ${branch} ${path} ${startRef}`); this.w.worktrees.set(path, { path, head: this.w.sha(), branch }); this.w.localBranches.add(branch); }
   async worktreeRemove(_repo: string, path: string, force: boolean) { this.say(`git worktree remove${force ? ' --force' : ''} ${path}`); const wt = this.w.worktrees.get(path); if (wt?.branch) this.w.localTips.set(wt.branch, wt.head); this.w.worktrees.delete(path); }
+  async setAsideLeftover(path: string, dest: string) { const files = this.w.leftovers.get(path); if (!files) return undefined; this.say(`move ${files.join(', ') || '(nothing)'} from ${path} to ${dest}; remove the empty folder`); this.w.leftovers.delete(path); return files; }
   async worktreePrune() { this.say('git worktree prune'); }
   async worktreeList() { return [...this.w.worktrees.values()]; }
   async status(cwd: string) { const u = this.w.untracked.get(cwd) ?? []; const dirty = [...(this.w.dirty.has(cwd) ? ['src/fake.ts'] : []), ...u]; return { clean: dirty.length === 0, dirty }; }

@@ -39,6 +39,12 @@ export interface GitPort {
   worktreeAddDetached(repo: string, path: string, ref: string): Promise<void>;
   worktreeRemove(repo: string, path: string, force: boolean): Promise<void>;
   worktreePrune(repo: string): Promise<void>;
+  /**
+   * A folder at `path` that git no longer lists as a worktree (#356: `git worktree remove` dropped the registration and
+   * left files behind): its files are moved into `dest`, keeping their relative paths, and the folder, empty by then, goes.
+   * Returns the files moved, or undefined when nothing is there. Throws, touching nothing, when the folder holds a `.git`.
+   */
+  setAsideLeftover(path: string, dest: string): Promise<string[] | undefined>;
   worktreeList(repo: string): Promise<WorktreeEntry[]>;
   status(cwd: string): Promise<{ clean: boolean; dirty: string[] }>;
   /** A dirty tree split: changes to tracked files, and untracked files one by one (not collapsed to their directory). */
