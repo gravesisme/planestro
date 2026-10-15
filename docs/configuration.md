@@ -344,6 +344,24 @@ Recorded only: nothing is refused or slowed.
 | `git.checkpoint_interval_min` | `60` | Telemetry (costs, timestamps) is checkpointed this often rather than per change. |
 | `attachments.managed_max_bytes` | `2000000` | Larger attachments are referenced in place instead of copied into the data dir. |
 
+### Daily efficiency audit
+
+Once a day (#348), planestro builds a digest of the last `days` days of usage up to yesterday, in code and at no model
+cost: totals by role, model and stage, the costliest items, starting context, cache hits, wasted test runs and
+permission parks, and the last recommendation with whether it was acted on. One wake on the orchestrator's model reads
+it and files exactly one note under **planestro feedback** on the Console: the biggest waste, its evidence, one
+mechanical change and the expected saving. It has no other tool. When the biggest waste is still the last note and
+nothing was done with it (no issue filed, not marked handled), it says so on that note instead of filing a duplicate. A
+day after one with no turns is skipped without a wake; a slot that began is never run again.
+
+| Key | Default | |
+|---|---|---|
+| `efficiency_audit.enabled` | `false` | Run the audit. |
+| `efficiency_audit.cron` | `30 3 * * *` | When, on this machine's clock; overnight, when no turns compete. |
+| `efficiency_audit.days` | `7` | How many days, up to yesterday, the digest covers. |
+| `efficiency_audit.budget_usd` | `1` | The hard cap on one audit, for a runner that reports dollars. |
+| `efficiency_audit.budget_tokens` | `60000` | The cap for a runner that reports tokens. |
+
 ### Releases
 
 `releases.sections` is the list of sections a release has, in order ([Releases](releases.md)).

@@ -71,7 +71,7 @@ export class LiveClaudePort implements ClaudePort {
         // bare names and its own MCP tools are listed whole (#153; #58's split left it unable to call anything).
         // The SDK's CAN_USE_TOOL_SHADOWED warning is accepted for this role: the callback is unused in this mode.
         allowedTools: customAllowedTools(o),
-        maxTurns: o.maxTurns, abortController,
+        maxTurns: o.maxTurns, ...(o.maxBudgetUsd !== undefined ? { maxBudgetUsd: o.maxBudgetUsd } : {}), abortController,
         ...(this.claudeBin ? { pathToClaudeCodeExecutable: this.claudeBin } : {}),
         env: claudeEnv(process.env, o.account),
         canUseTool: async (toolName, input) => {

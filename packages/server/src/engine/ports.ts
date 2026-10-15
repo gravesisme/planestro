@@ -384,6 +384,8 @@ export interface CustomTurnOptions {
   account?: AccountCredentials;
   maxTurns?: number;
   maxTokens?: number;
+  /** A hard dollar cap, for a runner that reports dollars (the daily efficiency audit's, #348). */
+  maxBudgetUsd?: number;
   onApproval?(req: PermissionRequest): Promise<void>;
   /** As for worker turns: the SDK's own fallback for an overloaded or unavailable model. */
   fallbackModel?: string;

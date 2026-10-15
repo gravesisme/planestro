@@ -557,6 +557,18 @@ export const Config = z.object({
    * Which worker commands are test runs (#347), read for the efficiency report's wasted runs: whole-suite runs (no names
    * and none of `filters`) and runs repeated on a tree unchanged since the same command's green run. Nothing is refused.
    */
+  /**
+   * The daily one-fix efficiency audit (#348): at `cron` (local time), one wake on the orchestrator's model reads a digest of
+   * the last `days` days built in code and files exactly one planestro feedback note: the biggest waste and one mechanical
+   * change. Off until enabled; skipped after a day with no turns; capped at `budget_usd` (Claude) or `budget_tokens`.
+   */
+  efficiency_audit: z.object({
+    enabled: z.boolean().default(false),
+    cron: z.string().default('30 3 * * *'),
+    days: z.number().int().min(1).max(30).default(7),
+    budget_usd: z.number().positive().default(1),
+    budget_tokens: z.number().int().positive().default(60_000),
+  }).default({ enabled: false, cron: '30 3 * * *', days: 7, budget_usd: 1, budget_tokens: 60_000 }),
   test_runs: z.object({
     /** Command prefixes that run tests, e.g. `npm test`, `./tools/run_checks.sh`. Empty: nothing is recorded. */
     patterns: z.array(z.string().min(1)).default([]),
