@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router';
 import { planReviewByDefault, placeholdersIn, renderPrompt, fallbackChain, findModel, canPlan, PRIORITIES, type Config, type ModelDef, type Priority } from '@planestro/shared';
 import { api, type PromptView, type State } from '../api.ts';
 import { act, useStore } from '../store.ts';
+import { newItemModeNote } from '../engineMode.ts';
 import { ActionButton } from './ActionButton.tsx';
 
 /** Prompts a person starts work from: the library's templates and actions that no engine step owns. */
@@ -96,6 +97,7 @@ export function NewItemDialog({ onClose, icebox, from }: { onClose: () => void; 
     <div className="dialog" onClick={onClose}>
       <form onClick={(e) => e.stopPropagation()} onSubmit={(e) => e.preventDefault()}>
         <h2 style={{ margin: 0 }}>New {icebox ? 'icebox ' : ''}{kind === 'epic' ? 'epic' : 'item'}</h2>
+        {newItemModeNote(state?.engine.modes) && <div className="small warn-text" role="status">{newItemModeNote(state?.engine.modes)}</div>}
         {library.length > 0 && <select value={template} onChange={(e) => pick(e.target.value)} title="Start from a prompt in the library"><option value="">blank — or start from a prompt…</option>{library.map((p) => <option key={p.name} value={p.name}>{p.frontmatter.favorite === true ? '★ ' : ''}{p.frontmatter.title} ({p.name})</option>)}</select>}
         <input autoFocus placeholder="Title" value={title} onChange={(e) => setTitle(e.target.value)} required />
         <KindChoice kind={kind} onChange={setKind} />

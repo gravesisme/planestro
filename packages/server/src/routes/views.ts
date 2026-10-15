@@ -106,6 +106,18 @@ export function questionView(store: DataStore, q: StoredQuestion, pending: boole
 }
 export type QuestionView = ReturnType<typeof questionView>;
 
+/**
+ * The engine mode three ways (#335): the project's saved `engine.mode`, this machine's override in planestro.local.yml,
+ * and the one the running engine was built with. The ports are made once, so a saved change applies only after a
+ * restart; `saved` is what a restart would run, and `restart_to_apply` says the two differ.
+ */
+export function modeView(store: DataStore, running: string) {
+  const configured = store.config.engine.mode;
+  const local = store.local.engine.mode ?? null;
+  const saved = local ?? configured;
+  return { configured, local, saved, running, restart_to_apply: saved !== running };
+}
+
 /** Who paused automation and, for a usage-guard pause, the window reading that did it. */
 export function guardView(store: DataStore, paused: boolean) {
   const e = store.local.engine;
@@ -156,7 +168,7 @@ export function stateView(store: DataStore, engine: { mode: string; paused: bool
     invalid: store.invalid,
     /** What serve --watch last found when it looked for a newer planestro (#103); absent when it never has. */
     update: readUpdateStatus(store.dataDir) ?? null,
-    engine: { mode: engine.mode, paused: engine.paused, ...guardView(store, engine.paused), sessions: engine.sessions(), slots: slotsView(store, engine), ...(engine.ciQueue ? { ci_queue: engine.ciQueue } : {}), ...runnerStallsView(engine), ...(engine.restartReadiness ? { restart: engine.restartReadiness() } : {}) },
+    engine: { mode: engine.mode, modes: modeView(store, engine.mode), paused: engine.paused, ...guardView(store, engine.paused), sessions: engine.sessions(), slots: slotsView(store, engine), ...(engine.ciQueue ? { ci_queue: engine.ciQueue } : {}), ...runnerStallsView(engine), ...(engine.restartReadiness ? { restart: engine.restartReadiness() } : {}) },
     git,
     statuses: ['NOT_YET_SUBMITTED', 'QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW', 'MERGED', 'FINISHED', 'ICEBOX'] satisfies Status[],
   };
