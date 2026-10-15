@@ -103,7 +103,7 @@ describe('the orchestrator chat takes images and files (#288)', () => {
       await send(app, 'many', Array.from({ length: 9 }, (_, i) => [`s${i}.png`, PNG, 'image/png'] as [string, Buffer, string])),
       await send(app, 'mixed', [['ok.png', PNG, 'image/png'], ['page.html', Buffer.from('<script>'), 'text/html']]),
     ];
-    for (const r of refused) expect(r.status).toBe(400);
+    expect(refused.map((r) => r.status)).toEqual([400, 400, 413, 400]);   // too many files is refused like an oversized body (#336)
     expect(s.journal.read({ type: 'orchestrator.user_message' }).length).toBe(before);
     expect(existsSync(join(dataDir, 'attachments', 'chat')) ? readdirSync(join(dataDir, 'attachments', 'chat')) : []).toEqual([]);
   });

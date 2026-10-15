@@ -30,6 +30,8 @@ const IMAGE_FILE = /\.(png|jpe?g|webp|gif|svg)$/i;
 /** What a person reviews by eye or ear (f5): images, sounds a sound worker made, models a 3D worker made. */
 const AUDIO_FILE = /\.(mp3|wav|ogg|flac|m4a|aac)$/i;
 const MODEL_FILE = /\.(glb|gltf|obj|fbx)$/i;
+/** The largest take an audition serves (#336): what a review read of a blob takes too (the git port's buffer), never more. */
+const MEDIA_MAX_BYTES = 64 * 1024 * 1024;
 const reviewKind = (path: string): 'image' | 'audio' | 'model' | undefined => IMAGE_FILE.test(path) ? 'image' : AUDIO_FILE.test(path) ? 'audio' : MODEL_FILE.test(path) ? 'model' : undefined;
 
 /** `schedule` runs `fn` after `ms` and returns a cancel (tests capture it instead of waiting). */
@@ -4015,7 +4017,8 @@ export class LiveEngine implements Engine {
     if (fm.awaiting !== 'audition' || !fm.worktree) return null;
     const audition = Audition.safeParse(fm.awaiting_data?.audition);
     if (!audition.success || !auditionTakes(audition.data).includes(path) || this.takeProblem(fm.worktree, path)) return null;
-    try { return readFileSync(join(this.absWorktree(fm.worktree), path)); } catch { return null; }
+    const abs = join(this.absWorktree(fm.worktree), path);
+    try { return statSync(abs).size > MEDIA_MAX_BYTES ? null : readFileSync(abs); } catch { return null; }
   }
 
   // ---- hand-off: one item's files, given to another before any branch merges ----
