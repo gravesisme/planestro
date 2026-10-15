@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DataStore } from '../src/store/DataStore.ts';
 import { LiveEngine } from '../src/engine/LiveEngine.ts';
-import { quietTransientFailure } from '../src/engine/transient.ts';
+import { quietTransientFailure, patchRejected } from '../src/engine/transient.ts';
 import { FakeWorld, DryRunGitPort, DryRunGhPort, DryRunProcPort } from '../src/engine/dryrun-ports.ts';
 import type { Ports, TurnOptions, TurnResult, CustomTurnOptions } from '../src/engine/ports.ts';
 import { makeFixture, sleep } from './helpers.ts';
@@ -143,6 +143,40 @@ describe('a turn that failed transiently before doing anything is retried once b
     await sleep(1500);
     expect(a.wakes).toEqual(['blocked_turn_error', 'blocked_turn_error']);
     expect(journal(s).filter((j) => j.type === 'orchestrator.transient_retry')).toHaveLength(1);
+  });
+});
+
+describe('a Codex turn ended over a rejected multi-operation patch (#344)', () => {
+  const rejected = (over: Partial<TurnResult> = {}) => quiet({ acted: true, text: 'Updating the manifest…', error: 'apply_patch verification failed: multiple operations target tmp/pending.json', ...over });
+
+  it('is retried once even though it acted, telling the session what went wrong', async () => {
+    const a = agents((n) => (n === 1 ? rejected() : undefined));
+    const { store: s, engine: e, id } = await setup(a.claude);
+    await e.start();
+    await waitFor(() => fmOf(s, id).status === 'PLAN_READY');
+    expect(a.prompts).toHaveLength(2);
+    expect(a.prompts[1]).toContain('several of its operations targeted the same file');
+    expect(a.prompts[1]).toContain('JSON or manifest file whole');
+    expect(activityOf(s, id)).toMatch(/Codex ended the turn over a rejected patch, so planestro retries it once/);
+    expect(a.wakes.filter((w) => w.startsWith('blocked_'))).toEqual([]);
+  });
+
+  it('a second rejection stops for triage as any second failure does', async () => {
+    const a = agents((n) => (n <= 2 ? rejected() : undefined));
+    const { store: s, engine: e, id } = await setup(a.claude);
+    await e.start();
+    await waitFor(() => a.wakes.includes('blocked_turn_error'));
+    expect(a.prompts).toHaveLength(2);
+    expect(fmOf(s, id).op_data?.transient_retry).toBeUndefined();
+  });
+
+  it('only that error, and never over a report the turn made', () => {
+    expect(patchRejected(rejected())).toBe(true);
+    expect(patchRejected(rejected({ error: undefined, text: 'error: multiple operations target prompts.json' }))).toBe(true);
+    expect(patchRejected(rejected({ error: 'apply_patch verification failed: invalid hunk' }))).toBe(false);
+    expect(patchRejected(rejected({ done: 'all done' }))).toBe(false);
+    expect(patchRejected(rejected({ subtype: 'auth_required' }))).toBe(false);
+    expect(patchRejected({ ...ok, text: 'multiple operations target x.json' })).toBe(false);
   });
 });
 

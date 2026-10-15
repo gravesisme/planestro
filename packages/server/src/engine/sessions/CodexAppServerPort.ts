@@ -13,6 +13,7 @@ import { gitWritableRoots } from './gitWritableRoots.ts';
 import { commandGrant } from './nativeApproval.ts';
 import { projectSkills, skillIndex, readSkillTool } from './projectSkills.ts';
 import { IMAGE_TOOL_NOTE } from './imageToolNote.ts';
+import { APPLY_PATCH_NOTE } from './patchNote.ts';
 
 export const CODEX_TOOL_CONTRACT = 'app-server-v1';
 const REPORTS = new Set(['submit_plan', 'submit_breakdown', 'report_done', 'report_blocked']);
@@ -278,7 +279,7 @@ export class CodexAppServerPort implements AgentPort {
       // Effort has no thread/start or thread/resume field: the config key carries it there, `effort` on the turn (#245).
       const tier = o.serviceTier ? { serviceTier: o.serviceTier } : {};
       const params = { model: o.model, allowProviderModelFallback: false, cwd: o.cwd, sandbox: readOnly ? 'read-only' : 'workspace-write', approvalPolicy: 'on-request', ...tier,
-        config: { web_search: 'disabled', ...(o.effort ? { model_reasoning_effort: o.effort } : {}), 'sandbox_workspace_write.writable_roots': writableRoots, mcp_servers: disabled, 'features.apps': false, 'features.multi_agent': false, 'features.plugins': false, 'features.image_generation': images, 'features.skill_mcp_dependency_install': false, 'features.skip_host_skill_discovery': true }, developerInstructions: `${o.systemAppend}\n\nApp-server tool contract: use the provided dynamic tools to report; a final text message does not submit a report. Use ask_question for a worker question. During planning do not edit or commit. During implementation use apply_patch for file edits. Keep scratch files inside the worktree. ${images ? `\n\n${IMAGE_TOOL_NOTE}` : 'Native image work is not enabled for this transport.'}${skills ? `\n\n${skills}` : ''}`,
+        config: { web_search: 'disabled', ...(o.effort ? { model_reasoning_effort: o.effort } : {}), 'sandbox_workspace_write.writable_roots': writableRoots, mcp_servers: disabled, 'features.apps': false, 'features.multi_agent': false, 'features.plugins': false, 'features.image_generation': images, 'features.skill_mcp_dependency_install': false, 'features.skip_host_skill_discovery': true }, developerInstructions: `${o.systemAppend}\n\nApp-server tool contract: use the provided dynamic tools to report; a final text message does not submit a report. Use ask_question for a worker question. During planning do not edit or commit. During implementation use apply_patch for file edits. ${APPLY_PATCH_NOTE} Keep scratch files inside the worktree. ${images ? `\n\n${IMAGE_TOOL_NOTE}` : 'Native image work is not enabled for this transport.'}${skills ? `\n\n${skills}` : ''}`,
         ...(o.resume ? { threadId: o.resume } : { dynamicTools: tools.map((t) => ({ type: 'function', name: t.name, description: t.description, inputSchema: t.inputSchema ?? z.toJSONSchema(z.strictObject(t.schema as z.ZodRawShape)) })) }) };
       const started = await rpc.request(o.resume ? 'thread/resume' : 'thread/start', params);
       if (o.model && started.model !== o.model) throw new Error(`Requested model ${o.model} was replaced with ${started.model}`);

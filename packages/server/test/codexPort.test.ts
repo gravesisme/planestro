@@ -106,7 +106,7 @@ describe('LiveCodexPort (against a recorded fake codex)', () => {
     expect(a.slice(0, 5)).toEqual(['exec', '-s', 'workspace-write', '-C', t.dir]);
     for (const flag of ['--json', '--ignore-user-config', '--output-schema', '-m', '-i']) expect(a, flag).toContain(flag);
     expect(a).not.toContain('--add-dir');                       // it grants write access; the data dir stays read-only to a worker
-    expect(a[a.length - 1]).toMatch(/^RULES\n\n## Your image tool\n[\s\S]*\$CODEX_HOME\/generated_images[\s\S]*\n\n---\n\ndraw it/);   // HH-274: its staging is not a write of the worker's
+    expect(a[a.length - 1]).toMatch(/^RULES\n\napply_patch takes one operation per file[^\n]*JSON or manifest file whole[^\n]*\n\n## Your image tool\n[\s\S]*\$CODEX_HOME\/generated_images[\s\S]*\n\n---\n\ndraw it/);   // HH-274: its staging is not a write of the worker's; #344: one operation per file
     // `-i` takes one or more files: without `--` the prompt after it is read as another image and codex waits on stdin
     expect(a[a.length - 2]).toBe('--');
     expect(a.indexOf('-i')).toBeLessThan(a.indexOf('--'));

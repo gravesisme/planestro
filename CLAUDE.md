@@ -202,6 +202,7 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   file change or report; never auth, quota or a cap) is retried once after `concurrency.transient_retry_after_s` (#241):
   the stop is recorded with `op_data.transient_retry.due_at` (no triage, not needs-you) and `driveTimedRetries`
   runs `retryOp` from the tick; a wake is queued again with `retry.not_before`. A second failure stops as before.
+  A Codex turn ended by apply_patch's "multiple operations target <file>" (#344, `patchRejected`) is retried the same way, told why.
   A `usage_exhausted` stop waits out its recorded reset the same way (#296: the orchestrator's `retry_at_reset`, the
   card's **Wait for the reset**): `op_data.usage_retry.due_at` (reset + 60 s, not needs-you), retried once; a second stops as before.
 - The concurrency control (#330, `concurrency.ts`) changes `max_sessions` / `runner_limits` through the Settings write
