@@ -72,7 +72,7 @@ function AuditionPanel({ item, audition, sending, respond }: { item: ItemView; a
   const kept = audition.roles.some((r) => r.kept?.length);
   const set = (id: string, f: (p: AuditionPick) => AuditionPick) => setPicks((x) => ({ ...x, [id]: f(x[id] ?? { takes: [] }) }));
   return (
-    <div className="approval audition" id="audition">
+    <div className="approval audition" id="audition" data-wait>
       <h2 style={{ margin: '0 0 4px' }}>Audition: {audition.title}</h2>
       <p className="small" style={{ marginTop: 0 }}>The worker made {takes} {kept ? 'new ' : ''}take{takes === 1 ? '' : 's'}. Keep what each role needs; if too few are right, regenerate the rest and say what to change.</p>
       {audition.roles.map((r) => {

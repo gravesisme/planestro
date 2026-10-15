@@ -537,6 +537,12 @@ input.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 /* A deep link's target (#226): clear of the sticky top bar, and marked while it holds the focus. */
 .item-page [id] { scroll-margin-top: 72px; }
+/* The item's header row (#373): on a wide screen it stays under the top bar, with what the item waits on you for in it. */
+@media (min-width: 841px) {
+  .item-actions { position: sticky; top: 56px; z-index: 4; margin: 0 -8px 8px; padding: 6px 8px; background: var(--bg); border-bottom: 1px solid var(--line); }
+  .item-page [id] { scroll-margin-top: 120px; }
+}
+.wait-shortcut { box-shadow: 0 0 0 2px color-mix(in srgb, var(--warn) 55%, transparent); } .wait-reason { color: var(--warn); overflow-wrap: anywhere; }
 .item-page [id][tabindex="-1"]:focus { outline: 2px solid var(--accent); outline-offset: 3px; }
 
 /* A render error (#280): what failed and a way back, never a blank page. */
