@@ -228,6 +228,43 @@ describe('the orchestrator holds an item (#97)', () => {
   });
 });
 
+describe('a hold that waits on the user is theirs to release (#339)', () => {
+  /** Wakes the orchestrator once and has it try unskip_merge on `id`. */
+  const unskipFrom = (results: Record<string, unknown>) => async (label: string, t: Tool) => {
+    if (!label.includes('orchestrator_note') || results.back !== undefined) return;
+    results.back = await t('unskip_merge').handler({ id: String(results.id) });
+  };
+
+  it('unskip_merge refuses the user\'s Approve and hold in words, and the hold stays', async () => {
+    const results: Record<string, unknown> = {};
+    const { store, engine } = await setup({ plan: plans(PLAIN_PLAN), orchestrate: unskipFrom(results) });
+    const id = results.id = await planned(store, engine);
+    await engine.approvePlan(id, undefined, 'user', { hold: STATED });
+    expect(fmOf(store, id)).toMatchObject({ skip_merge: true, hold_waits_on: 'person' });
+    engine.orchestrator.wake({ type: 'orchestrator_note', data: { note: 'release it' } });
+    await waitFor(() => results.back !== undefined);
+    expect(results.back).toBe(`not permitted: ${id}'s hold waits on the user (${STATED}), so only they release it, with Release hold on its page. Nothing was changed. To put it to them, ask with ask_user.`);
+    expect(fmOf(store, id)).toMatchObject({ skip_merge: true, hold_reason: STATED, hold_waits_on: 'person' });
+    expect(fmOf(store, id).op_data?.hold_waived).toBeUndefined();
+  });
+
+  it('unskip_merge refuses a review.hold_into hold, and the pull request stays open', async () => {
+    const results: Record<string, unknown> = {};
+    const { store, engine, world } = await setup({ plan: plans(PLAIN_PLAN), orchestrate: unskipFrom(results) });
+    store.updateConfig((doc) => { doc.setIn(['review', 'hold_into'], ['trunk']); }, 'config: hold into trunk');
+    const id = results.id = await planned(store, engine);
+    await engine.approvePlan(id);
+    await waitFor(() => fmOf(store, id).status === 'IN_REVIEW' && fmOf(store, id).skip_merge === true);
+    expect(fmOf(store, id).hold_waits_on).toBe('person');
+    engine.orchestrator.wake({ type: 'orchestrator_note', data: { note: 'release it' } });
+    await waitFor(() => results.back !== undefined);
+    expect(results.back).toMatch(/^not permitted: .*hold waits on the user \(a pull request into trunk: held for you before it merges \(review\.hold_into\)\)/);
+    await sleep(300);
+    expect(fmOf(store, id)).toMatchObject({ status: 'IN_REVIEW', skip_merge: true });
+    expect(world.prs.get(fmOf(store, id).pr!)!.state).toBe('OPEN');
+  });
+});
+
 describe('report_done with a hold (#97)', () => {
   it('opens the pull request held for the merge only, ready even where the project drafts held PRs, with the reason on the item (#195)', async () => {
     const replies: string[] = [];

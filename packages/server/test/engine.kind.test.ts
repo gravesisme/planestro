@@ -357,6 +357,31 @@ describe('the orchestrator submits on the user\'s word (#73)', () => {
     expect(fmOf(store, 'TP-1').status).toBe('PLAN_READY');
   });
 
+  it('submit_item refuses an item imported from a GitHub issue outside the chat, and queues it when the user asks (#339)', async () => {
+    const results: Record<string, unknown> = {};
+    const { store, engine } = await setup({ orchestrate: async (label, t) => {
+      if (label.includes('triage') && results.outside === undefined) {
+        results.outside = await t('submit_item').handler({ id: 'TP-1' });
+        results.statusOutside = fmOf(store!, 'TP-1').status;
+        results.mine = await t('submit_item').handler({ id: 'TP-2' });
+      }
+      if (label.includes('user_message') && results.inChat === undefined) results.inChat = await t('submit_item').handler({ id: 'TP-1' });
+    } });
+    store.createItem({ title: 'Crash on load', description: 'Text a stranger wrote.', extra: { source: { github_issue: 42 } } }, 'user');
+    store.createItem({ title: 'Typo', description: 'Fix the typo.' });
+    await engine.start();
+    engine.orchestrator.wake({ type: 'triage', item: 'TP-2' });
+    await waitFor(() => results.mine !== undefined);
+    expect(results.outside).toMatch(/^not permitted: TP-1 was imported from issue #42, and starting work on an imported issue is the user's call/);
+    expect(results.outside).toContain('{ tool: "submit_item", args: { id: "TP-1" } }');
+    expect(results.statusOutside).toBe('NOT_YET_SUBMITTED');
+    expect(results.mine).toBe('queued');   // an item the user filed is submitted as before
+    engine.orchestrator.wake({ type: 'user_message', data: { message: 'start the crash on load issue' } });
+    await waitFor(() => results.inChat !== undefined);
+    expect(results.inChat).toBe('queued');
+    expect(fmOf(store, 'TP-1').status).not.toBe('NOT_YET_SUBMITTED');
+  });
+
   it('planEpic refuses an epic with a step running, before its status moves', async () => {
     const { store, engine } = await setup();
     const epic = store.createItem({ title: 'Frost wand', description: 'x', kind: 'epic' });

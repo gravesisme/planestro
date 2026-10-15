@@ -107,7 +107,8 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   picked: `actionRefusal` checks it when the card is filed and again at the tap (a refusal
   leaves the card as it was), and once the first write is made nothing throws. Where the user
   is talking to it (`user_message`, `question_message`) `submit_item` on an epic plans its
-  breakdown; an epic is never QUEUED. Anywhere else both are refused in words, never thrown.
+  breakdown; an epic is never QUEUED. Anywhere else both are refused in words, never thrown, and so is
+  `submit_item` on an item imported from an issue (`source.github_issue`: a stranger's text, #339).
 - FINISHED has two ways in: the engine after a merged PR, and the user's
   **close as done** (`Engine.closeAsDone`) for work that landed some other way.
   The second is user-only, stops at IN_REVIEW (a PR decides from there), and
@@ -147,7 +148,7 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   `hold_waits_on` says who a hold waits on (#195): a `person`'s (the user, `review.hold_into`, a loop's
   review, a review hold) is drafted under `ci.draft_while_held`; an `agent`'s (the orchestrator, the worker,
   a scope check; unset reads so) holds the merge only, its PR kept ready so CI runs. A run in flight is never
-  cancelled by drafting.
+  cancelled by drafting. Only the user releases a `person`'s hold: `unskip_merge` refuses it in words (#339).
 - **Loop until green** (#171) is the orthogonal, authoritative `loop: {max_iterations, goal?}`, not a
   `kind`. The worker's `report_iteration` tallies each pass into `loop_state` and Activity and counts
   it against `max_iterations`; the pass that spends it unless green blocks `loop_cap` (tally + diff).
