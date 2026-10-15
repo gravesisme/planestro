@@ -226,7 +226,7 @@ npm --prefix ../planestro run -s planestro -- stop "$PWD/planning"
 ### The backlog from any MCP client
 
 A running server also serves the backlog over MCP at `/mcp` (streamable HTTP).
-It has three read-only tools, and one that writes only when the project opts
+It has three read-only tools, and more that write only when the project opts
 in:
 
 - `get_state`: the project, engine mode and pause, counts by status, and what
@@ -240,6 +240,15 @@ in:
   (off by default), files a new item (title, description, kind, category,
   priority) to Not yet submitted, marked `created_by: operator_mcp`. It cannot
   submit, edit or approve anything: starting the work is still yours.
+- Item actions, with `operator_mcp.allow_actions: true` (a separate opt-in,
+  off by default, so filing items never grants acting on them): `unblock_item` (id, message, fresh),
+  `send_message`, `answer_question` (each question to its answer),
+  `answer_decision` (an option's label and/or words; an option that carries an
+  action stays on the board), `decide_permission` (deny; allow once only with
+  `operator_mcp.allow_permissions`, never an allow rule), `sync_item` and
+  `rerun_ci`. Each takes the engine path the board's button does, and its
+  Activity line says `[operator]`, not `[user]`. Plan approval, merges and
+  discards stay on the board.
 
 Register it once per project, at **user scope**, under a name of its own.
 `planestro status` prints each instance's MCP URL:

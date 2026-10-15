@@ -8,7 +8,7 @@ import { makeFixture } from './helpers.ts';
 import { startServer } from '../src/server.ts';
 import { MockEngine } from '../src/engine/MockEngine.ts';
 import { DataStore } from '../src/store/DataStore.ts';
-import { OPERATOR_TOOLS, OPERATOR_READ_TOOLS, operatorMcpUrl } from '../src/routes/mcp.ts';
+import { OPERATOR_TOOLS, OPERATOR_READ_TOOLS, OPERATOR_WRITE_TOOLS, operatorMcpUrl } from '../src/routes/mcp.ts';
 import { instancePath } from '../src/instances.ts';
 
 // What the Agent SDK is handed for a worker or orchestrator turn: the MCP servers, and the tools of
@@ -80,7 +80,8 @@ describe('the operator MCP endpoint (#175, step 2)', () => {
       srv.store.updateConfig((d) => { d.setIn(['operator_mcp', 'allow_writes'], true); });
       await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`)));
       const { tools } = await client.listTools();
-      expect(tools.map((t) => t.name).sort()).toEqual([...OPERATOR_TOOLS].sort());
+      // Filing follow-ups never grants acting on items: those need operator_mcp.allow_actions (#365).
+      expect(tools.map((t) => t.name).sort()).toEqual([...OPERATOR_READ_TOOLS, ...OPERATOR_WRITE_TOOLS].sort());
       expect(tools.find((t) => t.name === 'create_item')!.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false });
       // It takes nothing that would start or change work: no status, no parent, no submit.
       expect(Object.keys((tools.find((t) => t.name === 'create_item')!.inputSchema as any).properties).sort()).toEqual(['category', 'description', 'kind', 'priority', 'title']);
