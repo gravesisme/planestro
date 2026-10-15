@@ -5,6 +5,7 @@ import { prepareUpload } from '../uploadImage.ts';
 import { usePhone } from '../usePhone.ts';
 import { FileDiff } from './FileDiff.tsx';
 import { ActionButton, ActionGroup } from './ActionButton.tsx';
+import { FOLD_FILES_AFTER, ImageZoom } from './ReviewImages.tsx';
 
 const src = (id: string, path: string, side: 'before' | 'after', v: string) => `/api/items/${id}/image?path=${encodeURIComponent(path)}&side=${side}&v=${encodeURIComponent(v)}`;
 const kb = (n?: number) => n === undefined ? '' : n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
@@ -21,6 +22,8 @@ export function ReviewPanel({ item, compact = false }: { item: ItemView; compact
   const [images, setImages] = useState<ReviewImage[] | null>(null);
   const [scaled, setScaled] = useState(false);
   const [zoom, setZoom] = useState<string | null>(null);
+  // A long list (an art branch's raw frames, an import's churn) is folded to its count until asked for (#355).
+  const [unfolded, setUnfolded] = useState(false);
   const phone = usePhone();
   const [split, setSplit] = useState<boolean | null>(null); // side by side where there is room, unless chosen
   const sideBySide = split ?? !phone;
@@ -45,6 +48,7 @@ export function ReviewPanel({ item, compact = false }: { item: ItemView; compact
   if (!awaiting && !images?.length) return null;
   const px = scaled ? scaleN : 1;
   const merged = fm.status === 'MERGED' || fm.status === 'FINISHED';
+  const folded = !unfolded && (images?.length ?? 0) > FOLD_FILES_AFTER;
   const texts = images?.filter((f) => f.kind === 'text') ?? [];
   const media = images?.filter((f) => f.kind !== 'text') ?? [];
   // Picked lines join the note the Request changes button sends.
@@ -79,7 +83,8 @@ export function ReviewPanel({ item, compact = false }: { item: ItemView; compact
         {scaleN > 1 && media.length > 0 && <button className="small" onClick={() => setScaled(!scaled)}>{scaled ? `showing ${scaleN}× — show 1×` : `showing 1× — show ${scaleN}×`}</button>}
       </h2>
       {awaiting && <p className="small" style={{ marginTop: 0 }}>Synced and CI is green{fm.pr ? ` (PR #${fm.pr})` : ''}. Everything a machine can check has passed; this part is yours.</p>}
-      {images === null ? <p className="small muted">Reading the branch…</p> : !images.length ? <p className="small muted">This branch changes no files{awaiting ? ' — review the pull request itself.' : '.'}</p> : media.length > 0 && (
+      {folded && <p className="small row" style={{ flexWrap: 'wrap' }}><button className="small" onClick={() => setUnfolded(true)}>Show all {images!.length} files</button><span className="muted">{media.length} image or media file{media.length === 1 ? '' : 's'}, {texts.length} other{texts.length === 1 ? '' : 's'}: folded because the list is long.</span></p>}
+      {folded ? null : images === null ? <p className="small muted">Reading the branch…</p> : !images.length ? <p className="small muted">This branch changes no files{awaiting ? ' — review the pull request itself.' : '.'}</p> : media.length > 0 && (
         <div className={`review-grid ${compact ? 'compact' : ''}`}>
           {media.filter((f) => f.kind && f.kind !== 'image').map(candidate)}
           {media.filter((f) => !f.kind || f.kind === 'image').map((img) => (
@@ -90,7 +95,7 @@ export function ReviewPanel({ item, compact = false }: { item: ItemView; compact
           ))}
         </div>
       )}
-      {texts.length > 0 && (
+      {!folded && texts.length > 0 && (
         <div className="diff-list">
           {awaiting && <p className="small muted" style={{ margin: 0 }}>Open a file for its diff; pick line numbers (shift for a range) to quote them in your note.</p>}
           {texts.map((f) => <FileDiff key={f.path} itemId={item.id} file={f} v={v} split={sideBySide} onQuote={quote} />)}
@@ -113,7 +118,7 @@ export function ReviewPanel({ item, compact = false }: { item: ItemView; compact
           </ActionGroup></div>
         </>
       )}
-      {zoom && <div className="dialog" onClick={() => setZoom(null)}><div className="checker zoomed"><img src={zoom} alt="" /></div></div>}
+      {zoom && <ImageZoom src={zoom} onClose={() => setZoom(null)} />}
     </div>
   );
 }
