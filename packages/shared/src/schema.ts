@@ -334,6 +334,52 @@ export const DEFAULT_RELEASE_SECTIONS: ReleaseSectionDef[] = [
   { title: 'Notes', carry: false, hint: 'Yours: the checklist, what went wrong, what to do differently.' },
 ];
 
+/**
+ * Starting points for `releases.sections` (#376), picked in Settings and then edited like any other. Plain is the
+ * default; the store sets show what `max_chars` and `carry` are for.
+ */
+export const RELEASE_SECTION_PRESETS: { id: string; name: string; summary: string; sections: ReleaseSectionDef[] }[] = [
+  { id: 'plain', name: 'Plain', summary: 'Release notes and your own notes.', sections: DEFAULT_RELEASE_SECTIONS },
+  { id: 'changelog', name: 'Changelog', summary: 'Keep a Changelog: Added, Changed, Fixed, Removed.', sections: [
+    { title: 'Added', carry: false, hint: 'New features.' },
+    { title: 'Changed', carry: false, hint: 'Changes to what was already there.' },
+    { title: 'Fixed', carry: false, hint: 'Bug fixes.' },
+    { title: 'Removed', carry: false, hint: 'Features taken out.' },
+    { title: 'Notes', carry: false, hint: 'Yours: the checklist, what went wrong, what to do differently.' },
+  ] },
+  { id: 'app-store', name: 'iOS App Store', summary: "App Store Connect's fields, with its character limits.", sections: [
+    { title: "What's New", max_chars: 4000, carry: false, hint: "App Store Connect → What's New in This Version." },
+    { title: 'Subtitle', max_chars: 30, carry: true },
+    { title: 'Promotional text', max_chars: 170, carry: true },
+    { title: 'Keywords', max_chars: 100, carry: true, hint: 'Comma-separated, no spaces needed.' },
+    { title: 'Description', max_chars: 4000, carry: true },
+    { title: 'Notes', carry: false, hint: 'Yours: the checklist, what went wrong, what to do differently.' },
+  ] },
+  { id: 'google-play', name: 'Google Play', summary: "Play Console's store listing fields, with its character limits.", sections: [
+    { title: 'Release notes', max_chars: 500, carry: false, hint: "Play Console → the release's notes." },
+    { title: 'Short description', max_chars: 80, carry: true },
+    { title: 'Full description', max_chars: 4000, carry: true },
+    { title: 'Notes', carry: false, hint: 'Yours: the checklist, what went wrong, what to do differently.' },
+  ] },
+];
+
+/**
+ * A preset applied over the sections a project has (#376). Release files keep their text under each heading, so a
+ * title the project already has (in any case) keeps its spelling and its text; `dropped` lists the headings the preset
+ * leaves out, whose text stays in the files and is shown after the configured sections.
+ */
+export function applySectionPreset(current: ReleaseSectionDef[], preset: ReleaseSectionDef[]): { sections: ReleaseSectionDef[]; dropped: string[] } {
+  const key = (t: string) => t.trim().toLowerCase();
+  const sections = preset.map((p) => ({ ...p, title: current.find((c) => key(c.title) === key(p.title))?.title ?? p.title }));
+  return { sections, dropped: current.filter((c) => !preset.some((p) => key(p.title) === key(c.title))).map((c) => c.title) };
+}
+
+/** The preset a project's sections are, exactly as shipped; undefined once edited. */
+export function sectionPresetOf(sections: ReleaseSectionDef[]): string | undefined {
+  const same = (a: ReleaseSectionDef, b: ReleaseSectionDef) => a.title === b.title && a.max_chars === b.max_chars && Boolean(a.carry) === Boolean(b.carry) && (a.hint ?? '') === (b.hint ?? '');
+  return RELEASE_SECTION_PRESETS.find((p) => p.sections.length === sections.length && p.sections.every((s, i) => same(s, sections[i])))?.id;
+}
+
 /** Which agent CLI runs a model's turns. `claude` plans and implements; `codex` implements only. */
 export const RUNNERS = ['claude', 'codex'] as const;
 export type Runner = typeof RUNNERS[number];
