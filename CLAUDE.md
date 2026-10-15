@@ -178,7 +178,9 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   full (input + cache write + output). The per-item efficiency report (#346: the item's **Efficiency** panel,
   `GET /items/:id/efficiency`, the Usage page's 7-day ranking, `GET /usage/items`) reads the same entries: each carries its
   `stage` (planning, implementation, fix once the PR is open, conflict), `resumed` and `start_context` (the first response's
-  window: a new conversation's startup weight), and a wake its `items`, which share its cost.
+  window: a new conversation's startup weight), and a wake its `items`, which share its cost. A worker command matching
+  `test_runs.patterns` (Bash on Claude, or a run_heavy batch) journals one `test.run` with the worktree's tree as it ended (#347);
+  whole-suite runs and repeats on a tree unchanged since that command's green run are the report's wasted runs, never refused.
 - A report (`submit_plan`, `submit_breakdown`, `report_done`, `report_blocked`) whose call never reached planestro is applied
   from the turn's record (#167): the port keeps the session's last lost report with its arguments, the engine
   persists it in `op_data.outbox` and applies it through the same tool when the turn ends (or at the next start),

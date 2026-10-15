@@ -4,7 +4,7 @@ import { join, relative, isAbsolute, extname, basename, matchesGlob } from 'node
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { DEBUG_MARKER, mcpServersNamed, debugMarkerRefusal, Audition, AuditionPicks, auditionProblem, takePathProblem, auditionPicksProblem, auditionPickLines, auditionNote, auditionComplete, auditionTakes, runnerTurnSettings, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem, usageTurnData, USAGE_TURN, type UsageStage, stepDownDue, timeoutKilledIn, limitsLabel, type HostLoad, type UsageRole, type ModelDef, resolveAccount, accountList, guardKey, unavailableKey, unavailableView, sameSessionStore, DEFAULT_ACCOUNT, type Account } from '@planestro/shared';
+import { DEBUG_MARKER, mcpServersNamed, debugMarkerRefusal, Audition, AuditionPicks, auditionProblem, takePathProblem, auditionPicksProblem, auditionPickLines, auditionNote, auditionComplete, auditionTakes, runnerTurnSettings, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem, usageTurnData, USAGE_TURN, type UsageStage, testRunShape, TEST_RUN, stepDownDue, timeoutKilledIn, limitsLabel, type HostLoad, type UsageRole, type ModelDef, resolveAccount, accountList, guardKey, unavailableKey, unavailableView, sameSessionStore, DEFAULT_ACCOUNT, type Account } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import { matchesPathPattern, type Checkpoint, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote, type CiQueue, type RunnerReport, type UndeliveredReport, type ConnectionDrop, type AccountCredentials } from './ports.ts';
@@ -1644,6 +1644,7 @@ export class LiveEngine implements Engine {
         tools: this.makeTools(id),
         onUndelivered: (r) => this.recordOutbox(id, r),
         onConnectionDrop: (d) => this.recordDrop(id, d),
+        onCommandRan: (r) => this.recordTestRun(id, cwd, r, 'bash'),
         onPermission: async (req) => {
           // The turn is being stopped under a person who took the item over: nothing may park on them or wake anyone.
           if (this.store.requireItem(id).file.frontmatter.taken_over) return { action: 'deny', message: 'Not allowed: the user has taken this item over and is finishing it by hand. Stop now and end your turn.' };
@@ -1686,6 +1687,8 @@ export class LiveEngine implements Engine {
       if (checkpointN !== undefined) await this.checkpointTurn(id, cwd, checkpointN, 'after');
       this.turns.delete(id);
     }
+    // The turn's test runs are journaled before its usage, so the report puts them in this turn (#347).
+    await this.testRunWrites.get(id);
     // What ran without a park, once per turn: the drift report's record of what the allow rules still match (#203).
     if (result.ran?.length) this.store.journal.append({ type: 'tools.ran', item: id, actor: 'engine', data: { phase, runner, ran: result.ran } });
     // A worker turn once the PR is open is a fix (CI or review) for the efficiency report (#346).
@@ -3820,6 +3823,28 @@ export class LiveEngine implements Engine {
 
   // ---- heavy local runs (#218) ----
   private readonly heavyLock = new HeavyLock();
+  /** Each item's test-run records still being written (their tree is read first), in order (#347). */
+  private readonly testRunWrites = new Map<string, Promise<void>>();
+
+  /**
+   * A worker command that ran tests (`test_runs.patterns`), journaled with the worktree's tree as it ended, for the
+   * efficiency report's wasted runs (#347). Recorded only: nothing is refused or slowed by it. An unreadable tree is
+   * left out, so that run is never called a repeat.
+   */
+  private recordTestRun(id: string, cwd: string, run: { command: string; ok: boolean; ms: number }, source: 'bash' | 'run_heavy'): Promise<void> {
+    const shape = testRunShape(run.command, this.store.config.test_runs);
+    if (!shape) return Promise.resolve();
+    const ts = isoLocal();
+    // Read at once, before the session's next edit; only the writes wait on each other, so the record keeps the order the runs ended in.
+    const reading = this.ports.git.snapshot(cwd).then((s) => s.tree, () => undefined);
+    const write = (this.testRunWrites.get(id) ?? Promise.resolve()).then(async () => {
+      const tree = await reading;
+      this.store.journal.append({ ts, type: TEST_RUN, item: id, actor: 'engine', data: { command: run.command.slice(0, 500), ok: run.ok, ms: run.ms, ...(tree ? { tree } : {}), ...shape, source } });
+    }).catch(() => {});
+    this.testRunWrites.set(id, write);
+    void write.then(() => { if (this.testRunWrites.get(id) === write) this.testRunWrites.delete(id); });
+    return write;
+  }
   /**
    * A worker's heavy local run: what its rules (or the project's heavy patterns) let it run, in its worktree, one heavy
    * run at a time, each batch after any CI job on a runner sharing this host (`heavy_runs.shared_labels`) has ended.
@@ -3865,7 +3890,9 @@ export class LiveEngine implements Engine {
           if (first) { const w = `${label}waited ${took(Date.now() - w0)} for CI on ${cfg.shared_labels.join(', ')} (${first.join('; ')})`; out.push(w); say(w); }
           else if (unread && i === 0) out.push(unread);
         }
+        const r0 = Date.now();
         const r = await this.ports.proc.run(command, { cwd, timeoutMs: cfg.timeout_min * 60_000, ...env });
+        await this.recordTestRun(id, cwd, { command, ok: r.code === 0, ms: Date.now() - r0 }, 'run_heavy');
         const tail = `${r.stdout}${r.stderr ? `\n[stderr]\n${r.stderr}` : ''}`.trim().slice(-4000);
         out.push(`${label}\`${command}\` exited ${r.code}${tail ? `:\n${tail}` : ''}`);
         if (r.code !== 0 && i < commands.length - 1) { out.push(`The batches after it were not run.`); break; }

@@ -279,6 +279,22 @@ CI is not waiting on a person: a turn that is stopped stops waiting.
 | `heavy_runs.poll_s` | `30` | How often a waiting run reads the runners again. |
 | `heavy_runs.timeout_min` | `120` | How long one batch may run before it is stopped. |
 
+### Test runs
+
+A worker command that starts with one of `test_runs.patterns` (a Bash call on Claude, or a
+`run_heavy` batch) is recorded with the worktree's tree as it ended (tracked and untracked files,
+ignored ones left out). The item's **Efficiency** panel and the Usage page count the wasted ones
+(#347): whole-suite runs (no test names after the command and none of `filters`), the same command
+run again on a tree unchanged since its last green run, and a load pass (`repeat_flags`) run again
+on a tree already green under one, with their wall time and what the turns they fell in cost.
+Recorded only: nothing is refused or slowed.
+
+| Key | Default | |
+|---|---|---|
+| `test_runs.patterns` | `[]` | Commands that run tests: a command prefix (`npm test`, `./tools/run_checks.sh`) or a `Bash(…)` rule. Empty: nothing is recorded. |
+| `test_runs.filters` | `[-t, --testNamePattern, --shard, --grep, --only-file]` | Flags that narrow a run to part of the suite. |
+| `test_runs.repeat_flags` | `[--repeat, --stress]` | Flags that make a run a repeated load pass. |
+
 ### CI and merging
 
 | Key | Default | |

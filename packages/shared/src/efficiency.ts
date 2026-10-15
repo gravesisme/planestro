@@ -1,5 +1,6 @@
 import type { JournalEntry } from './events.ts';
 import { cacheHitRate } from './tokens.ts';
+import { TEST_RUN, testWaste, type TestWaste } from './testRuns.ts';
 import { USAGE_TURN, USAGE_STAGES, usageStage, dayBefore, type UsageCell, type UsageStage, type UsageTurn } from './usageLog.ts';
 
 /**
@@ -24,6 +25,8 @@ export interface ItemEfficiency {
   cache_hit?: number;
   /** What its new conversations carried before their first tool call: the largest, and their mean (#346). */
   startup?: { sessions: number; max: number; mean: number };
+  /** Its recorded test runs and the wasted ones among them (#347), when it made any. */
+  test_runs?: TestWaste;
   first_at?: string;
   last_at?: string;
 }
@@ -71,7 +74,10 @@ export function itemEfficiencies(entries: JournalEntry[]): ItemEfficiency[] {
     } else if (e.item && e.type === 'session.replaced') acc(e.item, e.ts).e.fresh_sessions += 1;
     else if (e.item && e.type === 'permission.parked') acc(e.item, e.ts).e.parks += 1;
     else if (e.item && e.type === 'permission.answered' && typeof d.park === 'string') acc(e.item, e.ts).e.parked_ms += Math.max(0, Number(d.waited_ms) || 0);
+    else if (e.item && e.type === TEST_RUN) acc(e.item, e.ts);
   }
+  const waste = testWaste(entries);
+  for (const [item, w] of waste) { const a = by.get(item); if (a) a.e.test_runs = w; }
   return [...by.values()].map(({ e, all, starts }) => {
     settleCell(all);
     for (const c of Object.values(e.stages)) settleCell(c!);
@@ -98,6 +104,8 @@ export interface EfficiencyRanking {
   by_stage: Partial<Record<UsageStage, { item: string; usd: number; tokens: number; turns: number }[]>>;
   /** Heaviest starting context first. */
   startup: { item: string; max: number; mean: number; sessions: number }[];
+  /** Most time in wasted test runs first (#347). */
+  wasted_runs: ({ item: string } & TestWaste)[];
 }
 
 /** The last `days` local days up to `today`, ranked (#346): the Usage page's list and the daily audit's input. */
@@ -116,8 +124,9 @@ export function efficiencyRanking(entries: JournalEntry[], opts: { days: number;
     items: [...all].sort(costlier).slice(0, top),
     by_stage,
     startup: all.flatMap((e) => (e.startup ? [{ item: e.item, ...e.startup }] : [])).sort((a, b) => b.max - a.max).slice(0, top),
+    wasted_runs: all.flatMap((e) => (e.test_runs?.wasted.runs ? [{ item: e.item, ...e.test_runs }] : [])).sort((a, b) => b.wasted.ms - a.wasted.ms || b.wasted.runs - a.wasted.runs || b.turn_usd - a.turn_usd).slice(0, top),
   };
 }
 
 /** The journal types the efficiency report reads. */
-export const EFFICIENCY_TYPES = [USAGE_TURN, 'session.replaced', 'permission.parked', 'permission.answered'];
+export const EFFICIENCY_TYPES = [USAGE_TURN, 'session.replaced', 'permission.parked', 'permission.answered', TEST_RUN];

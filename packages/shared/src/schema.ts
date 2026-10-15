@@ -553,6 +553,18 @@ export const Config = z.object({
     /** How long one batch may run before it is stopped. */
     timeout_min: z.number().positive().default(120),
   }).default({ enabled: false, patterns: [], shared_labels: [], yield_to_ci: true, poll_s: 30, timeout_min: 120 }),
+  /**
+   * Which worker commands are test runs (#347), read for the efficiency report's wasted runs: whole-suite runs (no names
+   * and none of `filters`) and runs repeated on a tree unchanged since the same command's green run. Nothing is refused.
+   */
+  test_runs: z.object({
+    /** Command prefixes that run tests, e.g. `npm test`, `./tools/run_checks.sh`. Empty: nothing is recorded. */
+    patterns: z.array(z.string().min(1)).default([]),
+    /** Flags that narrow a run to part of the suite; a bare name after the command narrows it too. */
+    filters: z.array(z.string().min(1)).default(['-t', '--testNamePattern', '--shard', '--grep', '--only-file']),
+    /** Flags that make a run a repeated load pass. */
+    repeat_flags: z.array(z.string().min(1)).default(['--repeat', '--stress']),
+  }).default({ patterns: [], filters: ['-t', '--testNamePattern', '--shard', '--grep', '--only-file'], repeat_flags: ['--repeat', '--stress'] }),
   ci: z.object({
     mode: z.enum(['github', 'github-or-local']).default('github'),
     require_green_base: z.boolean().default(true),
