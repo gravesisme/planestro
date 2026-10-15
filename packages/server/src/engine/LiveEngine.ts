@@ -19,7 +19,7 @@ import { Orchestrator } from './orchestrator.ts';
 import { NeedsYouWatch, type Wait } from './needsYou.ts';
 import { pngSize } from './placeholderPng.ts';
 import { findWorkflow, infraPatternIn, namedInLog, prSkippedByPaths } from './ciFilters.ts';
-import { quietTransientFailure } from './transient.ts';
+import { quietTransientFailure, patchRejected, PATCH_REJECTED_RETRY } from './transient.ts';
 import { driveSchedules } from './schedules.ts';
 import { runnerStatusText, stallOf, recovered, type RunnerStall } from './runners.ts';
 import { recordCiResult, recentCi, lastConcurrencyChange, rollbackConcurrency, hostLoad, limitsOf } from '../concurrency.ts';
@@ -1778,10 +1778,12 @@ export class LiveEngine implements Engine {
     const prior = fm.op_data?.transient_retry;
     if (!prior && after > 0 && !fm.taken_over && quietTransientFailure(result)) {
       const due = new Date(Date.now() + after * 1000).toISOString();
+      // A patch the runner rejected (#344) is retried with what went wrong, since the turn had done things before it.
+      const patch = patchRejected(result);
       this.store.mutateItem(id, [
-        { set: { blocked: true, blocked_reason: reason, op_data: { ...(fm.op_data ?? {}), transient_retry: { due_at: due, reason, subtype: result.subtype } } } },
+        { set: { blocked: true, blocked_reason: reason, op_data: { ...(fm.op_data ?? {}), transient_retry: { due_at: due, reason, subtype: result.subtype, ...(patch ? { message: PATCH_REJECTED_RETRY } : {}) } } } },
         ...(fm.op ? [{ unset: ['op', 'op_started_at'] } as ItemOp] : []),
-        { activity: { actor: 'app', text: `BLOCKED (${reason}): ${detail.replace(/\s+/g, ' ').slice(0, 500)}. The turn produced nothing, so planestro retries it once in ${after}s (concurrency.transient_retry_after_s)` } },
+        { activity: { actor: 'app', text: `BLOCKED (${reason}): ${detail.replace(/\s+/g, ' ').slice(0, 500)}. ${patch ? 'The runner ended the turn over a rejected patch' : 'The turn produced nothing'}, so planestro retries it once in ${after}s (concurrency.transient_retry_after_s)` } },
       ], 'engine', { commit: `${id}: blocked (${reason}), retrying once` });
       this.store.journal.append({ type: 'turn.transient_retry', item: id, actor: 'engine', data: { reason, subtype: result.subtype, error: (result.error ?? '').slice(0, 300), due_at: due } });
       this.note('warn', `${id}: ${reason} (${result.subtype}) before the turn did anything; retrying once in ${after}s`);
@@ -1807,7 +1809,7 @@ export class LiveEngine implements Engine {
     for (const item of this.store.listItems()) {
       const fm = item.file.frontmatter;
       for (const key of ['transient_retry', 'usage_retry'] as const) {
-        const r = fm.op_data?.[key] as { due_at?: string; reason?: string; by?: string } | undefined;
+        const r = fm.op_data?.[key] as { due_at?: string; reason?: string; by?: string; message?: string } | undefined;
         if (!r?.due_at) continue;
         const usage = key === 'usage_retry';
         if (!fm.blocked || fm.taken_over || (usage && fm.blocked_reason !== 'usage_exhausted')) { this.dropTransientRetry(item.id, key); continue; }
@@ -1815,7 +1817,7 @@ export class LiveEngine implements Engine {
         const reason = usage ? 'usage_exhausted' : r.reason;
         this.store.mutateItem(item.id, [{ set: { op_data: { ...(this.store.requireItem(item.id).file.frontmatter.op_data ?? {}), [key]: { retried_at: this.now(), reason } } } },
           ...(usage ? [{ activity: { actor: 'app', text: `usage reset (${r.due_at}): retrying the step it stopped, once` } } as ItemOp] : [])], 'engine');
-        void this.retryOp(item.id, 'engine', usage ? 'Your model\'s usage window has reset; carry on.' : undefined).then((said) => {
+        void this.retryOp(item.id, 'engine', usage ? 'Your model\'s usage window has reset; carry on.' : r.message).then((said) => {
           if (/^not now/.test(said)) { const cur = this.store.requireItem(item.id).file.frontmatter; this.store.mutateItem(item.id, [{ set: { op_data: { ...(cur.op_data ?? {}), [key]: r } } }], 'engine'); return; }
           if (/^(not possible|nothing to retry)/.test(said)) { this.dropTransientRetry(item.id, key); this.block(item.id, reason ?? 'turn_error', `the automatic retry could not run: ${said}`); }
         }).catch((e) => { this.dropTransientRetry(item.id, key); this.block(item.id, reason ?? 'turn_error', `the automatic retry failed: ${(e as Error).message}`); });
