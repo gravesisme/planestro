@@ -9,6 +9,7 @@ import { act, useStore } from '../store.ts';
 import { DesktopNotifications } from '../components/DesktopNotifications.tsx';
 import { ActionButton } from '../components/ActionButton.tsx';
 import { CategoryTag } from '../components/CategoryTag.tsx';
+import { modeNote } from '../engineMode.ts';
 
 /**
  * Settings (issue #83): tabs by what you are deciding, every row rendered from the shared registry
@@ -153,6 +154,7 @@ function SettingRow({ def, value, changed, state }: { def: SettingDef; value: un
           {def.detail && <button className="link" aria-expanded={more} onClick={() => setMore(!more)}>{more ? 'Less' : 'Learn more'}</button>}
         </div>
         {more && def.detail && <div className="more">{def.detail.map((p) => <p key={p}>{p}</p>)}</div>}
+        {def.key === 'engine.mode' && modeNote(state.engine.modes) && <div className="sum rules-error" role="status">{modeNote(state.engine.modes)}</div>}
       </div>
       <Control def={def} value={value} state={state} />
     </div>
