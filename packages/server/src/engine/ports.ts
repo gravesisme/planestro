@@ -39,6 +39,12 @@ export interface GitPort {
   worktreeAddDetached(repo: string, path: string, ref: string): Promise<void>;
   worktreeRemove(repo: string, path: string, force: boolean): Promise<void>;
   worktreePrune(repo: string): Promise<void>;
+  /**
+   * A folder at `path` that git no longer lists as a worktree (#356: `git worktree remove` dropped the registration and
+   * left files behind): its files are moved into `dest`, keeping their relative paths, and the folder, empty by then, goes.
+   * Returns the files moved, or undefined when nothing is there. Throws, touching nothing, when the folder holds a `.git`.
+   */
+  setAsideLeftover(path: string, dest: string): Promise<string[] | undefined>;
   worktreeList(repo: string): Promise<WorktreeEntry[]>;
   status(cwd: string): Promise<{ clean: boolean; dirty: string[] }>;
   /** A dirty tree split: changes to tracked files, and untracked files one by one (not collapsed to their directory). */
@@ -121,6 +127,13 @@ export type CiState = 'none' | 'pending' | 'success' | 'failure' | 'cancelled' |
 /** `queued` (pending only): the run is waiting for a runner and no job has started, so it is not using its time yet (#170). */
 /** `timedOut` (cancelled only): GitHub called the run a failure though its jobs only ended cancelled, as a job past its `timeout-minutes` does (#330). */
 export interface CiStatus { state: CiState; runId?: number; url?: string; sha?: string; startedAt?: string; attempt?: number; queued?: boolean; timedOut?: boolean }
+/**
+ * One attempt of a CI run, timed as GitHub reports it (#179): when the run was created, when this attempt was queued
+ * (`run_started_at`), when it ended, and each job as GitHub names it, with no interpretation. `runner` is set only on
+ * a job a runner took, so a job that never left the queue has no start that counts.
+ */
+export interface CiJobTiming { name: string; status?: string; conclusion?: string; created_at?: string; started_at?: string; completed_at?: string; runner?: string }
+export interface CiAttemptTiming { attempt: number; status?: string; conclusion?: string; created_at?: string; queued_at?: string; first_job_started_at?: string; completed_at?: string; jobs: CiJobTiming[] }
 /** Runs of the CI workflow across the repository that are waiting for a runner, and running (#170). */
 export interface CiQueue { queued: number; running: number }
 /** A self-hosted runner as GitHub lists it for the repository, or its organization (#216). */
@@ -153,6 +166,8 @@ export interface GhPort {
   rerunFailed(repo: string, runId: number): Promise<void>;
   /** Re-run every job of a run: a cancelled run, which has no failed jobs to re-run (HH-321). */
   rerunAll(repo: string, runId: number): Promise<void>;
+  /** One attempt of a run with its jobs, timed (#179). Optional: a port without it records no timing. */
+  runTiming?(repo: string, runId: number, attempt: number): Promise<CiAttemptTiming>;
   mergePr(repo: string, number: number, opts: { headSha: string }): Promise<'merged' | 'head_moved'>;
   /** Close a pull request without merging it, with a comment saying why (#135). */
   closePr(repo: string, number: number, comment: string): Promise<void>;
@@ -281,6 +296,8 @@ export interface ClaudeTurnExtras {
   onUndelivered?(report: UndeliveredReport | undefined): void;
   /** The first sign in this turn that the session lost its connection to planestro (#167, HH-377), as soon as the port sees it. */
   onConnectionDrop?(drop: ConnectionDrop): void;
+  /** Each Bash command that ran (not refused, not interrupted), with whether it exited 0 and how long it took (#347). Claude runner only. */
+  onCommandRan?(run: { command: string; ok: boolean; ms: number }): void;
 }
 /** A report the session made whose call was lost on the way to planestro (sdk-notes gotcha 11), with the arguments it was made with. */
 export interface UndeliveredReport { tool: 'submit_plan' | 'submit_breakdown' | 'report_done' | 'report_blocked'; args: Record<string, unknown>; error: string }
@@ -311,6 +328,8 @@ export interface TurnResult {
   sessionTotalUsd?: number;
   /** Tokens in the window of the conversation's last response: what resuming it reloads. */
   contextTokens?: number;
+  /** The input window of the turn's first response (#346): the startup weight of a new conversation, the reload of a resumed one. */
+  startContextTokens?: number;
   /** How long the runner's cache writes live, in seconds: a resume within it reads the context instead of writing it. */
   cacheTtlS?: number;
   /** The CLI's quote for this resume, when it gave one. */
@@ -374,6 +393,8 @@ export interface CustomTurnOptions {
   account?: AccountCredentials;
   maxTurns?: number;
   maxTokens?: number;
+  /** A hard dollar cap, for a runner that reports dollars (the daily efficiency audit's, #348). */
+  maxBudgetUsd?: number;
   onApproval?(req: PermissionRequest): Promise<void>;
   /** As for worker turns: the SDK's own fallback for an overloaded or unavailable model. */
   fallbackModel?: string;

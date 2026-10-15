@@ -33,4 +33,17 @@ describe('what ran without a park (#203)', () => {
     await post('8', 'Bash', {}, 'PreToolUse');
     expect(w.list()).toEqual([{ tool: 'Bash', command: 'npm test', n: 2 }, { tool: 'Bash', command: 'npm run lint', n: 1 }, { tool: 'Read', n: 1 }]);
   });
+
+  it('tells each Bash command that ran as it ends, with its exit and wall time, for the test-run record (#347)', async () => {
+    const heard: { command: string; ok: boolean; ms: number }[] = [];
+    const w = new RanWatch((r) => heard.push(r));
+    const call = (h: ReturnType<RanWatch['hook']>, id: string, event: string, command: string, extra = {}) => h({ hook_event_name: event, tool_name: 'Bash', tool_input: { command }, tool_use_id: id, ...extra } as any, id, sig);
+    await call(w.started(), '1', 'PreToolUse', 'npm test');
+    await call(w.hook(), '1', 'PostToolUse', 'npm test');
+    await call(w.started(), '2', 'PreToolUse', 'npm test');
+    await call(w.hook(), '2', 'PostToolUseFailure', 'npm test', { error: 'exit 1' });
+    w.refused('3'); await call(w.hook(), '3', 'PostToolUseFailure', 'npm test', { error: 'denied' });
+    expect(heard.map((r) => [r.command, r.ok])).toEqual([['npm test', true], ['npm test', false]]);
+    expect(heard.every((r) => r.ms >= 0)).toBe(true);
+  });
 });

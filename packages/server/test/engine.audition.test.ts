@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdirSync, readFileSync, writeFileSync, symlinkSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, symlinkSync, truncateSync } from 'node:fs';
 import { join } from 'node:path';
 import { DataStore } from '../src/store/DataStore.ts';
 import { LiveEngine } from '../src/engine/LiveEngine.ts';
@@ -83,6 +83,9 @@ describe('mid-build auditions (#207)', () => {
     expect(await engine.auditionFile(id, 'secret.txt')).toBeNull();
     expect(await engine.auditionFile(id, 'tmp/desert_sfx/../../secret.txt')).toBeNull();
     expect(await engine.auditionFile(id, join(cwd, 'secret.txt'))).toBeNull();
+    // A take larger than any review read takes is not read into memory (#336).
+    truncateSync(join(cwd, 'tmp/desert_sfx/wind_b.mp3'), 64 * 1024 * 1024 + 1);
+    expect(await engine.auditionFile(id, 'tmp/desert_sfx/wind_b.mp3')).toBeNull();
   });
 
   it('refuses an audition whose takes are missing or outside the worktree, and parks nothing', async () => {

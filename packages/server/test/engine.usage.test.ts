@@ -16,7 +16,11 @@ afterEach(async () => { await engine?.stop(); store?.close(); store = undefined;
 function billingClaude(world: FakeWorld) {
   const inner = new DryRunClaudePort(world);
   return {
-    async runTurn(o: TurnOptions): Promise<TurnResult> { return { ...(await inner.runTurn(o)), costUsd: o.phase === 'plan' ? 0.25 : 1.5 }; },
+    async runTurn(o: TurnOptions): Promise<TurnResult> {
+      // The worker runs the whole suite twice on the same code (#347): heard as each command ends.
+      if (o.phase !== 'plan') for (let i = 0; i < 2; i++) o.onCommandRan?.({ command: 'npm test 2>&1 | tail -5', ok: true, ms: 60_000 });
+      return { ...(await inner.runTurn(o)), costUsd: o.phase === 'plan' ? 0.25 : 1.5 };
+    },
     async runCustomTurn(o: CustomTurnOptions): Promise<TurnResult> { return { ...(await inner.runCustomTurn(o)), costUsd: 0.1 }; },
   };
 }
@@ -46,11 +50,34 @@ describe('per-turn usage (#236)', () => {
     await engine.approvePlan(item.id);
     await waitFor(() => ['IN_REVIEW', 'MERGED', 'FINISHED'].includes(store.requireItem(item.id).file.frontmatter.status));
     const turns = usage(store).filter((e) => e.item === item.id).map((e) => e.data as unknown as UsageTurn);
-    expect(turns[0]).toMatchObject({ provider: 'claude', role: 'planner', op: 'planning_turn', usd: 0.25, subtype: 'success' });
-    expect(turns[1]).toMatchObject({ provider: 'claude', role: 'worker', op: 'implement_turn', usd: 1.5 });
+    expect(turns[0]).toMatchObject({ provider: 'claude', role: 'planner', op: 'planning_turn', usd: 0.25, subtype: 'success', stage: 'planning', resumed: false });
+    expect(turns[1]).toMatchObject({ provider: 'claude', role: 'worker', op: 'implement_turn', usd: 1.5, stage: 'implementation' });
     expect(turns[0].model).toBeTruthy();
-    await (engine.orchestrator as any).runWake([{ type: 'user_message', data: { text: 'hello' } }]);
-    expect(usage(store).at(-1)!.data).toMatchObject({ provider: 'claude', role: 'orchestrator', op: 'orchestrator_wake', usd: 0.1 });
+    await (engine.orchestrator as any).runWake([{ type: 'user_message', data: { text: 'hello' } }, { type: 'review_stalled', item: item.id }]);
+    expect(usage(store).at(-1)!.data).toMatchObject({ provider: 'claude', role: 'orchestrator', op: 'orchestrator_wake', usd: 0.1, stage: 'orchestrator', items: [item.id] });
+    // The item's efficiency (#346): its turns by stage, and the wake that was about it.
+    const eff = await (await apiRoutes(store, engine).request(`/items/${item.id}/efficiency`)).json();
+    // The engine woke the orchestrator about it on its way too: each wake about it adds its $0.10.
+    const wakes = usage(store).filter((e) => (e.data as unknown as UsageTurn).items?.includes(item.id)).length;
+    expect(eff).toMatchObject({ item: item.id, turns: 2, wakes, stages: { planning: { usd: 0.25 }, implementation: { usd: 1.5 }, orchestrator: { turns: wakes } } });
+    expect(eff.usd).toBeCloseTo(1.75 + wakes * 0.1, 2);
+    const ranked = await (await apiRoutes(store, engine).request('/usage/items?days=7')).json();
+    expect(ranked.items[0]).toMatchObject({ item: item.id, usd: eff.usd });
+  });
+
+  it('journals a worker\'s test runs with the tree they ran on, ahead of its turn, and reports the wasted ones (#347)', async () => {
+    const { store, engine } = await setup();
+    store.updateConfig((doc) => doc.set('test_runs', { patterns: ['npm test'], filters: ['--shard'], repeat_flags: ['--repeat'] }), 'config: test runs');
+    const item = store.createItem({ title: 'Test twice', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => store.requireItem(item.id).file.frontmatter.status === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => ['IN_REVIEW', 'MERGED', 'FINISHED'].includes(store.requireItem(item.id).file.frontmatter.status));
+    const runs = store.journal.read({ item: item.id }).filter((e) => e.type === 'test.run' || e.type === USAGE_TURN).map((e) => e.type === 'test.run' ? `run ${e.data!.whole_suite} ${Boolean(e.data!.tree)}` : `turn ${(e.data as unknown as UsageTurn).stage}`);
+    expect(runs.slice(0, 4)).toEqual(['turn planning', 'run true true', 'run true true', 'turn implementation']);
+    const eff = await (await apiRoutes(store, engine).request(`/items/${item.id}/efficiency`)).json();
+    expect(eff.test_runs).toMatchObject({ runs: 2, ms: 120_000, wasted: { runs: 2 }, whole_suite: { runs: 2 }, repeats: { runs: 1 }, turn_usd: 1.5 });
   });
 
   it('a token-accounted runner records its tokens and no dollars', async () => {

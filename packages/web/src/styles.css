@@ -72,7 +72,7 @@ main { padding: 16px; flex: 1; }
 .sidebar dl { display: grid; grid-template-columns: 110px 1fr; gap: 4px 8px; margin: 0; font-size: 12px; } .sidebar dt { color: var(--muted); } .sidebar dd { margin: 0; overflow-wrap: anywhere; }
 .md { line-height: 1.55; } .md pre { background: #0e1013; padding: 10px; border-radius: 6px; overflow: auto; } .md code { background: #0e1013; padding: 1px 4px; border-radius: 3px; } .md img { max-width: 100%; }
 .activity { margin: 0; padding: 0; list-style: none; font-size: 12px; } .activity li { display: grid; grid-template-columns: 150px 80px 1fr; gap: 8px; padding: 3px 0; border-bottom: 1px dashed var(--line); } .activity .at { color: var(--muted); }
-.attachments li { display: flex; gap: 8px; align-items: center; } .attachments img { max-height: 60px; border-radius: 4px; }
+.attachments li { display: flex; gap: 8px; align-items: center; } .attachments img { max-height: 60px; border-radius: 4px; } .attachments .checker img { max-height: 60px; }
 .approval { border: 1px solid var(--warn); background: #2b2413; border-radius: var(--radius); padding: 12px; margin-bottom: 12px; }
 .card-list { display: grid; gap: 8px; } table { border-collapse: collapse; width: 100%; } th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); font-size: 13px; } th { color: var(--muted); font-weight: 600; }
 .row { display: flex; gap: 8px; align-items: center; margin: 4px 0; } .grow { flex: 1; } .muted { color: var(--muted); } .small { font-size: 12px; }
@@ -537,6 +537,12 @@ input.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 /* A deep link's target (#226): clear of the sticky top bar, and marked while it holds the focus. */
 .item-page [id] { scroll-margin-top: 72px; }
+/* The item's header row (#373): on a wide screen it stays under the top bar, with what the item waits on you for in it. */
+@media (min-width: 841px) {
+  .item-actions { position: sticky; top: 56px; z-index: 4; margin: 0 -8px 8px; padding: 6px 8px; background: var(--bg); border-bottom: 1px solid var(--line); }
+  .item-page [id] { scroll-margin-top: 120px; }
+}
+.wait-shortcut { box-shadow: 0 0 0 2px color-mix(in srgb, var(--warn) 55%, transparent); } .wait-reason { color: var(--warn); overflow-wrap: anywhere; }
 .item-page [id][tabindex="-1"]:focus { outline: 2px solid var(--accent); outline-offset: 3px; }
 
 /* A render error (#280): what failed and a way back, never a blank page. */
@@ -590,3 +596,12 @@ input.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 .tag.cat { font-weight: 500; display: inline-block; }
 .color-well, .setting-list .li.add input.color-well { flex: none; width: 22px; height: 22px; padding: 0; border: 1px solid var(--line); border-radius: 4px; background: none; cursor: pointer; }
 .color-well::-webkit-color-swatch-wrapper { padding: 2px; } .color-well::-webkit-color-swatch { border: 0; border-radius: 2px; } .color-well::-moz-color-swatch { border: 0; border-radius: 2px; }
+
+/* A long item page's sections (#374): a sticky list under the details on a wide screen, a select at the top on a phone. */
+.section-nav { position: sticky; top: 72px; display: grid; gap: 1px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); max-height: calc(100vh - 96px); overflow-y: auto; font-size: 13px; }
+.section-nav a { padding: 3px 8px; border-left: 2px solid transparent; border-radius: 0 4px 4px 0; color: var(--muted); } .section-nav a:hover { color: var(--text); background: var(--panel2); }
+.section-nav a.wait { color: var(--warn); border-left-color: var(--warn); font-weight: 600; }
+.section-jump { width: 100%; margin: 4px 0 10px; }
+/* The pictures a review is about, first (#355, #372): large thumbnails that open full size. */
+.review-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; } .review-gallery .checker { width: 100%; } .review-gallery .checker img { width: 100%; max-height: 300px; object-fit: contain; }
+.review-gallery figcaption { margin-top: 4px; overflow-wrap: anywhere; } .review-gallery figcaption a { margin-left: 6px; }

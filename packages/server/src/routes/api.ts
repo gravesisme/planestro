@@ -5,17 +5,18 @@ import { importIssues, importableIssues } from '../engine/issueImport.ts';
 import type { GhPort } from '../engine/ports.ts';
 import { previewSwitch, applySwitch, itemModelSwitchOps } from '../providerSwitch.ts';
 import { orchestratorSpend } from '../engine/orchestratorSpend.ts';
-import { Hono, type Context } from 'hono';
+import { Hono, type Context, type MiddlewareHandler } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import { join } from 'node:path';
 import { managedAttachmentPath } from '../store/managedAttachments.ts';
 import { existsSync, readFileSync } from 'node:fs';
 import YAML from 'yaml';
-import { allowedTransitions, parsePromptFile, RenderError, STATUSES, PRIORITIES, type Priority, PROMPT_KINDS, RELEASE_STATUSES, KINDS, markUnavailable, CHAT_ATTACHMENTS_DIR, type Status, type Actor, usageReport, dayBefore, USAGE_REPORT_TYPES, isoLocal, HEX_COLOR, suggestCategoryColor } from '@planestro/shared';
+import { allowedTransitions, parsePromptFile, RenderError, STATUSES, PRIORITIES, type Priority, PROMPT_KINDS, RELEASE_STATUSES, KINDS, markUnavailable, CHAT_ATTACHMENTS_DIR, CHAT_MAX_FILES, type Status, type Actor, usageReport, dayBefore, USAGE_REPORT_TYPES, itemEfficiency, efficiencyRanking, EFFICIENCY_TYPES, isoLocal, HEX_COLOR, suggestCategoryColor } from '@planestro/shared';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Engine } from '../engine/Engine.ts';
 import type { ConsoleBuffer } from '../store/ConsoleBuffer.ts';
-import { itemView, promptView, releaseView, scheduleView, questionView, stateView, guardView, runnerStallsView, publicLocal } from './views.ts';
+import { itemView, promptView, releaseView, scheduleView, questionView, stateView, guardView, modeView, runnerStallsView, publicLocal } from './views.ts';
 import { applyConfigSettings, applyLocalSettings, putModel, removeModel } from '../settingsWrite.ts';
 import { projectsOverview, liveOverviewDeps, type OverviewDeps } from '../projects.ts';
 import { importCandidates, importMcpServers, putMcpServer, removeMcpServer, testMcpServer } from '../mcpServers.ts';
@@ -53,9 +54,28 @@ function reviewFile(c: Context, path: string, buf: Buffer | null): Response {
   return new Response(new Uint8Array(buf), { headers: { 'content-type': type, 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'", 'x-content-type-options': 'nosniff' } });
 }
 
+/** What a multipart form adds around its files (boundaries, headers, a chat message's text). */
+const FORM_OVERHEAD_BYTES = 256 * 1024;
+const mb = (n: number) => `${Math.round(n / 1e5) / 10} MB`;
+
+/**
+ * An upload is bounded before it is read (#336): a body over `maxFiles` files of the store's per-file limit is refused with
+ * 413 from its Content-Length, or as soon as a streamed one passes it, so nothing larger is ever held in memory. The limit
+ * is read per request, so a changed `attachments.managed_max_bytes` applies at once.
+ */
+function uploadLimit(store: DataStore, maxFiles: number): MiddlewareHandler {
+  return (c, next) => {
+    const perFile = store.config.attachments.managed_max_bytes;
+    const maxSize = perFile * maxFiles + FORM_OVERHEAD_BYTES;
+    return bodyLimit({ maxSize, onError: (c) => c.json({ error: `the upload is over the ${mb(maxSize)} limit: at most ${maxFiles} file${maxFiles === 1 ? '' : 's'} of ${mb(perFile)} each (attachments.managed_max_bytes)` }, 413) })(c, next);
+  };
+}
+/** More files than a route takes: refused whole, with 413 like an oversized body. */
+class TooManyFiles extends Error {}
+
 export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBuffer, opts: { projects?: OverviewDeps; hostLoad?: () => HostLoad | undefined } = {}): Hono {
   const api = new Hono();
-  const fail = (c: any, e: unknown, status = 400) => c.json({ error: (e as Error).message ?? String(e) }, status);
+  const fail = (c: any, e: unknown, status = 400) => c.json({ error: (e as Error).message ?? String(e) }, e instanceof TooManyFiles ? 413 : status);
   const pending = (id: string) => Boolean(orchestratorOf(engine)?.questionPending?.(id));
   const awake = (): Orch => { const o = orchestratorOf(engine); if (!o?.enabled) throw new Error('the orchestrator is not available with this engine'); return o; };
 
@@ -128,6 +148,11 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
     } catch (e) { return fail(c, e); }
   });
 
+  // Cost and tokens by stage, fresh sessions, parks and startup weight, from the journal (#346); an orchestrator wake shares its cost among its items.
+  api.get('/items/:id/efficiency', (c) => {
+    const types = new Set(EFFICIENCY_TYPES);
+    return c.json(itemEfficiency(store.journal.read().filter((e) => types.has(e.type)), c.req.param('id')));
+  });
   api.get('/items/:id/console', (c) => c.json({ lines: consoles?.get(c.req.param('id')) ?? [] }));
   api.get('/items/:id/transitions', (c) => {
     const it = store.requireItem(c.req.param('id'));
@@ -297,12 +322,13 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   });
   api.post('/items/:id/respond', async (c) => { try { await engine.respond(c.req.param('id'), await c.req.json()); return c.json({ ok: true }); } catch (e) { return fail(c, e); } });
 
-  api.post('/items/:id/attachments', async (c) => {
+  api.post('/items/:id/attachments', uploadLimit(store, 1), async (c) => {
     try {
       const id = c.req.param('id');
       const ct = c.req.header('content-type') ?? '';
       if (ct.includes('multipart/form-data')) {
         const form = await c.req.formData();
+        if (form.getAll('file').length > 1) throw new TooManyFiles('one file per upload');
         const f = form.get('file');
         if (!(f instanceof File)) throw new Error('file field missing');
         return c.json(store.addManagedAttachment(id, f.name || 'paste.png', Buffer.from(await f.arrayBuffer())), 201);
@@ -461,13 +487,14 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
     } catch (e) { return fail(c, e); }
   });
 
-  api.post('/orchestrator/message', async (c) => {
+  api.post('/orchestrator/message', uploadLimit(store, CHAT_MAX_FILES), async (c) => {
     try {
       // JSON, or a form with `file` parts (#288): what the user pasted or picked, stored and committed before the message is.
       const files: { name: string; data: Buffer }[] = [];
       let body: unknown;
       if ((c.req.header('content-type') ?? '').includes('multipart/form-data')) {
         const form = await c.req.formData();
+        if (form.getAll('file').length > CHAT_MAX_FILES) throw new TooManyFiles(`at most ${CHAT_MAX_FILES} attachments in one message`);
         for (const f of form.getAll('file')) if (f instanceof File) files.push({ name: f.name || 'paste.png', data: Buffer.from(await f.arrayBuffer()) });
         body = { text: String(form.get('text') ?? '').replace(/\r\n/g, '\n'), item: form.get('item') || undefined }; // a form sends its line breaks as CRLF
       } else body = await c.req.json();
@@ -540,13 +567,20 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
     const types = new Set(USAGE_REPORT_TYPES);
     return c.json(usageReport(store.journal.read({ since: dayBefore(today, days - 1) }).filter((e) => types.has(e.type)), { days, today }));
   });
+  // The last days' items ranked by cost, by stage and by starting context (#346).
+  api.get('/usage/items', (c) => {
+    const days = Math.min(90, Math.max(1, Math.floor(Number(c.req.query('days') ?? 7)) || 7));
+    const today = isoLocal().slice(0, 10);
+    const types = new Set(EFFICIENCY_TYPES);
+    return c.json(efficiencyRanking(store.journal.read({ since: dayBefore(today, days - 1) }).filter((e) => types.has(e.type)), { days, today }));
+  });
   // Allow rules suggested from the ruling history, replayed so none would have let a past denial through (#169). Read-only.
   api.get('/permissions/suggest', (c) => {
     const num = (k: string) => { const v = Number(c.req.query(k)); return Number.isFinite(v) && v > 0 ? v : undefined; };
     return c.json(suggestForStore(store, { minApprovals: num('min'), minItems: num('min_items') }));
   });
   api.get('/parks', (c) => c.json(parkSummary(store.journal.read().filter((e) => e.type.startsWith('permission.') || e.type === 'op.begin' || e.type === 'op.end'))));
-  api.get('/engine', (c) => c.json({ mode: engine.mode, paused: engine.paused, ...guardView(store, engine.paused), sessions: engine.sessions(), ...(engine.ciQueue ? { ci_queue: engine.ciQueue } : {}), ...runnerStallsView(engine), ...(engine.restartReadiness ? { restart: engine.restartReadiness() } : {}), log: engine.log.slice(-200) }));
+  api.get('/engine', (c) => c.json({ mode: engine.mode, modes: modeView(store, engine.mode), paused: engine.paused, ...guardView(store, engine.paused), sessions: engine.sessions(), ...(engine.ciQueue ? { ci_queue: engine.ciQueue } : {}), ...runnerStallsView(engine), ...(engine.restartReadiness ? { restart: engine.restartReadiness() } : {}), log: engine.log.slice(-200) }));
   // The orchestrator's suggestions about planestro itself (dogfood f8): a list of their own, not buried in Activity.
   // Each with what became of it (#231): the issues it was filed as, or handled by hand.
   api.get('/orchestrator/notes', (c) => c.json(notesWithLinks(store)));

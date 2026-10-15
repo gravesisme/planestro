@@ -1,4 +1,5 @@
-import type { ConcurrencyAdvice, ConcurrencyChange, ConcurrencyGuard, ConcurrencyLimits, HostLoad, ItemFrontmatter, PromptFrontmatter, ReleaseFrontmatter, ReleaseStatus, Config, LocalConfig, ModelDef, Status, JournalEntry, UsageGuardState, QuestionFrontmatter, ThreadEntry, ScheduleFrontmatter, UsageReport } from '@planestro/shared';
+import type { EngineModes } from './engineMode.ts';
+import type { ConcurrencyAdvice, ConcurrencyChange, ConcurrencyGuard, ConcurrencyLimits, HostLoad, ItemFrontmatter, PromptFrontmatter, ReleaseFrontmatter, ReleaseStatus, Config, LocalConfig, ModelDef, Status, JournalEntry, UsageGuardState, QuestionFrontmatter, ThreadEntry, ScheduleFrontmatter, UsageReport, ItemEfficiency, EfficiencyRanking } from '@planestro/shared';
 import type { BreakdownChild, Priority, SourcedRule } from '@planestro/shared';
 
 export interface OrchestratorSpend {
@@ -93,7 +94,7 @@ export interface State {
   permissions?: { machine_path: string; machine_exists: boolean; machine_error?: string; rules: SourcedRule[] };
   items: ItemView[]; prompts: PromptView[]; releases?: ReleaseView[]; schedules?: ScheduleView[]; invalid: { path: string; error: string }[];
   update: { channel: string; running: string; checked_at: string; state: string; detail: string; target?: string } | null;
-  engine: { mode: string; paused: boolean; paused_by?: 'user' | 'disk'; provider_guards?: Record<string, UsageGuardState>; disk_guard?: { free_gib: number; path: string; tripped_at: string }; ci_queue?: { queued: number; running: number }; runner_stalls?: { label: string; items: string[]; since: string }[]; sessions: SessionView[]; slots?: SlotsView; restart?: { draining: boolean; by?: 'user' | 'update'; idle: boolean; running: string[] } };
+  engine: { mode: string; modes?: EngineModes; paused: boolean; paused_by?: 'user' | 'disk'; provider_guards?: Record<string, UsageGuardState>; disk_guard?: { free_gib: number; path: string; tripped_at: string }; ci_queue?: { queued: number; running: number }; runner_stalls?: { label: string; items: string[]; since: string }[]; sessions: SessionView[]; slots?: SlotsView; restart?: { draining: boolean; by?: 'user' | 'update'; idle: boolean; running: string[] } };
   git: { dirty: string[]; branch: string; head?: string; ahead?: number };
   statuses: Status[];
 }
@@ -104,10 +105,19 @@ export function isState(s: unknown): s is State {
   return typeof v === 'object' && v !== null && typeof v.config?.project?.name === 'string' && Array.isArray(v.items);
 }
 
-async function req<T>(method: string, url: string, body?: unknown, raw?: BodyInit): Promise<T> {
+/** A response whose body could not be read (cut off by a restart or a dropped connection, #350): the request failed, and asking again may work. */
+export class UnreadableResponse extends Error { readonly retryable = true; }
+
+export async function req<T>(method: string, url: string, body?: unknown, raw?: BodyInit): Promise<T> {
   const res = await fetch(url, { method, headers: raw ? undefined : { 'content-type': 'application/json' }, body: raw ?? (body === undefined ? undefined : JSON.stringify(body)) });
-  const data = await res.json().catch(() => ({}));
+  let text: string | undefined;
+  try { text = await res.text(); } catch { /* cut off mid-body */ }
+  let data: unknown = {};
+  let unreadable = text === undefined;
+  if (text?.trim()) try { data = JSON.parse(text); } catch { unreadable = true; }
   if (!res.ok) throw new Error((data as { error?: string }).error ?? `${res.status} ${res.statusText}`);
+  // Never `{}` in place of what the caller asked for: one bad answer would reach a list as an object (#350).
+  if (unreadable) throw new UnreadableResponse(`the server sent an unreadable answer to ${method} ${url}; it will be asked again`);
   return data as T;
 }
 
@@ -187,6 +197,8 @@ export const api = {
   undrain: () => req<{ draining: boolean; idle: boolean; running: string[] }>('DELETE', '/api/engine/drain'),
   resume: () => req<{ paused: boolean }>('POST', '/api/engine/resume'),
   usage: (days: number) => req<UsageReport>('GET', `/api/usage?days=${days}`),
+  usageItems: (days: number) => req<EfficiencyRanking>('GET', `/api/usage/items?days=${days}`),
+  itemEfficiency: (id: string) => req<ItemEfficiency>('GET', `/api/items/${encodeURIComponent(id)}/efficiency`),
   orchestratorSpend: () => req<OrchestratorSpend>('GET', '/api/orchestrator/spend'),
   parks: () => req<ParkSummary[]>('GET', '/api/parks'),
   allowSuggest: () => req<AllowSuggestReport>('GET', '/api/permissions/suggest'),

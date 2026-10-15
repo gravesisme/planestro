@@ -1,6 +1,6 @@
 import { placeholderPng } from './placeholderPng.ts';
 import { matchesPathPattern } from './ports.ts';
-import type { GitPort, GhPort, ProcPort, ClaudePort, AgentPort, AgentTurnOptions, WorktreeEntry, WorktreeSnapshot, Checkpoint, RebaseResult, ContinueResult, CiStatus, PrInfo, PrClosure, IssueInfo, RunnerReport, TurnOptions, TurnResult, CustomTurnOptions } from './ports.ts';
+import type { GitPort, GhPort, ProcPort, ClaudePort, AgentPort, AgentTurnOptions, WorktreeEntry, WorktreeSnapshot, Checkpoint, RebaseResult, ContinueResult, CiStatus, CiAttemptTiming, PrInfo, PrClosure, IssueInfo, RunnerReport, TurnOptions, TurnResult, CustomTurnOptions } from './ports.ts';
 
 /**
  * An in-memory world so a dry run advances end to end: worktrees, branches, PRs whose CI
@@ -41,6 +41,8 @@ export class FakeWorld {
   ignored = new Map<string, string[]>();
   /** Files present in a main checkout, by its path: what copy_to_checkout copied there (#72), or a test put there. */
   checkout = new Map<string, Set<string>>();
+  /** Folders git no longer lists as worktrees, with the files left in them (#356: a half-done `git worktree remove`). */
+  leftovers = new Map<string, string[]>();
   /** Issues of the feedback repo (#231): what issueList reports and issueCreate adds to. */
   issues: IssueInfo[] = [];
   nextIssue = 1;
@@ -150,6 +152,7 @@ export class DryRunGitPort implements GitPort {
   async worktreeAddDetached(_repo: string, path: string, ref: string) { this.say(`git worktree add --detach ${path} ${ref}`); this.w.worktrees.set(path, { path, head: this.w.sha() }); }
   async worktreeAdd(_repo: string, path: string, branch: string, startRef: string) { this.say(`git worktree add -b ${branch} ${path} ${startRef}`); this.w.worktrees.set(path, { path, head: this.w.sha(), branch }); this.w.localBranches.add(branch); }
   async worktreeRemove(_repo: string, path: string, force: boolean) { this.say(`git worktree remove${force ? ' --force' : ''} ${path}`); const wt = this.w.worktrees.get(path); if (wt?.branch) this.w.localTips.set(wt.branch, wt.head); this.w.worktrees.delete(path); }
+  async setAsideLeftover(path: string, dest: string) { const files = this.w.leftovers.get(path); if (!files) return undefined; this.say(`move ${files.join(', ') || '(nothing)'} from ${path} to ${dest}; remove the empty folder`); this.w.leftovers.delete(path); return files; }
   async worktreePrune() { this.say('git worktree prune'); }
   async worktreeList() { return [...this.w.worktrees.values()]; }
   async status(cwd: string) { const u = this.w.untracked.get(cwd) ?? []; const dirty = [...(this.w.dirty.has(cwd) ? ['src/fake.ts'] : []), ...u]; return { clean: dirty.length === 0, dirty }; }
@@ -311,6 +314,10 @@ export class DryRunGhPort implements GhPort {
     for (const p of this.w.prs.values()) { p.attempt = (p.attempt ?? 1) + 1; p.polls = 0; p.staleFailures = this.w.rerunLagPolls; if (this.w.rerunFailsAgain) { p.failOnce = true; this.w.rerunFailsAgain = false; } }
   }
   async rerunAll(_repo: string, runId: number) { this.say(`gh run rerun ${runId}`); for (const p of this.w.prs.values()) if (p.cancelled) { p.cancelled = false; p.attempt = (p.attempt ?? 1) + 1; p.polls = 0; } }
+  async runTiming(_repo: string, runId: number, attempt: number): Promise<CiAttemptTiming> {
+    const t = (min: number) => new Date(Date.UTC(2026, 0, 1, 0, min)).toISOString();
+    return { attempt, status: 'completed', conclusion: runId === 3 ? 'success' : runId === 5 ? 'cancelled' : 'failure', created_at: t(0), queued_at: t(attempt * 10), first_job_started_at: t(attempt * 10 + 2), completed_at: t(attempt * 10 + 5), jobs: [{ name: 'test', status: 'completed', created_at: t(attempt * 10), started_at: t(attempt * 10 + 2), completed_at: t(attempt * 10 + 5), runner: 'fake-runner' }] };
+  }
   async previewUrl(_repo: string, sha: string): Promise<string | null> { return this.w.previews.get(sha) ?? null; }
   async issueList(_repo: string, opts: { limit: number; state?: 'open' | 'all'; label?: string }): Promise<IssueInfo[]> {
     return this.w.issues.filter((i) => (opts.state !== 'open' || i.state === 'OPEN') && (!opts.label || i.labels?.includes(opts.label))).sort((a, b) => b.number - a.number).slice(0, opts.limit);
@@ -398,6 +405,9 @@ export class DryRunClaudePort implements ClaudePort {
     const onQuestion = /^Event: question_message\nQuestion (Q-\d+)/m.exec(o.prompt)?.[1];
     const replyOn = o.mcpTools.find((t) => t.name === 'reply_on_question');
     if (onQuestion && replyOn) await replyOn.handler({ id: onQuestion, text: '(dry-run) I would weigh your answer against the item and carry it out. Switch to live mode for a real reply.' });
+    // The daily efficiency audit (#348): one recommendation, named after the digest's costliest item.
+    const recommend = o.mcpTools.find((t) => t.name === 'file_recommendation');
+    if (recommend) { const top = /^## Costliest items\n- (\S+): (.*)$/m.exec(o.prompt); await recommend.handler({ key: top ? `${top[1]}-cost` : 'dry-run', what: top ? `(dry-run) ${top[1]} cost the most` : '(dry-run) nothing stood out', evidence: top?.[2] ?? 'the digest', change: '(dry-run) switch to live mode for a real recommendation', saving: 'unknown' }); }
     const done = o.mcpTools.find((t) => t.name === 'done_with_wake');
     if (done) await done.handler({ summary: approved.length ? `dry-run: approved ${approved.join(', ')}` : 'dry-run: reviewed the wake, no action needed' });
     return { sessionId: o.resume ?? `dryrun-orch-${this.w.sha().slice(-6)}`, subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: 'wake handled (dry-run)' };

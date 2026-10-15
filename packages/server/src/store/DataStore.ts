@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync, existsSync, mkdirSync, unlinkSync, statSync, writeFileSync } from 'node:fs';
 import { join, basename, relative } from 'node:path';
 import { createHash } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type YAML from 'yaml';
 import { planReviewByDefault,
   parseItemFile, serializeItemFile, setSection, appendActivity, getSection, idNumber, slugify,
@@ -370,11 +371,11 @@ export class DataStore {
       if ('set' in op) Object.assign(file.frontmatter, op.set);
       else if ('unset' in op) for (const k of op.unset) delete (file.frontmatter as Record<string, unknown>)[k];
       else if ('section' in op) setSection(file, op.section, op.body);
-      else if ('activity' in op) { if (!repeatsRecentAppLine(file, op.activity.actor, op.activity.text)) appendActivity(file, op.activity.actor, op.activity.text, now); }
+      else if ('activity' in op) { if (!repeatsRecentAppLine(file, op.activity.actor, op.activity.text)) appendActivity(file, attributed(op.activity.actor), op.activity.text, now); }
       else if ('transition' in op) {
         const next = applyTransition(file.frontmatter, op.transition.to, op.transition.actor, this.flavorOf(file.frontmatter), now);
         file.frontmatter = next;
-        appendActivity(file, actorToActivity(op.transition.actor), `status ${before} → ${op.transition.to}`, now);
+        appendActivity(file, attributed(actorToActivity(op.transition.actor)), `status ${before} → ${op.transition.to}`, now);
       }
       else if ('rank' in op) file.frontmatter.rank = op.rank;
     }
@@ -1034,4 +1035,17 @@ export class DataStore {
 /** A headline is one line: whatever the model wrote, newlines fold into spaces. */
 function oneLine(text: string): string { return text.replace(/\s*\n\s*/g, ' ').trim(); }
 function actorToActivity(actor: Actor): ActivityActor { return actor === 'engine' ? 'app' : actor; }
+
+/**
+ * Who a `[user]` Activity line is really from while an operator MCP call runs (#365): the engine acts as the user,
+ * and the line says `[operator]`. Only while the call is in flight: work it starts that runs on afterwards (a turn,
+ * a tick) writes as itself, and a person's own click in the meantime is not in this context at all.
+ */
+const acting = new AsyncLocalStorage<{ as: ActivityActor; live: boolean }>();
+function attributed(actor: ActivityActor): ActivityActor { const a = acting.getStore(); return actor === 'user' && a?.live ? a.as : actor; }
+/** Run `fn` with the user's Activity lines written as `as` (#365: `operator`). */
+export async function actingAs<T>(as: ActivityActor, fn: () => Promise<T>): Promise<T> {
+  const ctx = { as, live: true };
+  try { return await acting.run(ctx, fn); } finally { ctx.live = false; }
+}
 function opName(op: ItemOp): string { return Object.keys(op)[0]; }

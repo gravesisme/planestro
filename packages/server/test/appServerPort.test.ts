@@ -254,6 +254,9 @@ it('a row without skills gets neither the index nor read_skill (#238)', async ()
   const start = readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).find((r) => r.method === 'thread/start').params;
   expect(start.dynamicTools.map((t: any) => t.name)).not.toContain('read_skill');
   expect(start.developerInstructions).not.toContain('Project skills');
+  // apply_patch rejects several operations on one file and Codex ends the turn on it (#344).
+  expect(start.developerInstructions).toContain('one operation per file');
+  expect(start.developerInstructions).toMatch(/JSON or manifest file whole/);
 });
 it('turns the image tool on only for a native_images row\'s implement turns, fresh and resumed, approvals unchanged (HH-540)', async () => {
   const { root, log, port } = fixture('worker');

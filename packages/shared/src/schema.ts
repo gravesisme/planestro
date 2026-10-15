@@ -59,7 +59,7 @@ export const OPERATIONAL_KEYS = [
   'pr_created_at', 'merged_at', 'finished_at', 'iceboxed_at',
   'branch', 'worktree', 'pr', 'session_id', 'agent_sessions', 'session_context', 'awaiting', 'awaiting_data', 'triage', 'resume_after', 'taken_over',
   'op', 'op_started_at', 'op_data', 'plan_revisions', 'ci_head_sha', 'ci_result', 'ci_failed_count',
-  'merge_order', 'skip_merge', 'hold_reason', 'hold_waits_on', 'review_hold', 'loop_state', 'delivered', 'parts', 'blocked', 'blocked_reason', 'cost_usd', 'turns', 'agent_turns', 'tokens',
+  'merge_order', 'skip_merge', 'hold_reason', 'hold_waits_on', 'review_hold', 'loop_state', 'delivered', 'validated_by', 'parts', 'blocked', 'blocked_reason', 'cost_usd', 'turns', 'agent_turns', 'tokens',
   'imported_from', 'dates_estimated', 'scheduled_from', 'created_by',
 ] as const;
 export const DERIVED_KEYS = ['base_branch', 'lane', 'external', 'children', 'deps_satisfied', 'needs_you'] as const;
@@ -185,6 +185,8 @@ export const ItemFrontmatter = z.object({
   loop_state: z.object({ iteration: z.number().int().nonnegative(), passing: z.number().int().nonnegative(), total: z.number().int().nonnegative(), line: z.string().optional(), at: ts }).passthrough().optional(),
   /** What this item's branch changed, recorded from git as it merged — so items that waited on it can be told, long after the branch is gone. */
   delivered: z.array(z.object({ path: z.string(), change: z.enum(['added', 'modified', 'deleted']), bytes: z.number().optional(), width: z.number().optional(), height: z.number().optional() })).optional(),
+  /** What proved the merge green (#180): the CI run for the head that merged (or `gate`: the local gate, a change CI does not run for), the head, the base tip it was synced onto, the merge commit. */
+  validated_by: z.object({ run_id: z.number().int().optional(), attempt: z.number().int().optional(), url: z.string().optional(), gate: z.enum(['local', 'not_run', 'unknown']).optional(), head: z.string(), base: z.string().optional(), merge: z.string().optional() }).optional(),
   blocked: z.boolean().optional(),
   blocked_reason: z.string().optional(),
   cost_usd: z.number().nonnegative().optional(),
@@ -333,6 +335,52 @@ export const DEFAULT_RELEASE_SECTIONS: ReleaseSectionDef[] = [
   { title: 'Release notes', carry: false, hint: 'What users are told changed.' },
   { title: 'Notes', carry: false, hint: 'Yours: the checklist, what went wrong, what to do differently.' },
 ];
+
+/**
+ * Starting points for `releases.sections` (#376), picked in Settings and then edited like any other. Plain is the
+ * default; the store sets show what `max_chars` and `carry` are for.
+ */
+export const RELEASE_SECTION_PRESETS: { id: string; name: string; summary: string; sections: ReleaseSectionDef[] }[] = [
+  { id: 'plain', name: 'Plain', summary: 'Release notes and your own notes.', sections: DEFAULT_RELEASE_SECTIONS },
+  { id: 'changelog', name: 'Changelog', summary: 'Keep a Changelog: Added, Changed, Fixed, Removed.', sections: [
+    { title: 'Added', carry: false, hint: 'New features.' },
+    { title: 'Changed', carry: false, hint: 'Changes to what was already there.' },
+    { title: 'Fixed', carry: false, hint: 'Bug fixes.' },
+    { title: 'Removed', carry: false, hint: 'Features taken out.' },
+    { title: 'Notes', carry: false, hint: 'Yours: the checklist, what went wrong, what to do differently.' },
+  ] },
+  { id: 'app-store', name: 'iOS App Store', summary: "App Store Connect's fields, with its character limits.", sections: [
+    { title: "What's New", max_chars: 4000, carry: false, hint: "App Store Connect → What's New in This Version." },
+    { title: 'Subtitle', max_chars: 30, carry: true },
+    { title: 'Promotional text', max_chars: 170, carry: true },
+    { title: 'Keywords', max_chars: 100, carry: true, hint: 'Comma-separated, no spaces needed.' },
+    { title: 'Description', max_chars: 4000, carry: true },
+    { title: 'Notes', carry: false, hint: 'Yours: the checklist, what went wrong, what to do differently.' },
+  ] },
+  { id: 'google-play', name: 'Google Play', summary: "Play Console's store listing fields, with its character limits.", sections: [
+    { title: 'Release notes', max_chars: 500, carry: false, hint: "Play Console → the release's notes." },
+    { title: 'Short description', max_chars: 80, carry: true },
+    { title: 'Full description', max_chars: 4000, carry: true },
+    { title: 'Notes', carry: false, hint: 'Yours: the checklist, what went wrong, what to do differently.' },
+  ] },
+];
+
+/**
+ * A preset applied over the sections a project has (#376). Release files keep their text under each heading, so a
+ * title the project already has (in any case) keeps its spelling and its text; `dropped` lists the headings the preset
+ * leaves out, whose text stays in the files and is shown after the configured sections.
+ */
+export function applySectionPreset(current: ReleaseSectionDef[], preset: ReleaseSectionDef[]): { sections: ReleaseSectionDef[]; dropped: string[] } {
+  const key = (t: string) => t.trim().toLowerCase();
+  const sections = preset.map((p) => ({ ...p, title: current.find((c) => key(c.title) === key(p.title))?.title ?? p.title }));
+  return { sections, dropped: current.filter((c) => !preset.some((p) => key(p.title) === key(c.title))).map((c) => c.title) };
+}
+
+/** The preset a project's sections are, exactly as shipped; undefined once edited. */
+export function sectionPresetOf(sections: ReleaseSectionDef[]): string | undefined {
+  const same = (a: ReleaseSectionDef, b: ReleaseSectionDef) => a.title === b.title && a.max_chars === b.max_chars && Boolean(a.carry) === Boolean(b.carry) && (a.hint ?? '') === (b.hint ?? '');
+  return RELEASE_SECTION_PRESETS.find((p) => p.sections.length === sections.length && p.sections.every((s, i) => same(s, sections[i])))?.id;
+}
 
 /** Which agent CLI runs a model's turns. `claude` plans and implements; `codex` implements only. */
 export const RUNNERS = ['claude', 'codex'] as const;
@@ -507,6 +555,30 @@ export const Config = z.object({
     /** How long one batch may run before it is stopped. */
     timeout_min: z.number().positive().default(120),
   }).default({ enabled: false, patterns: [], shared_labels: [], yield_to_ci: true, poll_s: 30, timeout_min: 120 }),
+  /**
+   * Which worker commands are test runs (#347), read for the efficiency report's wasted runs: whole-suite runs (no names
+   * and none of `filters`) and runs repeated on a tree unchanged since the same command's green run. Nothing is refused.
+   */
+  /**
+   * The daily one-fix efficiency audit (#348): at `cron` (local time), one wake on the orchestrator's model reads a digest of
+   * the last `days` days built in code and files exactly one planestro feedback note: the biggest waste and one mechanical
+   * change. Off until enabled; skipped after a day with no turns; capped at `budget_usd` (Claude) or `budget_tokens`.
+   */
+  efficiency_audit: z.object({
+    enabled: z.boolean().default(false),
+    cron: z.string().default('30 3 * * *'),
+    days: z.number().int().min(1).max(30).default(7),
+    budget_usd: z.number().positive().default(1),
+    budget_tokens: z.number().int().positive().default(60_000),
+  }).default({ enabled: false, cron: '30 3 * * *', days: 7, budget_usd: 1, budget_tokens: 60_000 }),
+  test_runs: z.object({
+    /** Command prefixes that run tests, e.g. `npm test`, `./tools/run_checks.sh`. Empty: nothing is recorded. */
+    patterns: z.array(z.string().min(1)).default([]),
+    /** Flags that narrow a run to part of the suite; a bare name after the command narrows it too. */
+    filters: z.array(z.string().min(1)).default(['-t', '--testNamePattern', '--shard', '--grep', '--only-file']),
+    /** Flags that make a run a repeated load pass. */
+    repeat_flags: z.array(z.string().min(1)).default(['--repeat', '--stress']),
+  }).default({ patterns: [], filters: ['-t', '--testNamePattern', '--shard', '--grep', '--only-file'], repeat_flags: ['--repeat', '--stress'] }),
   ci: z.object({
     mode: z.enum(['github', 'github-or-local']).default('github'),
     require_green_base: z.boolean().default(true),
@@ -577,8 +649,13 @@ export const Config = z.object({
     idle_after_min: z.number().min(0).default(2),
   }).default({ idle_after_min: 2 }),
   /** Where the orchestrator's notes about planestro are filed as issues (#231), `owner/repo`; unset, **File as issue** is not offered. Not the project's own repo, unless planestro is the project. */
-  /** The operator MCP endpoint (`/mcp`, #175): `allow_writes` lists `create_item`, which files to NOT_YET_SUBMITTED only (#232). */
-  operator_mcp: z.object({ allow_writes: z.boolean().default(false) }).default({ allow_writes: false }),
+  /**
+   * The operator MCP endpoint (`/mcp`, #175): `allow_writes` lists `create_item`, which files to NOT_YET_SUBMITTED only (#232);
+   * `allow_actions` lists the item actions a supervising session needs (#365: unblock, message, answer, sync, re-run CI), a separate
+   * opt-in so filing follow-ups never grants acting on items. `allow_permissions` lets those actions allow a parked permission
+   * request once; off, they may only deny one.
+   */
+  operator_mcp: z.object({ allow_writes: z.boolean().default(false), allow_actions: z.boolean().default(false), allow_permissions: z.boolean().default(false) }).default({ allow_writes: false, allow_actions: false, allow_permissions: false }),
   feedback: z.object({ issue_repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, 'owner/repo').optional() }).default({}),
   /** Importing the project's GitHub issues as items (#231): with none selected, every open issue with this label is imported. */
   issues: z.object({ import_label: z.string().min(1).optional() }).default({}),

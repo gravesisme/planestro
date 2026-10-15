@@ -83,6 +83,37 @@ describe('merge and cleanup bind their mutations to verified commits', () => {
     expect(c.store.requireItem(c.item.id).file.frontmatter.blocked_reason).toBe('cleanup_unverifiable');
   });
 
+  it('a folder git no longer lists as a worktree is set aside and cleanup goes on to delete the branches (#356)', async () => {
+    const c = await setup();
+    c.world.worktrees.delete(c.cwd);
+    c.world.leftovers.set(c.cwd, ['CLAUDE.md']);
+    c.git.worktreeRemove = async () => { throw new Error(`fatal: '${c.cwd}' is not a working tree`); };
+    await (c.engine as any).cleanup(c.item.id);
+    const fm = c.store.requireItem(c.item.id).file.frontmatter;
+    expect(fm.status).toBe('FINISHED');
+    expect(c.world.leftovers.has(c.cwd)).toBe(false);
+    expect(c.world.localBranches.has(c.branch)).toBe(false);
+    expect(c.world.remoteBranches.has(c.branch)).toBe(false);
+    expect(c.store.requireItem(c.item.id).file.sections.find((x) => x.title === 'Activity')!.body).toMatch(/was already unregistered in git; moved the 1 file left in it to \S+\.displaced\/\S+ \(CLAUDE\.md\) and removed the empty folder/);
+  });
+
+  it('a remove that drops the registration but leaves files behind is finished in the same cleanup (#356)', async () => {
+    const c = await setup();
+    c.git.worktreeRemove = async (_repo, path) => { c.world.worktrees.delete(path); c.world.leftovers.set(path, []); throw new Error('error: failed to delete'); };
+    await (c.engine as any).cleanup(c.item.id);
+    expect(c.store.requireItem(c.item.id).file.frontmatter.status).toBe('FINISHED');
+    expect(c.world.leftovers.has(c.cwd)).toBe(false);
+    expect(c.world.remoteBranches.has(c.branch)).toBe(false);
+  });
+
+  it('a remove that fails while git still lists the worktree blocks as before (#356)', async () => {
+    const c = await setup();
+    c.git.worktreeRemove = async () => { throw new Error('locked'); };
+    await (c.engine as any).cleanup(c.item.id);
+    expect(c.store.requireItem(c.item.id).file.frontmatter).toMatchObject({ status: 'MERGED', blocked_reason: 'cleanup_unverifiable' });
+    expect(c.world.localBranches.has(c.branch)).toBe(true);
+  });
+
   it('finishes normally when the verified tips remain unchanged', async () => {
     const c = await setup();
     await (c.engine as any).cleanup(c.item.id);

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, NavLink, useNavigate, useParams } from 'react-router';
-import { charCount, nextVersions, releaseMarkdown, RELEASE_STATUSES, type ReleaseSectionDef, type ReleaseStatus } from '@planestro/shared';
+import { charCount, nextVersions, releaseMarkdown, sectionPresetOf, RELEASE_STATUSES, type ReleaseSectionDef, type ReleaseStatus } from '@planestro/shared';
 import { api, type ReleaseFields, type ReleaseView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { statusLabel } from '../components/ItemCard.tsx';
@@ -86,6 +86,7 @@ function ReleaseBody({ release }: { release: ReleaseView }) {
           <button type="button" onClick={() => copy(releaseMarkdown({ frontmatter: fm, sections: release.sections }))} title="Every section with text, as one markdown document">Copy all</button>
           <ActionButton type="button" className="danger" working="Deleting…" onAct={() => { if (confirm(`Delete release ${release.version}? The file is removed; git history keeps it.`)) return act(() => api.deleteRelease(release.version)).then(() => nav('/releases')); }}>Delete</ActionButton>
         </div>
+        <SectionsLine sections={state.config.releases.sections} />
       </div>
 
       {defs.map((d) => <SectionEditor key={`${release.version}:${d.title}`} release={release.version} def={d} body={bodyOf(d.title)} />)}
@@ -105,6 +106,13 @@ function ReleaseBody({ release }: { release: ReleaseView }) {
       </div>
     </div>
   );
+}
+
+/** The sections are the project's (#376): say which they are and where they change, louder while they are still the defaults. */
+const SECTIONS_LINK = '/settings?tab=data#setting-releases.sections';
+function SectionsLine({ sections }: { sections: ReleaseSectionDef[] }) {
+  const plain = sectionPresetOf(sections) === 'plain';
+  return <p className={`small ${plain ? '' : 'muted'}`} style={{ margin: '8px 0 0' }}>Sections: {sections.map((s) => s.title).join(', ')}{plain ? " (planestro's defaults: pick a changelog or app store set, or make your own)" : ''} · <Link to={SECTIONS_LINK}>Customize →</Link></p>;
 }
 
 export function ReleasesPage() {
@@ -131,6 +139,7 @@ export function ReleasesPage() {
       {release ? <ReleaseBody key={release.version} release={release} />
         : version ? <p>Unknown release {version}. <Link to="/releases">All releases</Link></p>
         : <div className="section"><p style={{ marginTop: 0 }}>What you ship, next to what you planned: each release keeps its notes, its store copy and the backlog items that went out in it.</p>
+            <SectionsLine sections={state.config.releases.sections} />
             <p className="small muted" style={{ marginBottom: 0 }}>The sections come from <code>releases.sections</code> in <code>planestro.yml</code> — a character limit per section, and whether it carries forward to the next release. Files live in <code>{state.dataDir}/releases/</code>.</p></div>}
     </div>
   );

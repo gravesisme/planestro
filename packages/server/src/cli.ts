@@ -15,6 +15,11 @@ const USAGE = `planestro ${TOOL_VERSION}
 
   planestro init <data_dir> --repo <code_repo> [--name N] [--prefix HH] [--default-branch B] [--release-branch B] [--github owner/repo] [--layout dir|orphan-branch] [--no-commit]
   planestro check [data_dir]        validate every file and report
+  planestro check [data_dir] --preflight [--offline] [--port N] [--json]
+                                    what a first task would stop on, found on this machine with no model call (#337): Node,
+                                    git and its identity, the code repo's HEAD, remote and base branch, gh sign-in, the
+                                    claude / codex CLIs the models use and their sign-in, named accounts, the planning repo,
+                                    the port, a worktree setup hook. Each problem with its repair; --offline skips the network
   planestro migrate [data_dir]      apply schema migrations (${SCHEMA_VERSION} is current)
   planestro serve [data_dir] [--port N] [--host H] [--mock] [--watch] [--open]
                                     run the web UI + engine (default host 127.0.0.1, or 0.0.0.0 with lan_access in planestro.local.yml)
@@ -56,7 +61,7 @@ const { values, positionals } = parseArgs({
     repo: { type: 'string' }, name: { type: 'string' }, prefix: { type: 'string' }, 'default-branch': { type: 'string' },
     'release-branch': { type: 'string' }, github: { type: 'string' }, layout: { type: 'string' }, 'no-commit': { type: 'boolean' },
     commit: { type: 'boolean' }, 'copy-small': { type: 'boolean' }, data: { type: 'string' },
-    help: { type: 'boolean', short: 'h' }, port: { type: 'string' }, host: { type: 'string' }, mock: { type: 'boolean' }, watch: { type: 'boolean' }, open: { type: 'boolean' }, reset: { type: 'boolean' }, 'no-serve': { type: 'boolean' }, all: { type: 'boolean' }, json: { type: 'boolean' }, min: { type: 'string' }, label: { type: 'string' }, closes: { type: 'boolean' },
+    help: { type: 'boolean', short: 'h' }, port: { type: 'string' }, host: { type: 'string' }, mock: { type: 'boolean' }, watch: { type: 'boolean' }, open: { type: 'boolean' }, reset: { type: 'boolean' }, 'no-serve': { type: 'boolean' }, all: { type: 'boolean' }, json: { type: 'boolean' }, min: { type: 'string' }, label: { type: 'string' }, closes: { type: 'boolean' }, preflight: { type: 'boolean' }, offline: { type: 'boolean' },
   },
 });
 const [cmd, arg] = positionals;
@@ -76,6 +81,26 @@ try {
     }
     case 'check': {
       const dir = locateDataDir(arg);
+      if (values.preflight) {
+        // Read-only, and no store: a data dir that is not a git repository yet is one of the things it reports.
+        const { preflight, liveEnv, runnersInUse, accountsOf, savePreflight, formatPreflight } = await import('./preflight.ts');
+        const { readConfig, resolveCodeRepo } = await import('./config.ts');
+        const { readInstance, groupAlive } = await import('./instances.ts');
+        const config = readConfig(dir); const local = readLocalConfig(dir);
+        const port = values.port ? Number(values.port) : 4300;
+        const own = readInstance(dir);
+        const r = await preflight({
+          dataDir: dir, codeRepo: resolveCodeRepo(dir, config, local), defaultBranch: config.code_repo.default_branch, github: config.code_repo.github,
+          runners: runnersInUse(config, []), accounts: accountsOf(local), claudeBin: local.claude_bin && local.claude_bin !== 'bundled' ? local.claude_bin : undefined, codexBin: local.codex_bin,
+          port, host: bindHost(values.host, local), ownServerOnPort: Boolean(own && own.port === port && groupAlive(own.pgid)),
+          afterWorktreeCreate: config.hooks.after_worktree_create, offline: values.offline,
+        }, liveEnv);
+        savePreflight(dir, r);
+        if (values.json) log(JSON.stringify(r, null, 2));
+        else { log(`preflight: ${dir}`); for (const line of formatPreflight(r)) log(line); }
+        if (!r.ok) process.exit(1);
+        break;
+      }
       const store = await DataStore.open(dir, { lock: false, log: (l, m) => log(`[${l}] ${m}`) });
       const s = store.stats();
       log(`${dir}: schema ${store.config.schema_version} (${store.schema}), ${s.items} items, ${s.prompts} prompts, ${s.releases} releases, ${s.invalid} invalid`);

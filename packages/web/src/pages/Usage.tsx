@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import type { UsageGroup, UsageReport } from '@planestro/shared';
 import { api } from '../api.ts';
 import { setTitle } from '../tabBadge.ts';
+import { EfficiencyRankingSection } from '../components/EfficiencyPanel.tsx';
 import { usageSeries, dayValues, niceTicks, formatValue, labelOf, type UsageMeasure, type Series } from '../usageChart.ts';
 
 // ---- usage over time (#236): what every turn and wake spent, per day, by provider, model or role ----
@@ -121,6 +122,7 @@ export function UsagePage() {
           </>}
           <p className="small muted">{measure === 'usd' ? 'Dollars are what Claude reports for each turn; Codex reports tokens only.' : 'Tokens are the work each turn paid for in full: uncached input, cache writes and output. Cache reads are counted below.'} {since ? `Recorded from ${longDay(since)}: earlier turns are not counted.` : 'Spend from before per-turn recording is not counted.'}</p>
         </section>
+        <EfficiencyRankingSection days={Math.min(days, 90)} />
         {report.totals.input + report.totals.cache_read + report.totals.cache_write + report.totals.output > 0 && <TokenSplitTable report={report} group={group} />}
         <section className="usage-section">
           <h3>Usage windows and pauses</h3>

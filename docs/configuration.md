@@ -279,6 +279,22 @@ CI is not waiting on a person: a turn that is stopped stops waiting.
 | `heavy_runs.poll_s` | `30` | How often a waiting run reads the runners again. |
 | `heavy_runs.timeout_min` | `120` | How long one batch may run before it is stopped. |
 
+### Test runs
+
+A worker command that starts with one of `test_runs.patterns` (a Bash call on Claude, or a
+`run_heavy` batch) is recorded with the worktree's tree as it ended (tracked and untracked files,
+ignored ones left out). The item's **Efficiency** panel and the Usage page count the wasted ones
+(#347): whole-suite runs (no test names after the command and none of `filters`), the same command
+run again on a tree unchanged since its last green run, and a load pass (`repeat_flags`) run again
+on a tree already green under one, with their wall time and what the turns they fell in cost.
+Recorded only: nothing is refused or slowed.
+
+| Key | Default | |
+|---|---|---|
+| `test_runs.patterns` | `[]` | Commands that run tests: a command prefix (`npm test`, `./tools/run_checks.sh`) or a `Bash(…)` rule. Empty: nothing is recorded. |
+| `test_runs.filters` | `[-t, --testNamePattern, --shard, --grep, --only-file]` | Flags that narrow a run to part of the suite. |
+| `test_runs.repeat_flags` | `[--repeat, --stress]` | Flags that make a run a repeated load pass. |
+
 ### CI and merging
 
 | Key | Default | |
@@ -322,11 +338,31 @@ CI is not waiting on a person: a turn that is stopped stops waiting.
 | `orchestrator.rotate_after_wakes` | `10` | Start a fresh orchestrator conversation after this many wakes… A long conversation costs more per wake than a fresh one, and the files are its memory, so rotating often loses nothing. A Codex orchestrator also rotates when its instructions (`orchestrator-system`, `standing-decisions`) change, since a resumed Codex thread keeps the ones it started with. |
 | `orchestrator.rotate_after_days` | `3` | …or this many days. The files are its memory, and the fresh conversation is given the last 7 days of the user's chat, so an instruction it has not carried out yet still stands. |
 | `operator_mcp.allow_writes` | `false` | Whether the operator MCP endpoint (`/mcp`, see the README's *The backlog from any MCP client*) also offers `create_item`, so your own Claude Code or Codex session can file a follow-up. It files to `NOT_YET_SUBMITTED` only, with `created_by: operator_mcp` and an Activity line saying so: it cannot submit, edit or approve, and nothing starts until you submit it. Off, the tool is not listed and a call to it is an unknown tool. Read on every request, so a change applies at once. planestro's workers and orchestrator never reach the endpoint either way. |
+| `operator_mcp.allow_actions` | `false` | Whether the operator MCP endpoint also offers the item actions a supervising session needs (#365): `unblock_item`, `send_message`, `answer_question`, `answer_decision`, `decide_permission`, `sync_item`, `rerun_ci`. Separate from `allow_writes`, so filing follow-ups never grants acting on items. Each action goes through the engine call its board button makes, is journaled as `operator_mcp.action`, and writes its Activity line as `[operator]`, not `[user]`; a decision option that carries an action, plan approval, merges and discards stay on the board. Off, none is listed and a call to one is an unknown tool. Read on every request, so a change applies at once. planestro's workers and orchestrator never reach the endpoint either way. |
+| `operator_mcp.allow_permissions` | `false` | With `allow_actions` on, whether `decide_permission` may also allow a parked permission request once. Off, it may only deny one. It never adds an allow rule (**Always allow** stays on the board). Read on every call. |
 | `engine.mode` | `dry-run` | `dry-run` logs `Would …` against in-memory fakes; `live` acts. Overridden per machine by `engine.mode` in the local file. |
 | `git.auto_commit` | `true` | Commit data-dir changes with semantic messages. |
 | `git.auto_push` | `true` | Push the data dir at checkpoints, if it has a remote. |
 | `git.checkpoint_interval_min` | `60` | Telemetry (costs, timestamps) is checkpointed this often rather than per change. |
 | `attachments.managed_max_bytes` | `2000000` | Larger attachments are referenced in place instead of copied into the data dir. |
+
+### Daily efficiency audit
+
+Once a day (#348), planestro builds a digest of the last `days` days of usage up to yesterday, in code and at no model
+cost: totals by role, model and stage, the costliest items, starting context, cache hits, wasted test runs and
+permission parks, and the last recommendation with whether it was acted on. One wake on the orchestrator's model reads
+it and files exactly one note under **planestro feedback** on the Console: the biggest waste, its evidence, one
+mechanical change and the expected saving. It has no other tool. When the biggest waste is still the last note and
+nothing was done with it (no issue filed, not marked handled), it says so on that note instead of filing a duplicate. A
+day after one with no turns is skipped without a wake; a slot that began is never run again.
+
+| Key | Default | |
+|---|---|---|
+| `efficiency_audit.enabled` | `false` | Run the audit. |
+| `efficiency_audit.cron` | `30 3 * * *` | When, on this machine's clock; overnight, when no turns compete. |
+| `efficiency_audit.days` | `7` | How many days, up to yesterday, the digest covers. |
+| `efficiency_audit.budget_usd` | `1` | The hard cap on one audit, for a runner that reports dollars. |
+| `efficiency_audit.budget_tokens` | `60000` | The cap for a runner that reports tokens. |
 
 ### Releases
 

@@ -4,7 +4,7 @@ import { join, relative, isAbsolute, extname, basename, matchesGlob } from 'node
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { DEBUG_MARKER, mcpServersNamed, debugMarkerRefusal, Audition, AuditionPicks, auditionProblem, takePathProblem, auditionPicksProblem, auditionPickLines, auditionNote, auditionComplete, auditionTakes, runnerTurnSettings, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem, usageTurnData, USAGE_TURN, stepDownDue, timeoutKilledIn, limitsLabel, type HostLoad, type UsageRole, type ModelDef, resolveAccount, accountList, guardKey, unavailableKey, unavailableView, sameSessionStore, DEFAULT_ACCOUNT, type Account } from '@planestro/shared';
+import { DEBUG_MARKER, mcpServersNamed, debugMarkerRefusal, Audition, AuditionPicks, auditionProblem, takePathProblem, auditionPicksProblem, auditionPickLines, auditionNote, auditionComplete, auditionTakes, runnerTurnSettings, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem, usageTurnData, USAGE_TURN, type UsageStage, testRunShape, TEST_RUN, stepDownDue, timeoutKilledIn, limitsLabel, type HostLoad, type UsageRole, type ModelDef, resolveAccount, accountList, guardKey, unavailableKey, unavailableView, sameSessionStore, DEFAULT_ACCOUNT, type Account } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import { matchesPathPattern, type Checkpoint, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote, type CiQueue, type RunnerReport, type UndeliveredReport, type ConnectionDrop, type AccountCredentials } from './ports.ts';
@@ -19,8 +19,9 @@ import { Orchestrator } from './orchestrator.ts';
 import { NeedsYouWatch, type Wait } from './needsYou.ts';
 import { pngSize } from './placeholderPng.ts';
 import { findWorkflow, infraPatternIn, namedInLog, prSkippedByPaths } from './ciFilters.ts';
-import { quietTransientFailure } from './transient.ts';
+import { quietTransientFailure, patchRejected, PATCH_REJECTED_RETRY } from './transient.ts';
 import { driveSchedules } from './schedules.ts';
+import { auditSlotDue, runEfficiencyAudit } from './efficiencyAudit.ts';
 import { runnerStatusText, stallOf, recovered, type RunnerStall } from './runners.ts';
 import { recordCiResult, recentCi, lastConcurrencyChange, rollbackConcurrency, hostLoad, limitsOf } from '../concurrency.ts';
 import { HeavyLock, ciOnSharedHost, heavyRedirects, heavyAllowRules, took } from './heavyRuns.ts';
@@ -30,6 +31,8 @@ const IMAGE_FILE = /\.(png|jpe?g|webp|gif|svg)$/i;
 /** What a person reviews by eye or ear (f5): images, sounds a sound worker made, models a 3D worker made. */
 const AUDIO_FILE = /\.(mp3|wav|ogg|flac|m4a|aac)$/i;
 const MODEL_FILE = /\.(glb|gltf|obj|fbx)$/i;
+/** The largest take an audition serves (#336): what a review read of a blob takes too (the git port's buffer), never more. */
+const MEDIA_MAX_BYTES = 64 * 1024 * 1024;
 const reviewKind = (path: string): 'image' | 'audio' | 'model' | undefined => IMAGE_FILE.test(path) ? 'image' : AUDIO_FILE.test(path) ? 'audio' : MODEL_FILE.test(path) ? 'model' : undefined;
 
 /** `schedule` runs `fn` after `ms` and returns a cancel (tests capture it instead of waiting). */
@@ -73,7 +76,7 @@ const MAX_TRIAGE_ROUNDS = 4;
  * the task it was given. `final`: the prompt is already what the agent is to read (a re-run).
  * `syncFirst`: the branch is synced with its base before the turn starts (#217), and the turn told how.
  */
-interface TurnOpts { opener?: boolean; fresh?: true | 'auto'; note?: string; carryOn?: boolean; final?: boolean; estimate?: ResumeEstimate; commandGrant?: CommandGrant; syncFirst?: boolean; ruling?: true }
+interface TurnOpts { /** A plan's revision turn: it answers whatever stop the plan's last turn left (#359). */ clearsStop?: true; opener?: boolean; fresh?: true | 'auto'; note?: string; carryOn?: boolean; final?: boolean; estimate?: ResumeEstimate; commandGrant?: CommandGrant; syncFirst?: boolean; ruling?: true }
 interface PendingTurn { key: string; phase: TurnPhase; prompt: string; extraAllowed: string[]; oneShotCommands: string[]; opts: TurnOpts }
 
 /** The CLI's quote as the engine's estimate: the write when the cache has expired, a read of the same window when it has not. */
@@ -287,7 +290,8 @@ export class LiveEngine implements Engine {
     if (this.timer) clearInterval(this.timer);
     if (this.reconcileTimer) clearInterval(this.reconcileTimer);
     for (const t of this.turns.values()) t.abort.abort();
-    await Promise.allSettled([...this.jobs.values(), orchestratorStopped]);
+    this.auditAbort?.abort();
+    await Promise.allSettled([...this.jobs.values(), orchestratorStopped, this.auditing]);
   }
   /** The lever by hand. A manual pause is the user's: the usage guard never resumes it. */
   pause(): void { this.setPaused(true, 'user'); this.note('warn', 'AUTOMATION PAUSED — running steps finish, nothing new starts'); }
@@ -300,8 +304,8 @@ export class LiveEngine implements Engine {
   }
 
   /** What a turn spent, journaled as it ends (#236): the Usage page's facts, never rebuilt from item totals later. */
-  private recordUsage(item: string, def: ModelDef, model: string, role: UsageRole, op: string, result: TurnResult): void {
-    const data = usageTurnData({ provider: def.runner ?? 'claude', model, role, op, accounting: modelCapabilities(def).accounting, result });
+  private recordUsage(item: string, def: ModelDef, model: string, role: UsageRole, op: string, result: TurnResult, at: { stage: UsageStage; resumed?: boolean }): void {
+    const data = usageTurnData({ provider: def.runner ?? 'claude', model, role, op, accounting: modelCapabilities(def).accounting, ...at, result });
     if (data) this.store.journal.append({ type: USAGE_TURN, item, actor: 'engine', data: { ...data } });
   }
 
@@ -552,6 +556,7 @@ export class LiveEngine implements Engine {
       this.orchestrator.kick();
       // Before admission, so an item a schedule submits starts on this pass.
       driveSchedules(this.store, new Date(Date.parse(this.now())), { submit: (id, why) => { this.submitAsUser(id, why); }, note: (l, m) => this.note(l, m) });
+      this.driveEfficiencyAudit();
       this.drivePendingTurns();
       this.driveTimedRetries();
       for (const item of this.store.listItems()) this.continueAfterProviderSwitch(item.id);
@@ -1073,6 +1078,7 @@ export class LiveEngine implements Engine {
   private runPendingTurn(id: string, turn: PendingTurn): Promise<TurnResult | undefined> {
     const current = this.store.requireItem(id).file.frontmatter.op_data?.pending_turn as PendingTurn | undefined;
     if (current?.key !== turn.key) return Promise.resolve(undefined);
+    if (turn.opts.clearsStop) this.clearSupersededStop(id);
     if (turn.opts.syncFirst && !(this._paused || this.draining || this.stopping) && !this.store.requireItem(id).file.frontmatter.taken_over) {
       return this.syncBeforeTurn(id, turn).then((synced) => { this.savePendingTurn(id, synced); return this.runPendingTurn(id, synced); });
     }
@@ -1201,6 +1207,7 @@ export class LiveEngine implements Engine {
     const round = (fm.plan_revisions ?? 0) + 1;
     const counted = by === 'orchestrator' && !amend;   // an amendment is a stipulation the orchestrator accepts with, not one of its fix rounds
     const { plan_amended: _old, ...opData } = fm.op_data ?? {};
+    this.clearSupersededStop(id);
     this.store.mutateItem(id, [
       { transition: { to: 'PLAN_IN_PROGRESS', actor: by } },
       ...(counted ? [{ set: { plan_revisions: round } } as ItemOp] : []),
@@ -1211,7 +1218,21 @@ export class LiveEngine implements Engine {
     const ask = amend
       ? `The orchestrator approves your plan with these amendments. Fold them into the plan (do not just append them) and submit the whole plan again with the ${tool} tool, then end your turn:\n\n${message}`
       : `Changes requested on your plan:\n\n${message}\n\nRevise it accordingly and submit it again with the ${tool} tool, then end your turn.`;
-    this.queueTurn(id, 'plan', `${this.resumeNote(id, 'your plan review')}\n\n${ask}`);
+    this.queueTurn(id, 'plan', `${this.resumeNote(id, 'your plan review')}\n\n${ask}`, [], [], { clearsStop: true });
+  }
+
+  /**
+   * A plan sent back for revision answers any stop its plan's last turn left (#359, HH-534: a token cap after submit_plan
+   * blocked turn_error while the amended turn was queued behind it, and that turn then ran blocked, in triage, with the old
+   * turn's wake handing it to the user). The block, its triage and its card go, and so does the wake waiting on the old
+   * turn. Done when the plan is sent back and again when its turn starts, since the old turn may end after the first.
+   */
+  private clearSupersededStop(id: string): void {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    if (!fm.blocked) return;
+    this.pendingWakes.delete(id);
+    const stale = ['blocked', 'blocked_reason', ...(fm.triage ? ['triage'] : []), ...(fm.awaiting === 'user' ? ['awaiting', 'awaiting_data'] : [])];
+    this.store.mutateItem(id, [{ unset: stale }, { activity: { actor: 'app', text: `the earlier stop (${fm.blocked_reason}) is cleared: the plan's revision turn answers it` } }], 'engine', { commit: `${id}: stop cleared by the plan's revision` });
   }
 
   async message(id: string, text: string, by: 'user' | 'orchestrator' = 'user'): Promise<void> {
@@ -1626,6 +1647,7 @@ export class LiveEngine implements Engine {
         tools: this.makeTools(id),
         onUndelivered: (r) => this.recordOutbox(id, r),
         onConnectionDrop: (d) => this.recordDrop(id, d),
+        onCommandRan: (r) => this.recordTestRun(id, cwd, r, 'bash'),
         onPermission: async (req) => {
           // The turn is being stopped under a person who took the item over: nothing may park on them or wake anyone.
           if (this.store.requireItem(id).file.frontmatter.taken_over) return { action: 'deny', message: 'Not allowed: the user has taken this item over and is finishing it by hand. Stop now and end your turn.' };
@@ -1668,9 +1690,12 @@ export class LiveEngine implements Engine {
       if (checkpointN !== undefined) await this.checkpointTurn(id, cwd, checkpointN, 'after');
       this.turns.delete(id);
     }
+    // The turn's test runs are journaled before its usage, so the report puts them in this turn (#347).
+    await this.testRunWrites.get(id);
     // What ran without a park, once per turn: the drift report's record of what the allow rules still match (#203).
     if (result.ran?.length) this.store.journal.append({ type: 'tools.ran', item: id, actor: 'engine', data: { phase, runner, ran: result.ran } });
-    this.recordUsage(id, def, model ?? def.label, phase === 'plan' ? 'planner' : 'worker', op, result);
+    // A worker turn once the PR is open is a fix (CI or review) for the efficiency report (#346).
+    this.recordUsage(id, def, model ?? def.label, phase === 'plan' ? 'planner' : 'worker', op, result, { stage: phase === 'plan' ? 'planning' : fm.status === 'IN_REVIEW' ? 'fix' : 'implementation', resumed: Boolean(resumeId) });
     if (result.subtype === 'deferred') {
       defer();
       const { active_turn: _active, ...data } = this.store.requireItem(id).file.frontmatter.op_data ?? {};
@@ -1778,10 +1803,12 @@ export class LiveEngine implements Engine {
     const prior = fm.op_data?.transient_retry;
     if (!prior && after > 0 && !fm.taken_over && quietTransientFailure(result)) {
       const due = new Date(Date.now() + after * 1000).toISOString();
+      // A patch the runner rejected (#344) is retried with what went wrong, since the turn had done things before it.
+      const patch = patchRejected(result);
       this.store.mutateItem(id, [
-        { set: { blocked: true, blocked_reason: reason, op_data: { ...(fm.op_data ?? {}), transient_retry: { due_at: due, reason, subtype: result.subtype } } } },
+        { set: { blocked: true, blocked_reason: reason, op_data: { ...(fm.op_data ?? {}), transient_retry: { due_at: due, reason, subtype: result.subtype, ...(patch ? { message: PATCH_REJECTED_RETRY } : {}) } } } },
         ...(fm.op ? [{ unset: ['op', 'op_started_at'] } as ItemOp] : []),
-        { activity: { actor: 'app', text: `BLOCKED (${reason}): ${detail.replace(/\s+/g, ' ').slice(0, 500)}. The turn produced nothing, so planestro retries it once in ${after}s (concurrency.transient_retry_after_s)` } },
+        { activity: { actor: 'app', text: `BLOCKED (${reason}): ${detail.replace(/\s+/g, ' ').slice(0, 500)}. ${patch ? 'The runner ended the turn over a rejected patch' : 'The turn produced nothing'}, so planestro retries it once in ${after}s (concurrency.transient_retry_after_s)` } },
       ], 'engine', { commit: `${id}: blocked (${reason}), retrying once` });
       this.store.journal.append({ type: 'turn.transient_retry', item: id, actor: 'engine', data: { reason, subtype: result.subtype, error: (result.error ?? '').slice(0, 300), due_at: due } });
       this.note('warn', `${id}: ${reason} (${result.subtype}) before the turn did anything; retrying once in ${after}s`);
@@ -1807,7 +1834,7 @@ export class LiveEngine implements Engine {
     for (const item of this.store.listItems()) {
       const fm = item.file.frontmatter;
       for (const key of ['transient_retry', 'usage_retry'] as const) {
-        const r = fm.op_data?.[key] as { due_at?: string; reason?: string; by?: string } | undefined;
+        const r = fm.op_data?.[key] as { due_at?: string; reason?: string; by?: string; message?: string } | undefined;
         if (!r?.due_at) continue;
         const usage = key === 'usage_retry';
         if (!fm.blocked || fm.taken_over || (usage && fm.blocked_reason !== 'usage_exhausted')) { this.dropTransientRetry(item.id, key); continue; }
@@ -1815,7 +1842,7 @@ export class LiveEngine implements Engine {
         const reason = usage ? 'usage_exhausted' : r.reason;
         this.store.mutateItem(item.id, [{ set: { op_data: { ...(this.store.requireItem(item.id).file.frontmatter.op_data ?? {}), [key]: { retried_at: this.now(), reason } } } },
           ...(usage ? [{ activity: { actor: 'app', text: `usage reset (${r.due_at}): retrying the step it stopped, once` } } as ItemOp] : [])], 'engine');
-        void this.retryOp(item.id, 'engine', usage ? 'Your model\'s usage window has reset; carry on.' : undefined).then((said) => {
+        void this.retryOp(item.id, 'engine', usage ? 'Your model\'s usage window has reset; carry on.' : r.message).then((said) => {
           if (/^not now/.test(said)) { const cur = this.store.requireItem(item.id).file.frontmatter; this.store.mutateItem(item.id, [{ set: { op_data: { ...(cur.op_data ?? {}), [key]: r } } }], 'engine'); return; }
           if (/^(not possible|nothing to retry)/.test(said)) { this.dropTransientRetry(item.id, key); this.block(item.id, reason ?? 'turn_error', `the automatic retry could not run: ${said}`); }
         }).catch((e) => { this.dropTransientRetry(item.id, key); this.block(item.id, reason ?? 'turn_error', `the automatic retry failed: ${(e as Error).message}`); });
@@ -2388,7 +2415,7 @@ export class LiveEngine implements Engine {
     }
     this.store.mutateItem(id, [{ set: { ci_head_sha: headSha, ci_result: 'green' } }, { activity: { actor: 'app', text: `${synced}; CI is green for it` } }], 'engine');
     if (this.parkIfHeld(id, opId)) return;
-    await this.merge(id, opId, base, headSha);
+    await this.merge(id, opId, base, headSha, baseSha);
   }
 
   /**
@@ -2402,7 +2429,11 @@ export class LiveEngine implements Engine {
     if (view.headRefOid !== sha) return false;
     const od = this.store.requireItem(id).file.frontmatter.op_data;
     if (od?.ci_green === sha || od?.local_green === sha) return true;
-    return (await this.ports.gh.ciForSha(this.github, branch, sha, this.ciWorkflow)).state === 'success';
+    const ci = await this.ports.gh.ciForSha(this.github, branch, sha, this.ciWorkflow);
+    if (ci.state !== 'success') return false;
+    // The run that proved this head green, for the merge's evidence pointer (#180).
+    if (ci.runId) this.store.mutateItem(id, [{ set: { op_data: { ...(this.store.requireItem(id).file.frontmatter.op_data ?? {}), ci: { runId: ci.runId, url: ci.url, sha, ...(ci.attempt ? { attempt: ci.attempt } : {}) } } } }], 'engine');
+    return true;
   }
 
   /**
@@ -2419,17 +2450,23 @@ export class LiveEngine implements Engine {
     const headSha = fm.ci_head_sha;
     const canFix = this.store.derived(item).flavor === 'worker';
     const opId = this.store.journal.begin('ci_wait', id, { pr: fm.pr, sha: headSha });
-    let verdict = await this.waitForCi(id, fm.branch, headSha, fm.pr, (fm.op_data?.ci_replaced as string | null | undefined) ?? null);
+    // Each wait's end leaves the run's timing on the item and on this op's end, whichever path ends it (#179).
+    const wait = async (previousSha: string | null, minAttempt?: number) => {
+      const v = await this.waitForCi(id, fm.branch!, headSha, fm.pr!, previousSha, minAttempt);
+      if (v !== 'stopping') await this.noteCiTiming(id, opId, headSha);
+      return v;
+    };
+    let verdict = await wait((fm.op_data?.ci_replaced as string | null | undefined) ?? null);
     // A red on the infrastructure (#219) or on a known flake is re-run once, for this same head, before anything else happens to it.
     if (verdict === 'red') {
       const infra = await this.rerunIfInfra(id, opId, headSha);
       if (infra === 'blocked') return;
       if (infra) {
-        verdict = await this.waitForCi(id, fm.branch, headSha, fm.pr, null, infra);
+        verdict = await wait(null, infra);
         if (verdict === 'red' && await this.rerunIfInfra(id, opId, headSha) === 'blocked') return;
       } else if (canFix) {
         const attempt = await this.rerunIfFlaky(id, headSha);
-        if (attempt) verdict = await this.waitForCi(id, fm.branch, headSha, fm.pr, null, attempt);
+        if (attempt) verdict = await wait(null, attempt);
       }
     }
     // Read after the wait, not before it: a setting changed in the meantime is the one that applies (#173).
@@ -2473,6 +2510,34 @@ export class LiveEngine implements Engine {
     await this.mergeJob(id);
   }
 
+  /**
+   * The timing of the run a CI wait ended on (#179): each attempt's creation, queue, first job start and end, its jobs as
+   * GitHub names them, and the re-runs planestro or a person asked for on this head, with why. Kept in `op_data.ci_timing`
+   * and on the wait's `op.end` (`timing`); `ci.result` stays the per-attempt verdict, joined to it by run id and attempt.
+   * Read once the wait is over, never while it polls; a port or run it cannot read records what it has.
+   */
+  private async noteCiTiming(id: string, opId: string, headSha: string): Promise<void> {
+    const fm = this.store.getItem(id)?.file.frontmatter;
+    const run = fm?.op_data?.ci as { runId?: number; url?: string; attempt?: number; sha?: string } | undefined;
+    if (!fm || !run?.runId || (run.sha && run.sha !== headSha)) return;
+    const od = fm.op_data ?? {};
+    const reruns: Record<string, unknown>[] = [];
+    if (od.ci_cancel_rerun === headSha) reruns.push({ reason: 'cancelled', by: 'app' });
+    const flake = od.flake_rerun as { sha?: string; attempt?: number; check?: string } | undefined;
+    if (flake?.sha === headSha) reruns.push({ reason: flake.check?.startsWith('infrastructure') ? 'infrastructure' : flake.check === 'no change from the session' ? 'same_red' : 'flaky', by: 'app', ...(flake.attempt ? { attempt: flake.attempt } : {}), ...(flake.check ? { check: flake.check } : {}) });
+    const asked = od.ci_rerun as { sha?: string; attempt?: number; by?: string } | undefined;
+    if (asked?.sha === headSha && !(asked.by === 'app' && flake?.sha === headSha && flake.attempt === asked.attempt)) reruns.push({ reason: 'rerun_ci', by: asked.by ?? 'user', ...(asked.attempt ? { attempt: asked.attempt } : {}) });
+    const last = run.attempt ?? 1;
+    const attempts: unknown[] = [];
+    if (this.ports.gh.runTiming) for (let n = Math.max(1, last - 4); n <= last; n++) {
+      const t = await this.ports.gh.runTiming(this.github, run.runId, n).catch(() => undefined);
+      if (t) attempts.push(t);
+    }
+    const timing = { run_id: run.runId, attempt: last, head: headSha, ...(run.url ? { url: run.url } : {}), attempts, reruns };
+    this.store.mutateItem(id, [{ set: { op_data: { ...(this.store.requireItem(id).file.frontmatter.op_data ?? {}), ci_timing: timing } } }], 'engine');
+    this.store.journal.note(opId, { timing });
+  }
+
   /** Green, but a hold, block or question landed while CI ran: the verdict is kept and nothing merges. Returns whether it parked. */
   private parkIfHeld(id: string, opId: string): boolean {
     const latest = this.store.requireItem(id).file.frontmatter;
@@ -2491,7 +2556,19 @@ export class LiveEngine implements Engine {
   }
 
   /** 4. merge, inside the chain, on a head the chain has just seen green on the base tip. */
-  private async merge(id: string, opId: string, base: string, headSha: string): Promise<void> {
+  /**
+   * What proved a merge green (#180): the run for this exact head (`op_data.ci`, which a later head's run replaces), or the
+   * local gate, or a change the project's CI does not run for; with the head, the base tip it was synced onto and the merge commit.
+   */
+  private validationPointer(id: string, headSha: string, baseSha?: string, merged?: string): NonNullable<ItemFrontmatter['validated_by']> {
+    const od = this.store.requireItem(id).file.frontmatter.op_data ?? {};
+    const run = od.ci as { runId?: number; url?: string; attempt?: number; sha?: string } | undefined;
+    const gate = run?.runId && run.sha === headSha ? { run_id: run.runId, ...(run.attempt ? { attempt: run.attempt } : {}), ...(run.url ? { url: run.url } : {}) }
+      : od.local_green === headSha ? { gate: 'local' as const } : od.ci_not_run === headSha ? { gate: 'not_run' as const } : { gate: 'unknown' as const };
+    return { ...gate, head: headSha, ...(baseSha ? { base: baseSha } : {}), ...(merged ? { merge: merged } : {}) };
+  }
+
+  private async merge(id: string, opId: string, base: string, headSha: string, baseSha?: string): Promise<void> {
     const fm = this.store.requireItem(id).file.frontmatter;
     // Commits made after the review touch something the reviewer never saw: held for the orchestrator to accept or send back (#74).
     const extra = fm.ci_head_sha ? await this.outsideApprovedScope(id, fm.ci_head_sha) : [];
@@ -2522,13 +2599,15 @@ export class LiveEngine implements Engine {
     }
     const view = await this.ports.gh.prView(this.github, fm.pr!);
     if (view.state !== 'MERGED') { this.store.journal.end(opId, id, 'failed', { state: view.state }); this.block(id, 'merge_unverified', `gh reported the merge but PR #${fm.pr} is ${view.state}`); return; }
+    const validated = this.validationPointer(id, headSha, baseSha, view.mergeCommit);
+    const evidence = validated.run_id ? `CI run ${validated.run_id}${validated.url ? ` (${validated.url})` : ''}` : validated.gate === 'local' ? 'the local gate' : validated.gate === 'not_run' ? 'no CI run (CI does not run for this change)' : 'a CI verdict with no run on record';
     this.store.mutateItem(id, [
       { transition: { to: 'MERGED', actor: 'engine' } },
-      { set: { merged_at: view.mergedAt ? isoLocal(new Date(view.mergedAt)) : this.now(), op_data: { ...(fm.op_data ?? {}), merge_commit: view.mergeCommit } } },
+      { set: { merged_at: view.mergedAt ? isoLocal(new Date(view.mergedAt)) : this.now(), validated_by: validated, op_data: { ...(this.store.requireItem(id).file.frontmatter.op_data ?? {}), merge_commit: view.mergeCommit } } },
       { unset: ['op', 'op_started_at'] },
-      { activity: { actor: 'app', text: `merged PR #${fm.pr} into ${base}${view.mergeCommit ? ` (${view.mergeCommit.slice(0, 7)})` : ''}` } },
+      { activity: { actor: 'app', text: `merged PR #${fm.pr} into ${base}${view.mergeCommit ? ` (${view.mergeCommit.slice(0, 7)})` : ''}; validated by ${evidence} on ${headSha.slice(0, 7)}${baseSha ? ` over ${base}@${baseSha.slice(0, 7)}` : ''}` } },
     ], 'engine', { commit: `${id}: merge` });
-    this.store.journal.end(opId, id, 'ok', { merged: true });
+    this.store.journal.end(opId, id, 'ok', { merged: true, validated_by: validated });
     this.note('info', `${id}: PR #${fm.pr} merged into ${base}`);
     this.wakeOrchestrator('pr_merged', id);
     this.announce('on_merge', `${id} merged`, `PR #${fm.pr} merged into ${base}: ${fm.title}`, id);
@@ -3046,7 +3125,7 @@ export class LiveEngine implements Engine {
       this.ciSeen.set(id, { state: ci.state, at: Date.now() });
       this.sawCi(id, ci);
       const elapsedMin = (this.ciNow() - started) / 60_000;
-      if (ci.runId && ci.state !== 'skipped') { sawRun = true; const cur = this.store.requireItem(id).file.frontmatter; const seen = cur.op_data?.ci as { runId?: number; attempt?: number } | undefined; if (seen?.runId !== ci.runId || seen?.attempt !== ci.attempt) this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), ci: { runId: ci.runId, url: ci.url, ...(ci.attempt ? { attempt: ci.attempt } : {}) } } } }], 'engine'); }
+      if (ci.runId && ci.state !== 'skipped') { sawRun = true; const cur = this.store.requireItem(id).file.frontmatter; const seen = cur.op_data?.ci as { runId?: number; attempt?: number; sha?: string } | undefined; if (seen?.runId !== ci.runId || seen?.attempt !== ci.attempt || seen?.sha !== sha) this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), ci: { runId: ci.runId, url: ci.url, sha, ...(ci.attempt ? { attempt: ci.attempt } : {}) } } } }], 'engine'); }
       if (ci.state === 'success') return 'green';
       // A re-run keeps its run id: until its attempt shows up, the completed run is the old verdict.
       const stale = need > 0 && (ci.attempt ?? 0) < need;
@@ -3138,6 +3217,19 @@ export class LiveEngine implements Engine {
     return `set aside ${what.join(' and ')} before removing the worktree: ${dest}`;
   }
 
+  /**
+   * A merged item's worktree folder that git no longer lists (#356: a `git worktree remove` that dropped the registration
+   * and left files behind, so every retry failed with "is not a working tree"). Unlisted and holding no `.git`, it is not a
+   * worktree any more: its files are moved to `.displaced/`, never deleted (invariant 7), and the empty folder goes.
+   */
+  private async setAsideLeftover(id: string, cwd: string): Promise<void> {
+    const dest = this.displacedDir(id);
+    const files = await this.ports.git.setAsideLeftover(cwd, dest);
+    if (!files) return;
+    const n = files.length;
+    this.store.mutateItem(id, [{ activity: { actor: 'app', text: `the worktree ${cwd} was already unregistered in git; ${n ? `moved the ${n} file${n === 1 ? '' : 's'} left in it to ${dest} (${files.slice(0, 12).join(', ')}${n > 12 ? ', …' : ''}) and ` : ''}removed the empty folder` } }], 'engine');
+  }
+
   /** What is set aside when a worktree goes: keep_on_remove, and what copy_to_checkout copies (a copy keeps its original too). */
   private keptPaths(): string[] {
     const w = this.store.config.worktrees;
@@ -3203,14 +3295,20 @@ export class LiveEngine implements Engine {
       if (view.state !== 'MERGED' || stranded.length) { this.store.journal.end(opId, id, 'aborted', { reason: 'unverifiable', stranded }); this.block(id, 'cleanup_unverifiable', view.state !== 'MERGED' ? `PR #${fm.pr} is ${view.state}; nothing was deleted` : `cannot prove ${stranded.join(', ')} reachable from origin/${base}; nothing was deleted`); return; }
       const { clean } = cwd && worktrees.some((w) => w.path === cwd) ? await this.worktreeDirt(cwd) : { clean: true };
       if (!clean) { this.store.journal.end(opId, id, 'aborted', { reason: 'dirty' }); this.block(id, 'cleanup_dirty', 'the worktree has uncommitted changes after the merge; remove it by hand or discard them'); return; }
-      if (cwd) {
+      if (cwd && !worktrees.some((w) => w.path === cwd)) await this.setAsideLeftover(id, cwd);
+      else if (cwd) {
         let copied: string | undefined;
         try { copied = await this.copyToCheckout(cwd); }
         catch (e) { this.store.journal.end(opId, id, 'aborted', { reason: 'copy_failed' }); this.block(id, 'cleanup_dirty', `copying ${this.store.config.worktrees.copy_to_checkout.join(', ')} into the main checkout failed (${(e as Error).message.replace(/\s+/g, ' ').slice(0, 200)}); nothing was removed`); return; }
         if (copied) this.store.mutateItem(id, [{ activity: { actor: 'app', text: copied } }], 'engine');
         const kept = await this.setAsideBeforeRemove(id, cwd);
         if (kept) this.store.mutateItem(id, [{ activity: { actor: 'app', text: kept } }], 'engine');
-        await this.ports.git.worktreeRemove(this.repo, cwd, false);
+        try { await this.ports.git.worktreeRemove(this.repo, cwd, false); }
+        catch (e) {
+          // Git can drop the registration and still fail to delete the folder (#356): unlisted now, what is left is a leftover.
+          if ((await this.ports.git.worktreeList(this.repo)).some((w) => w.path === cwd)) throw e;
+          await this.setAsideLeftover(id, cwd);
+        }
       }
       await this.ports.git.worktreePrune(this.repo);
       await this.ports.git.deleteLocalBranch(this.repo, fm.branch!, localTip);
@@ -3780,6 +3878,43 @@ export class LiveEngine implements Engine {
 
   // ---- heavy local runs (#218) ----
   private readonly heavyLock = new HeavyLock();
+  /** The daily efficiency audit in flight (#348): one at a time, off the tick. */
+  private auditing?: Promise<unknown>;
+  private auditAbort?: AbortController;
+  /** Its slot, once due, while automation runs and its model has usage: a model out of usage waits for the next tick. */
+  private driveEfficiencyAudit(): void {
+    if (this.auditing || this.stopping) return;
+    const slot = auditSlotDue(this.store, new Date(Date.parse(this.now())));
+    if (!slot) return;
+    const pick = this.orchestrator.modelForWake();
+    if (pick.exhaustedUntil || this.guarded(pick.runner, pick.account)) return;
+    const abort = new AbortController(); this.auditAbort = abort;
+    this.auditing = runEfficiencyAudit({ store: this.store, agents: this.ports.agents, orchestrator: this.orchestrator, log: (l, m) => this.note(l, m), signal: abort.signal }, slot)
+      .catch((e) => this.note('error', `efficiency audit: ${(e as Error).message}`))
+      .finally(() => { this.auditing = undefined; });
+  }
+  /** Each item's test-run records still being written (their tree is read first), in order (#347). */
+  private readonly testRunWrites = new Map<string, Promise<void>>();
+
+  /**
+   * A worker command that ran tests (`test_runs.patterns`), journaled with the worktree's tree as it ended, for the
+   * efficiency report's wasted runs (#347). Recorded only: nothing is refused or slowed by it. An unreadable tree is
+   * left out, so that run is never called a repeat.
+   */
+  private recordTestRun(id: string, cwd: string, run: { command: string; ok: boolean; ms: number }, source: 'bash' | 'run_heavy'): Promise<void> {
+    const shape = testRunShape(run.command, this.store.config.test_runs);
+    if (!shape) return Promise.resolve();
+    const ts = isoLocal();
+    // Read at once, before the session's next edit; only the writes wait on each other, so the record keeps the order the runs ended in.
+    const reading = this.ports.git.snapshot(cwd).then((s) => s.tree, () => undefined);
+    const write = (this.testRunWrites.get(id) ?? Promise.resolve()).then(async () => {
+      const tree = await reading;
+      this.store.journal.append({ ts, type: TEST_RUN, item: id, actor: 'engine', data: { command: run.command.slice(0, 500), ok: run.ok, ms: run.ms, ...(tree ? { tree } : {}), ...shape, source } });
+    }).catch(() => {});
+    this.testRunWrites.set(id, write);
+    void write.then(() => { if (this.testRunWrites.get(id) === write) this.testRunWrites.delete(id); });
+    return write;
+  }
   /**
    * A worker's heavy local run: what its rules (or the project's heavy patterns) let it run, in its worktree, one heavy
    * run at a time, each batch after any CI job on a runner sharing this host (`heavy_runs.shared_labels`) has ended.
@@ -3825,7 +3960,9 @@ export class LiveEngine implements Engine {
           if (first) { const w = `${label}waited ${took(Date.now() - w0)} for CI on ${cfg.shared_labels.join(', ')} (${first.join('; ')})`; out.push(w); say(w); }
           else if (unread && i === 0) out.push(unread);
         }
+        const r0 = Date.now();
         const r = await this.ports.proc.run(command, { cwd, timeoutMs: cfg.timeout_min * 60_000, ...env });
+        await this.recordTestRun(id, cwd, { command, ok: r.code === 0, ms: Date.now() - r0 }, 'run_heavy');
         const tail = `${r.stdout}${r.stderr ? `\n[stderr]\n${r.stderr}` : ''}`.trim().slice(-4000);
         out.push(`${label}\`${command}\` exited ${r.code}${tail ? `:\n${tail}` : ''}`);
         if (r.code !== 0 && i < commands.length - 1) { out.push(`The batches after it were not run.`); break; }
@@ -3978,7 +4115,8 @@ export class LiveEngine implements Engine {
     if (fm.awaiting !== 'audition' || !fm.worktree) return null;
     const audition = Audition.safeParse(fm.awaiting_data?.audition);
     if (!audition.success || !auditionTakes(audition.data).includes(path) || this.takeProblem(fm.worktree, path)) return null;
-    try { return readFileSync(join(this.absWorktree(fm.worktree), path)); } catch { return null; }
+    const abs = join(this.absWorktree(fm.worktree), path);
+    try { return statSync(abs).size > MEDIA_MAX_BYTES ? null : readFileSync(abs); } catch { return null; }
   }
 
   // ---- hand-off: one item's files, given to another before any branch merges ----
@@ -4313,7 +4451,7 @@ export class LiveEngine implements Engine {
   private orchestratorSetsFields(id: string, fields: Record<string, unknown>): string {
     const item = this.store.requireItem(id);
     const refused = Object.keys(fields ?? {}).filter((k) => !(ORCHESTRATOR_FIELDS as readonly string[]).includes(k));
-    if (refused.length) return `not permitted: ${refused.join(', ')}. You may set only ${ORCHESTRATOR_FIELDS.join(', ')}; nothing was changed.`;
+    if (refused.length) return `not permitted: ${refused.join(', ')}. You may set only ${ORCHESTRATOR_FIELDS.join(', ')}; nothing was changed.${refused.includes('mcp_budget') ? ' An MCP budget is the user\'s: ask_user_decision with an option that carries set_mcp_budget (the number the plan states), and their tap sets it.' : ''}`;
     if (!Object.keys(fields ?? {}).length) return 'no fields given';
     const set: Record<string, unknown> = {}; const unset: string[] = [];
     for (const [k, v] of Object.entries(fields)) {
@@ -4682,6 +4820,10 @@ export class LiveEngine implements Engine {
   private raiseTooSmall(fm: ItemFrontmatter, options: DecisionOption[]): string | undefined {
     // A fresh conversation changes context, not the item's cumulative budget counters.
     const needed = fm.blocked_reason === 'turn_budget' ? 'raise_budget_turns' : fm.blocked_reason === 'token_budget' ? 'raise_budget_tokens' : undefined;
+    // An MCP budget is only for an implementer that has MCP servers to spend it on (#371).
+    const mcp = findModel(this.store.config, fm.implementer)?.mcp ?? [];
+    const noMcp = options.find((o) => o.set_mcp_budget !== undefined && !mcp.length);
+    if (noMcp) return `option "${noMcp.label}" sets an MCP budget, but ${fm.id}'s implementer (${fm.implementer ?? 'none'}) has no MCP servers to spend it on.`;
     for (const o of options) {
       if (needed && (o.raise_budget_usd !== undefined || o.raise_budget_turns !== undefined || o.raise_budget_tokens !== undefined || o.fresh) && o[needed] === undefined) return `option "${o.label}" cannot clear ${fm.blocked_reason}: include ${needed}; dollars and fresh sessions do not extend this limit.`;
       for (const [key, cap, used] of [['raise_budget_turns', this.budgetOf(fm).turns, fm.agent_turns ?? 0], ['raise_budget_tokens', this.budgetOf(fm).tokens, fm.tokens ?? 0]] as const) {
@@ -4853,7 +4995,10 @@ export class LiveEngine implements Engine {
     }
     const raisedTurns = chosen?.raise_budget_turns !== undefined ? Math.max(this.budgetOf(fm).turns, fm.agent_turns ?? 0) + chosen.raise_budget_turns : undefined;
     const raisedTokens = chosen?.raise_budget_tokens !== undefined ? Math.max(this.budgetOf(fm).tokens, fm.tokens ?? 0) + chosen.raise_budget_tokens : undefined;
-    const raisedUnits = [raisedTurns !== undefined ? `turn budget raised to ${raisedTurns}` : '', raisedTokens !== undefined ? `token budget raised to ${raisedTokens}` : ''].filter(Boolean).join('; ');
+    // The user's tap is the spend's authorization (#371): the plan's MCP calls, set on the item as they read it on the card.
+    const mcpBudget = chosen?.set_mcp_budget;
+    const mcpTo = mcpBudget !== undefined ? `MCP budget set to ${mcpBudget} call${mcpBudget === 1 ? '' : 's'} to ${findModel(this.store.config, fm.implementer)?.mcp.join(', ') || 'its MCP servers'} (mcp_budget)` : '';
+    const raisedUnits = [raisedTurns !== undefined ? `turn budget raised to ${raisedTurns}` : '', raisedTokens !== undefined ? `token budget raised to ${raisedTokens}` : '', mcpTo].filter(Boolean).join('; ');
     const raisedTo = raise ? Math.round((Math.max(this.budgetOf(fm).usd, fm.cost_usd ?? 0) + raise) * 100) / 100 : undefined;
     this.store.mutateItem(id, [
       Object.keys(rest).length ? { set: { awaiting_data: rest } } : { unset: ['awaiting_data'] },
@@ -4861,9 +5006,10 @@ export class LiveEngine implements Engine {
       ...(raisedTo !== undefined ? [{ set: { budget_usd: raisedTo } } as ItemOp] : []),
       ...(raisedTurns !== undefined ? [{ set: { budget_turns: raisedTurns } } as ItemOp] : []),
       ...(raisedTokens !== undefined ? [{ set: { budget_tokens: raisedTokens } } as ItemOp] : []),
+      ...(mcpBudget !== undefined ? [{ set: { mcp_budget: mcpBudget } } as ItemOp] : []),
       { activity: { actor: 'user', text: `decided: ${decision.question} → ${said}${raisedTo !== undefined ? ` (budget raised to $${raisedTo})` : ''}${raisedUnits ? ` (${raisedUnits})` : ''}${done ? ` (done for you: ${done})` : ''}` } },
     ], 'user', { commit: `${id}: decision answered` });
-    this.store.journal.append({ type: 'orchestrator.decision_answered', item: id, actor: 'user', data: { question: decision.question, choice: choice ?? null, text: text ?? null, ...(raisedTo !== undefined ? { budget_raised_to: raisedTo } : {}), ...(raisedTurns !== undefined ? { budget_turns_raised_to: raisedTurns } : {}), ...(raisedTokens !== undefined ? { budget_tokens_raised_to: raisedTokens } : {}), ...(done ? { action: chosen!.action!.tool, action_result: done } : {}) } });
+    this.store.journal.append({ type: 'orchestrator.decision_answered', item: id, actor: 'user', data: { question: decision.question, choice: choice ?? null, text: text ?? null, ...(raisedTo !== undefined ? { budget_raised_to: raisedTo } : {}), ...(raisedTurns !== undefined ? { budget_turns_raised_to: raisedTurns } : {}), ...(raisedTokens !== undefined ? { budget_tokens_raised_to: raisedTokens } : {}), ...(mcpBudget !== undefined ? { mcp_budget: mcpBudget } : {}), ...(done ? { action: chosen!.action!.tool, action_result: done } : {}) } });
     const doneNote = done ? `Already done by planestro, as the user: ${done}. Do not do it again. ` : '';
     const raisedNote = (raisedTo !== undefined ? `The item's budget is already raised to $${raisedTo} (budget_usd); nothing else needs changing. ` : '') + (raisedUnits ? `Already applied: ${raisedUnits}. ` : '');
     if (carry) { this.wakeOrchestrator('decision_answered', id, { question: decision.question, answer: said, options: decision.options.map((o) => `${o.label}: ${o.description}`).join(' | '), ...(raisedNote ? { budget: `${raisedNote}Resume it with unblock_item${fresh ? ' and fresh: true, as the option promised' : ''}.` } : fresh ? { budget: 'The option promised a fresh session: unblock_item with fresh: true and the instruction as its message.' } : {}), ...(done ? { action: `${doneNote}What is left is this item's own stop.` } : {}) }); return; }
@@ -5195,7 +5341,7 @@ export class LiveEngine implements Engine {
       });
       }));
     } finally { this.turns.delete(id); }
-    this.recordUsage(id, def, model ?? def.label, 'worker', 'conflict_session', result);
+    this.recordUsage(id, def, model ?? def.label, 'worker', 'conflict_session', result, { stage: 'conflict', resumed: false });
     const after = this.store.requireItem(id).file.frontmatter;
     this.store.mutateItem(id, [{ set: { cost_usd: Math.round(((after.cost_usd ?? 0) + result.costUsd) * 10000) / 10000, turns: (after.turns ?? 0) + result.numTurns, tokens: (after.tokens ?? 0) + (result.tokens ?? 0), agent_turns: (after.agent_turns ?? 0) + (result.numTurns > 0 ? 1 : 0) } }, { unset: ['op', 'op_started_at'] }], 'engine');
     this.usageSeen(result.rateLimit, guardKey(runner, account.name));
@@ -5736,7 +5882,10 @@ export class LiveEngine implements Engine {
    * the old approved set and holds the same paths again. Paths it cannot read are not approved blind: the hold stays.
    */
   private async orchestratorUnskips(id: string): Promise<string> {
-    const scoped = Boolean(this.store.requireItem(id).file.frontmatter.op_data?.approved_scope);
+    const fm = this.store.requireItem(id).file.frontmatter;
+    // A hold that waits on a person (the user's Approve and hold, review.hold_into, a loop's review) is theirs to release (#339).
+    if (fm.skip_merge && fm.hold_waits_on === 'person') return `not permitted: ${id}'s hold waits on the user${heldReasonOf(fm) ? ` (${heldReasonOf(fm)})` : ''}, so only they release it, with Release hold on its page. Nothing was changed. To put it to them, ask with ask_user.`;
+    const scoped = Boolean(fm.op_data?.approved_scope);
     const scope = scoped ? await this.changedPaths(id).catch(() => undefined) : undefined;
     if (scoped && !scope) return 'not returned: its changed paths could not be read, so releasing it would not approve them; try again';
     this.store.mutateItem(id, [{ unset: ['skip_merge'] }, { set: { ci_result: 'pending', op_data: this.releasedOpData(id, scope) } }, { activity: { actor: 'orchestrator', text: 'returned to the merge queue' } }], 'orchestrator', { commit: `${id}: unskip merge` });

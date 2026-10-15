@@ -8,6 +8,7 @@ import { budgetTokens, codexSplit, emptySplit, splitPlus } from '@planestro/shar
 import { CodexAppServerPort, codexEnv } from './CodexAppServerPort.ts';
 import { projectSkills, skillsInPrompt } from './projectSkills.ts';
 import { IMAGE_TOOL_NOTE } from './imageToolNote.ts';
+import { APPLY_PATCH_NOTE } from './patchNote.ts';
 import type { AccountCredentials, AgentPort, AgentTurnOptions, TurnOptions, CustomTurnOptions, TurnResult } from '../ports.ts';
 
 /**
@@ -113,7 +114,7 @@ export class LiveCodexPort implements AgentPort {
     // There is no system-prompt flag: the worker rules ride at the top of the prompt, every turn. The project's
     // skills (#238) ride once, with a new thread: a resumed one holds them already, and exec has no tool to ask with.
     const skills = o.skills && !o.resume ? skillsInPrompt(projectSkills(o.cwd)) : '';
-    const prompt = `${o.systemAppend.trim()}\n\n${IMAGE_TOOL_NOTE}${skills ? `\n\n${skills}` : ''}\n\n---\n\n${o.prompt.trim()}\n\nEnd your turn with ONLY the JSON object described above: {"outcome": "done" | "blocked" | "question", "summary": "...", "parts": [...] or null, "question": "..." or null, "hold": null or "<what the pull request waits for>", "hand_off": null or {"to": "<item id that waits on this one>", "paths": ["<files in your worktree, relative>"], "note": "<what they are and how to use them>"}}. Use hand_off only when another backlog item needs files you made before your branch merges. Use hold only with "done", and only when the pull request must not merge yet because the plan or the request says it waits for something ("until TD-12 has merged"): planestro then keeps it out of the merge queue until the user releases it.`;
+    const prompt = `${o.systemAppend.trim()}\n\n${APPLY_PATCH_NOTE}\n\n${IMAGE_TOOL_NOTE}${skills ? `\n\n${skills}` : ''}\n\n---\n\n${o.prompt.trim()}\n\nEnd your turn with ONLY the JSON object described above: {"outcome": "done" | "blocked" | "question", "summary": "...", "parts": [...] or null, "question": "..." or null, "hold": null or "<what the pull request waits for>", "hand_off": null or {"to": "<item id that waits on this one>", "paths": ["<files in your worktree, relative>"], "note": "<what they are and how to use them>"}}. Use hand_off only when another backlog item needs files you made before your branch merges. Use hold only with "done", and only when the pull request must not merge yet because the plan or the request says it waits for something ("until TD-12 has merged"): planestro then keeps it out of the merge queue until the user releases it.`;
 
     let killed = false;
     this.lastError = undefined;

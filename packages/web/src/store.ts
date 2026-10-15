@@ -70,12 +70,14 @@ export const useStore = create<Store>((set, get) => ({
   connected: false, events: [], consoles: {}, updateReady: false, chat: { open: false }, notes: [], notesSeen: '', questionRev: {},
   openChat(opts = {}) { set({ chat: { ...get().chat, open: true, item: opts.item, draft: opts.draft } }); void get().loadChat(); },
   closeChat() { set({ chat: { ...get().chat, open: false } }); },
-  async loadChat() { try { const r = await api.orchestratorChat(); set({ chat: { ...get().chat, entries: r.entries, enabled: r.enabled } }); } catch { /* the panel says it could not load */ } },
+  async loadChat() { try { const r = await api.orchestratorChat(); if (Array.isArray(r?.entries)) set({ chat: { ...get().chat, entries: r.entries, enabled: r.enabled } }); } catch { /* the panel says it could not load */ } },
   // Notes and marker land together, so no page counts every note unread while the marker is on its way.
   async loadNotes() {
     try {
       const [notes, { seen }] = await Promise.all([api.orchestratorNotes(), api.notesSeen()]);
-      set({ notes, notesSeen: later(get().notesSeen, seen) });
+      // A list only: anything else keeps what was held, and the next reconnect asks again (#350).
+      if (Array.isArray(notes)) set({ notes });
+      set({ notesSeen: later(get().notesSeen, String(seen ?? '')) });
       const migrated = await migrateOldSeen(seen);
       if (migrated !== seen) set({ notesSeen: later(get().notesSeen, migrated) });
     } catch { /* the Console says so when it loads */ }
@@ -87,7 +89,7 @@ export const useStore = create<Store>((set, get) => ({
     set({ notesSeen: later(get().notesSeen, seen) });
   },
   // Only the newest request's answer is kept: an older one that returns late would bring back a stale list.
-  async loadQuestions() { const n = ++questionsSeq; try { const questions = await api.questions(); if (n === questionsSeq) set({ questions }); } catch { /* the Console keeps what it had */ } },
+  async loadQuestions() { const n = ++questionsSeq; try { const questions = await api.questions(); if (n === questionsSeq && Array.isArray(questions)) set({ questions }); } catch { /* the Console keeps what it had */ } },
   seedConsole(id, lines) { set({ consoles: { ...get().consoles, [id]: lines } }); },
   async refresh() {
     try { set({ state: await api.state(), error: undefined }); } catch (e) { set({ error: (e as Error).message }); }

@@ -71,7 +71,7 @@ export class LiveClaudePort implements ClaudePort {
         // bare names and its own MCP tools are listed whole (#153; #58's split left it unable to call anything).
         // The SDK's CAN_USE_TOOL_SHADOWED warning is accepted for this role: the callback is unused in this mode.
         allowedTools: customAllowedTools(o),
-        maxTurns: o.maxTurns, abortController,
+        maxTurns: o.maxTurns, ...(o.maxBudgetUsd !== undefined ? { maxBudgetUsd: o.maxBudgetUsd } : {}), abortController,
         ...(this.claudeBin ? { pathToClaudeCodeExecutable: this.claudeBin } : {}),
         env: claudeEnv(process.env, o.account),
         canUseTool: async (toolName, input) => {
@@ -97,7 +97,7 @@ export class LiveClaudePort implements ClaudePort {
     const input = new InputGate();
     const reports = new ReportWatch((r) => { result.undelivered = r; o.onUndelivered?.(r); });
     const drops = new DropWatch((d) => { result.connectionDrop = d; o.onConnectionDrop?.(d); });
-    const ran = new RanWatch();
+    const ran = new RanWatch(o.onCommandRan);
     // What a worker's tool call gets: planestro's tools and bare-named ones allowed, plans and questions recorded, the rest the engine's to judge.
     const decide = async (toolName: string, input: Record<string, unknown>): Promise<{ behavior: 'allow'; updatedInput: Record<string, unknown> } | { behavior: 'deny'; message: string }> => {
       // planestro's own tools, and a whole tool a rule names bare, are always fine (plan mode routes even allow-listed tools here).
@@ -127,7 +127,7 @@ export class LiveClaudePort implements ClaudePort {
         ...resumed.options,
         // The secret-file deny list (#227) before anything else: allow rules and the CLI's own approvals never reach canUseTool.
         // What ran without a park is counted from the tool calls that ran (#203): the SDK's own approvals never reach canUseTool.
-        hooks: { ...(resumed.options.hooks as object | undefined), PreToolUse: [{ hooks: [secretHook(o.cwd, { dirs: o.secretDirs }, (id) => ran.refused(id))] }], PostToolUse: [{ hooks: [ran.hook()] }], PostToolUseFailure: [{ hooks: [ran.hook()] }] },
+        hooks: { ...(resumed.options.hooks as object | undefined), PreToolUse: [{ hooks: [secretHook(o.cwd, { dirs: o.secretDirs }, (id) => ran.refused(id)), ran.started()] }], PostToolUse: [{ hooks: [ran.hook()] }], PostToolUseFailure: [{ hooks: [ran.hook()] }] },
         // The model's own servers ride along; their tools are not allow-listed, so every call reaches canUseTool and the engine's count.
         mcpServers: { planestro, ...(o.mcpServers ?? {}) } as any, strictMcpConfig: true, settingSources: ['project'],
         allowedTools: allow.rules,
@@ -173,13 +173,25 @@ const RAN_COMMAND = 1000;
 export class RanWatch {
   private readonly denied = new Set<string>();
   private readonly seen = new Map<string, { tool: string; command?: string; n: number }>();
+  private readonly starts = new Map<string, number>();
+  /** `onCommand` hears each Bash command that ran, as it ends, with its exit (PostToolUseFailure: non-zero) and wall time (#347). */
+  constructor(private readonly onCommand?: (run: { command: string; ok: boolean; ms: number }) => void) {}
   refused(toolUseId: string | undefined): void { if (toolUseId) this.denied.add(toolUseId); }
+  /** When each Bash call was let through to run: the hook after the deny list, so a refused one is never timed. */
+  started(): HookCallback {
+    return async (input) => {
+      if (input.hook_event_name === 'PreToolUse' && input.tool_name === 'Bash' && this.onCommand) this.starts.set(input.tool_use_id, Date.now());
+      return { continue: true };
+    };
+  }
   hook(): HookCallback {
     return async (input) => {
       if (input.hook_event_name !== 'PostToolUse' && input.hook_event_name !== 'PostToolUseFailure') return { continue: true };
       if ((input.hook_event_name === 'PostToolUseFailure' && input.is_interrupt) || this.denied.has(input.tool_use_id) || input.tool_name.startsWith('mcp__planestro__')) return { continue: true };
       const command = input.tool_name === 'Bash' ? String((input.tool_input as { command?: unknown } | undefined)?.command ?? '').trim().slice(0, RAN_COMMAND) : undefined;
       if (command === '') return { continue: true };
+      const t0 = this.starts.get(input.tool_use_id); this.starts.delete(input.tool_use_id);
+      if (command !== undefined && this.onCommand) { try { this.onCommand({ command, ok: input.hook_event_name === 'PostToolUse', ms: t0 === undefined ? 0 : Date.now() - t0 }); } catch { /* a listener's failure is not the turn's */ } }
       const key = `${input.tool_name}\0${command ?? ''}`;
       const e = this.seen.get(key);
       if (e) e.n++;
@@ -428,7 +440,7 @@ export function lastCostState(path: string | undefined, tailBytes = 512 * 1024):
 }
 
 /** What the next resume of this conversation reloads, from the responses as they stream. */
-export interface ContextSeen { tokens?: number; ttlS?: number }
+export interface ContextSeen { tokens?: number; ttlS?: number; start?: number }
 
 /**
  * Feed one SDK message to the context reading. Exported for tests. Only the conversation's own
@@ -441,6 +453,9 @@ export function noteContext(m: any, c: ContextSeen): void {
   const n = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0);
   const tokens = n(u.input_tokens) + n(u.cache_read_input_tokens) + n(u.cache_creation_input_tokens) + n(u.output_tokens);
   if (tokens > 0) c.tokens = tokens;
+  // The first response's input is what the session carried before it did anything (#346).
+  const input = tokens - n(u.output_tokens);
+  if (c.start === undefined && input > 0) c.start = input;
   if (n(u.cache_creation?.ephemeral_1h_input_tokens) > 0) c.ttlS = 3600;
   else if (n(u.cache_creation?.ephemeral_5m_input_tokens) > 0) c.ttlS = 300;
 }
@@ -617,6 +632,7 @@ async function consume(q: AsyncIterable<unknown>, result: TurnResult, onOutput: 
   reports?.end();
   settleCost(result, total, resumed);
   if (context.tokens) result.contextTokens = context.tokens;
+  if (context.start) result.startContextTokens = context.start;
   if (context.ttlS) result.cacheTtlS = context.ttlS;
   if (splitBudgetTokens(tokens.split) + tokens.split.cache_read > 0) result.usage = tokens.split;
   if (resumed?.quote) result.resumeQuote = resumed.quote;

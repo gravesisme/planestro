@@ -48,6 +48,8 @@ Evaluate every change against these; they are the architecture.
    collide with ones the base now tracks are moved aside to `.displaced/`,
    not deleted: `clearForSync`. Untracked files the project names in
    `worktrees.byproducts` are never dirt: cleanup sets them aside the same way.
+   A folder git no longer lists as a worktree, holding no `.git`, is a leftover:
+   cleanup moves its files there too and goes on to the branches (#356).
    A sync git refuses over local changes is not a conflict: untracked files it
    names are set aside and it runs once more, else `dirty_tree`. An epic's own
    `merge-<id>` worktree is cleared before merging: tips logged, its changes
@@ -107,7 +109,8 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   picked: `actionRefusal` checks it when the card is filed and again at the tap (a refusal
   leaves the card as it was), and once the first write is made nothing throws. Where the user
   is talking to it (`user_message`, `question_message`) `submit_item` on an epic plans its
-  breakdown; an epic is never QUEUED. Anywhere else both are refused in words, never thrown.
+  breakdown; an epic is never QUEUED. Anywhere else both are refused in words, never thrown, and so is
+  `submit_item` on an item imported from an issue (`source.github_issue`: a stranger's text, #339).
 - FINISHED has two ways in: the engine after a merged PR, and the user's
   **close as done** (`Engine.closeAsDone`) for work that landed some other way.
   The second is user-only, stops at IN_REVIEW (a PR decides from there), and
@@ -147,7 +150,7 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   `hold_waits_on` says who a hold waits on (#195): a `person`'s (the user, `review.hold_into`, a loop's
   review, a review hold) is drafted under `ci.draft_while_held`; an `agent`'s (the orchestrator, the worker,
   a scope check; unset reads so) holds the merge only, its PR kept ready so CI runs. A run in flight is never
-  cancelled by drafting.
+  cancelled by drafting. Only the user releases a `person`'s hold: `unskip_merge` refuses it in words (#339).
 - **Loop until green** (#171) is the orthogonal, authoritative `loop: {max_iterations, goal?}`, not a
   `kind`. The worker's `report_iteration` tallies each pass into `loop_state` and Activity and counts
   it against `max_iterations`; the pass that spends it unless green blocks `loop_cap` (tally + diff).
@@ -172,7 +175,15 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   the runner reports them); the Usage page (`GET /usage`, #236) reads only those, never item totals (pre-#107 ones are inflated).
   Each keeps the turn's token split (#345: `input`, `cache_read`, `cache_write` with `cache_ttl_s`, `output`, `context` at
   its end), summed from the stream once per response, never from the result's running totals; `tokens` is the work paid in
-  full (input + cache write + output).
+  full (input + cache write + output). The per-item efficiency report (#346: the item's **Efficiency** panel,
+  `GET /items/:id/efficiency`, the Usage page's 7-day ranking, `GET /usage/items`) reads the same entries: each carries its
+  `stage` (planning, implementation, fix once the PR is open, conflict), `resumed` and `start_context` (the first response's
+  window: a new conversation's startup weight), and a wake its `items`, which share its cost. A worker command matching
+  `test_runs.patterns` (Bash on Claude, or a run_heavy batch) journals one `test.run` with the worktree's tree as it ended (#347);
+  whole-suite runs and repeats on a tree unchanged since that command's green run are the report's wasted runs, never refused.
+  The daily efficiency audit (#348, `efficiency_audit`, off by default) builds its digest of these in code (`auditDigest`) and
+  spends one capped wake on the orchestrator's model whose only tool files one planestro feedback note (or a line on the last
+  one, while it stands unacted); `efficiency.audit` and the slot's `op.begin` are its memory, so a slot never runs twice.
 - A report (`submit_plan`, `submit_breakdown`, `report_done`, `report_blocked`) whose call never reached planestro is applied
   from the turn's record (#167): the port keeps the session's last lost report with its arguments, the engine
   persists it in `op_data.outbox` and applies it through the same tool when the turn ends (or at the next start),
@@ -199,6 +210,7 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   file change or report; never auth, quota or a cap) is retried once after `concurrency.transient_retry_after_s` (#241):
   the stop is recorded with `op_data.transient_retry.due_at` (no triage, not needs-you) and `driveTimedRetries`
   runs `retryOp` from the tick; a wake is queued again with `retry.not_before`. A second failure stops as before.
+  A Codex turn ended by apply_patch's "multiple operations target <file>" (#344, `patchRejected`) is retried the same way, told why.
   A `usage_exhausted` stop waits out its recorded reset the same way (#296: the orchestrator's `retry_at_reset`, the
   card's **Wait for the reset**): `op_data.usage_retry.due_at` (reset + 60 s, not needs-you), retried once; a second stops as before.
 - The concurrency control (#330, `concurrency.ts`) changes `max_sessions` / `runner_limits` through the Settings write

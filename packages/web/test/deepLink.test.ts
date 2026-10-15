@@ -2,10 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter, Route, Routes } from 'react-router';
-import { Config, ItemFrontmatter } from '@planestro/shared';
+import { Config, ItemFrontmatter, needsYou } from '@planestro/shared';
 import type { ItemView, State } from '../src/api.ts';
 import { itemWait } from '../../server/src/engine/needsYou.ts';
 import { notificationPath, waitTarget } from '../src/deepLink.ts';
+import { WAIT_LABEL } from '../src/components/WaitShortcut.tsx';
+import type { WaitKind } from '@planestro/shared';
 
 const fixture = vi.hoisted(() => ({ current: {} as any }));
 vi.mock('../src/store.ts', () => ({ useStore: (selector: (s: any) => any) => selector(fixture.current), act: () => {} }));
@@ -35,7 +37,7 @@ describe('deep links that open straight to the decision (#226)', () => {
     const item = {
       id: 'TP-1', path: 'items/TP-1.md', frontmatter,
       sections: { Description: '', Notes: '', Plan: '1. Do it.', Activity: '' }, activity: [],
-      derived: { lane: 'board', needs_you: true, external: false, flavor: 'worker', deps_satisfied: true, children: [], base_branch: 'trunk' },
+      derived: { lane: 'board', needs_you: needsYou(frontmatter), external: false, flavor: 'worker', deps_satisfied: true, children: [], base_branch: 'trunk' },
     } as unknown as ItemView;
     fixture.current = { state: { config, local: { model_unavailable: {} }, engine: { paused: false, provider_guards: {}, sessions: [] }, items: [item], releases: [] } as unknown as State, chat: {}, consoles: {}, seedConsole: () => {} };
     const markup = renderToStaticMarkup(createElement(MemoryRouter, { initialEntries: ['/items/TP-1'] }, createElement(Routes, null, createElement(Route, { path: '/items/:id', element: createElement(ItemPage) }))));
@@ -50,11 +52,27 @@ describe('deep links that open straight to the decision (#226)', () => {
     ['question', { awaiting: 'question', awaiting_data: { questions: [{ question: 'Which?', options: [] }] } }],
     ['decision', { awaiting: 'user', awaiting_data: { decision: { question: 'Which way?', why: 'Two ways.', options: [{ label: 'Left' }], requested_at: '2026-10-07T00:00:00Z' } } }],
     ['blocked', { blocked: true, blocked_reason: 'ci_red', awaiting: 'user' }],
+    ['audition', { awaiting: 'audition', awaiting_data: { audition: { title: 'Wind', roles: [{ id: 'wind', name: 'Wind', takes: ['tmp/a.mp3'] }] } } }],
     ['review', { status: 'IN_REVIEW', awaiting: 'review' }],
     ['hold', { status: 'IN_REVIEW', skip_merge: true, hold_reason: 'for the designer' }],
   ])("the item page holds the panel a '#%s' link names, marked as waiting on you", (kind, fields) => {
     const { kind: notified, markup } = page(fields);
     expect(notified).toBe(kind); // the fragment the server's notification uses
-    expect(markup).toMatch(new RegExp(`<div[^>]* id="${kind}" data-wait="true"`));
+    expect(markup).toMatch(new RegExp(`<div[^>]* id="${kind}"[^>]* data-wait="true"`));
+    // The header row names it too (#373), before Take over…: a held PR is released from there, anything else is a jump.
+    const header = markup.slice(markup.indexOf('item-actions'), markup.indexOf('Take over'));
+    expect(header).toContain(kind === 'hold' ? '>Release hold</button>' : `>Jump to: ${WAIT_LABEL[kind as WaitKind]}</button>`);
+  });
+
+  it('a held pull request shows its reason beside Release hold, at the top, above the file list (#373)', () => {
+    const { markup } = page({ status: 'IN_REVIEW', skip_merge: true, hold_reason: 'for the designer to play it' });
+    const top = markup.indexOf('Release hold'); const panel = markup.indexOf('id="hold"');
+    expect(top).toBeGreaterThan(-1); expect(top).toBeLessThan(panel);
+    expect(markup.slice(top, panel)).toContain('<b>Held:</b> for the designer to play it');
+  });
+
+  it('nothing in the header when the item waits on nobody', () => {
+    const { markup } = page({ status: 'IN_REVIEW', skip_merge: true, op: 'implement_turn' });
+    expect(markup).not.toContain('wait-shortcut');
   });
 });
