@@ -263,8 +263,10 @@ export class Orchestrator {
     this.running = true;
     try {
       while (this.queue.some(due) && !this.unavailable() && !this.stopped && !this.pausedRef() && !this.guarded()) {
-        const batch = this.queue.filter(due);
+        const ready = this.queue.filter(due);
         this.queue = this.queue.filter((e) => !due(e));
+        const batch = ready.filter((e) => { const why = this.staleStop(e); if (why) this.log('info', `${e.item}: dropped its ${e.type} wake: ${why}`); return !why; });
+        if (!batch.length) continue;
         this.inFlight = new Set(batch.flatMap((e) => (e.item ? [e.item] : [])));
         this.questionsInFlight = new Set(batch.flatMap((e) => questionOf(e) ?? []));
         this.reviewsInFlight = new Set(batch.flatMap((e) => (e.type === 'question_review' ? questionOf(e) ?? [] : [])));
@@ -286,6 +288,19 @@ export class Orchestrator {
         }
       }
     } finally { this.running = false; this.activeModel = undefined; }
+  }
+
+  /**
+   * A stop's wake that the item has moved past while it waited in the queue (#359: a plan sent back to be amended
+   * started a new turn and the old turn's `blocked_turn_error` wake still ran, handing a live planner to the user).
+   * The block it is about is gone or replaced; a stop the item comes to later wakes for itself.
+   */
+  private staleStop(e: WakeEvent): string | undefined {
+    if (!e.item || !e.type.startsWith('blocked_')) return undefined;
+    const fm = this.store.getItem(e.item)?.file.frontmatter;
+    if (!fm) return 'the item is gone';
+    if (!fm.blocked) return 'it is no longer blocked';
+    return `blocked_${fm.blocked_reason}` !== e.type ? `it is blocked for another reason now (${fm.blocked_reason})` : undefined;
   }
 
   /**
