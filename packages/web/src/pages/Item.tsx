@@ -28,6 +28,7 @@ import { useLandOnWait } from '../deepLink.ts';
 import { useFullItem } from '../fullItem.ts';
 import { WaitShortcut, promptReleaseHold } from '../components/WaitShortcut.tsx';
 import { SectionNav } from '../components/SectionNav.tsx';
+import { ImageZoom, ReviewGallery, isImageAttachment } from '../components/ReviewImages.tsx';
 
 function useAutosave(id: string, section: 'Description' | 'Notes' | 'Plan', initial: string) {
   const [text, setText] = useState(initial);
@@ -78,6 +79,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
   const [listOpen, setListOpen] = useState(false);
   useEffect(() => { setListOpen(false); }, [item.id]);
   const [refPath, setRefPath] = useState('');
+  const [zoom, setZoom] = useState<string | null>(null);
   const session = state.engine.sessions.find((s) => s.item === item.id);
   const children = d.children.map((c) => state.items.find((i) => i.id === c)).filter(Boolean) as ItemView[];
   const epics = state.items.filter((i) => i.frontmatter.kind === 'epic' && i.id !== item.id);
@@ -221,6 +223,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
         {fm.parts?.length ? <div id="parts" data-nav="Parts"><PartsStrip parts={fm.parts} /></div> : null}
         {fm.loop && <div className="section" id="loop" data-nav="Loop"><h2>Loop · {fm.loop_state ? `${fm.loop_state.passing}/${fm.loop_state.total} passing` : 'not started'}</h2><div className="small">{fm.loop_state ? loopLine(fm.loop_state, fm.loop.max_iterations) : `no iteration reported yet; ${fm.loop.max_iterations} allowed`}{loopGreen(fm.loop_state) && <> · <b>green</b></>}</div>{fm.loop.goal && <div className="muted small">goal: {fm.loop.goal}</div>}</div>}
         <AwaitingPanels item={item} />
+        <ReviewGallery item={item} />
         <ReviewPanel item={item} />
         {drop && (
           <div className="approval" id="connection" data-nav="Lost connection">
@@ -271,7 +274,8 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           <ItemConsole id={item.id} />
         </div>
         <div className="section" id="attachments" data-nav={`Attachments · ${fm.attachments.length}`}><h2>Attachments</h2>
-          <ul className="attachments">{fm.attachments.map((a) => <li key={a.path}>{a.kind === 'managed' && /\.(png|jpe?g|gif|webp)$/i.test(a.path) && <img src={`/${a.path}`} alt="" />}<code>{a.path}</code><span className="tag">{a.kind}</span>{a.kind === 'managed' && <a href={`/${a.path}`} target="_blank" rel="noreferrer">open</a>}<ActionButton className="small" working="Removing…" onAct={() => act(() => api.removeAttachment(item.id, a.path))}>remove</ActionButton></li>)}</ul>
+          <ul className="attachments">{fm.attachments.map((a) => <li key={a.path}>{isImageAttachment(a) && <button type="button" className="checker" title="Click to zoom" onClick={() => setZoom(`/${a.path}`)}><img src={`/${a.path}`} alt="" /></button>}<code>{a.path}</code><span className="tag">{a.kind}</span>{a.kind === 'managed' && <a href={`/${a.path}`} target="_blank" rel="noreferrer">open</a>}<ActionButton className="small" working="Removing…" onAct={() => act(() => api.removeAttachment(item.id, a.path))}>remove</ActionButton></li>)}</ul>
+          {zoom && <ImageZoom src={zoom} onClose={() => setZoom(null)} />}
           <div className="row">
             <button className="small" onClick={() => picker.current?.click()}>Attach photo or file…</button>
             <input ref={picker} type="file" accept="image/*,.heic,.heif,.pdf,.txt,.md,.json" multiple hidden onChange={(e) => { const fs = [...(e.target.files ?? [])]; e.target.value = ''; upload(fs); }} />

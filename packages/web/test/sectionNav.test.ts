@@ -40,6 +40,6 @@ describe('the item page section nav (#374)', () => {
     fixture.current = { state: { config, local: { model_unavailable: {} }, engine: { paused: false, provider_guards: {}, sessions: [] }, items: [item], releases: [] } as unknown as State, chat: {}, consoles: {}, seedConsole: () => {} };
     const markup = renderToStaticMarkup(createElement(MemoryRouter, { initialEntries: ['/items/TP-1'] }, createElement(Routes, null, createElement(Route, { path: '/items/:id', element: createElement(ItemPage) }))));
     const ids = [...markup.matchAll(/ id="([^"]+)" data-nav="([^"]+)"/g)].map((m) => `${m[1]}:${m[2]}`);
-    expect(ids).toEqual(['hold:Held out of the merge queue', 'description:Description', 'notes:Notes', 'plan-text:Plan', 'session:Session', 'console:Console', 'attachments:Attachments · 1', 'activity:Activity']);
+    expect(ids).toEqual(['images:Images to review · 1', 'hold:Held out of the merge queue', 'description:Description', 'notes:Notes', 'plan-text:Plan', 'session:Session', 'console:Console', 'attachments:Attachments · 1', 'activity:Activity']);
   });
 });
