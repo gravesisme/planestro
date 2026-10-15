@@ -549,6 +549,40 @@ describe('tools from outside: MCP servers per model (f5)', () => {
     expect(seen[0].message).toMatch(/no sounds budget has been approved for this item/);
   });
 
+  it("a card option sets the MCP budget on the user's tap, never the orchestrator's set_item_fields (#371)", async () => {
+    const PAID = (yml: string) => MCP(yml).replace('mcp: [sounds], mcp_calls_per_item: 2, hold_for_review: true }', 'mcp: [sounds], user_approves_plans: true, hold_for_review: true }');
+    const seen: string[] = [];
+    const claude = (world: FakeWorld) => { const inner = new DryRunClaudePort(world); return { async runTurn(o: any): Promise<TurnResult> {
+      if (o.phase === 'plan') return inner.runTurn(o);
+      seen.push((await o.onPermission({ tool: 'mcp__sounds__text_to_sound_effects', input: {} })).action);
+      if (seen.length === 1) { await o.tools.report_blocked('No sounds budget is set: the plan needs 3 calls'); return { sessionId: 's1', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', blocked: 'no budget' }; }
+      return inner.runTurn(o);
+    }, runCustomTurn: inner.runCustomTurn.bind(inner) }; };
+    const { store, engine } = await setup({ claude, config: PAID });
+    store.updateLocal({ mcp_servers: { sounds: { command: 'uvx' } } } as any);
+    const item = store.createItem({ title: 'Siren', description: 'x', implementer: 'sfx' });
+    const plain = store.createItem({ title: 'Plain', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => fmOf(store, item.id).status === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => fmOf(store, item.id).blocked === true && fmOf(store, item.id).op === undefined);
+    expect(seen).toEqual(['deny']);
+    expect((engine as any).orchestratorSetsFields(item.id, { mcp_budget: 3 })).toMatch(/not permitted: mcp_budget[\s\S]*set_mcp_budget/);
+    const card = { question: 'Let the siren spend 3 sounds calls?', why: 'The approved plan states 3 calls and none are budgeted.', options: [{ label: 'Set 3 calls', description: 'As the plan says', recommended: true, set_mcp_budget: 3 }, { label: 'Stop', description: 'Leave it' }] };
+    store.mutateItem(plain.id, [{ set: { blocked: true, blocked_reason: 'agent_blocked' } }], 'engine');
+    expect((engine as any).askUserDecision(plain.id, card)).toMatch(/no MCP servers to spend it on/);
+    expect((engine as any).askUserDecision(item.id, card)).toContain('recorded');
+    expect(fmOf(store, item.id).mcp_budget).toBeUndefined();                         // filing the card spends nothing
+    await engine.answerDecision(item.id, { choice: 'Set 3 calls' });
+    expect(fmOf(store, item.id).mcp_budget).toBe(3);
+    expect(activityOf(store, item.id)).toContain('MCP budget set to 3 calls to sounds (mcp_budget)');
+    expect(store.journal.read({ type: 'orchestrator.decision_answered' }).at(-1)?.data?.mcp_budget).toBe(3);
+    await engine.unblock(item.id, 'Your sounds budget is set: carry on.', 'orchestrator');
+    await waitFor(() => seen.length === 2);
+    expect(seen[1]).toBe('allow');
+  });
+
   it('a model naming a server this machine does not define stops the item as mcp_missing', async () => {
     const { store, engine } = await setup({ config: MCP });
     const item = store.createItem({ title: 'Nowhere', description: 'x', implementer: 'lonely' });

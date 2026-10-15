@@ -47,6 +47,13 @@ describe('decision cards', () => {
   });
 });
 
+it('carries an MCP budget an option sets on the tap (#371)', () => {
+  const v = validateDecision(card(no, yes({ set_mcp_budget: 35 })));
+  expect(v.ok && v.value.options[0]).toMatchObject({ set_mcp_budget: 35 });
+  for (const n of [0, -1, 1.5, NaN]) expect(errorOf(card(no, yes({ set_mcp_budget: n })))).toContain('set_mcp_budget');
+  expect(errorOf(card(no, yes({ set_mcp_budget: 3, action: create })))).toContain('has both set_mcp_budget and an action');
+});
+
 it('validates explicit turn/token extensions without silently dropping them', () => {
   const v = validateDecision(card(no, yes({ raise_budget_turns: 10, raise_budget_tokens: 500000, fresh: true })));
   expect(v.ok && v.value.options[0]).toMatchObject({ raise_budget_turns: 10, raise_budget_tokens: 500000, fresh: true });
