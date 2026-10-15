@@ -73,7 +73,7 @@ const MAX_TRIAGE_ROUNDS = 4;
  * the task it was given. `final`: the prompt is already what the agent is to read (a re-run).
  * `syncFirst`: the branch is synced with its base before the turn starts (#217), and the turn told how.
  */
-interface TurnOpts { opener?: boolean; fresh?: true | 'auto'; note?: string; carryOn?: boolean; final?: boolean; estimate?: ResumeEstimate; commandGrant?: CommandGrant; syncFirst?: boolean; ruling?: true }
+interface TurnOpts { /** A plan's revision turn: it answers whatever stop the plan's last turn left (#359). */ clearsStop?: true; opener?: boolean; fresh?: true | 'auto'; note?: string; carryOn?: boolean; final?: boolean; estimate?: ResumeEstimate; commandGrant?: CommandGrant; syncFirst?: boolean; ruling?: true }
 interface PendingTurn { key: string; phase: TurnPhase; prompt: string; extraAllowed: string[]; oneShotCommands: string[]; opts: TurnOpts }
 
 /** The CLI's quote as the engine's estimate: the write when the cache has expired, a read of the same window when it has not. */
@@ -1073,6 +1073,7 @@ export class LiveEngine implements Engine {
   private runPendingTurn(id: string, turn: PendingTurn): Promise<TurnResult | undefined> {
     const current = this.store.requireItem(id).file.frontmatter.op_data?.pending_turn as PendingTurn | undefined;
     if (current?.key !== turn.key) return Promise.resolve(undefined);
+    if (turn.opts.clearsStop) this.clearSupersededStop(id);
     if (turn.opts.syncFirst && !(this._paused || this.draining || this.stopping) && !this.store.requireItem(id).file.frontmatter.taken_over) {
       return this.syncBeforeTurn(id, turn).then((synced) => { this.savePendingTurn(id, synced); return this.runPendingTurn(id, synced); });
     }
@@ -1201,6 +1202,7 @@ export class LiveEngine implements Engine {
     const round = (fm.plan_revisions ?? 0) + 1;
     const counted = by === 'orchestrator' && !amend;   // an amendment is a stipulation the orchestrator accepts with, not one of its fix rounds
     const { plan_amended: _old, ...opData } = fm.op_data ?? {};
+    this.clearSupersededStop(id);
     this.store.mutateItem(id, [
       { transition: { to: 'PLAN_IN_PROGRESS', actor: by } },
       ...(counted ? [{ set: { plan_revisions: round } } as ItemOp] : []),
@@ -1211,7 +1213,21 @@ export class LiveEngine implements Engine {
     const ask = amend
       ? `The orchestrator approves your plan with these amendments. Fold them into the plan (do not just append them) and submit the whole plan again with the ${tool} tool, then end your turn:\n\n${message}`
       : `Changes requested on your plan:\n\n${message}\n\nRevise it accordingly and submit it again with the ${tool} tool, then end your turn.`;
-    this.queueTurn(id, 'plan', `${this.resumeNote(id, 'your plan review')}\n\n${ask}`);
+    this.queueTurn(id, 'plan', `${this.resumeNote(id, 'your plan review')}\n\n${ask}`, [], [], { clearsStop: true });
+  }
+
+  /**
+   * A plan sent back for revision answers any stop its plan's last turn left (#359, HH-534: a token cap after submit_plan
+   * blocked turn_error while the amended turn was queued behind it, and that turn then ran blocked, in triage, with the old
+   * turn's wake handing it to the user). The block, its triage and its card go, and so does the wake waiting on the old
+   * turn. Done when the plan is sent back and again when its turn starts, since the old turn may end after the first.
+   */
+  private clearSupersededStop(id: string): void {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    if (!fm.blocked) return;
+    this.pendingWakes.delete(id);
+    const stale = ['blocked', 'blocked_reason', ...(fm.triage ? ['triage'] : []), ...(fm.awaiting === 'user' ? ['awaiting', 'awaiting_data'] : [])];
+    this.store.mutateItem(id, [{ unset: stale }, { activity: { actor: 'app', text: `the earlier stop (${fm.blocked_reason}) is cleared: the plan's revision turn answers it` } }], 'engine', { commit: `${id}: stop cleared by the plan's revision` });
   }
 
   async message(id: string, text: string, by: 'user' | 'orchestrator' = 'user'): Promise<void> {

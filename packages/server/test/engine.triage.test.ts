@@ -157,6 +157,57 @@ describe('needs-you triage', () => {
     expect(world.worktrees.has(cwd())).toBe(true);
   });
 
+  it('amend_plan after a token cap that followed submit_plan clears the stop, and its stale wake never runs (#359, HH-534)', async () => {
+    const capped = async (o: TurnOptions): Promise<TurnResult> => { await o.tools.submit_plan('# the plan'); return { ...ok, subtype: 'token_cap', isError: true, error: 'token cap', planSubmitted: '# the plan', acted: true }; };
+    const labels: string[] = [];
+    let amended = false;
+    const a = agents({ firstTurn: capped, orchestrate: async (w) => {
+      labels.push(w.label);
+      if (amended) return;
+      amended = true;
+      expect(await w.tools('amend_plan').handler({ id: 'TP-1', amendments: 'Add a retention step.' })).toContain('sent back to be amended');
+    } });
+    const { store: s, engine: e, id } = await setup(a.claude, (y) => y.replace('may_approve_plans: false', 'may_approve_plans: true'));
+    await e.start();
+    await waitFor(() => a.prompts.length >= 2 && fmOf(s, id).status === 'PLAN_READY' && !e['turns'].has(id) && !e['jobs'].has(id));
+    await sleep(200);
+    expect(a.prompts[1]).toContain('approves your plan with these amendments');
+    const fm = fmOf(s, id);
+    expect(fm.blocked).toBeUndefined(); expect(fm.triage).toBeUndefined();
+    expect(labels).not.toContain('blocked_turn_error');
+    expect(activityOf(s, id)).toMatch(/BLOCKED \(turn_error\)[\s\S]*the earlier stop \(turn_error\) is cleared: the plan's revision turn answers it/);
+  });
+
+  it('amend_plan on a plan already blocked by its last turn clears the block and its triage at once (#359)', async () => {
+    const capped = async (o: TurnOptions): Promise<TurnResult> => { await o.tools.submit_plan('# the plan'); return { ...ok, subtype: 'token_cap', isError: true, error: 'token cap', planSubmitted: '# the plan', acted: true }; };
+    const seen: { blocked?: boolean; triage: boolean }[] = [];
+    const a = agents({ firstTurn: capped, orchestrate: async (w) => {
+      if (w.label !== 'blocked_turn_error') return;
+      expect(await w.tools('amend_plan').handler({ id: 'TP-1', amendments: 'Add a retention step.' })).toContain('sent back to be amended');
+      const fm = fmOf(store!, 'TP-1'); seen.push({ blocked: fm.blocked, triage: Boolean(fm.triage) });
+    } });
+    const { store: s, engine: e, id } = await setup(a.claude);
+    await e.start();
+    await waitFor(() => a.prompts.length >= 2 && fmOf(s, id).status === 'PLAN_READY' && !e['turns'].has(id) && !e['jobs'].has(id));
+    expect(seen).toEqual([{ blocked: undefined, triage: false }]);
+    // The revised plan is the user's to approve (not delegated here), not a stop.
+    expect(fmOf(s, id)).toMatchObject({ status: 'PLAN_READY', awaiting: 'plan_approval' });
+    expect(fmOf(s, id).blocked).toBeUndefined();
+    expect(activityOf(s, id)).not.toContain('needs you:');
+  });
+
+  it('a stop wake whose block is gone by the time it is served is dropped (#359)', async () => {
+    const a = agents({ firstTurn: blocksOnce, orchestrate: async () => {} });
+    const { store: s, engine: e, id } = await setup(a.claude);
+    const orch = e['orchestrator'];
+    s.mutateItem(id, [{ set: { blocked: true, blocked_reason: 'turn_error' } }], 'engine');
+    orch.wake({ type: 'blocked_agent_blocked', item: id });   // replaced by another block
+    s.mutateItem(id, [{ unset: ['blocked', 'blocked_reason'] }], 'engine');
+    orch.wake({ type: 'blocked_turn_error', item: id });      // no longer blocked
+    await sleep(100);
+    expect(a.wakes).toEqual([]);
+  });
+
   it('retry_op resumes a session stopped by a transient failure', async () => {
     // It had done something first: a failure before anything is retried by planestro itself (#241).
     const fails = async (): Promise<TurnResult> => ({ ...ok, subtype: 'error_during_execution', isError: true, error: 'GitHub 503', acted: true });
