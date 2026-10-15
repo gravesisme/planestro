@@ -162,7 +162,9 @@ npm start -- ../myproject-planning --open     # http://127.0.0.1:4300
 
 Requirements: Node 24, git, the GitHub CLI (`gh`, authenticated) and Claude
 Code (`claude`, logged in); the Codex CLI (`codex`, logged in) if you route work
-to it. The engine starts in `dry-run`; flip `engine.mode`
+to it. `npx tsx packages/server/src/cli.ts check ../myproject-planning --preflight`
+checks all of them on this machine, with no model call, and prints the repair for
+anything missing. The engine starts in `dry-run`; flip `engine.mode`
 to `live` in Settings once you have watched a dry run against your repo.
 Project rules come from your repo's own `CLAUDE.md` / `AGENTS.md`; planestro
 adds nothing project-specific.
