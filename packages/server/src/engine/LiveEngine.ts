@@ -1778,12 +1778,12 @@ export class LiveEngine implements Engine {
     const prior = fm.op_data?.transient_retry;
     if (!prior && after > 0 && !fm.taken_over && quietTransientFailure(result)) {
       const due = new Date(Date.now() + after * 1000).toISOString();
-      // A patch Codex rejected (#344) is retried with what went wrong, since the turn had done things before it.
+      // A patch the runner rejected (#344) is retried with what went wrong, since the turn had done things before it.
       const patch = patchRejected(result);
       this.store.mutateItem(id, [
         { set: { blocked: true, blocked_reason: reason, op_data: { ...(fm.op_data ?? {}), transient_retry: { due_at: due, reason, subtype: result.subtype, ...(patch ? { message: PATCH_REJECTED_RETRY } : {}) } } } },
         ...(fm.op ? [{ unset: ['op', 'op_started_at'] } as ItemOp] : []),
-        { activity: { actor: 'app', text: `BLOCKED (${reason}): ${detail.replace(/\s+/g, ' ').slice(0, 500)}. ${patch ? 'Codex ended the turn over a rejected patch' : 'The turn produced nothing'}, so planestro retries it once in ${after}s (concurrency.transient_retry_after_s)` } },
+        { activity: { actor: 'app', text: `BLOCKED (${reason}): ${detail.replace(/\s+/g, ' ').slice(0, 500)}. ${patch ? 'The runner ended the turn over a rejected patch' : 'The turn produced nothing'}, so planestro retries it once in ${after}s (concurrency.transient_retry_after_s)` } },
       ], 'engine', { commit: `${id}: blocked (${reason}), retrying once` });
       this.store.journal.append({ type: 'turn.transient_retry', item: id, actor: 'engine', data: { reason, subtype: result.subtype, error: (result.error ?? '').slice(0, 300), due_at: due } });
       this.note('warn', `${id}: ${reason} (${result.subtype}) before the turn did anything; retrying once in ${after}s`);

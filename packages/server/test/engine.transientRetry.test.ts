@@ -157,7 +157,7 @@ describe('a Codex turn ended over a rejected multi-operation patch (#344)', () =
     expect(a.prompts).toHaveLength(2);
     expect(a.prompts[1]).toContain('several of its operations targeted the same file');
     expect(a.prompts[1]).toContain('JSON or manifest file whole');
-    expect(activityOf(s, id)).toMatch(/Codex ended the turn over a rejected patch, so planestro retries it once/);
+    expect(activityOf(s, id)).toMatch(/The runner ended the turn over a rejected patch, so planestro retries it once/);
     expect(a.wakes.filter((w) => w.startsWith('blocked_'))).toEqual([]);
   });
 
