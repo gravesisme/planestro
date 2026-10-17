@@ -182,7 +182,7 @@ is plain text and readable without the tool; git history is the audit trail.
 - \`releases/<version>.md\` — one release: status, date, the items it shipped, and the sections
   \`releases.sections\` in planestro.yml names (release notes, store copy, your notes).
 - \`attachments/${prefix}-<n>/\` — small managed attachments; large assets are referenced by path.
-- \`journal/YYYY-MM.ndjson\` — the operational event stream (high frequency; not the place to read history).
+- \`journal/YYYY-MM.ndjson\` — the operational event stream (high frequency, machine-local and ignored by git; not the place to read history).
 
 Editing by hand: fine while planestro is not running (it commits your edits as \`manual: …\`
 at startup). While it runs, planestro is the only writer — use the UI, or "Reload from disk".

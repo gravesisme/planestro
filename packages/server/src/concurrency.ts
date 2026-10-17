@@ -25,7 +25,7 @@ function ledgerOf(store: DataStore): Ledger {
   let l = ledgers.get(store);
   if (l) return l;
   l = { ci: [], seen: new Set() };
-  for (const e of store.journal.read()) {
+  for (const e of store.journal.read({ types: [CI_RESULT, CONCURRENCY_CHANGED] })) {
     if (e.type === CI_RESULT && e.data) {
       const r = { at: e.ts, ...(e.item ? { item: e.item } : {}), ...e.data } as CiResultSeen;
       l.ci.push(r);

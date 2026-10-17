@@ -1,3 +1,4 @@
+import { isTableSeparator } from './textScan.ts';
 // ---- a merge hold stated in a plan's text (#97) ----
 
 /**
@@ -42,7 +43,7 @@ const asUntil = (tail: string) => tail.replace(/^(?:till|before|after|once|when)
 const cap = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
 /** Emphasis and code marks go; an underscore inside a word (skip_merge) stays. */
 const unmarked = (s: string) => s.replace(/[*`]/g, '').replace(/(^|[^\w])_+(?=\w)/g, '$1').replace(/(\w)_+(?=[^\w]|$)/g, '$1');
-const isSeparator = (row: string) => /^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/.test(row.trim());
+const isSeparator = isTableSeparator;
 
 /** The plan as sentences: fenced code left out, list, heading and quote marks dropped, a table row read cell by cell. */
 function sentencesOf(plan: string): string[] {

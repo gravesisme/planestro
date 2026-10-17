@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
-import { WORKTREE_SCOPE, type Config, type PermissionRedirect } from '@planestro/shared';
+import { WORKTREE_SCOPE, trimEndBlanks, type Config, type PermissionRedirect } from '@planestro/shared';
 import type { PermissionRequest } from './ports.ts';
 import { literal, readShell, type Command, type Item, type Word } from './shell.ts';
 import { secretDenial, type SecretOptions } from './secrets.ts';
@@ -117,7 +117,7 @@ function insideWorktree(raw: string, worktree: string, from: string = worktree):
 
 const GIT_C = /^git\s+-C\s+('[^']*'|"[^"]*"|\S+)\s+/;
 const CD = /^cd\s+('[^']*'|"[^"]*"|\S+)$/;
-const SEPARATORS = /\s*(?:&&|\|\||;|\|)\s*/;
+const SEPARATORS = /&&|\|\||;|\|/; // its parts are trimmed: `\s*` on either side backtracked on a long run of spaces
 const HEREDOC = /<<-?\s*'?"?\w+'?"?\s*$/;
 
 /**
@@ -358,7 +358,7 @@ function firstReading(command: string, prefixes: string[], worktree: string | un
       at.enter(to);
       continue;
     }
-    if (!segmentAllowed(it.text.replace(HEREDOC, '').replace(/[ \t]+$/, ''), prefixes, worktree)) return false;
+    if (!segmentAllowed(trimEndBlanks(it.text.replace(HEREDOC, '')), prefixes, worktree)) return false;
   }
   return true;
 }
@@ -480,7 +480,7 @@ function staysInWorktree(command: string, prefixes: string[], worktree: string, 
       const from = names.findIndex((_, i) => refused.command.every((c, j) => names[i + j] === c));
       if (from >= 0 && it.words.slice(from + refused.command.length).some((w) => expand(w, vars, dirs)?.values.some((v) => refused.flag.test(v)))) return false;
     }
-    if (!segmentAllowed(it.text.replace(HEREDOC, '').replace(/[ \t]+$/, ''), prefixes, worktree)) return false;
+    if (!segmentAllowed(trimEndBlanks(it.text.replace(HEREDOC, '')), prefixes, worktree)) return false;
   }
   return true;
 }

@@ -444,7 +444,7 @@ export class Orchestrator {
    */
   private recentChat(now = Date.now()): string {
     const since = now - RECENT_CHAT_DAYS * 86_400_000;
-    const chat = this.store.journal.read().filter((j) => (j.type === 'orchestrator.user_message' || j.type === 'orchestrator.reply') && Date.parse(j.ts) >= since).slice(-RECENT_CHAT_ENTRIES);
+    const chat = this.store.journal.read({ types: ['orchestrator.user_message', 'orchestrator.reply'] }).filter((j) => (j.type === 'orchestrator.user_message' || j.type === 'orchestrator.reply') && Date.parse(j.ts) >= since).slice(-RECENT_CHAT_ENTRIES);
     if (!chat.some((j) => j.type === 'orchestrator.user_message')) return '';
     const line = (j: (typeof chat)[number]) => {
       const who = j.type === 'orchestrator.user_message' ? 'user' : 'you';

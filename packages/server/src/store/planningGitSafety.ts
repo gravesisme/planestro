@@ -28,10 +28,34 @@ const refusal = () => new Error('machine-local settings or runtime files are tra
 /** Preserve custom rules, but put private exclusions last so earlier negations cannot expose them. */
 export function ensurePlanningIgnores(dir: string): boolean {
   const path = join(dir, '.gitignore');
-  const before = existsSync(path) ? readFileSync(path, 'utf8') : '';
-  const required = '/.planestro/\n/planestro.local.yml\n/logs/\n.DS_Store\n';
-  if (before.endsWith(required)) return false;
-  atomicWrite(path, before + (before && !before.endsWith('\n') ? '\n' : '') + required);
+  let before = existsSync(path) ? readFileSync(path, 'utf8') : '';
+  if (before.endsWith(REQUIRED_IGNORES)) return false;
+  // The block as an older planestro wrote it is replaced, not repeated.
+  for (const old of OLD_IGNORES) if (before.endsWith(old)) { before = before.slice(0, -old.length); break; }
+  atomicWrite(path, before + (before && !before.endsWith('\n') ? '\n' : '') + REQUIRED_IGNORES);
+  return true;
+}
+const REQUIRED_IGNORES = '/.planestro/\n/planestro.local.yml\n/logs/\n/journal/\n.DS_Store\n';
+const OLD_IGNORES = ['/.planestro/\n/planestro.local.yml\n/logs/\n.DS_Store\n'];
+
+/**
+ * The journal is machine-local and appended to all day: tracked, every hourly checkpoint committed the month's file
+ * again, and one planning repository passed 3 GiB. It is ignored and taken out of the index (never deleted; history is
+ * left as it is), in one commit of its own. With anything else already staged it waits for the next start rather
+ * than commit that too. Returns whether it committed.
+ */
+export function untrackJournal(dir: string, toolVersion: string, log?: (level: 'info' | 'warn', msg: string) => void): boolean {
+  if (!existsSync(join(dir, '.git'))) return false;
+  const ignoresChanged = ensurePlanningIgnores(dir);
+  const tracked = git(dir, ['ls-files', '--cached', '--', 'journal']);
+  if (!tracked && !ignoresChanged) return false;
+  const staged = git(dir, ['diff', '--cached', '--name-only']).split('\n').filter((p) => p && p !== '.gitignore' && !p.startsWith('journal/'));
+  if (staged.length) { log?.('warn', `journal: left tracked for now (${staged.length} other change(s) already staged)`); return false; }
+  if (tracked) git(dir, ['rm', '-r', '-q', '--cached', '--', 'journal']);
+  git(dir, ['add', '--', '.gitignore']);
+  if (!git(dir, ['diff', '--cached', '--name-only'])) return false;
+  git(dir, ['commit', '-q', '-m', tracked ? 'planestro: stop tracking journal' : 'planestro: ignore journal', '-m', 'The journal stays on disk; it is machine-local and no longer versioned.', '-m', `Planestro-Version: ${toolVersion}`]);
+  log?.('info', tracked ? 'git: stopped tracking journal/ (the files stay on disk)' : 'git: journal/ ignored');
   return true;
 }
 

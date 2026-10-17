@@ -13,7 +13,7 @@ releases/1.5.0.md      one release: notes, store copy, the items it shipped
 questions/Q-7.md       one orchestrator question: # Summary, # Details, # Recommendation, # Thread
 schedules/audit.md     one recurring piece of work: cron, time zone, the item it files (# Description)
 attachments/MP-12/     small files attached to an item
-journal/2026-09.ndjson every operation, begin and end
+journal/2026-09.ndjson every operation, begin and end (machine-local: ignored by git)
 ```
 
 The data dir is git-versioned with meaningful commits (`MP-12: approve plan`). While

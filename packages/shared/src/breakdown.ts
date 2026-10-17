@@ -1,4 +1,5 @@
 import { canPlan, type ModelDef } from './schema.ts';
+import { atxHeading, isTableSeparator } from './textScan.ts';
 
 /** What a breakdown needs to know of a model: its id, and whether it can plan. */
 type ModelRef = Pick<ModelDef, 'id'> & Partial<Pick<ModelDef, 'runner' | 'external' | 'codex_transport'>>;
@@ -81,7 +82,7 @@ const CHILD_HEADING = /^(?:\d+[.)]\s*)?(?:(?:the|proposed|suggested)\s+)?(?:chil
 /** A table column that holds child items. */
 const CHILD_COLUMN = /^(?:#\s*)?(?:child|children|child\s+item|sub-?item)s?$/i;
 const cells = (row: string) => row.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.replace(/[*_`]/g, '').trim());
-const isSeparator = (row: string) => /^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/.test(row.trim());
+const isSeparator = isTableSeparator;
 const plain = (s: string) => s.replace(/[*_`]/g, '').trim();
 
 /**
@@ -94,17 +95,17 @@ const plain = (s: string) => s.replace(/[*_`]/g, '').trim();
 export function epicShapeOf(plan: string): string | null {
   const lines = plan.split('\n');
   for (let i = 0; i < lines.length; i++) {
-    const h = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(lines[i]);
-    if (h && CHILD_HEADING.test(plain(h[2]))) {
+    const h = atxHeading(lines[i]);
+    if (h && CHILD_HEADING.test(plain(h.text))) {
       let entries = 0; let tableRows = 0;
       for (let j = i + 1; j < lines.length; j++) {
         const next = /^(#{1,6})\s/.exec(lines[j]);
-        if (next && next[1].length <= h[1].length) break;
+        if (next && next[1].length <= h.level) break;
         if (/^(?:[-*+]|\d+[.)])\s+\S/.test(lines[j])) entries++;               // top-level entries only: a child's own sub-bullets are indented
         else if (/^\s*\|/.test(lines[j]) && !isSeparator(lines[j])) tableRows++;
       }
       const n = Math.max(entries, tableRows - 1);                               // a table's first row is its header
-      if (n >= 2) return `its plan has a "${plain(h[2])}" section listing ${n} child items`;
+      if (n >= 2) return `its plan has a "${plain(h.text)}" section listing ${n} child items`;
     }
     if (/^\s*\|/.test(lines[i]) && i + 1 < lines.length && isSeparator(lines[i + 1]) && cells(lines[i]).some((c) => CHILD_COLUMN.test(c))) {
       let rows = 0;

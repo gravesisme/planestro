@@ -1,4 +1,4 @@
-import { SCHEMA_VERSION, categoryColors, QUESTION_SECTIONS, canonicalTimestamp, isoLocal, parseItemFile, serializeQuestionFile, setQuestionSection, appendThread, type QuestionFile } from '@planestro/shared';
+import { SCHEMA_VERSION, joinLines, categoryColors, QUESTION_SECTIONS, canonicalTimestamp, isoLocal, parseItemFile, serializeQuestionFile, setQuestionSection, appendThread, type QuestionFile } from '@planestro/shared';
 import YAML from 'yaml';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -101,7 +101,7 @@ export function importJournalQuestions(dataDir: string): { imported: number; set
     const last = again.at(-1)?.ts ?? first.ts;
     const now = isoLocal();
     const file: QuestionFile = {
-      frontmatter: { schema: 1, id, status: moot ? 'resolved' : 'open', ...(item ? { item } : {}), asked_at: first.ts, updated_at: moot ? now : last, ...(moot ? { resolved_at: now, resolution: `${item} ${moot}` } : {}), headline: first.text.replace(/\s*\n\s*/g, ' ') },
+      frontmatter: { schema: 1, id, status: moot ? 'resolved' : 'open', ...(item ? { item } : {}), asked_at: first.ts, updated_at: moot ? now : last, ...(moot ? { resolved_at: now, resolution: `${item} ${moot}` } : {}), headline: joinLines(first.text) },
       sections: QUESTION_SECTIONS.map((title) => ({ title, body: '' })),
     };
     setQuestionSection(file, 'Summary', first.text + (first.item && !item ? ` (about ${first.item})` : ''));
