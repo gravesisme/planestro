@@ -31,6 +31,11 @@ export function settingWrites(file: SettingFile, body: unknown): Write[] {
   return out;
 }
 
+/** The keys of a body whose values run (`runs` in the registry), refused unless the request comes from this machine. */
+export function runningKeys(file: SettingFile, body: unknown): string[] {
+  return settingWrites(file, body).filter(([def]) => def.runs).map(([def]) => def.key);
+}
+
 function clean(def: SettingDef, v: unknown): unknown {
   if (v === null || v === undefined || (typeof v === 'string' && !v.trim())) return undefined;
   switch (def.control) {

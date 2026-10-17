@@ -18,10 +18,21 @@ import { LiveEngine } from './engine/LiveEngine.ts';
 import { makePorts } from './engine/makePorts.ts';
 import { VALIDATED_CLAUDE_VERSION, VALIDATED_CODEX_VERSION } from './compat.ts';
 import { TOOL_VERSION } from './config.ts';
-import { allowedHosts, bindHost, linkRefusal, requestGuard } from './guard.ts';
+import { allowedHosts, bindHost, isLoopbackBind, linkRefusal, requestGuard } from './guard.ts';
 import { PortInUseError } from './exitCodes.ts';
 
 export interface ServeOptions { dataDir: string; port?: number; host?: string; mock?: boolean; engineFactory?: (store: DataStore, emit: (e: ServerEvent) => void) => Engine; log?: (level: string, msg: string) => void }
+
+/**
+ * The app shell's Content-Security-Policy: everything from planestro itself. Model-written text is shown as markdown,
+ * and nothing in it may fetch from elsewhere (an image's URL can carry what the page shows). React sets inline styles.
+ * The WebSocket is named by host as well as 'self', which older Safari does not extend to ws:.
+ */
+export function appCsp(host?: string): string {
+  const ws = host && /^[\w.:\[\]-]+$/.test(host) ? ` ws://${host} wss://${host}` : '';
+  return [`default-src 'self'`, `script-src 'self'`, `style-src 'self' 'unsafe-inline'`, `img-src 'self' data: blob:`, `media-src 'self' data: blob:`,
+    `connect-src 'self'${ws}`, `object-src 'none'`, `base-uri 'none'`, `frame-ancestors 'none'`, `form-action 'self'`].join('; ');
+}
 
 /**
  * The built web UI. The page that names the bundles is always revalidated (#280): a reload answered with a stale page
@@ -30,7 +41,12 @@ export interface ServeOptions { dataDir: string; port?: number; host?: string; m
  */
 export function serveWeb(app: Hono, webDist: string): void {
   const root = relative(process.cwd(), webDist) || '.';
-  app.use('/*', async (c, next) => { await next(); if (c.res.headers.get('content-type')?.startsWith('text/html')) c.res.headers.set('cache-control', 'no-cache'); });
+  app.use('/*', async (c, next) => {
+    await next();
+    if (!c.res.headers.get('content-type')?.startsWith('text/html')) return;
+    c.res.headers.set('cache-control', 'no-cache');
+    c.res.headers.set('content-security-policy', appCsp(c.req.header('host')));
+  });
   app.use('/*', serveStatic({ root }));
   app.get('*', (c) => c.html(readFileSync(join(webDist, 'index.html'), 'utf8')));
 }
@@ -54,7 +70,7 @@ export async function startServer(o: ServeOptions) {
   observer = engine;
   const app = new Hono();
   // Before every route, the WebSocket upgrade included: see guard.ts.
-  app.use('*', requestGuard(allowedHosts(host, store.local.allowed_hosts), (l, m) => log(l, m), { lanOnly: store.local.lan_access }));
+  app.use('*', requestGuard(allowedHosts(host, store.local.allowed_hosts), (l, m) => log(l, m), { lanOnly: store.local.lan_access || !isLoopbackBind(host), declared: store.local.allowed_hosts }));
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
   // The API's JSON only (the state payload runs to megabytes, too slow for a phone on slow Wi-Fi); never /ws or /mcp's streams.
   app.use('/api/*', compress({ contentTypeFilter: /^application\/json/ }));

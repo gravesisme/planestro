@@ -4056,13 +4056,21 @@ export class LiveEngine implements Engine {
     if (!paths?.length) return '';
     const fm = this.store.requireItem(id).file.frontmatter;
     if (!fm.worktree) return 'Nothing attached: this item has no worktree.';
-    const root = this.absWorktree(fm.worktree);
+    let root: string;
+    try { root = realpathSync(this.absWorktree(fm.worktree)); } catch { return 'Nothing attached: the worktree is not there.'; }
+    const max = this.store.config.attachments.managed_max_bytes;
     const done: string[] = []; const skipped: string[] = [];
     for (const p of paths.slice(0, 12)) {
-      const abs = join(root, p); const rel = relative(root, abs);
+      const rel = relative(root, join(root, p));
       if (!rel || rel.startsWith('..') || isAbsolute(rel)) { skipped.push(`${p} (outside your worktree)`); continue; }
       if (!ATTACHABLE.test(p)) { skipped.push(`${p} (not an image or video)`); continue; }
       try {
+        // A link is followed only where it stays inside: `shot.png -> ~/.aws/credentials` would be committed with the data dir.
+        const abs = realpathSync(join(root, p));
+        if (!abs.startsWith(root + '/')) { skipped.push(`${p} (links outside your worktree)`); continue; }
+        const st = statSync(abs);
+        if (!st.isFile()) { skipped.push(`${p} (not a file)`); continue; }
+        if (st.size > max) { skipped.push(`${p} (${st.size} bytes, over attachments.managed_max_bytes ${max})`); continue; }
         const data = readFileSync(abs);
         this.store.addManagedAttachment(id, rel.replace(/[\/\\]/g, '-'), data, 'engine');
         done.push(p);
@@ -4144,10 +4152,10 @@ export class LiveEngine implements Engine {
       let abs: string;
       try { abs = realpathSync(join(root, p)); } catch { return `Rejected: "${p}" does not exist in the worktree.`; }
       if (abs !== root && !abs.startsWith(root + '/')) return `Rejected: "${p}" is outside the worktree.`;
-      if (!statSync(abs).isFile()) return `Rejected: "${p}" is not a file.`;
-      const data = readFileSync(abs);
-      if (data.length > max) return `Rejected: "${p}" is ${data.length} bytes; a hand-off file may be at most ${max} (attachments.managed_max_bytes). Hand off the deliverable itself, not previews or scratch.`;
-      copied.push(this.store.addManagedAttachment(to, p.replace(/\//g, '__'), data, 'engine').path);
+      const st = statSync(abs);
+      if (!st.isFile()) return `Rejected: "${p}" is not a file.`;
+      if (st.size > max) return `Rejected: "${p}" is ${st.size} bytes; a hand-off file may be at most ${max} (attachments.managed_max_bytes). Hand off the deliverable itself, not previews or scratch.`;
+      copied.push(this.store.addManagedAttachment(to, p.replace(/\//g, '__'), readFileSync(abs), 'engine').path);
     }
     const absPaths = copied.map((rel) => join(this.store.dataDir, rel));
     const who = by === 'worker' ? `${from}'s worker` : by === 'orchestrator' ? `the orchestrator, from ${from}` : `the user, from ${from}`;

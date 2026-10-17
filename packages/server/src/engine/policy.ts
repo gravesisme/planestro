@@ -5,6 +5,7 @@ import { WORKTREE_SCOPE, type Config, type PermissionRedirect } from '@planestro
 import type { PermissionRequest } from './ports.ts';
 import { literal, readShell, type Command, type Item, type Word } from './shell.ts';
 import { secretDenial, type SecretOptions } from './secrets.ts';
+import { gitDenial } from './gitDenials.ts';
 
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
 
@@ -237,6 +238,8 @@ export function makePolicy(config: Config, baseBranch: string, worktree: string,
         return null;
       }
       const cmd = String(req.input.command ?? '');
+      const git = gitDenial(cmd);
+      if (git) return git;
       if (leavesWorktree(cmd, worktree)) return `your working directory is pinned to your worktree (${worktree}): every command starts there and a cd out of it is refused. Run the command from the worktree, with paths relative to it.`;
       // Every command the shell would run (#109), heredoc bodies aside: split on the first line alone, a denied
       // command on a second line or after a single `&` was never looked at. Unread, every line and every `&` split.
