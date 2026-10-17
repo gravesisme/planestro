@@ -8,6 +8,7 @@ import { CONFIG_FILE, readLocalConfig } from './config.ts';
 import { bindHost } from './guard.ts';
 import { EXIT_DATA_DIR_IN_USE, EXIT_PORT_IN_USE } from './exitCodes.ts';
 import { pidAlive } from './supervise.ts';
+import { atomicWrite } from './store/atomicWrite.ts';
 
 // ---- `planestro start` / `stop` / `status` (#175) ----
 // A server started as a Claude Code background task died at that task's 2-hour cap, and took the
@@ -64,9 +65,8 @@ export function readInstance(dataDir: string): Instance | undefined {
 }
 function writeInstance(r: Instance): void {
   mkdirSync(join(r.data_dir, '.planestro'), { recursive: true });
-  writeFileSync(instancePath(r.data_dir), JSON.stringify(r, null, 2));
-  mkdirSync(indexDir(), { recursive: true });
-  writeFileSync(indexPath(r.data_dir), JSON.stringify({ data_dir: r.data_dir }));
+  atomicWrite(instancePath(r.data_dir), JSON.stringify(r, null, 2));
+  atomicWrite(indexPath(r.data_dir), JSON.stringify({ data_dir: r.data_dir }));
 }
 export function forgetInstance(dataDir: string): void {
   for (const p of [instancePath(dataDir), indexPath(dataDir)]) { try { unlinkSync(p); } catch { /* already gone */ } }

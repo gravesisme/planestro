@@ -348,3 +348,15 @@ describe('what a new project starts with (#49)', () => {
     expect(store.renderPrompt('orchestrator-system', undefined)).toContain('(None yet.');
   });
 });
+
+describe('managed attachments with one name', () => {
+  it('two in the same second each keep their own file', async () => {
+    store = await DataStore.open(makeFixture().dataDir);
+    const it = store.createItem({ title: 'Pastes' });
+    const a = store.addManagedAttachment(it.id, 'image.png', Buffer.from('first'));
+    const b = store.addManagedAttachment(it.id, 'image.png', Buffer.from('second'));
+    expect(a.path).not.toBe(b.path);
+    expect(readFileSync(join(store.dataDir, a.path), 'utf8')).toBe('first');
+    expect(readFileSync(join(store.dataDir, b.path), 'utf8')).toBe('second');
+  });
+});

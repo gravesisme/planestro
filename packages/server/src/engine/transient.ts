@@ -7,6 +7,13 @@ const QUOTA = /usage limit|quota|billing|credit balance|\bENOSPC\b|No space left
 /** A 4xx other than a timeout or a rate limit is the request's own fault: the same request fails the same way. */
 const CLIENT_ERROR = /\b(?:API Error:?|status(?: code)?:?|HTTP(?:\/[\d.]+)?)\s*4(?!08|29)\d\d\b/i;
 
+/**
+ * What git and gh say when the answer is "try again", not "this is wrong": another process held a
+ * ref lock (a fetch racing a merge's push, HH-124), or the network or GitHub blinked (a `gh pr
+ * view` timeout, HH-123). Anything else fails at once, as before.
+ */
+export const TRANSIENT = /cannot lock ref|unable to update local ref|could not resolve host|connection (timed out|reset|refused|closed)|operation timed out|timed out|i\/o timeout|early EOF|RPC failed|remote end hung up|ECONNRESET|ETIMEDOUT|EAI_AGAIN|TLS handshake|unexpected EOF|HTTP 50[0234]|Bad Gateway|Service Unavailable|Gateway Timeout|secondary rate limit/i;
+
 /** Text other than an API error the CLI printed in the model's place. */
 const saidAnything = (text: string): boolean => text.split('\n').some((l) => l.trim() && !/^API Error: \d{3}\b/.test(l.trim()));
 

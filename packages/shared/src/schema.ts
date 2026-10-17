@@ -523,6 +523,11 @@ export const Config = z.object({
     runner_limits: z.record(z.string(), z.number().int().positive()).default({ codex: 1 }),
     /** An active item that nothing has driven for this many minutes is stalled: resumed once, then blocked. 0 turns the detector off. */
     stall_after_min: z.number().min(0).default(10),
+    /**
+     * A live turn with no output for this many minutes is stopped and blocked `turn_quiet`: a session held open by a
+     * background process, or a CLI that hung, kept its slot forever, and the stall detector skips live turns. 0 is off.
+     */
+    turn_quiet_min: z.number().min(0).default(0),
     /** A turn that failed transiently before it produced anything is retried once after this many seconds (#241). 0 turns it off. */
     transient_retry_after_s: z.number().min(0).default(30),
     /**
@@ -538,7 +543,7 @@ export const Config = z.object({
       auto_step_down: z.boolean().default(false),
       step_down_load_per_cpu: z.number().positive().default(2),
     }).default({ ci_window: 10, max_load_per_cpu: 1, settle_min: 30, auto_step_down: false, step_down_load_per_cpu: 2 }),
-  }).default({ max_sessions: 3, max_local_jobs: 1, runner_limits: { codex: 1 }, stall_after_min: 10, transient_retry_after_s: 30, guard: { ci_window: 10, max_load_per_cpu: 1, settle_min: 30, auto_step_down: false, step_down_load_per_cpu: 2 } }),
+  }).default({ max_sessions: 3, max_local_jobs: 1, runner_limits: { codex: 1 }, stall_after_min: 10, turn_quiet_min: 0, transient_retry_after_s: 30, guard: { ci_window: 10, max_load_per_cpu: 1, settle_min: 30, auto_step_down: false, step_down_load_per_cpu: 2 } }),
   permissions: PermissionRules.default({ allow: [], deny: [], redirect: [] }),
   /**
    * Heavy local runs (#218): a worker's `run_heavy` runs one at a time across the data dir, and before each batch waits

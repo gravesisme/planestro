@@ -381,6 +381,14 @@ describe('hand-off between items', () => {
     expect(fm.awaiting).toBe('permission');
     expect((fm.op_data?.pending_messages as string[])[0]).toContain('handed off 1 file');
     expect(fm.attachments).toHaveLength(2);
+    // blocked (a cap, a failure: awaiting the user): the block and its card stay, and no turn runs past them
+    store.mutateItem(b.id, [{ unset: ['awaiting', 'awaiting_data'] }, { set: { blocked: true, blocked_reason: 'turn_budget', awaiting: 'user', awaiting_data: { decision: { question: 'Raise the cap?', options: [{ label: 'Yes' }, { label: 'No' }] } }, op_data: {} } }], 'engine');
+    expect(await engine.handOff(a.id, b.id, ['f.txt'], 'third')).toContain('blocked (turn_budget) and will read the hand-off when it is unblocked');
+    const blocked = store.getItem(b.id)!.file.frontmatter;
+    expect(blocked.blocked).toBe(true);
+    expect(blocked.awaiting_data?.decision).toBeTruthy();
+    expect((blocked.op_data?.pending_messages as string[])).toHaveLength(1);
+    expect((engine as any).jobs.has(b.id)).toBe(false);
   });
 });
 
