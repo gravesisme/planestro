@@ -666,11 +666,15 @@ redesign and site redesign can follow a clearly labeled experimental release.
   October 3. Retain the prior owner decisions about historical identity/paths;
   do not rewrite history just because old branches exist. Keep planning data
   and pre-rewrite backups out of the public code repository.
-- [ ] Publish one correct experimental installation path: separate planning Git
+- [x] Publish one correct experimental installation path: separate planning Git
   repo, explicit verified base, correct provider instructions, loopback startup,
   and mode-change restart. Document O3 workarounds until implemented.
-- [ ] State support/contribution expectations and supported Node/platform versions;
-  declare Node compatibility in package metadata. Clone/install/build is an
+  *(Pre-open-source audit, 2026-10-17: `init` creates and commits the planning repository,
+  resolves the base without a literal fallback, and excludes a nested folder through git;
+  README and Getting started give the restart and loopback recipe, and document
+  `--layout orphan-branch` as needing its worktree first.)*
+- [x] State support/contribution expectations and supported Node/platform versions;
+  declare Node compatibility in package metadata. *(CONTRIBUTING.md, `engines`, `.nvmrc`, 2026-10-17.)* Clone/install/build is an
   acceptable first distribution; the private workspace package flags do not
   themselves block making GitHub source public.
 - [ ] Prepare required `check` status, force-push/deletion restrictions and security
@@ -685,10 +689,10 @@ redesign and site redesign can follow a clearly labeled experimental release.
 - [x] Rewrite SECURITY.md for the machine-access trust model, including untrusted
   input (A1). *(Second review, D6/P3.)*
 - [x] Remove the model API-key paths from code and docs (D6, P9).
-- [ ] Document the platforms (macOS used, Linux in CI) and raise CI's timeout to 20 minutes.
-  Declare the Agent SDK as a `packages/server` dependency (A2, A3).
-- [ ] Add CONTRIBUTING, issue/PR templates, Dependabot and `docs/what-planestro-sends.md`
-  (A4, A5).
+- [x] Document the platforms (macOS used, Linux in CI) and raise CI's timeout to 20 minutes.
+  Declare the Agent SDK as a `packages/server` dependency (A2, A3). *(2026-10-17.)*
+- [x] Add CONTRIBUTING, issue/PR templates, Dependabot and `docs/what-planestro-sends.md`
+  (A4, A5). *(2026-10-17.)*
 - [x] Remove the Crystal Cavern dogfood log (A6). Decide whether history must be
   rewritten for it before the flip.
 - [ ] Record the release revision, CI, audit and scan evidence, accepted exceptions,

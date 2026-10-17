@@ -13,7 +13,7 @@
 #   planestro cli <args…>       the planestro CLI itself
 #
 # Settings (environment):
-#   PLANESTRO_DIR       planestro checkout (default: ../planestro beside the repo, then ~/Projects/planestro)
+#   PLANESTRO_DIR       planestro checkout (default: the one this plugin is in, then ../planestro beside the repo)
 #   PLANESTRO_DATA_DIR  the data dir, when it is not <repo>/planning or the current directory
 
 set -u
@@ -44,7 +44,7 @@ checkout() {
 	if [ -n "${PLANESTRO_DIR:-}" ]; then is_checkout "$PLANESTRO_DIR" && { echo "$PLANESTRO_DIR"; return 0; }; die "PLANESTRO_DIR=$PLANESTRO_DIR is not an installed planestro checkout (npm install there)"; fi
 	here=$(cd "$(dirname "$0")/../../.." 2>/dev/null && pwd)
 	root=$(repo_root 2>/dev/null || true)
-	for c in "$here" ${root:+"$root/../planestro"} "$HOME/Projects/planestro"; do
+	for c in "$here" ${root:+"$root/../planestro"}; do
 		is_checkout "$c" && { (cd "$c" && pwd); return 0; }
 	done
 	die "no planestro checkout found: clone gravesisme/planestro, run npm install there, and set PLANESTRO_DIR to it"
@@ -77,7 +77,7 @@ case "$cmd" in
 		data=$(locate) || die "no planestro data dir here; cd into the project or set PLANESTRO_DATA_DIR"
 		root=$(dirname "$data")
 		if [ -x "$root/start-planestro.sh" ]; then echo "using $root/start-planestro.sh"; exec "$root/start-planestro.sh"; fi
-		case " $* " in *" --port "*) ;; *) die "no start-planestro.sh in $root, and no --port: say which port (\`planestro status\` lists the ones in use), e.g. /planestro start --port 4301 --host 0.0.0.0 --watch" ;; esac
+		case " $* " in *" --port "*) ;; *) die "no start-planestro.sh in $root, and no --port: say which port (\`planestro status\` lists the ones in use), e.g. /planestro start --port 4301" ;; esac
 		cli start "$data" "$@" ;;
 	stop)
 		data=$(locate) || die "no planestro data dir here; cd into the project or set PLANESTRO_DATA_DIR"

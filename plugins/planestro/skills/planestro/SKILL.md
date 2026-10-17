@@ -15,7 +15,7 @@ and its UI and orchestrator are where state changes. Say so if the user asks you
 
 Every action goes through one script, `"${CLAUDE_PLUGIN_ROOT}/scripts/planestro"`, which finds the
 project's data dir (the current directory, `<repo>/planning`, or `$PLANESTRO_DATA_DIR`) and a
-planestro checkout (`$PLANESTRO_DIR`, `../planestro` beside the repo, or `~/Projects/planestro`).
+planestro checkout (`$PLANESTRO_DIR`, the checkout this plugin is installed from, or `../planestro` beside the repo).
 Run it with the Bash tool, **in the foreground: never with `run_in_background`**, with a timeout of
 at least 120000 ms for `start`. If it fails, show its message: it says what is missing.
 
@@ -40,7 +40,7 @@ Take the first word of the arguments.
 1. Run `"${CLAUDE_PLUGIN_ROOT}/scripts/planestro" start <the remaining arguments>`. When the repo has
    `start-planestro.sh`, the script uses it and ignores the flags.
 2. If it asks for a port, ask the user which one (show `"${CLAUDE_PLUGIN_ROOT}/scripts/planestro" status`
-   so they can see which are taken) and suggest `--port N --host 0.0.0.0 --watch`. Never pick one yourself.
+   so they can see which are taken) and suggest `--port N`. Never pick one yourself.
 3. Report the URL, the log path and the reconcile corrections it printed. "already running" is
    success. The server runs in a session of its own and outlives this conversation.
 

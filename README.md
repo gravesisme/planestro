@@ -160,12 +160,25 @@ npx tsx packages/server/src/cli.ts init ../myproject-planning --repo ../myprojec
 npm start -- ../myproject-planning --open     # http://127.0.0.1:4300
 ```
 
-Requirements: Node 24, git, the GitHub CLI (`gh`, authenticated) and Claude
-Code (`claude`, logged in); the Codex CLI (`codex`, logged in) if you route work
-to it. `npx tsx packages/server/src/cli.ts check ../myproject-planning --preflight`
+Requirements: Node 24, git (with a `user.name` and `user.email`), the GitHub CLI
+(`gh`, authenticated), and an agent CLI for each runner your models use: Claude
+Code (`claude`, logged in), the Codex CLI (`codex`, logged in), or both.
+`npx tsx packages/server/src/cli.ts check ../myproject-planning --preflight`
 checks all of them on this machine, with no model call, and prints the repair for
-anything missing. The engine starts in `dry-run`; flip `engine.mode`
-to `live` in Settings once you have watched a dry run against your repo.
+anything missing. macOS is where planestro is used day to day; Linux runs its CI.
+
+`init` makes the planning folder a git repository of its own when it is not one
+already, and commits the seed files: that history is the audit trail. Keep any
+remote you push it to private. If `origin/HEAD` is not set in your code repo, it
+takes the branch checked out and says so; pass `--default-branch` to choose.
+
+The engine starts in `dry-run`; once you have watched a dry run against your repo,
+set `engine.mode` to `live` in Settings and **restart the server**: the mode is read
+at startup, and the header says which one is running.
+
+planestro is MIT-licensed. It depends on the Claude Agent SDK, which is distributed
+under Anthropic's own terms (see the SDK's README), and runs the agents on your
+own Claude Code or Codex login.
 Project rules come from your repo's own `CLAUDE.md` / `AGENTS.md`; planestro
 adds nothing project-specific.
 
@@ -179,7 +192,7 @@ the UI and open pages reload; server changes restart it between agent turns
 the terminal (or the Claude Code session) that started it is gone, use `start`:
 
 ```sh
-npm run planestro -- start ../myproject-planning --port 4300 --host 0.0.0.0 --watch
+npm run planestro -- start ../myproject-planning --port 4300
 npm run planestro -- status
 npm run planestro -- stop ../myproject-planning
 ```
@@ -219,7 +232,7 @@ A consumer repo's scripts can be one line each. From a repo whose backlog is its
 `planning/` directory, with planestro checked out beside it:
 
 ```sh
-npm --prefix ../planestro run -s planestro -- start "$PWD/planning" --port 4300 --host 0.0.0.0 --watch
+npm --prefix ../planestro run -s planestro -- start "$PWD/planning" --port 4300
 npm --prefix ../planestro run -s planestro -- stop "$PWD/planning"
 ```
 
@@ -314,7 +327,8 @@ whatever `codex` is. It has no login of its own and never takes a model API key;
 `ANTHROPIC_API_KEY` and the Bedrock/Vertex switches in its environment are
 dropped from every session, so usage always comes out of your plans. The dollars it counts are API-price estimates,
 a yardstick for budgets, not charges. Access to the machine is the access
-control: see [SECURITY.md](SECURITY.md).
+control: see [SECURITY.md](SECURITY.md). There is no telemetry; everything that
+leaves the machine is listed in [What planestro sends](docs/what-planestro-sends.md).
 
 ### What agents may do
 

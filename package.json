@@ -4,6 +4,17 @@
   "private": true,
   "license": "MIT",
   "description": "Local-first backlog planning and orchestration with Claude Code or Codex",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gravesisme/planestro.git"
+  },
+  "homepage": "https://github.com/gravesisme/planestro#readme",
+  "bugs": {
+    "url": "https://github.com/gravesisme/planestro/issues"
+  },
+  "engines": {
+    "node": ">=24"
+  },
   "type": "module",
   "workspaces": [
     "packages/*"
@@ -22,9 +33,7 @@
     "sample": "tsx packages/server/src/cli.ts sample"
   },
   "devDependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.251",
     "@types/node": "^24.0.0",
-    "tsx": "^4.20.0",
     "typescript": "^5.8.0",
     "zod": "^4.0.0",
     "vitest": "^4.1.11"

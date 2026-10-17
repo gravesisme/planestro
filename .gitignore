@@ -5,3 +5,6 @@ dist/
 .DS_Store
 spikes/out/
 tmp/
+# Claude Code's machine-local settings and the worktrees its sessions make here
+.claude/settings.local.json
+.claude/worktrees/
