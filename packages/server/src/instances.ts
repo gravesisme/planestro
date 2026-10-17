@@ -1,6 +1,6 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, openSync, closeSync, readFileSync, readdirSync, unlinkSync, writeFileSync, appendFileSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, openSync, closeSync, readFileSync, readdirSync, unlinkSync, writeFileSync, appendFileSync, statSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +8,7 @@ import { CONFIG_FILE, readLocalConfig } from './config.ts';
 import { bindHost } from './guard.ts';
 import { EXIT_DATA_DIR_IN_USE, EXIT_PORT_IN_USE } from './exitCodes.ts';
 import { pidAlive } from './supervise.ts';
+import { atomicWrite } from './store/atomicWrite.ts';
 
 // ---- `planestro start` / `stop` / `status` (#175) ----
 // A server started as a Claude Code background task died at that task's 2-hour cap, and took the
@@ -64,9 +65,8 @@ export function readInstance(dataDir: string): Instance | undefined {
 }
 function writeInstance(r: Instance): void {
   mkdirSync(join(r.data_dir, '.planestro'), { recursive: true });
-  writeFileSync(instancePath(r.data_dir), JSON.stringify(r, null, 2));
-  mkdirSync(indexDir(), { recursive: true });
-  writeFileSync(indexPath(r.data_dir), JSON.stringify({ data_dir: r.data_dir }));
+  atomicWrite(instancePath(r.data_dir), JSON.stringify(r, null, 2));
+  atomicWrite(indexPath(r.data_dir), JSON.stringify({ data_dir: r.data_dir }));
 }
 export function forgetInstance(dataDir: string): void {
   for (const p of [instancePath(dataDir), indexPath(dataDir)]) { try { unlinkSync(p); } catch { /* already gone */ } }
@@ -182,6 +182,7 @@ export async function startInstance(o: StartOptions): Promise<StartResult> {
   mkdirSync(join(dataDir, '.planestro'), { recursive: true });
   const serveArgs = ['serve', dataDir, '--port', String(port), '--host', host, ...(o.watch ? ['--watch'] : [])];
   const { cmd, args } = o.serveCommand?.(serveArgs) ?? { cmd: process.execPath, args: [...(process.execArgv.some((a) => a.includes('tsx')) ? process.execArgv : ['--import', 'tsx']), CLI, ...serveArgs] };
+  rotateServeLog(log);
   appendFileSync(log, `\n==== planestro start ${new Date().toISOString()}: ${serveArgs.join(' ')}\n`);
   const fd = openSync(log, 'a');
   // detached: the child leads a new session and process group (setsid), so it survives this
@@ -285,4 +286,9 @@ export function describeInstance(r: Instance): string {
   let size = '';
   try { size = ` (${Math.round(statSync(r.log).size / 1024)} KB)`; } catch { /* no log */ }
   return `${r.data_dir}\n  ${r.url}${r.host === '0.0.0.0' ? ' (listening on 0.0.0.0)' : ''}  pid ${r.pid}  process group ${r.pgid}  up ${uptime(r.started_at)}${r.watch ? '  --watch' : ''}\n  mcp ${r.url}/mcp\n  log ${r.log}${size}`;
+}
+
+/** A serve log over 10 MB is kept once as `serve.log.1` (the one before goes) at each start: it only ever grew. */
+export function rotateServeLog(log: string, max = 10 * 1024 * 1024): void {
+  try { if (statSync(log).size > max) renameSync(log, `${log}.1`); } catch { /* none yet */ }
 }

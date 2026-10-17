@@ -22,7 +22,7 @@ export interface SecretOptions {
 }
 
 /** Directories whose every file is a secret, under the home folder. */
-const SECRET_DIRS = ['.ssh', '.aws', '.gnupg', join('.config', 'gcloud')];
+const SECRET_DIRS = ['.ssh', '.aws', '.gnupg', join('.config', 'gcloud'), join('.config', 'gh')];
 
 const SECRET_NAMES: { re: RegExp; what: string }[] = [
   { re: /^\.env(?!\.example$)/, what: '.env files' },
@@ -59,6 +59,9 @@ function listed(abs: string, o: SecretOptions): string | null {
   if (gcloud && within(abs, resolve(gcloud))) return 'gcloud config';
   const auth = [join(o.codexHome ?? process.env.CODEX_HOME ?? join(home, '.codex'), 'auth.json'), join(home, '.codex', 'auth.json'), join(home, '.planestro', 'codex', 'auth.json')];
   if (auth.includes(abs)) return "Codex's login (auth.json)";
+  // Claude Code's login where no keychain holds it (Linux), in the home folder and in each account's (#242, #340).
+  if (abs.endsWith('/.credentials.json') && [join(home, '.claude'), ...(o.dirs ?? []).map((d) => resolve(d.startsWith('~/') ? join(home, d.slice(2)) : d))].includes(dirname(abs))) return "Claude Code's login (.credentials.json)";
+  if (/^\/proc\/[^/]+\/environ$/.test(abs)) return "a process's environment (/proc/*/environ)";
   if (abs.endsWith('/.git/config')) return '.git/config';
   const name = basename(abs);
   for (const n of SECRET_NAMES) if (n.re.test(name)) return n.what;

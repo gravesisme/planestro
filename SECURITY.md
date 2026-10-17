@@ -36,17 +36,31 @@ web page you visit can send requests to `localhost`. So every request is checked
 any route runs, including the WebSocket upgrade:
 
 - the `Host` must be one of this machine's names, which defeats DNS rebinding;
-- a request marked `Sec-Fetch-Site: cross-site`, or with an `Origin` from anywhere else,
-  is refused, which defeats cross-site request forgery.
+- an `Origin` must be the page's own: the same name *and port* as the `Host` (or a name
+  you declared in `allowed_hosts`, for a proxy in front). A page on another `localhost`
+  port, such as a dev server or something a worker just built, is another site;
+- a request marked `Sec-Fetch-Site: cross-site` is refused, and so is a `same-site` one
+  that changes anything;
+- a write with a form or `text/plain` body, which browsers send without a CORS preflight,
+  is refused. The UI only sends JSON and file uploads.
+
+The UI's page also sends a Content-Security-Policy that loads scripts, images and
+connections from planestro alone. Text a model wrote is shown as markdown, and a picture
+in it pointing anywhere else is shown as a link, never fetched.
 
 What's left is everything that reaches the port *as this machine*: other processes and
 other user accounts on it. **`--host 0.0.0.0` or `lan_access` moves the boundary
 outward:** anyone who can reach the port is treated as you, with no login to stop them.
-`lan_access` refuses remote addresses outside loopback, private (RFC 1918), link-local
-and IPv6 ULA ranges, so a port-forward gets a 403. It filters addresses; it does not
-identify people. Only use it on a network where every device is yours, such as a private
-overlay like Tailscale. Names you reach it by go in `allowed_hosts` in
-`planestro.local.yml`.
+Any bind other than loopback refuses remote addresses outside loopback, private
+(RFC 1918), link-local, Tailscale's 100.64.0.0/10 and IPv6 ULA ranges, so a port-forward
+gets a 403. It filters addresses; it does not identify people. Only use it on a network
+where every device is yours, such as a private overlay like Tailscale. Names you reach it
+by go in `allowed_hosts` in `planestro.local.yml`.
+
+From another device you can answer, approve and steer, but not change what runs on this
+machine: settings that are commands or programs (setup hooks, the local check, generated
+file commands, notification commands, `permissions.allow`, the Claude and Codex binaries,
+the code repository's path) and MCP servers are changed only from this machine itself.
 
 ## What agents may do
 
@@ -58,6 +72,12 @@ rail, not a sandbox: an allowed command runs with your privileges. The worktree-
 rules (`…@worktree`) and the pinned working directory read a command's text. They stop a
 command that names a path outside the worktree, not a script that writes there once it
 runs.
+
+Some things no rule can allow, judged before the SDK's own approvals as well as in the
+policy: reading or writing a secret file (SSH, cloud and GitHub CLI logins, `.env`,
+keys, a process's `/proc/*/environ`, the Claude and Codex logins), and the git options
+that write files or run programs (`--output`, fetch refspecs, `rebase --exec`,
+`--upload-pack`, `-c core.*`). A session never inherits `GH_TOKEN` or `GITHUB_TOKEN`.
 
 A Codex worker runs inside the Codex CLI's own sandbox: writes confined to its worktree
 (and temp), no network for its commands. Under app-server, a command that needs approval
@@ -105,9 +125,12 @@ ignore rules while adding the private exclusions. planestro refuses startup or a
 commits when machine-local settings or runtime files are tracked, and refuses pushes
 whose outgoing history includes them. See the
 [recovery instructions](docs/troubleshooting.md#machine-local-files-are-tracked).
-Everything else in the data dir (items, plans, prompts, the journal) is committed to its
-git repository and pushed to its remote if it has one. Keep that remote private, and
-don't paste secrets into items.
+Everything else in the data dir (items, plans, prompts, questions, attachments) is committed
+to its git repository and pushed to its remote if it has one. Keep that remote private, and
+don't paste secrets into items. The journal stays on this machine: it is ignored by git, and
+token-shaped strings (GitHub, Anthropic/OpenAI, Slack, AWS keys, bearer headers) are redacted
+before a line is written. Nothing is sent anywhere you did not configure: see
+[What planestro sends](docs/what-planestro-sends.md).
 
 **Attachments.** Managed attachments are restricted to real files in a known item's
 attachment directory; symlinks and traversals are rejected. Active document formats

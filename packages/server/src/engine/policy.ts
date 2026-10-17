@@ -1,10 +1,11 @@
 import { existsSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
-import { WORKTREE_SCOPE, type Config, type PermissionRedirect } from '@planestro/shared';
+import { WORKTREE_SCOPE, trimEndBlanks, type Config, type PermissionRedirect } from '@planestro/shared';
 import type { PermissionRequest } from './ports.ts';
 import { literal, readShell, type Command, type Item, type Word } from './shell.ts';
 import { secretDenial, type SecretOptions } from './secrets.ts';
+import { gitDenial } from './gitDenials.ts';
 
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
 
@@ -116,7 +117,7 @@ function insideWorktree(raw: string, worktree: string, from: string = worktree):
 
 const GIT_C = /^git\s+-C\s+('[^']*'|"[^"]*"|\S+)\s+/;
 const CD = /^cd\s+('[^']*'|"[^"]*"|\S+)$/;
-const SEPARATORS = /\s*(?:&&|\|\||;|\|)\s*/;
+const SEPARATORS = /&&|\|\||;|\|/; // its parts are trimmed: `\s*` on either side backtracked on a long run of spaces
 const HEREDOC = /<<-?\s*'?"?\w+'?"?\s*$/;
 
 /**
@@ -237,6 +238,8 @@ export function makePolicy(config: Config, baseBranch: string, worktree: string,
         return null;
       }
       const cmd = String(req.input.command ?? '');
+      const git = gitDenial(cmd);
+      if (git) return git;
       if (leavesWorktree(cmd, worktree)) return `your working directory is pinned to your worktree (${worktree}): every command starts there and a cd out of it is refused. Run the command from the worktree, with paths relative to it.`;
       // Every command the shell would run (#109), heredoc bodies aside: split on the first line alone, a denied
       // command on a second line or after a single `&` was never looked at. Unread, every line and every `&` split.
@@ -355,7 +358,7 @@ function firstReading(command: string, prefixes: string[], worktree: string | un
       at.enter(to);
       continue;
     }
-    if (!segmentAllowed(it.text.replace(HEREDOC, '').replace(/[ \t]+$/, ''), prefixes, worktree)) return false;
+    if (!segmentAllowed(trimEndBlanks(it.text.replace(HEREDOC, '')), prefixes, worktree)) return false;
   }
   return true;
 }
@@ -477,7 +480,7 @@ function staysInWorktree(command: string, prefixes: string[], worktree: string, 
       const from = names.findIndex((_, i) => refused.command.every((c, j) => names[i + j] === c));
       if (from >= 0 && it.words.slice(from + refused.command.length).some((w) => expand(w, vars, dirs)?.values.some((v) => refused.flag.test(v)))) return false;
     }
-    if (!segmentAllowed(it.text.replace(HEREDOC, '').replace(/[ \t]+$/, ''), prefixes, worktree)) return false;
+    if (!segmentAllowed(trimEndBlanks(it.text.replace(HEREDOC, '')), prefixes, worktree)) return false;
   }
   return true;
 }

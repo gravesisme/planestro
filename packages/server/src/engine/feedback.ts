@@ -33,7 +33,7 @@ const issueUrl = (repo: string | undefined, n: number): string | undefined => (r
 
 /** Every note with what became of it, oldest first: all of them, so the Console can reach every one it counts (#220). */
 export function notesWithLinks(store: DataStore): NoteView[] {
-  const all = store.journal.read().filter((e) => e.type === NOTE_TYPE || e.type === NOTE_LINK_TYPE);
+  const all = store.journal.read({ types: [NOTE_TYPE, NOTE_LINK_TYPE] });
   const links = new Map<string, NoteLinks>();
   for (const e of all) {
     if (e.type !== NOTE_LINK_TYPE) continue;

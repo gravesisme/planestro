@@ -84,4 +84,37 @@ describe('machine-local planning files never enter automatic Git operations', ()
     if (process.platform !== 'win32') expect(statSync(path).mode & 0o777).toBe(0o600);
     expect(readFileSync(path, 'utf8')).toContain(dummy);
   });
+
+  it('takes a tracked journal out of the index in one commit of its own, leaving the files on disk', async () => {
+    const { dataDir } = makeFixture();
+    // As an older planestro left it: the journal committed, the ignore block without it.
+    writeFileSync(join(dataDir, '.gitignore'), readFileSync(join(dataDir, '.gitignore'), 'utf8').replace('/journal/\n', ''));
+    mkdirSync(join(dataDir, 'journal'), { recursive: true });
+    writeFileSync(join(dataDir, 'journal', '2026-09.ndjson'), '{"ts":"2026-09-01T00:00:00Z","type":"x","actor":"engine"}\n');
+    git(dataDir, 'add', '-A'); git(dataDir, 'commit', '-qm', 'old checkpoint');
+    store = await DataStore.open(dataDir);
+    expect(git(dataDir, 'log', '-1', '--format=%s').trim()).toBe('planestro: stop tracking journal');
+    expect(git(dataDir, 'show', '--name-status', '--format=', 'HEAD').trim().split('\n').sort()).toEqual(['D\tjournal/2026-09.ndjson', 'M\t.gitignore']);
+    expect(git(dataDir, 'ls-files', 'journal').trim()).toBe('');
+    expect(existsSync(join(dataDir, 'journal', '2026-09.ndjson'))).toBe(true);
+    expect(readFileSync(join(dataDir, '.gitignore'), 'utf8').match(/\/\.planestro\//g)).toHaveLength(1); // the old block replaced, not repeated
+    store.journal.append({ type: 'y', actor: 'engine' });
+    expect(store.git.checkpoint()).toBe(false);
+    store.close(); store = undefined;
+    const head = git(dataDir, 'rev-parse', 'HEAD');
+    store = await DataStore.open(dataDir);
+    expect(git(dataDir, 'rev-parse', 'HEAD')).toBe(head);
+  });
+
+  it('leaves the journal tracked while something else is staged, rather than commit that too', async () => {
+    const { dataDir } = makeFixture();
+    mkdirSync(join(dataDir, 'journal'), { recursive: true });
+    writeFileSync(join(dataDir, 'journal', '2026-09.ndjson'), '{}\n');
+    git(dataDir, 'add', '-f', 'journal'); git(dataDir, 'commit', '-qm', 'old checkpoint');
+    writeFileSync(join(dataDir, 'notes.txt'), 'mine'); git(dataDir, 'add', 'notes.txt');
+    const head = git(dataDir, 'rev-parse', 'HEAD');
+    store = await DataStore.open(dataDir);
+    expect(git(dataDir, 'rev-parse', 'HEAD')).toBe(head);
+    expect(git(dataDir, 'ls-files', 'journal')).not.toBe('');
+  });
 });

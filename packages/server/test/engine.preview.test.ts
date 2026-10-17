@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DataStore } from '../src/store/DataStore.ts';
 import { LiveEngine } from '../src/engine/LiveEngine.ts';
@@ -77,5 +78,22 @@ describe('preview links and worker attachments (#137)', () => {
     expect(existsSync(join(store.dataDir, att[0].path))).toBe(true);
     expect(await tools.report_done('Done.', undefined, undefined, ['tools/cache/shot.png'])).toMatch(/Attached for the user: tools\/cache\/shot\.png\. End your turn now\./);
     expect(fm(it.id).attachments).toHaveLength(2);
+  });
+
+  it('attach does not follow a link out of the worktree, so a secret file is never copied into the data dir', async () => {
+    const { store, engine } = await setup();
+    const it = store.createItem({ title: 'Links', description: 'x' });
+    store.mutateItem(it.id, [{ set: { status: 'IN_PROGRESS', worktree: '.claude/worktrees/lnk', branch: 'lm/lnk' } }], 'engine');
+    const root = (engine as any).absWorktree('.claude/worktrees/lnk') as string;
+    mkdirSync(root, { recursive: true });
+    const secret = join(mkdtempSync(join(tmpdir(), 'planestro-secret-')), 'credentials');
+    writeFileSync(secret, 'aws_secret_access_key=x');
+    symlinkSync(secret, join(root, 'shot.png'));
+    writeFileSync(join(root, 'real.png'), Buffer.from([0x89, 0x50]));
+    symlinkSync(join(root, 'real.png'), join(root, 'alias.png'));
+    const said = await (engine as any).makeTools(it.id).add_note('Look.', ['shot.png', 'alias.png']);
+    expect(said).toMatch(/shot\.png \(links outside your worktree\)/);
+    expect(said).toMatch(/Attached for the user: alias\.png\./);    // a link that stays inside is fine
+    expect(fm(it.id).attachments).toHaveLength(1);
   });
 });

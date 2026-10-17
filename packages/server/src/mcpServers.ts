@@ -37,9 +37,12 @@ export function putMcpServer(store: DataStore, name: string, body: unknown): Loc
   const text = (k: string) => { const v = body[k]; if (v !== undefined && v !== null && typeof v !== 'string') throw new Error(`${k}: expected text`); return typeof v === 'string' ? v.trim() : v; };
   const url = text('url'); const command = text('command');
   if (url && command) throw new Error('a server has a command or a url, not both');
-  if (url) { s.url = url; delete s.command; s.args = []; s.env = {}; }
+  // Keys go only where they were entered for: a new address or program starts with none, so a
+  // changed url cannot carry the stored Authorization header to another host (they are entered again).
+  const moved: string[] = [];
+  if (url) { if (was?.url !== undefined && was.url !== url && Object.keys(s.headers).length) moved.push('headers'); if (was?.url !== url) s.headers = {}; s.url = url; delete s.command; s.args = []; s.env = {}; }
   else if (url === null || url === '') delete s.url;
-  if (command) { s.command = command; delete s.url; s.headers = {}; }
+  if (command) { if (was?.command !== undefined && was.command !== command && Object.keys(s.env).length) moved.push('env'); if (was?.command !== command) s.env = {}; s.command = command; delete s.url; s.headers = {}; }
   else if (command === null || command === '') delete s.command;
   if (body.args !== undefined) {
     if (!Array.isArray(body.args) || body.args.some((a) => typeof a !== 'string')) throw new Error('args: expected a list of text');
@@ -56,7 +59,7 @@ export function putMcpServer(store: DataStore, name: string, body: unknown): Loc
       if (v === null) delete next[k];
       else if (typeof v !== 'string') throw new Error(`${field}.${k}: expected text`);
       else if (v.trim()) next[k] = v.trim();
-      else if (!(k in next)) throw new Error(`${field}.${k}: needs a value`);
+      else if (!(k in next)) throw new Error(moved.includes(field) ? `${field}.${k}: enter it again, the ${field === 'headers' ? 'url' : 'command'} changed` : `${field}.${k}: needs a value`);
     }
     s[field] = next;
   }

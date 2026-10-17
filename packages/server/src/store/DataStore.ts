@@ -14,15 +14,17 @@ import { planReviewByDefault,
   isoLocal, SCHEMA_VERSION, chatAttachmentKind, chatAttachmentRefusal, CHAT_ATTACHMENTS_DIR, type ChatAttachment,
   type ItemFile, type ItemFrontmatter, type PromptFile, type ReleaseFile, type ReleaseStatus, type QuestionFile, type QuestionStatus, type ScheduleFile, type ThreadActor, type Status, type Actor, type Flavor, type Lane, type Priority,
   type Config, type LocalConfig, type ServerEvent, type ActivityActor,
+  joinLines,
 } from '@planestro/shared';
 import { atomicWrite, cleanStaleTemps } from './atomicWrite.ts';
 import { managedAttachmentPath, managedAttachmentParts } from './managedAttachments.ts';
-import { assertSafePlanningGit } from './planningGitSafety.ts';
+import { assertSafePlanningGit, untrackJournal } from './planningGitSafety.ts';
 import { DataDirInUseError } from '../exitCodes.ts';
 import { Journal } from './Journal.ts';
 import { GitCommitter } from './GitCommitter.ts';
 import { IdAllocator } from './IdAllocator.ts';
 import { matches } from './Search.ts';
+import { takePidLock } from './pidLock.ts';
 import { MachinePolicy, machinePolicyPath, permissionRules, type EffectiveRules } from '../machinePolicy.ts';
 import { readConfig, readLocalConfig, patchConfigFile, writeLocalConfig, resolveCodeRepo, resolveWorktreesRoot, schemaStatus, TOOL_VERSION, type SchemaStatus } from '../config.ts';
 
@@ -35,7 +37,7 @@ import { readConfig, readLocalConfig, patchConfigFile, writeLocalConfig, resolve
 const ACTIVITY_REPEAT_WINDOW = 2;
 function repeatsRecentAppLine(file: ItemFile, actor: ActivityActor, text: string): boolean {
   if (actor !== 'app') return false;
-  const line = `[app] ${text.replace(/\s*\n\s*/g, ' ').trim()}`;
+  const line = `[app] ${joinLines(text).trim()}`;
   return getSection(file, 'Activity').split('\n').filter((l) => l.startsWith('- ')).slice(-ACTIVITY_REPEAT_WINDOW).some((l) => l.slice(l.indexOf(' ', 2) + 1) === line);
 }
 
@@ -136,6 +138,9 @@ export class DataStore {
     for (const d of ['items', 'prompts', 'releases', 'questions', 'schedules']) for (const f of cleanStaleTemps(join(dataDir, d))) opts.log?.('warn', `removed stale temp file ${d}/${f}`);
     store.load();
     await store.commitHandEdits();
+    if (!store.readOnly && store.git.enabled) {
+      try { untrackJournal(dataDir, TOOL_VERSION, (l, m) => store.log(l, m)); } catch (e) { store.log('warn', `journal: could not stop tracking it: ${String((e as Error).message).split('\n')[0]}`); }
+    }
     if (!store.readOnly) store.refreshRetiredPrompts();
     if (!store.readOnly) store.settleQuestions();
     return store;
@@ -163,16 +168,8 @@ export class DataStore {
     const dir = join(this.dataDir, '.planestro');
     mkdirSync(dir, { recursive: true });
     const lock = join(dir, 'lock');
-    if (existsSync(lock)) {
-      try {
-        const { pid } = JSON.parse(readFileSync(lock, 'utf8'));
-        if (pid && pid !== process.pid) { process.kill(pid, 0); throw new DataDirInUseError(pid, lock); }
-      } catch (e) {
-        if (e instanceof DataDirInUseError) throw e; // live process; typed so `serve` exits with its own code (#85)
-        // ESRCH or unreadable: stale lock
-      }
-    }
-    writeFileSync(lock, JSON.stringify({ pid: process.pid, started_at: isoLocal() }));
+    const got = takePidLock(lock, { pid: process.pid, started_at: isoLocal() });
+    if (!got.ok) throw new DataDirInUseError(got.holder.pid, lock); // live process; typed so `serve` exits with its own code (#85)
     this.locked = true;
   }
 
@@ -183,7 +180,7 @@ export class DataStore {
 
   // ---- loading ----
   load(): void {
-    this.items.clear(); this.prompts.clear(); this.releases.clear(); this.questions.clear(); this.schedules.clear(); this.invalid.length = 0;
+    this.items.clear(); this.childIndex = undefined; this.prompts.clear(); this.releases.clear(); this.questions.clear(); this.schedules.clear(); this.invalid.length = 0;
     mkdirSync(this.itemsDir, { recursive: true }); mkdirSync(this.promptsDir, { recursive: true });
     for (const name of readdirSync(this.itemsDir).filter((f) => f.endsWith('.md')).sort()) {
       const path = join(this.itemsDir, name);
@@ -191,7 +188,7 @@ export class DataStore {
         const file = parseItemFile(readFileSync(path, 'utf8'));
         if (`${file.frontmatter.id}.md` !== name) throw new Error(`id ${file.frontmatter.id} does not match file name`);
         if (file.frontmatter.schema > SCHEMA_VERSION) throw new Error(`schema ${file.frontmatter.schema} is newer than this planestro (${SCHEMA_VERSION})`);
-        this.items.set(file.frontmatter.id, { id: file.frontmatter.id, path, file });
+        this.items.set(file.frontmatter.id, { id: file.frontmatter.id, path, file }); this.childIndex = undefined;
       } catch (e) { this.invalid.push({ path, error: String((e as Error).message ?? e) }); this.emit({ type: 'invalid_file', path, error: String((e as Error).message ?? e) }); }
     }
     for (const name of readdirSync(this.promptsDir).filter((f) => f.endsWith('.md')).sort()) {
@@ -296,9 +293,25 @@ export class DataStore {
     return {
       lane: laneOf(fm.status), needs_you: needsYou(fm), flavor, external: flavor === 'external', base_branch, base_branch_error,
       deps_satisfied: depsSatisfied(fm, (id) => this.items.get(id)?.file.frontmatter),
-      children: [...this.items.values()].filter((s) => s.file.frontmatter.parent === fm.id).map((s) => s.id).sort((a, b) => idNumber(a) - idNumber(b)),
+      children: [...(this.children().get(fm.id) ?? [])],
     };
   }
+
+  /**
+   * Each parent's children, by id number, built once per change to the items: `derived` scanned every item for each
+   * one it was asked about, so a board of n items cost n² on every refresh and tick.
+   */
+  private children(): Map<string, string[]> {
+    if (this.childIndex) return this.childIndex;
+    const index = new Map<string, string[]>();
+    for (const s of this.items.values()) {
+      const p = s.file.frontmatter.parent;
+      if (p) { const l = index.get(p); if (l) l.push(s.id); else index.set(p, [s.id]); }
+    }
+    for (const l of index.values()) l.sort((a, b) => idNumber(a) - idNumber(b));
+    return (this.childIndex = index);
+  }
+  private childIndex?: Map<string, string[]>;
 
   /**
    * Items planestro merged into this item's base after its worktree was cut (#217), by merged_at: what a plan
@@ -324,6 +337,7 @@ export class DataStore {
     atomicWrite(path, serializeItemFile(file));
     const stored = { id, path, file: parseItemFile(readFileSync(path, 'utf8')) };
     this.items.set(id, stored);
+    this.childIndex = undefined;
     return stored;
   }
 
@@ -443,6 +457,7 @@ export class DataStore {
     if (this.derived(item).children.length) throw new Error(`${id} has children`);
     unlinkSync(item.path);
     this.items.delete(id);
+    this.childIndex = undefined;
     this.journal.append({ type: 'item.deleted', item: id, actor });
     this.emit({ type: 'item.deleted', id });
     this.git.commit(`${id}: delete item`, item.file.frontmatter.title, [this.rel(item.path)]);
@@ -473,8 +488,11 @@ export class DataStore {
     if (data.length > this.config.attachments.managed_max_bytes) throw new Error(`attachment exceeds managed_max_bytes (${this.config.attachments.managed_max_bytes}); add it as a reference instead`);
     const stamp = isoLocal().slice(0, 19).replace(/[-:T]/g, '').replace(/^(\d{8})(\d{6})$/, '$1-$2');
     const safe = basename(originalName).replace(/[^A-Za-z0-9._-]+/g, '-');
-    const rel = `attachments/${id}/${stamp}-${safe}`;
-    atomicWrite(managedAttachmentPath(this.dataDir, id, `${stamp}-${safe}`, true), data);
+    // Two in the same second with one name (every pasted picture is image.png) took one file between two entries.
+    let file = `${stamp}-${safe}`;
+    for (let n = 2; existsSync(join(this.attachmentsDir, id, file)); n++) file = `${stamp}-${n}-${safe}`;
+    const rel = `attachments/${id}/${file}`;
+    atomicWrite(managedAttachmentPath(this.dataDir, id, file, true), data);
     const entry = { path: rel, kind: 'managed' as const, added_at: isoLocal() };
     this.mutateItem(id, [{ set: { attachments: [...this.requireItem(id).file.frontmatter.attachments, entry] } }, { activity: { actor: actorToActivity(actor), text: `attached ${rel}` } }], actor, { commit: `${id}: attach ${safe}`, paths: [rel] });
     return entry;
@@ -1033,7 +1051,7 @@ export class DataStore {
 }
 
 /** A headline is one line: whatever the model wrote, newlines fold into spaces. */
-function oneLine(text: string): string { return text.replace(/\s*\n\s*/g, ' ').trim(); }
+function oneLine(text: string): string { return joinLines(text).trim(); }
 function actorToActivity(actor: Actor): ActivityActor { return actor === 'engine' ? 'app' : actor; }
 
 /**

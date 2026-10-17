@@ -112,8 +112,7 @@ export function readRegistry(): RegisteredProject[] {
 export function registerProject(entry: RegisteredProject): void {
   const list = readRegistry().filter((p) => p.data_dir !== entry.data_dir);
   list.push(entry);
-  mkdirSync(join(registryPath(), '..'), { recursive: true });
-  writeFileSync(registryPath(), YAML.stringify({ projects: list }, { lineWidth: 0 }));
+  atomicWrite(registryPath(), YAML.stringify({ projects: list }, { lineWidth: 0 }));
 }
 
 /** Pick the data dir: explicit arg, PLANESTRO_DATA_DIR, a planestro.yml in cwd, else the most recently used registered project. */

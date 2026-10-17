@@ -59,7 +59,7 @@ export async function runEfficiencyAudit(deps: AuditDeps, slot: string): Promise
   // The slot's day is the day it runs on: the digest ends the day before, whose turns are all in.
   const through = dayBefore(slot.slice(0, 10), 1);
   const types = new Set(AUDIT_DIGEST_TYPES);
-  const entries: JournalEntry[] = store.journal.read({ since: dayBefore(through, cfg.days - 1) }).filter((e) => types.has(e.type));
+  const entries: JournalEntry[] = store.journal.read({ since: dayBefore(through, cfg.days - 1), types });
   if (!turnsOn(entries, through)) return finish({ slot, outcome: 'skipped', reason: `no turns on ${through}` });
   const pick = deps.orchestrator.modelForWake();
   const agent = deps.agents[pick.runner];

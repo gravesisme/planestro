@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import YAML from 'yaml';
 import { LocalConfig } from '@planestro/shared';
+import { atomicWrite } from './store/atomicWrite.ts';
 
 /**
  * `serve --watch` keeping its own planestro checkout current (#103). Each project runs planestro from a
@@ -75,8 +76,7 @@ export function readUpdateSettings(dataDir: string): UpdateSettings {
 
 export const updateStatusPath = (dataDir: string) => join(dataDir, '.planestro', 'update.json');
 export function writeUpdateStatus(dataDir: string, s: UpdateStatus): void {
-  mkdirSync(join(dataDir, '.planestro'), { recursive: true });
-  writeFileSync(updateStatusPath(dataDir), JSON.stringify(s, null, 2));
+  atomicWrite(updateStatusPath(dataDir), JSON.stringify(s, null, 2));
 }
 export function readUpdateStatus(dataDir: string): UpdateStatus | undefined {
   try { return existsSync(updateStatusPath(dataDir)) ? JSON.parse(readFileSync(updateStatusPath(dataDir), 'utf8')) : undefined; } catch { return undefined; }

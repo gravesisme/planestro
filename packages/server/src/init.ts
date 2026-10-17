@@ -41,13 +41,20 @@ export function initDataDir(o: InitOptions): { created: string[] } {
     created.push(rel);
   };
   mkdirSync(dataDir, { recursive: true });
+  // The data dir's history is the audit trail: a separate planning repository is created when there is none (O1), so
+  // the shortest recipe does not leave unversioned files behind. Not inside the code repo, which keeps its own layout.
+  const nested = dataDir === codeRepo || dataDir.startsWith(codeRepo + '/');
+  if ((o.commit ?? true) && o.layout !== 'orphan-branch' && !nested && !insideGitRepo(dataDir)) {
+    execFileSync('git', ['-C', dataDir, 'init', '-q']);
+    log(`created a git repository for the planning data in ${dataDir}`);
+  }
   assertSafePlanningGit(dataDir);
   if (ensurePlanningIgnores(dataDir)) created.push('.gitignore');
   for (const d of ['items', 'prompts', 'attachments', 'journal']) mkdirSync(join(dataDir, d), { recursive: true });
 
   const name = o.name ?? basename(codeRepo);
   const prefix = (o.prefix ?? (name.replace(/[^A-Za-z]/g, '').slice(0, 2) || 'PL')).toUpperCase();
-  const defaultBranch = o.defaultBranch ?? detectDefaultBranch(codeRepo);
+  const defaultBranch = o.defaultBranch ?? detectDefaultBranch(codeRepo, log);
   const github = o.github ?? detectGithub(codeRepo);
   const relRepo = relative(dataDir, codeRepo) || '.';
   const categories = o.categories?.length ? o.categories : DEFAULT_CATEGORIES;
@@ -141,7 +148,9 @@ releases:
     if (!existsSync(dest)) { copyFileSync(new URL(f, SHIPPED_PROMPTS), dest); created.push(`prompts/${f}`); }
   }
   if (o.layout === 'orphan-branch' || dataDir.startsWith(codeRepo + '/')) {
-    const exclude = join(codeRepo, '.git', 'info', 'exclude');
+    // Through git: in a linked worktree `.git` is a file, and `.git/info/exclude` beneath it does not exist (O3).
+    const exclude = resolve(codeRepo, execFileSync('git', ['-C', codeRepo, 'rev-parse', '--git-path', 'info/exclude'], { encoding: 'utf8' }).trim());
+    mkdirSync(join(exclude, '..'), { recursive: true });
     const rel = relative(codeRepo, dataDir) + '/';
     if (!existsSync(exclude) || !readFileSync(exclude, 'utf8').split('\n').includes(rel)) { appendFileSync(exclude, `${rel}\n`); log(`added ${rel} to ${exclude}`); }
   }
@@ -149,14 +158,32 @@ releases:
   if ((o.commit ?? true) && existsSync(join(dataDir, '.git')) && created.length) {
     assertSafePlanningGit(dataDir);
     execFileSync('git', ['-C', dataDir, 'add', '-A', '--', ...planningStagePaths(dataDir, safePlanningPaths(dataDir))]);
-    execFileSync('git', ['-C', dataDir, 'commit', '-q', '-m', `planestro: init schema ${SCHEMA_VERSION}`, '-m', `Planestro-Version: ${TOOL_VERSION}`]);
+    try { execFileSync('git', ['-C', dataDir, 'commit', '-q', '-m', `planestro: init schema ${SCHEMA_VERSION}`, '-m', `Planestro-Version: ${TOOL_VERSION}`], { stdio: ['ignore', 'pipe', 'pipe'] }); }
+    catch (e) {
+      const why = String((e as { stderr?: Buffer }).stderr ?? (e as Error).message);
+      if (/user\.(name|email)|identity/i.test(why)) throw new Error(`the seed files are written but not committed: git has no identity here. Set one (git config --global user.name "Your Name"; git config --global user.email you@example.com) and run init again`);
+      throw e;
+    }
     log('committed seed files');
   }
   return { created };
 }
 
-function detectDefaultBranch(repo: string): string {
-  try { return execFileSync('git', ['-C', repo, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim().replace(/^origin\//, ''); } catch { return 'main'; }
+/**
+ * The branch every item targets: the remote's default (`origin/HEAD`), else the branch checked out, said so. Never a
+ * name assumed: a repository on `trunk` with no `origin/HEAD` was given `main` (O3).
+ */
+function detectDefaultBranch(repo: string, log: (m: string) => void): string {
+  const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  try { return git('symbolic-ref', '--short', 'refs/remotes/origin/HEAD').replace(/^origin\//, ''); } catch { /* no remote default recorded */ }
+  let current = '';
+  try { current = git('symbolic-ref', '--short', 'HEAD'); } catch { /* detached */ }
+  if (!current) throw new Error(`cannot tell ${repo}'s default branch (no origin/HEAD and no branch checked out): pass --default-branch <name>`);
+  log(`default branch: ${current} (the branch checked out; origin/HEAD is not set). Pass --default-branch to choose another`);
+  return current;
+}
+function insideGitRepo(dir: string): boolean {
+  try { execFileSync('git', ['-C', dir, 'rev-parse', '--git-dir'], { stdio: 'ignore' }); return true; } catch { return false; }
 }
 function detectGithub(repo: string): string | undefined {
   try {
@@ -182,7 +209,7 @@ is plain text and readable without the tool; git history is the audit trail.
 - \`releases/<version>.md\` — one release: status, date, the items it shipped, and the sections
   \`releases.sections\` in planestro.yml names (release notes, store copy, your notes).
 - \`attachments/${prefix}-<n>/\` — small managed attachments; large assets are referenced by path.
-- \`journal/YYYY-MM.ndjson\` — the operational event stream (high frequency; not the place to read history).
+- \`journal/YYYY-MM.ndjson\` — the operational event stream (high frequency, machine-local and ignored by git; not the place to read history).
 
 Editing by hand: fine while planestro is not running (it commits your edits as \`manual: …\`
 at startup). While it runs, planestro is the only writer — use the UI, or "Reload from disk".

@@ -8,6 +8,7 @@ import { KNOWN_USAGE_LIMIT_PREFIXES, USAGE_ERROR_CODES, isUsageLimitText, resetT
 import type { AccountCredentials, ClaudePort, TurnOptions, TurnResult, CustomTurnOptions, ResumeQuote, UndeliveredReport, ConnectionDrop } from '../ports.ts';
 import { PARKED_REFUSAL } from '../parks.ts';
 import { secretDenial, type SecretOptions } from '../secrets.ts';
+import { gitDenial } from '../gitDenials.ts';
 
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] });
 import { workerTools } from './workerTools.ts';
@@ -30,15 +31,20 @@ const USAGE_PREFIXES: readonly string[] = [...new Set([...(((sdk as Record<strin
  * switches that send it to Bedrock or Vertex instead. One left in the shell planestro started from would do it silently.
  */
 const NOT_THE_LOGIN = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX'] as const;
+/**
+ * GitHub tokens (#340): a session's commands inherit its environment, and planestro does the GitHub work itself
+ * (a worker may not `gh pr`). A `gh` a session does run falls back to its own stored login, as it would at a shell.
+ */
+const NOT_FOR_SESSIONS = ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN'] as const;
 
 /**
  * The environment a Claude session starts with (#242): planestro's own, on the `claude` CLI's login, without
- * `NOT_THE_LOGIN`. A named account's `home` is the session's CLAUDE_CONFIG_DIR (a second subscription's login, and where
+ * `NOT_THE_LOGIN` or `NOT_FOR_SESSIONS`. A named account's `home` is the session's CLAUDE_CONFIG_DIR (a second subscription's login, and where
  * its transcripts live).
  */
 export function claudeEnv(base: NodeJS.ProcessEnv, account?: AccountCredentials, home = homedir()): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...base };
-  for (const k of NOT_THE_LOGIN) delete env[k];
+  for (const k of [...NOT_THE_LOGIN, ...NOT_FOR_SESSIONS]) delete env[k];
   if (account?.home) env.CLAUDE_CONFIG_DIR = account.home === '~' ? home : account.home.startsWith('~/') ? join(home, account.home.slice(2)) : account.home;
   return env;
 }
@@ -152,11 +158,13 @@ export class LiveClaudePort implements ClaudePort {
  * The secret-file deny list (#227) as a PreToolUse hook. canUseTool never sees what the SDK approves by itself:
  * an allow-listed `Bash(tail *)`, a built-in read-only command (sdk-notes gotcha 3), a read inside the working
  * directory, an edit under acceptEdits. A hook runs before all of those, so the list holds whatever a rule says.
+ * The git calls no rule may approve (`gitDenial`: --output, fetch refspecs) are judged here for the same reason.
  */
 export function secretHook(cwd: string, o: SecretOptions = {}, onDeny?: (toolUseId: string) => void): HookCallback {
   return async (input) => {
     if (input.hook_event_name !== 'PreToolUse') return { continue: true };
-    const why = secretDenial({ tool: input.tool_name, input: (input.tool_input ?? {}) as Record<string, unknown> }, cwd, o);
+    const req = { tool: input.tool_name, input: (input.tool_input ?? {}) as Record<string, unknown> };
+    const why = secretDenial(req, cwd, o) ?? (req.tool === 'Bash' ? gitDenial(String(req.input.command ?? '')) : null);
     if (why) onDeny?.(input.tool_use_id);
     return why ? { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `Not allowed: ${why}` } } : { continue: true };
   };

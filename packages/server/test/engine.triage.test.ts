@@ -306,13 +306,13 @@ describe('needs-you triage', () => {
     const a = agents({ firstTurn: blocksOnce, orchestrate: async (w) => { if (w.label.startsWith('blocked_')) packet = w.prompt; } });
     const { store: s, engine: e, id } = await setup(a.claude);
     (e as any).ports.gh.prList = async () => [
-      { number: 338, url: 'u', state: 'OPEN', headRefOid: 'a', headRefName: 'fix/ci-log-upload', baseRefName: 'develop', title: "CI: the Mac runner's log dir must not contain '..'", author: 'gravesisme', updatedAt: new Date(Date.now() - 20 * 60_000).toISOString() },
+      { number: 338, url: 'u', state: 'OPEN', headRefOid: 'a', headRefName: 'fix/ci-log-upload', baseRefName: 'develop', title: "CI: the Mac runner's log dir must not contain '..'", author: 'a-maintainer', updatedAt: new Date(Date.now() - 20 * 60_000).toISOString() },
       { number: 300, url: 'u', state: 'OPEN', headRefOid: 'b', headRefName: fmOf(s, id).branch ?? 'tp/1-stops', baseRefName: 'trunk', title: 'Stops (TP-1)', updatedAt: new Date(Date.now() - 3 * 86_400_000).toISOString() },
     ];
     await e.start();
     await waitFor(() => packet !== '');
     expect(packet).toContain('Open pull requests in the repository (2)');
-    expect(packet).toContain(`- #338 "CI: the Mac runner's log dir must not contain '..'" — fix/ci-log-upload → develop, by gravesisme, updated just now (not a planestro item: a person opened it)`);
+    expect(packet).toContain(`- #338 "CI: the Mac runner's log dir must not contain '..'" — fix/ci-log-upload → develop, by a-maintainer, updated just now (not a planestro item: a person opened it)`);
     expect(packet).toMatch(/- #300 "Stops \(TP-1\)" — \S+ → trunk, updated 3 d ago \(item TP-1\)/);
     expect(packet).toContain('a fix already in flight');
   });

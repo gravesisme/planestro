@@ -2,6 +2,7 @@ import { QuestionFrontmatter, QUESTION_KEY_ORDER, QUESTION_SECTIONS, QUESTION_ID
 import { splitFrontmatter, serializeFrontmatter } from './frontmatter.ts';
 import { canonicalTimestamp, isoLocal } from './timestamps.ts';
 import { splitSections, demoteH1, idNumber, type Section } from './itemfile.ts';
+import { trimLineEnds } from './textScan.ts';
 
 export interface QuestionFile { frontmatter: QuestionFrontmatter; sections: Section[] }
 /** `user` and `orchestrator` talk; `app` lines are planestro saying what happened (resolved when its item finished, a review that changed nothing). */
@@ -28,7 +29,7 @@ export function parseQuestionFile(text: string): QuestionFile {
 export function serializeQuestionFile(file: QuestionFile): string {
   const fm = serializeFrontmatter(file.frontmatter as Record<string, unknown>, QUESTION_KEY_ORDER);
   const body = file.sections.map((s) => {
-    const text = s.body.replace(/[ \t]+$/gm, '').replace(/\s+$/, '');
+    const text = trimLineEnds(s.body).trimEnd();
     if (s.title === '') return text ? `${text}\n` : '';
     return text ? `# ${s.title}\n\n${text}\n` : `# ${s.title}\n`;
   }).filter(Boolean).join('\n');
@@ -66,7 +67,7 @@ export function parseThread(file: QuestionFile): ThreadEntry[] {
     const last = out.at(-1);
     if (last) last.text += `\n${line.replace(/^ {2}/, '')}`;
   }
-  for (const e of out) e.text = e.text.replace(/\s+$/, '');
+  for (const e of out) e.text = e.text.trimEnd();
   return out;
 }
 

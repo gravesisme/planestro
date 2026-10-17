@@ -2,9 +2,10 @@
 
 ## Requirements
 
-- Node 24, git.
-- For real work: the GitHub CLI (`gh`, authenticated) and Claude Code (`claude`, logged in).
-  For art or any other work routed to Codex: the Codex CLI (`codex`, logged in).
+- Node 24, git (with a `user.name` and `user.email`). macOS and Linux.
+- For real work: the GitHub CLI (`gh`, authenticated) and the agent CLI for each runner your
+  models use: Claude Code (`claude`, logged in), the Codex CLI (`codex`, logged in), or both.
+  `planestro check <data_dir> --preflight` lists what is missing, each with its repair.
 - None of those for the sample: it runs on in-memory fakes.
 
 ```sh
@@ -54,9 +55,13 @@ npm start -- ../myproject-planning --open       # http://127.0.0.1:4300
 ```
 
 `init` creates a *data dir*: `planestro.yml`, `items/`, `prompts/` (a copy of the shipped
-prompt library, yours to edit), `attachments/`, `journal/`. It can be a plain directory, its
-own git repository, or an orphan branch of the code repository checked out as a nested
-worktree (`--layout orphan-branch`), so planning history never touches the code's branches.
+prompt library, yours to edit), `attachments/`, `journal/`. A separate sibling folder, as
+above, is the recommended layout: `init` makes it a git repository of its own when it is not
+one and commits the seed files, so planning history never touches the code's branches. Keep
+any remote for it private. The base branch is the code repo's `origin/HEAD`, else the branch
+checked out (it says so); pass `--default-branch` to choose another. `--layout orphan-branch`
+expects the orphan branch already checked out as a worktree at the data dir: `init` writes the
+files and keeps the folder out of the code repo's status, nothing more.
 Re-running `init` on an existing data dir adds files that are missing (new shipped prompts
 after an upgrade) and never overwrites one.
 
@@ -65,7 +70,8 @@ Then:
 1. **Settings** — check the base branch, models and categories. The engine starts in
    `dry-run`; queue an item and read the Console to see exactly what it would do to *your*
    repository.
-2. Switch `engine.mode` to `live`.
+2. Switch `engine.mode` to `live`, then **restart the server**: the mode is read at startup,
+   and the header shows the one running. Until then it is still simulating.
 3. Write an item (or start one from a prompt), queue it, approve its plan.
 
 To add an art model, see [Agents](agents.md#adding-a-codex-model). Project rules —

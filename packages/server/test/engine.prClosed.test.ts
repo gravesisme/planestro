@@ -50,7 +50,7 @@ async function until(pred: () => boolean, ms = 6000) { const t0 = Date.now(); wh
 describe('a PR closed outside planestro (#205)', () => {
   it('closed by a commit of another merge: the item says so, names the commit and the PR, and does not call it a decision', async () => {
     const { engine, closed } = await setup();
-    const h = closed({ actor: 'gravesisme', commit: 'dc12f31aabbccddeeff00112233445566778899', pr: 565 });
+    const h = closed({ actor: 'a-maintainer', commit: 'dc12f31aabbccddeeff00112233445566778899', pr: 565 });
     await engine.reconcile('manual');
     expect(fm(h.id)).toMatchObject({ blocked: true, blocked_reason: 'pr_closed_externally' });
     const note = 'PR #563 was closed by commit dc12f31 (merge of #565): GitHub closing keyword, probably not intended';

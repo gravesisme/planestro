@@ -22,4 +22,14 @@ describe('ConsoleBuffer', () => {
     expect(b.get('HH-1').length).toBe(800);
     expect(b.get('HH-1').at(-1)).toMatch(/line 899$/);
   });
+
+  it('keeps the consoles of the 64 items written to last', () => {
+    const b = new ConsoleBuffer();
+    for (let i = 0; i < 70; i++) b.handle({ type: 'session.output', id: `X-${i}`, text: 'x' });
+    b.handle({ type: 'session.output', id: 'X-6', text: 'again' }); // written again: kept over X-7
+    b.handle({ type: 'session.output', id: 'X-70', text: 'x' });
+    expect(b.get('X-6')).toHaveLength(2);
+    expect(b.get('X-7')).toEqual([]);
+    expect(b.get('X-8')).toHaveLength(1);
+  });
 });

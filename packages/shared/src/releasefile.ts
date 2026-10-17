@@ -2,6 +2,7 @@ import { ReleaseFrontmatter, RELEASE_KEY_ORDER, type ReleaseSectionDef, type Ite
 import { splitFrontmatter, serializeFrontmatter } from './frontmatter.ts';
 import { canonicalTimestamp } from './timestamps.ts';
 import { splitSections, demoteH1, type Section } from './itemfile.ts';
+import { trimLineEnds } from './textScan.ts';
 
 export interface ReleaseFile { frontmatter: ReleaseFrontmatter; sections: Section[] }
 
@@ -23,7 +24,7 @@ export function parseReleaseFile(text: string): ReleaseFile {
 export function serializeReleaseFile(file: ReleaseFile): string {
   const fm = serializeFrontmatter(file.frontmatter as Record<string, unknown>, RELEASE_KEY_ORDER);
   const body = file.sections.map((s) => {
-    const text = s.body.replace(/[ \t]+$/gm, '').replace(/\s+$/, '');
+    const text = trimLineEnds(s.body).trimEnd();
     if (s.title === '') return text ? `${text}\n` : '';
     return text ? `# ${s.title}\n\n${text}\n` : `# ${s.title}\n`;
   }).filter(Boolean).join('\n');

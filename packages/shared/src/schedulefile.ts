@@ -3,6 +3,7 @@ import { splitFrontmatter, serializeFrontmatter } from './frontmatter.ts';
 import { canonicalTimestamp } from './timestamps.ts';
 import { splitSections, demoteH1, type Section } from './itemfile.ts';
 import { parseCron, prevSlot, nextSlot, isoInZone } from './cron.ts';
+import { trimLineEnds } from './textScan.ts';
 
 export interface ScheduleFile { frontmatter: ScheduleFrontmatter; sections: Section[] }
 
@@ -21,7 +22,7 @@ export function parseScheduleFile(text: string): ScheduleFile {
 export function serializeScheduleFile(file: ScheduleFile): string {
   const fm = serializeFrontmatter(file.frontmatter as Record<string, unknown>, SCHEDULE_KEY_ORDER);
   const body = file.sections.map((s) => {
-    const text = s.body.replace(/[ \t]+$/gm, '').replace(/\s+$/, '');
+    const text = trimLineEnds(s.body).trimEnd();
     if (s.title === '') return text ? `${text}\n` : '';
     return text ? `# ${s.title}\n\n${text}\n` : `# ${s.title}\n`;
   }).filter(Boolean).join('\n');

@@ -1,12 +1,13 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { isoLocal } from '@planestro/shared';
 import { assertSafePlanningGit, assertSafePlanningPush, safePlanningPaths, planningStagePaths } from './planningGitSafety.ts';
 
 const execFileP = promisify(execFile);
 
+export interface GitStatus { dirty: string[]; branch: string; head?: string; ahead?: number }
 export interface GitCommitterOptions { autoCommit: boolean; autoPush: boolean; toolVersion: string; log?: (level: 'info' | 'warn' | 'error', msg: string) => void }
 
 /**
@@ -31,7 +32,21 @@ export class GitCommitter {
   /** Resolves once every queued push has finished (tests, shutdown). */
   async idle(): Promise<void> { await this.pushQueue; }
 
-  async status(): Promise<{ dirty: string[]; branch: string; head?: string; ahead?: number }> {
+  /**
+   * The data dir's git state. With `maxAgeMs`, a read that recent (or still running) is shared: every board refresh
+   * asked for it, four git processes each. A commit or push drops it.
+   */
+  status(opts: { maxAgeMs?: number } = {}): Promise<GitStatus> {
+    const c = this.statusCache;
+    if (opts.maxAgeMs && c && Date.now() - c.at < opts.maxAgeMs) return c.read;
+    const read = this.readStatus();
+    this.statusCache = { at: Date.now(), read };
+    read.catch(() => { if (this.statusCache?.read === read) this.statusCache = undefined; });
+    return read;
+  }
+  private statusCache?: { at: number; read: Promise<GitStatus> };
+
+  private async readStatus(): Promise<GitStatus> {
     if (!existsSync(join(this.dir, '.git'))) return { dirty: [], branch: '(no git)' };
     const { stdout } = await this.git(['status', '--porcelain', '--untracked-files=all']);
     const dirty = stdout.split('\n').filter(Boolean).map((l) => l.slice(3));
@@ -51,7 +66,10 @@ export class GitCommitter {
     if (!this.enabled) return false;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        assertSafePlanningGit(this.dir);
+        // The index as this committer last left it, checked then, needs no second look: only another process staging
+        // or committing changes it, and that is what the check is for (one git process fewer per mutation).
+        const stamp = this.indexStamp();
+        if (!stamp || stamp !== this.safeIndex) assertSafePlanningGit(this.dir);
         const selected = safePlanningPaths(this.dir, paths);
         if (!selected.length) return false;
         const scope = ['--', ...selected.map((p) => `:(top,literal)${p}`)];
@@ -62,6 +80,8 @@ export class GitCommitter {
         if (body) args.push('-m', body);
         args.push('-m', `Planestro-Version: ${this.opts.toolVersion}`, ...scope);
         this.gitSync(args);
+        this.safeIndex = this.indexStamp();
+        this.statusCache = undefined;
         this.opts.log?.('info', `git: ${message}`);
         return true;
       } catch (e) {
@@ -72,6 +92,11 @@ export class GitCommitter {
       }
     }
     return false;
+  }
+
+  private safeIndex?: string;
+  private indexStamp(): string | undefined {
+    try { const s = statSync(join(this.dir, '.git', 'index'), { bigint: true }); return `${s.mtimeNs}:${s.size}:${s.ino}`; } catch { return undefined; }
   }
 
   checkpoint(): boolean {
@@ -87,6 +112,7 @@ export class GitCommitter {
         if (ahead === 0) return true;
         assertSafePlanningPush(this.dir);
         await this.git(['push', '-q']);
+        this.statusCache = undefined;
         this.opts.log?.('info', `git: pushed ${ahead} commit(s)`);
         return true;
       } catch (e) {

@@ -1,10 +1,11 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { statfs } from 'node:fs/promises';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, renameSync, copyFileSync, unlinkSync, rmdirSync, lstatSync, readdirSync, readFileSync, statSync, constants as fsConstants } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { matchesPathPattern } from './ports.ts';
+import { TRANSIENT } from './transient.ts';
 import type { GitPort, GhPort, ProcPort, WorktreeEntry, RebaseResult, ContinueResult, CiStatus, CiAttemptTiming, CiJobTiming, CiQueue, PrInfo, ChangedFile, IssueInfo, PrClosure, RunnerReport, RunnerInfo, OpenJob, WorktreeSnapshot, Checkpoint } from './ports.ts';
 
 const execFileP = promisify(execFile);
@@ -43,26 +44,36 @@ async function takeSide(cwd: string, conflicts: string[], patterns: string[], si
   return (await git(cwd, ['add', '--', ...conflicts], true)).code === 0;
 }
 
+/**
+ * Nothing planestro runs may wait at a prompt (invariant 2): a credential or host-key question would hold a fetch, and every
+ * ref-updating call queued behind it (`refLocked`), forever. Asked, git and gh fail at once instead; a call that still
+ * hangs (a dead network) is killed at its timeout, and the timeout reads as TRANSIENT, so `retrying` tries it again.
+ */
+const NO_PROMPTS: Record<string, string> = {
+  GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', GH_PROMPT_DISABLED: '1',
+  ...(process.env.GIT_SSH_COMMAND ? {} : { GIT_SSH_COMMAND: 'ssh -o BatchMode=yes' }),
+};
+/** Long enough for a large fetch or a worktree checkout with LFS art; a hung call still ends. */
+export const GIT_TIMEOUT_MS = 30 * 60_000;
+const GH_TIMEOUT_MS = 5 * 60_000;
+const timedOut = (e: any, ms: number) => (e?.killed && e?.signal ? `timed out after ${Math.round(ms / 1000)}s` : '');
+
 async function git(cwd: string, args: string[], allowFail = false, env?: Record<string, string>): Promise<{ stdout: string; stderr: string; code: number }> {
   try {
-    const r = await execFileP('git', ['-C', cwd, ...args], { maxBuffer: 16 * 1024 * 1024, ...(env ? { env: { ...process.env, ...env } } : {}) });
+    const r = await execFileP('git', ['-C', cwd, ...args], { maxBuffer: 16 * 1024 * 1024, timeout: GIT_TIMEOUT_MS, killSignal: 'SIGKILL', env: { ...process.env, ...NO_PROMPTS, ...env } });
     return { ...r, code: 0 };
   } catch (e: any) {
-    if (allowFail) return { stdout: e.stdout ?? '', stderr: e.stderr ?? '', code: e.code ?? 1 };
-    throw new Error(`git ${args.join(' ')} failed in ${cwd}: ${(e.stderr || e.message || '').trim().split('\n').slice(-3).join(' | ')}`);
+    const late = timedOut(e, GIT_TIMEOUT_MS);
+    if (allowFail) return { stdout: e.stdout ?? '', stderr: late || (e.stderr ?? ''), code: typeof e.code === 'number' ? e.code : 1 };
+    throw new Error(`git ${args.join(' ')} failed in ${cwd}: ${late || (e.stderr || e.message || '').trim().split('\n').slice(-3).join(' | ')}`);
   }
 }
 async function gh(args: string[]): Promise<string> {
-  try { return (await execFileP('gh', args, { maxBuffer: 32 * 1024 * 1024 })).stdout; }
-  catch (e: any) { throw new Error(`gh ${args.slice(0, 3).join(' ')} failed: ${(e.stderr || e.message || '').trim().split('\n').slice(-2).join(' | ')}`); }
+  try { return (await execFileP('gh', args, { maxBuffer: 32 * 1024 * 1024, timeout: GH_TIMEOUT_MS, killSignal: 'SIGKILL', env: { ...process.env, ...NO_PROMPTS } })).stdout; }
+  catch (e: any) { throw new Error(`gh ${args.slice(0, 3).join(' ')} failed: ${timedOut(e, GH_TIMEOUT_MS) || (e.stderr || e.message || '').trim().split('\n').slice(-2).join(' | ')}`); }
 }
 
-/**
- * What git and gh say when the answer is "try again", not "this is wrong": another process held a
- * ref lock (a fetch racing a merge's push, HH-124), or the network or GitHub blinked (a `gh pr
- * view` timeout, HH-123). Anything else fails at once, as before.
- */
-export const TRANSIENT = /cannot lock ref|unable to update local ref|could not resolve host|connection (timed out|reset|refused|closed)|operation timed out|timed out|i\/o timeout|early EOF|RPC failed|remote end hung up|ECONNRESET|ETIMEDOUT|EAI_AGAIN|TLS handshake|unexpected EOF|HTTP 50[0234]|Bad Gateway|Service Unavailable|Gateway Timeout|secondary rate limit/i;
+export { TRANSIENT };
 const pause = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 /** Retry `fn` after each delay while it fails with a TRANSIENT message. Exported for tests. */
 export async function retrying<T>(fn: () => Promise<T>, delaysMs: number[], sleep: (ms: number) => Promise<void> = pause): Promise<T> {
@@ -251,7 +262,9 @@ export class LiveGitPort implements GitPort {
   }
   async moveAside(cwd: string, paths: string[], dest: string) {
     for (const p of paths) {
-      const to = join(dest, p);
+      // Never over a file set aside before (two set-asides in one second share a folder): the second gets a suffix.
+      let to = join(dest, p);
+      for (let n = 2; existsSync(to); n++) to = join(dest, `${p}.${n}`);
       mkdirSync(dirname(to), { recursive: true });
       try { renameSync(join(cwd, p), to); } catch { copyFileSync(join(cwd, p), to); unlinkSync(join(cwd, p)); } // another volume
     }
@@ -473,8 +486,9 @@ export class LiveGhPort implements GhPort {
     if (f.head) args.push('--head', f.head); if (f.base) args.push('--base', f.base);
     return (JSON.parse(await ghRead(args)) as any[]).map(toPr);
   }
+  // By commit as well: the branch's last ten runs held none for this head once ten newer pushes had run (the same branch, re-runs).
   async ciForSha(repo: string, branch: string, sha: string, workflow: string): Promise<CiStatus> {
-    const runs = JSON.parse(await ghRead(['run', 'list', '--repo', repo, '--branch', branch, '--workflow', workflow, '--limit', '10', '--json', 'databaseId,status,conclusion,headSha,url,createdAt,attempt'])) as any[];
+    const runs = JSON.parse(await ghRead(['run', 'list', '--repo', repo, '--branch', branch, '--commit', sha, '--workflow', workflow, '--limit', '10', '--json', 'databaseId,status,conclusion,headSha,url,createdAt,attempt'])) as any[];
     const ci = ciFromRuns(runs.filter((r) => r.headSha === sha), sha);
     if (ci.state !== 'failure' || !ci.runId) return ci;
     // GitHub's `failure` is not proof that anything failed: read the jobs (#213).
@@ -593,13 +607,45 @@ export class LiveGhPort implements GhPort {
   }
 }
 
+/** Output kept from a command: its last part, where a failure says what went wrong. */
+const PROC_KEEP = 16 * 1024 * 1024;
+/** After the kill, how long the pipes get to close: a grandchild that ignored it must not hold the run open. */
+const PROC_DRAIN_MS = 2_000;
+
 export class LiveProcPort implements ProcPort {
   async freeBytes(path: string) { try { const s = await statfs(path); return Number(s.bavail) * Number(s.bsize); } catch { return undefined; } }
-  async run(command: string, opts: { cwd: string; timeoutMs?: number; env?: Record<string, string>; cleanEnv?: boolean }) {
+  /**
+   * A command in its own process group, killed whole at its timeout or when `signal` aborts. Killing only bash left a
+   * hung check script's children running, holding a local-job slot and its pipes (and so this promise) open.
+   */
+  async run(command: string, opts: { cwd: string; timeoutMs?: number; env?: Record<string, string>; cleanEnv?: boolean; signal?: AbortSignal }) {
     return new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
-      execFile('/bin/bash', ['-lc', command], { cwd: opts.cwd, timeout: opts.timeoutMs ?? 60 * 60_000, maxBuffer: 64 * 1024 * 1024, env: opts.cleanEnv ? { ...opts.env } : { ...process.env, ...opts.env } }, (err, stdout, stderr) => {
-        resolve({ code: err ? ((err as any).code ?? 1) : 0, stdout: String(stdout), stderr: String(stderr) });
-      });
+      const timeoutMs = opts.timeoutMs ?? 60 * 60_000;
+      let child: ReturnType<typeof spawn>;
+      try {
+        child = spawn('/bin/bash', ['-lc', command], { cwd: opts.cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: opts.cleanEnv ? { ...opts.env } : { ...process.env, ...opts.env } });
+      } catch (e) { resolve({ code: 127, stdout: '', stderr: String((e as Error).message) }); return; }
+      const out = { stdout: '', stderr: '' };
+      const keep = (k: 'stdout' | 'stderr') => (d: Buffer) => { out[k] += d.toString(); if (out[k].length > PROC_KEEP) out[k] = out[k].slice(-PROC_KEEP); };
+      child.stdout!.on('data', keep('stdout')); child.stderr!.on('data', keep('stderr'));
+      let why = ''; let done = false; let drain: ReturnType<typeof setTimeout> | undefined;
+      const finish = (code: number) => {
+        if (done) return; done = true;
+        clearTimeout(timer); clearTimeout(drain); opts.signal?.removeEventListener('abort', onAbort);
+        resolve({ code, stdout: out.stdout, stderr: why ? `${out.stderr}${out.stderr ? '\n' : ''}${why}` : out.stderr });
+      };
+      const kill = (reason: string) => {
+        if (done || why) return;
+        why = reason;
+        try { process.kill(-child.pid!, 'SIGTERM'); } catch { /* already gone */ }
+        setTimeout(() => { try { process.kill(-child.pid!, 'SIGKILL'); } catch { /* gone */ } }, 1_000).unref();
+        drain = setTimeout(() => finish(124), PROC_DRAIN_MS + 1_000);
+      };
+      const timer = setTimeout(() => kill(`timed out after ${Math.round(timeoutMs / 1000)}s; its process group was killed`), timeoutMs);
+      const onAbort = () => kill('stopped: its turn ended; its process group was killed');
+      if (opts.signal?.aborted) onAbort(); else opts.signal?.addEventListener('abort', onAbort, { once: true });
+      child.on('error', (e) => { out.stderr += String(e.message); finish(127); });
+      child.on('close', (code, signal) => finish(why ? 124 : code ?? (signal ? 128 : 1)));
     });
   }
 }
