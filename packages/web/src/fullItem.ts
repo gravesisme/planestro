@@ -14,6 +14,6 @@ export function useFullItem(id: string | undefined): ItemView | undefined {
     let live = true;
     api.item(id).then((v) => { if (live) setFull(v); }).catch(() => { /* the summary stays */ });
     return () => { live = false; };
-  }, [id, listed]);
+  }, [id, listed?.summary, listed?.frontmatter.updated_at]); // a new state object is not a change to this item
   return listed?.summary && full?.id === id ? full : listed;
 }

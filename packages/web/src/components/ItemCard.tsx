@@ -5,7 +5,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { useNavigate } from 'react-router';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
-import { agentStateOf } from '../agentState.ts';
+import { agentStateOf, itemsById } from '../agentState.ts';
 import { confirmMove } from './QuickActions.tsx';
 import { CategoryTag } from './CategoryTag.tsx';
 import { afterChoices, columnOf, stepMove } from '../reorder.ts';
@@ -25,14 +25,16 @@ export function ItemCard({ item, sortable = true, onSelect, selection }: {
   const state = useStore((s) => s.state);
   const fm = item.frontmatter;
   const d = item.derived;
-  const agent = agentStateOf(item, state);
+  const lastOutput = useStore((s) => s.lastOutput?.[item.id]);
+  const agent = agentStateOf(item, state, lastOutput);
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id, disabled: !sortable || !!selection, data: { status: fm.status } });
   const style = { transform: CSS.Transform.toString(transform), transition };
   // The mouse drags the whole card, touch only its handle: each takes its own sensor's activator.
   const drag = (listeners ?? {}) as { onMouseDown?: MouseEventHandler; onTouchStart?: TouchEventHandler };
   const lane = d.lane;
   const modelLabel = (id?: string) => state?.config.models.find((m) => m.id === id)?.label ?? id;
-  const children = d.children.map((c) => state?.items.find((i) => i.id === c)).filter(Boolean) as ItemView[];
+  const byId = state ? itemsById(state.items) : undefined;
+  const children = d.children.map((c) => byId?.get(c)).filter(Boolean) as ItemView[];
   const merged = children.filter((c) => ['MERGED', 'FINISHED'].includes(c.frontmatter.status)).length;
   const heading = <><span className="id">{item.id}</span>{' '}<span className="title">{fm.title}</span></>;
   const content = <>
