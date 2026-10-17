@@ -51,6 +51,16 @@ export function serveWeb(app: Hono, webDist: string): void {
   app.get('*', (c) => c.html(readFileSync(join(webDist, 'index.html'), 'utf8')));
 }
 
+let strayErrorsLog: ((msg: string) => void) | undefined;
+/** Installed once per process; the latest server's log hears them. */
+function keepRunningOnStrayErrors(log: (msg: string) => void): void {
+  if (!strayErrorsLog) {
+    process.on('unhandledRejection', (e) => strayErrorsLog?.(`unhandled rejection: ${(e as Error)?.stack ?? String(e)}`));
+    process.on('uncaughtException', (e) => strayErrorsLog?.(`uncaught exception: ${e.stack ?? e.message}`));
+  }
+  strayErrorsLog = log;
+}
+
 export async function startServer(o: ServeOptions) {
   const log = o.log ?? ((level, msg) => console.log(`[${level}] ${msg}`));
   const sockets = new Set<{ send(data: string): void }>();
@@ -108,7 +118,10 @@ export async function startServer(o: ServeOptions) {
   warnOnCodexDrift(store, log);
   await engine.start();
 
-  const checkpoint = setInterval(() => { store.git.checkpoint(); void store.git.push(); }, store.config.git.checkpoint_interval_min * 60_000);
+  const checkpoint = setInterval(() => {
+    try { store.git.checkpoint(); } catch (e) { log('error', `checkpoint: ${(e as Error).message}`); }
+    void store.git.push().catch((e: unknown) => log('error', `push: ${(e as Error).message}`));
+  }, store.config.git.checkpoint_interval_min * 60_000);
   checkpoint.unref();
   let shuttingDown = false;
   const shutdown = async () => {
@@ -125,8 +138,14 @@ export async function startServer(o: ServeOptions) {
     server.close();
     process.exit(0);
   };
-  process.once('SIGINT', () => void shutdown());
-  process.once('SIGTERM', () => void shutdown());
+  // A second Ctrl-C ends it now: a shutdown waiting on a stuck step must not need a kill -9.
+  let signals = 0;
+  const onSignal = () => { if (++signals > 1) { log('warn', 'second signal: exiting without waiting'); process.exit(130); } void shutdown(); };
+  process.on('SIGINT', onSignal);
+  process.on('SIGTERM', onSignal);
+  // planestro runs unattended (invariant 2): an error nothing caught is logged and the server goes on. Node's default
+  // ends the process, which loses every turn in flight; the disk guard pauses automation when the cause is a full disk.
+  keepRunningOnStrayErrors((msg) => log('error', msg));
   return { store, engine, server, shutdown };
 }
 

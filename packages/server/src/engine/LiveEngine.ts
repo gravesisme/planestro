@@ -19,7 +19,7 @@ import { Orchestrator } from './orchestrator.ts';
 import { NeedsYouWatch, type Wait } from './needsYou.ts';
 import { pngSize } from './placeholderPng.ts';
 import { findWorkflow, infraPatternIn, namedInLog, prSkippedByPaths } from './ciFilters.ts';
-import { quietTransientFailure, patchRejected, PATCH_REJECTED_RETRY } from './transient.ts';
+import { quietTransientFailure, patchRejected, PATCH_REJECTED_RETRY, TRANSIENT } from './transient.ts';
 import { driveSchedules } from './schedules.ts';
 import { auditSlotDue, runEfficiencyAudit } from './efficiencyAudit.ts';
 import { runnerStatusText, stallOf, recovered, type RunnerStall } from './runners.ts';
@@ -178,7 +178,8 @@ export class LiveEngine implements Engine {
   private _paused: boolean;
   private jobs = new Map<string, Promise<void>>();
   /** Turns this engine started. `waiting` names the slot the turn is still queued for, a runner's (concurrency.runner_limits) or `session` (max_sessions): no process yet. */
-  private turns = new Map<string, { model: string; phase: TurnPhase; startedAt: string; lastOutput: string; abort: AbortController; waiting?: string; oneShot?: string }>();
+  /** `lastOutputAt`: when it last said anything, or was admitted to run (epoch ms), for `concurrency.turn_quiet_min`. */
+  private turns = new Map<string, { model: string; phase: TurnPhase; startedAt: string; lastOutput: string; abort: AbortController; waiting?: string; oneShot?: string; lastOutputAt?: number }>();
   /** Agent turns holding one of `concurrency.max_sessions` slots, and the turns queued for one (withSessionSlot). */
   private sessionTurns = 0;
   private sessionWaiters: Array<() => void> = [];
@@ -203,7 +204,9 @@ export class LiveEngine implements Engine {
     this.mode = ports.mode;
     this._paused = store.local.engine.paused;
     this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
-    this.schedule = opts.schedule ?? ((fn, ms) => { const t = setTimeout(fn, ms); t.unref?.(); return () => clearTimeout(t); });
+    const schedule = opts.schedule ?? ((fn, ms) => { const t = setTimeout(fn, ms); t.unref?.(); return () => clearTimeout(t); });
+    // A timer's callback runs outside any caller's try: one that throws (a full disk under a journal write) is noted, never the process's end.
+    this.schedule = (fn, ms) => schedule(() => { try { fn(); } catch (e) { this.note('error', `timer: ${(e as Error).message}`); } }, ms);
     this.now = opts.now ?? isoLocal;
     this.ciWorkflow = opts.ciWorkflow ?? 'CI';
     this.orchestrator = new Orchestrator(store, ports, {
@@ -290,6 +293,7 @@ export class LiveEngine implements Engine {
     if (this.timer) clearInterval(this.timer);
     if (this.reconcileTimer) clearInterval(this.reconcileTimer);
     for (const t of this.turns.values()) t.abort.abort();
+    this.wakeSlotWaiters();   // a turn waiting for a slot sees `stopping` and ends; stop() waits on its job
     this.auditAbort?.abort();
     await Promise.allSettled([...this.jobs.values(), orchestratorStopped, this.auditing]);
   }
@@ -538,11 +542,29 @@ export class LiveEngine implements Engine {
   }
 
   /** Run one scheduling pass. Idempotent; safe to call often. */
-  async tick(): Promise<void> {
+  private ticking?: Promise<void>;
+  private tickAgain = false;
+  /**
+   * One pass of the drive loops at a time. A tick asked for while one runs (the interval, a poke) is folded into one
+   * more pass after it, and its caller waits for that pass: overlapping ticks did the same work twice and interleaved.
+   * Nothing a pass throws escapes: the interval and every poke call this unawaited.
+   */
+  tick(): Promise<void> {
+    if (this.ticking) { this.tickAgain = true; return this.ticking; }
+    this.ticking = (async () => {
+      try { do { this.tickAgain = false; await this.tickOnce(); } while (this.tickAgain && !this.stopping); }
+      catch (e) { this.note('error', `tick: ${(e as Error).message}`); }
+      finally { this.ticking = undefined; }
+    })();
+    return this.ticking;
+  }
+  private async tickOnce(): Promise<void> {
     if (this.stopping) return;
     // Before the pause check: while automation is paused the orchestrator is not woken, so nothing may sit in triage.
     if (this.draining) return;
     try { this.driveTriage(); } catch (e) { this.note('error', `triage: ${(e as Error).message}`); }
+    // Before the pause check too: a paused engine's running turns still finish, or hang.
+    this.driveQuietTurns();
     // A backstop for the guard's timer (a machine that slept through it): resume once the reset has passed.
     const due = this.guardResumeDue();
     if (due !== undefined && due <= Date.now()) { this.guardResume(); return; }
@@ -567,7 +589,8 @@ export class LiveEngine implements Engine {
       this.drivePlanReviews();
       this.drivePermissionReviews();
       await this.driveEpics();
-      await this.driveExternal();
+      // Its GitHub reads retry for about a minute each: off the pass, one at a time, so the rest of the tick never waits on them.
+      if (!this.externalPoll) this.externalPoll = this.driveExternal().catch((e) => this.note('error', `external PRs: ${(e as Error).message}`)).finally(() => { this.externalPoll = undefined; });
       this.driveInReview();
       this.driveHeld();
       this.driveBaseWaits();
@@ -1037,23 +1060,47 @@ export class LiveEngine implements Engine {
   private followUps = new Map<string, () => Promise<unknown>>();
   /** Why a live turn was aborted on purpose (a take-over, a move into review), for the line its end writes. */
   private stoppedFor = new Map<string, string>();
+  /** Turns the quiet watchdog stopped, with why: blocked `turn_quiet` once the kill lands. */
+  private quietStopped = new Map<string, string>();
+  /**
+   * `concurrency.turn_quiet_min`: a turn that has said nothing for that long is stopped. The stall detector skips live
+   * turns, and a session held open by a background process (or a hung CLI) kept its slot until a person noticed.
+   */
+  private driveQuietTurns(): void {
+    const min = this.store.config.concurrency.turn_quiet_min;
+    if (!min) return;
+    for (const [id, t] of this.turns) {
+      if (t.waiting || t.abort.signal.aborted || t.lastOutputAt === undefined || Date.now() - t.lastOutputAt < min * 60_000) continue;
+      const why = `no output for ${min} min (concurrency.turn_quiet_min)`;
+      this.quietStopped.set(id, why); this.stoppedFor.set(id, why);
+      t.abort.abort();
+    }
+  }
   /** Triage wakes held until the item's step (the turn that stopped) has finished: the orchestrator must find it idle to act on it. */
   private pendingWakes = new Map<string, { type: string; data?: Record<string, unknown> }>();
 
   private runJob(id: string, fn: () => Promise<unknown>): void {
     if (this.jobs.has(id)) return;
-    const p = fn().then(() => undefined, (e) => {
-      // A finished or iceboxed item has nothing left for a person to decide: a failed step is noted, not a block (#214).
-      const status = this.store.getItem(id)?.file.frontmatter.status;
-      if (status === 'FINISHED' || status === 'ICEBOX') this.note('warn', `${id}: an engine step failed after the item reached ${status}: ${(e as Error).message}`);
-      else this.block(id, 'engine_error', (e as Error).message);
+    // Started now (callers rely on what a step does before its first await), but a step that throws before it rejects like any other.
+    let started: Promise<unknown>;
+    try { started = fn(); } catch (e) { started = Promise.reject(e); }
+    const p = started.then(() => undefined, (e) => {
+      try {
+        // A finished or iceboxed item has nothing left for a person to decide: a failed step is noted, not a block (#214).
+        const status = this.store.getItem(id)?.file.frontmatter.status;
+        if (status === 'FINISHED' || status === 'ICEBOX') this.note('warn', `${id}: an engine step failed after the item reached ${status}: ${(e as Error).message}`);
+        else this.block(id, 'engine_error', (e as Error).message);
+      } catch (again) { this.note('error', `${id}: a step failed (${(e as Error).message}) and blocking it failed too: ${(again as Error).message}`); }
     }).finally(() => {
       this.jobs.delete(id);
-      const next = this.followUps.get(id);
-      if (next) { this.followUps.delete(id); this.runJob(id, next); }
-      // A message queued while a job that is not a turn ran (a CI wait, a merge step) has no turn to end and deliver it.
-      else if (this.deliverQueued(id, 'its job ended')) { /* queued as the next job */ }
-      else { const wake = this.pendingWakes.get(id); if (wake) { this.pendingWakes.delete(id); this.wakeOrchestrator(wake.type, id, wake.data); } }
+      // Nothing here may throw out of the job: no one awaits it, and a rejection would end the process.
+      try {
+        const next = this.followUps.get(id);
+        if (next) { this.followUps.delete(id); this.runJob(id, next); }
+        // A message queued while a job that is not a turn ran (a CI wait, a merge step) has no turn to end and deliver it.
+        else if (this.deliverQueued(id, 'its job ended')) { /* queued as the next job */ }
+        else { const wake = this.pendingWakes.get(id); if (wake) { this.pendingWakes.delete(id); this.wakeOrchestrator(wake.type, id, wake.data); } }
+      } catch (e) { this.note('error', `${id}: after its step ended: ${(e as Error).message}`); }
     });
     this.jobs.set(id, p);
   }
@@ -1569,7 +1616,7 @@ export class LiveEngine implements Engine {
       const data = { ...this.store.requireItem(id).file.frontmatter.op_data };
       if ((data.pending_turn as PendingTurn | undefined)?.key === intent.key) delete data.pending_turn;
       this.store.mutateItem(id, [{ set: { op_data: { ...data, active_turn: intent } } }], 'engine');
-      const t = this.turns.get(id); if (t?.waiting) { t.waiting = undefined; t.startedAt = this.now(); } this.emit({ type: 'session.started', id, session_id: fm.session_id }); };
+      const t = this.turns.get(id); if (t?.waiting) { t.waiting = undefined; t.startedAt = this.now(); } if (t) t.lastOutputAt = Date.now(); this.emit({ type: 'session.started', id, session_id: fm.session_id }); };
     const budgetLeft = Math.max(MIN_TURN_USD, usdLeft);
     // A planning turn is capped on its own (dogfood p41): past the cap it is asked for the plan it has, not for more research.
     // The cap is for the work: what the resume reloads first is on top of it.
@@ -1683,9 +1730,9 @@ export class LiveEngine implements Engine {
           this.store.mutateItem(id, [{ set: { awaiting: 'question', awaiting_data: { questions, requested_at: this.now(), park } } }, { activity: { actor: 'app', text: `parked: agent asked ${questions.length} question(s)` } }, ...triage.ops], 'engine', { commit: `${id}: awaiting answers` });
           if (triage.on) this.wakeWhenIdle(id, 'worker_question');
         },
-        onOutput: (text) => { const t = this.turns.get(id); if (t) t.lastOutput = text.slice(-400); this.emit({ type: 'session.output', id, text }); },
+        onOutput: (text) => { const t = this.turns.get(id); if (t) { t.lastOutput = text.slice(-400); t.lastOutputAt = Date.now(); } this.emit({ type: 'session.output', id, text }); },
         signal: abort.signal,
-      })); }));
+      })); }, abort.signal), abort.signal);
     } finally {
       if (checkpointN !== undefined) await this.checkpointTurn(id, cwd, checkpointN, 'after');
       this.turns.delete(id);
@@ -1747,7 +1794,12 @@ export class LiveEngine implements Engine {
     if (result.subtype !== 'killed') { await this.ingestOutbox(id, result); if (this.settleDrop(id, phase, result)) return result; }
     else if (!this.stopping) this.recordOutbox(id, undefined);
     const stoppedFor = this.stoppedFor.get(id); this.stoppedFor.delete(id);
-    if (result.subtype === 'killed') { this.store.mutateItem(id, [{ activity: { actor: 'app', text: stoppedFor && !this.stopping ? `turn stopped: ${stoppedFor}` : 'turn interrupted (engine stopping); resumable' } }], 'engine'); return result; }
+    if (result.subtype === 'killed') {
+      this.store.mutateItem(id, [{ activity: { actor: 'app', text: stoppedFor && !this.stopping ? `turn stopped: ${stoppedFor}` : 'turn interrupted (engine stopping); resumable' } }], 'engine');
+      const quiet = this.quietStopped.get(id); this.quietStopped.delete(id);
+      if (quiet && !this.stopping) this.block(id, 'turn_quiet', `the turn was stopped: ${quiet}. Its conversation resumes from where it stopped.`);
+      return result;
+    }
     if (result.subtype === 'resume_declined') {
       // Nothing was sent and nothing spent. The same turn again, on the CLI's numbers: a fresh conversation if it may have one, else the stop.
       const q = result.resumeQuote;
@@ -2424,12 +2476,16 @@ export class LiveEngine implements Engine {
    * that briefly says otherwise would bounce the item between the chain and the watcher.
    */
   private async greenFor(id: string, branch: string, sha: string, pr: number): Promise<boolean> {
-    const view = await this.ports.gh.prView(this.github, pr);
+    // GitHub not answering is "not known green": the item waits beside the chain, where ciRead waits the outage out.
+    const unsure = (e: unknown) => { if (TRANSIENT.test(String((e as Error).message))) return undefined; throw e; };
+    const view = await this.ports.gh.prView(this.github, pr).catch(unsure);
+    if (!view) return false;
     if (view.state === 'MERGED') return true;
     if (view.headRefOid !== sha) return false;
     const od = this.store.requireItem(id).file.frontmatter.op_data;
     if (od?.ci_green === sha || od?.local_green === sha) return true;
-    const ci = await this.ports.gh.ciForSha(this.github, branch, sha, this.ciWorkflow);
+    const ci = await this.ports.gh.ciForSha(this.github, branch, sha, this.ciWorkflow).catch(unsure);
+    if (!ci) return false;
     if (ci.state !== 'success') return false;
     // The run that proved this head green, for the merge's evidence pointer (#180).
     if (ci.runId) this.store.mutateItem(id, [{ set: { op_data: { ...(this.store.requireItem(id).file.frontmatter.op_data ?? {}), ci: { runId: ci.runId, url: ci.url, sha, ...(ci.attempt ? { attempt: ci.attempt } : {}) } } } }], 'engine');
@@ -3085,6 +3141,24 @@ export class LiveEngine implements Engine {
   /** Items whose CI wait is polling: a wait is not a step running, so the user may re-run a cancelled run under it (#174). */
   private ciWaits = new Set<string>();
 
+  private ciOutage = new Map<string, number>();
+  /**
+   * One GitHub read of a CI wait. A blip GitHub's own retries (about a minute) did not ride out is waited through here,
+   * said once in the Activity log, until the wait's own `ci.timeout_min`: blocking `engine_error` sent every item
+   * waiting on CI to triage at once. Undefined means "poll again"; anything not transient fails the wait as before.
+   */
+  private async ciRead<T>(id: string, sha: string, started: number, read: () => Promise<T>): Promise<T | undefined> {
+    try { const v = await read(); this.ciOutage.delete(id); return v; }
+    catch (e) {
+      const msg = (e as Error).message;
+      if (!TRANSIENT.test(msg) || this.stopping || (this.ciNow() - started) / 60_000 > this.store.config.ci.timeout_min) { this.ciOutage.delete(id); throw e; }
+      const n = (this.ciOutage.get(id) ?? 0) + 1; this.ciOutage.set(id, n);
+      if (n === 1) this.store.mutateItem(id, [{ activity: { actor: 'app', text: `GitHub did not answer about CI for ${sha.slice(0, 7)} (${msg.replace(/\s+/g, ' ').slice(0, 160)}); still waiting` } }], 'engine');
+      await this.sleep(Math.min(5 * 60_000, 30_000 * n));
+      return undefined;
+    }
+  }
+
   private async pollCi(id: string, branch: string, sha: string, pr: number, previousSha: string | null, minAttempt: number): Promise<'green' | 'red' | 'blocked' | 'moved' | 'timeout' | 'queue_timeout' | 'stopping' | 'taken_over' | 'skipped' | 'cancelled'> {
     // The project's CI runs nothing for this change (its own path filters): there is nothing to wait for, and nothing to stand in for (HH-324).
     const notRun = await this.ciSkipsHead(id, sha);
@@ -3113,7 +3187,8 @@ export class LiveEngine implements Engine {
       if (asked?.sha === sha && (asked.attempt ?? 0) > need) { need = asked.attempt!; started = this.ciNow(); runningSince = null; cancelledPolls = 0; }
       // A person took the item over while its CI ran: the merge chain is not held for them.
       if (this.store.getItem(id)?.file.frontmatter.taken_over) return 'taken_over';
-      const view = await this.ports.gh.prView(this.github, pr);
+      const view = await this.ciRead(id, sha, started, () => this.ports.gh.prView(this.github, pr));
+      if (!view) continue;
       if (view.state === 'MERGED') return 'green';
       if (view.headRefOid !== sha) {
         const lagging = previousSha !== null && view.headRefOid === previousSha && this.ciNow() - started < HEAD_PROPAGATION_GRACE_MS;
@@ -3121,7 +3196,8 @@ export class LiveEngine implements Engine {
         await this.sleep(10_000);
         continue;
       }
-      const ci = await this.ports.gh.ciForSha(this.github, branch, sha, this.ciWorkflow);
+      const ci = await this.ciRead(id, sha, started, () => this.ports.gh.ciForSha(this.github, branch, sha, this.ciWorkflow));
+      if (!ci) continue;
       this.ciSeen.set(id, { state: ci.state, at: Date.now() });
       this.sawCi(id, ci);
       const elapsedMin = (this.ciNow() - started) / 60_000;
@@ -3332,8 +3408,15 @@ export class LiveEngine implements Engine {
    * Never assumes an operation completed and never deletes on its own authority
    * (invariant 7 — deletions still go through cleanup's positive-evidence checks).
    * Every correction is logged to the item's Activity as `reconcile: …`.
+   * One pass at a time: its GitHub reads retry for about a minute each, and during an outage the five-minute timer stacked passes.
    */
-  async reconcile(source: 'startup' | 'periodic' | 'manual'): Promise<string[]> {
+  private reconciling?: Promise<string[]>;
+  reconcile(source: 'startup' | 'periodic' | 'manual'): Promise<string[]> {
+    if (this.reconciling) return this.reconciling;
+    this.reconciling = this.reconcileOnce(source).finally(() => { this.reconciling = undefined; });
+    return this.reconciling;
+  }
+  private async reconcileOnce(source: 'startup' | 'periodic' | 'manual'): Promise<string[]> {
     const corrections: string[] = [];
     const correct = (id: string, text: string, ops: ItemOp[] = []) => {
       corrections.push(`${id}: ${text}`);
@@ -3398,7 +3481,9 @@ export class LiveEngine implements Engine {
         }
         // MERGED but never finished, or FINISHED leftovers
         if (fm.status === 'MERGED' && !fm.op && !this.jobs.has(id) && !fm.blocked && !fm.taken_over) { corrections.push(`${id}: resuming cleanup`); this.runJob(id, () => this.cleanup(id)); }
-        if (fm.status === 'FINISHED' && fm.branch && d.flavor !== 'external' && remoteHeads.has(fm.branch)) correct(id, `remote branch ${fm.branch} still exists after finish (left in place; delete by hand or re-run cleanup)`);
+        // Said once per tip: every five minutes it rewrote the item, its journal and a commit, forever.
+        const leftTip = fm.status === 'FINISHED' && fm.branch && d.flavor !== 'external' ? remoteHeads.get(fm.branch) : undefined;
+        if (leftTip && fm.op_data?.leftover_branch !== leftTip) correct(id, `remote branch ${fm.branch} still exists after finish (left in place; delete by hand or re-run cleanup)`, [{ set: { op_data: { ...(fm.op_data ?? {}), leftover_branch: leftTip } } }]);
       } catch (e) { corrections.push(`${id}: reconcile error ${(e as Error).message}`); }
     }
     // orphans: worktrees under our root that no item references
@@ -3429,6 +3514,8 @@ export class LiveEngine implements Engine {
   private async resumeInterrupted(): Promise<void> {
     for (const item of this.store.listItems()) {
       const fm = item.file.frontmatter;
+      // An op this process is running now (a step a call made before start() poked off) was not interrupted by a restart.
+      if (this.jobs.has(item.id) || this.turns.has(item.id)) continue;
       if (fm.op_data?.outbox && !fm.taken_over) {
         const phase = this.phaseFor(fm.status);
         this.store.mutateItem(item.id, [{ unset: ['op', 'op_started_at'] }], 'engine');
@@ -3679,6 +3766,7 @@ export class LiveEngine implements Engine {
 
   // ---- externally driven items (watched) ----
   private lastExternalPoll = 0;
+  private externalPoll?: Promise<void>;
   private async driveExternal(): Promise<void> {
     const externals = this.store.listItems().filter((i) => { const fm = i.file.frontmatter; return this.store.derived(i).flavor === 'external' && (fm.merge_policy ?? 'watch') === 'watch' && !fm.blocked && (fm.status === 'IN_PROGRESS' || fm.status === 'IN_REVIEW'); });
     if (!externals.length || Date.now() - this.lastExternalPoll < 60_000) return;
@@ -3961,7 +4049,7 @@ export class LiveEngine implements Engine {
           else if (unread && i === 0) out.push(unread);
         }
         const r0 = Date.now();
-        const r = await this.ports.proc.run(command, { cwd, timeoutMs: cfg.timeout_min * 60_000, ...env });
+        const r = await this.ports.proc.run(command, { cwd, timeoutMs: cfg.timeout_min * 60_000, ...env, ...(signal ? { signal } : {}) });
         await this.recordTestRun(id, cwd, { command, ok: r.code === 0, ms: Date.now() - r0 }, 'run_heavy');
         const tail = `${r.stdout}${r.stderr ? `\n[stderr]\n${r.stderr}` : ''}`.trim().slice(-4000);
         out.push(`${label}\`${command}\` exited ${r.code}${tail ? `:\n${tail}` : ''}`);
@@ -4172,10 +4260,14 @@ export class LiveEngine implements Engine {
       const text = `${from} handed off ${copied.length} file${copied.length === 1 ? '' : 's'} to you, now attached to your item:\n${absPaths.map((p) => `- ${p}`).join('\n')}${noteText ? `\n\n${noteText}` : ''}`;
       const cur = this.store.requireItem(to).file.frontmatter;
       if (cur.taken_over) told = 'the user has taken it over; the files and your note are in its attachments and notes';
-      else if (this.turns.has(to) || this.jobs.has(to) || (cur.awaiting && cur.awaiting !== 'user')) {
+      // A block (budget, a failure) or a decision card is for whoever resolves it: resuming here ran a turn on a blocked
+      // item, past its cap, and dropped the card. The hand-off waits for the turn that resolution starts.
+      else if (this.turns.has(to) || this.jobs.has(to) || (cur.awaiting && cur.awaiting !== 'user') || cur.blocked || cur.awaiting_data?.decision) {
         const pending = [...((cur.op_data?.pending_messages as string[] | undefined) ?? []), text];
         this.store.mutateItem(to, [{ set: { op_data: { ...(cur.op_data ?? {}), pending_messages: pending } } }], 'engine');
-        told = cur.awaiting && cur.awaiting !== 'user' ? `its session is parked (awaiting ${cur.awaiting}) and will read the hand-off when it resumes` : 'its session is busy and will read the hand-off at its next turn';
+        told = cur.blocked ? `it is blocked (${cur.blocked_reason ?? 'no reason given'}) and will read the hand-off when it is unblocked`
+          : cur.awaiting_data?.decision ? 'it waits on a decision from the user and will read the hand-off once that is answered'
+          : cur.awaiting && cur.awaiting !== 'user' ? `its session is parked (awaiting ${cur.awaiting}) and will read the hand-off when it resumes` : 'its session is busy and will read the hand-off at its next turn';
       } else {
         this.store.mutateItem(to, [{ unset: ['awaiting', 'awaiting_data'] }], 'engine');
         this.queueTurn(to, phase, `${this.resumeNote(to, `a hand-off from ${from}`)}\n\n${text}`);
@@ -5323,7 +5415,7 @@ export class LiveEngine implements Engine {
     const policy = makePolicy(this.store.config, base, cwd, {}, rules);
     const abort = new AbortController();
     const waiting = ((fm.op_data?.pending_messages as string[] | undefined) ?? []).length;
-    this.turns.set(id, { model: model ?? def.label, phase: 'fix', startedAt: this.now(), lastOutput: '', abort, oneShot: 'conflict session' });
+    this.turns.set(id, { model: model ?? def.label, phase: 'fix', startedAt: this.now(), lastOutput: '', abort, oneShot: 'conflict session', lastOutputAt: Date.now() });
     let result: TurnResult;
     try {
       result = await this.withRunnerSlot(runner, () => this.withSessionSlot(id, async () => {
@@ -5344,10 +5436,10 @@ export class LiveEngine implements Engine {
         },
         onApproval: async (req) => { this.store.journal.append({ type: 'permission.declined', item: id, actor: 'engine', data: { ...req, reason: 'conflict session' } }); },
         onQuestion: async (questions) => { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `conflict session question: ${JSON.stringify(questions)}` } }], 'engine', { commit: `${id}: record conflict question` }); },
-        onOutput: (text) => { const t = this.turns.get(id); if (t) t.lastOutput = text.slice(-400); this.emit({ type: 'session.output', id, text }); },
+        onOutput: (text) => { const t = this.turns.get(id); if (t) { t.lastOutput = text.slice(-400); t.lastOutputAt = Date.now(); } this.emit({ type: 'session.output', id, text }); },
         signal: abort.signal,
       });
-      }));
+      }, abort.signal), abort.signal);
     } finally { this.turns.delete(id); }
     this.recordUsage(id, def, model ?? def.label, 'worker', 'conflict_session', result, { stage: 'conflict', resumed: false });
     const after = this.store.requireItem(id).file.frontmatter;
@@ -6034,6 +6126,8 @@ export class LiveEngine implements Engine {
                 const w = await this.worktreeDirt(cwd); const dirty = [...w.dirty, ...w.byproducts];
                 const aside = dirty.length ? join(this.store.worktreesRoot(), '.displaced', `${branch.replace(/[\/\\]/g, '-')}-${this.now().replace(/[:+]/g, '-')}`) : undefined;
                 if (aside) { await this.ports.git.moveAside(cwd, dirty, aside); said.push(`set ${dirty.length} uncommitted file${dirty.length === 1 ? '' : 's'} aside in ${relative(this.repo, aside)}`); }
+                // What git ignores goes with a forced remove: worktrees.keep_on_remove is set aside first, as cleanup does (invariant 7).
+                const kept = await this.setAsideBeforeRemove(id, cwd); if (kept) said.push(kept);
                 await this.ports.git.worktreeRemove(this.repo, cwd, true);
                 await this.ports.git.worktreePrune(this.repo);
                 await this.ports.git.deleteLocalBranch(this.repo, branch, head);
@@ -6047,7 +6141,7 @@ export class LiveEngine implements Engine {
           else if (!clean) said.push(`kept its worktree and branch ${branch}: it has uncommitted changes`);
           else if (head !== remote) said.push(`kept its worktree and branch ${branch}: its local commits are not all on the remote`);
           else {
-            try { await this.ports.git.worktreeRemove(this.repo, cwd, false); await this.ports.git.worktreePrune(this.repo); await this.ports.git.deleteLocalBranch(this.repo, branch, head); removed = true; said.push(`removed its worktree and local branch (everything is on the remote branch ${branch}, which is kept)`); }
+            try { const kept = await this.setAsideBeforeRemove(id, cwd); if (kept) said.push(kept); await this.ports.git.worktreeRemove(this.repo, cwd, false); await this.ports.git.worktreePrune(this.repo); await this.ports.git.deleteLocalBranch(this.repo, branch, head); removed = true; said.push(`removed its worktree and local branch (everything is on the remote branch ${branch}, which is kept)`); }
             catch (e) { said.push(`removing its worktree stopped partway (${brief(e)}); finish it by hand`); }
           }
         }
@@ -6503,19 +6597,36 @@ export class LiveEngine implements Engine {
    * implement turns against a cap of three. Every turn now wins a session slot before its agent starts,
    * and waits (shown as waiting for a session slot) while all of them are taken.
    */
-  private async withSessionSlot<T>(id: string, fn: () => Promise<T>): Promise<T> {
-    while (this.sessionTurns >= Math.max(1, this.store.config.concurrency.max_sessions)) {
+  private async withSessionSlot<T>(id: string, fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    while (this.sessionTurns >= Math.max(1, this.store.config.concurrency.max_sessions) && !this.stopping && !signal?.aborted) {
       const t = this.turns.get(id); if (t) t.waiting = 'session';
-      await new Promise<void>((r) => this.sessionWaiters.push(r));
+      await this.slotWait(this.sessionWaiters, signal);
     }
     this.sessionTurns += 1;
     try { return await fn(); } finally { this.sessionTurns -= 1; this.sessionWaiters.shift()?.(); }
   }
 
+  /**
+   * Wait in `queue` for a slot, or until `signal` aborts: a turn stopped (Discard, take over, shutdown) while it
+   * waited left its job, and `stop()`, waiting on every job, hanging until some other turn ended. It leaves the queue
+   * when it stops waiting, so a slot freed later goes to a turn that still wants it. The turn's first check sees the stop.
+   */
+  private slotWait(queue: (() => void)[], signal?: AbortSignal): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const go = () => { signal?.removeEventListener('abort', gone); resolve(); };
+      const gone = () => { const i = queue.indexOf(go); if (i >= 0) queue.splice(i, 1); resolve(); };
+      queue.push(go);
+      signal?.addEventListener('abort', gone, { once: true });
+    });
+  }
+
   /** `concurrency.runner_limits`: a runner with its own rate limit takes its turns a few at a time; unlisted runners are not limited here. */
-  private async withRunnerSlot<T>(runner: string, fn: () => Promise<T>): Promise<T> {
+  private async withRunnerSlot<T>(runner: string, fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     const limit = () => this.store.config.concurrency.runner_limits?.[runner];
-    while (limit() !== undefined && (this.runnerTurns.get(runner) ?? 0) >= limit()!) await new Promise<void>((r) => { const q = this.runnerWaiters.get(runner) ?? []; q.push(r); this.runnerWaiters.set(runner, q); });
+    while (limit() !== undefined && (this.runnerTurns.get(runner) ?? 0) >= limit()! && !this.stopping && !signal?.aborted) {
+      const q = this.runnerWaiters.get(runner) ?? []; this.runnerWaiters.set(runner, q);
+      await this.slotWait(q, signal);
+    }
     this.runnerTurns.set(runner, (this.runnerTurns.get(runner) ?? 0) + 1);
     try { return await fn(); } finally { this.runnerTurns.set(runner, (this.runnerTurns.get(runner) ?? 1) - 1); this.runnerWaiters.get(runner)?.shift()?.(); }
   }

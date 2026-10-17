@@ -3,6 +3,7 @@ import { watch, existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync }
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EXIT_DATA_DIR_IN_USE, EXIT_PORT_IN_USE } from './exitCodes.ts';
+import { pidAlive, takePidLock } from './store/pidLock.ts';
 import { checkForUpdate, readUpdateSettings } from './autoUpdate.ts';
 
 export interface SuperviseOptions { dataDir: string; serveArgs: string[]; host: string; port: number; open?: boolean; log?: (m: string) => void }
@@ -44,27 +45,19 @@ export interface SupervisorLock { pid: number; port: number; host: string; start
 export const supervisorLockPath = (dataDir: string) => join(dataDir, '.planestro', 'supervisor');
 const baseUrl = (host: string, port: number) => `http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`;
 
-/** EPERM means the pid exists under another user: alive, not stale. */
-export function pidAlive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; }
-}
+export { pidAlive };
 
 /**
  * Take `<data_dir>/.planestro/supervisor`, or name the live supervisor that has it. A lock whose
- * pid is dead (or that does not parse) is stale and replaced, as DataStore does with its own.
+ * pid is dead (or that does not parse) is stale and replaced, as DataStore does with its own (`takePidLock`).
  */
 export function acquireSupervisorLock(dataDir: string, me: Omit<SupervisorLock, 'started_at'>, alive = pidAlive): { ok: true } | { ok: false; holder: SupervisorLock; message: string } {
   const path = supervisorLockPath(dataDir);
   mkdirSync(join(dataDir, '.planestro'), { recursive: true });
-  if (existsSync(path)) {
-    let holder: SupervisorLock | undefined;
-    try { holder = JSON.parse(readFileSync(path, 'utf8')); } catch { /* unreadable: stale */ }
-    if (holder && typeof holder.pid === 'number' && holder.pid !== me.pid && alive(holder.pid)) {
-      return { ok: false, holder, message: `${dataDir} is already supervised by pid ${holder.pid} on :${holder.port} (since ${holder.started_at}); stop it (kill ${holder.pid}) or open ${baseUrl(holder.host, holder.port)}` };
-    }
-  }
-  writeFileSync(path, JSON.stringify({ ...me, started_at: new Date().toISOString() } satisfies SupervisorLock));
-  return { ok: true };
+  const got = takePidLock(path, { ...me, started_at: new Date().toISOString() } satisfies SupervisorLock, alive);
+  if (got.ok) return got;
+  const holder = got.holder as unknown as SupervisorLock;
+  return { ok: false, holder, message: `${dataDir} is already supervised by pid ${holder.pid} on :${holder.port} (since ${holder.started_at}); stop it (kill ${holder.pid}) or open ${baseUrl(holder.host, holder.port)}` };
 }
 
 /** Only our own lock: a supervisor that lost a race must not delete the winner's. */

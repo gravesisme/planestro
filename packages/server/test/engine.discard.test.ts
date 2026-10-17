@@ -141,4 +141,17 @@ describe('discard (#135)', () => {
     expect(activity(h.child)).toContain('discarded by your answer on');
     expect(activity(h.child)).toMatch(/decided: Drop the siren\? → Discard it and delete its branch \(done for you: .* discarded/);
   });
+
+  it('what worktrees.keep_on_remove names, git-ignored, is set aside before either remove, never deleted with it (invariant 7)', async () => {
+    for (const deleteBranch of [true, false]) {
+      const { store, engine, world, held } = await setup();
+      store.updateConfig((doc) => { doc.setIn(['worktrees', 'keep_on_remove'], ['tmp']); }, 'config: keep tmp');
+      const h = held();
+      world.ignored.set(h.cwd, ['tmp/raw/a.png', '.godot/x.md5']);
+      await engine.discard(h.child, 'dropped', deleteBranch ? { deleteBranch: true, expectSha: h.tip } : {});
+      expect(activity(h.child), String(deleteBranch)).toMatch(/set aside 1 file under tmp \(worktrees\.keep_on_remove\) before removing the worktree/);
+      expect(world.ignored.get(h.cwd), String(deleteBranch)).toEqual(['.godot/x.md5']);
+      await engine.stop(); store.close();
+    }
+  });
 });

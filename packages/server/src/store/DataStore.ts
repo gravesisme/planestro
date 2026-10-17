@@ -23,6 +23,7 @@ import { Journal } from './Journal.ts';
 import { GitCommitter } from './GitCommitter.ts';
 import { IdAllocator } from './IdAllocator.ts';
 import { matches } from './Search.ts';
+import { takePidLock } from './pidLock.ts';
 import { MachinePolicy, machinePolicyPath, permissionRules, type EffectiveRules } from '../machinePolicy.ts';
 import { readConfig, readLocalConfig, patchConfigFile, writeLocalConfig, resolveCodeRepo, resolveWorktreesRoot, schemaStatus, TOOL_VERSION, type SchemaStatus } from '../config.ts';
 
@@ -163,16 +164,8 @@ export class DataStore {
     const dir = join(this.dataDir, '.planestro');
     mkdirSync(dir, { recursive: true });
     const lock = join(dir, 'lock');
-    if (existsSync(lock)) {
-      try {
-        const { pid } = JSON.parse(readFileSync(lock, 'utf8'));
-        if (pid && pid !== process.pid) { process.kill(pid, 0); throw new DataDirInUseError(pid, lock); }
-      } catch (e) {
-        if (e instanceof DataDirInUseError) throw e; // live process; typed so `serve` exits with its own code (#85)
-        // ESRCH or unreadable: stale lock
-      }
-    }
-    writeFileSync(lock, JSON.stringify({ pid: process.pid, started_at: isoLocal() }));
+    const got = takePidLock(lock, { pid: process.pid, started_at: isoLocal() });
+    if (!got.ok) throw new DataDirInUseError(got.holder.pid, lock); // live process; typed so `serve` exits with its own code (#85)
     this.locked = true;
   }
 
@@ -473,8 +466,11 @@ export class DataStore {
     if (data.length > this.config.attachments.managed_max_bytes) throw new Error(`attachment exceeds managed_max_bytes (${this.config.attachments.managed_max_bytes}); add it as a reference instead`);
     const stamp = isoLocal().slice(0, 19).replace(/[-:T]/g, '').replace(/^(\d{8})(\d{6})$/, '$1-$2');
     const safe = basename(originalName).replace(/[^A-Za-z0-9._-]+/g, '-');
-    const rel = `attachments/${id}/${stamp}-${safe}`;
-    atomicWrite(managedAttachmentPath(this.dataDir, id, `${stamp}-${safe}`, true), data);
+    // Two in the same second with one name (every pasted picture is image.png) took one file between two entries.
+    let file = `${stamp}-${safe}`;
+    for (let n = 2; existsSync(join(this.attachmentsDir, id, file)); n++) file = `${stamp}-${n}-${safe}`;
+    const rel = `attachments/${id}/${file}`;
+    atomicWrite(managedAttachmentPath(this.dataDir, id, file, true), data);
     const entry = { path: rel, kind: 'managed' as const, added_at: isoLocal() };
     this.mutateItem(id, [{ set: { attachments: [...this.requireItem(id).file.frontmatter.attachments, entry] } }, { activity: { actor: actorToActivity(actor), text: `attached ${rel}` } }], actor, { commit: `${id}: attach ${safe}`, paths: [rel] });
     return entry;

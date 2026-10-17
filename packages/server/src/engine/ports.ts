@@ -193,7 +193,8 @@ export interface GhPort {
 
 export interface ProcPort {
   /** `cleanEnv`: `env` is the command's whole environment, none of planestro's own (a Codex worker's command, #228). */
-  run(command: string, opts: { cwd: string; timeoutMs?: number; env?: Record<string, string>; cleanEnv?: boolean }): Promise<{ code: number; stdout: string; stderr: string }>;
+  /** `signal`: stop it (its whole process group) when the turn that asked for it ends. */
+  run(command: string, opts: { cwd: string; timeoutMs?: number; env?: Record<string, string>; cleanEnv?: boolean; signal?: AbortSignal }): Promise<{ code: number; stdout: string; stderr: string }>;
   /** Bytes free to this user on the volume holding `path` (#161), or undefined when it cannot be read. */
   freeBytes?(path: string): Promise<number | undefined>;
 }

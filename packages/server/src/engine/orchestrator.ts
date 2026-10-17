@@ -11,6 +11,7 @@ import { hostNote, keptPathsNote } from './hostNote.ts';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Ports, CustomToolDef, TurnResult } from './ports.ts';
 import { quietTransientFailure } from './transient.ts';
+import { atomicWrite } from '../store/atomicWrite.ts';
 import type { DecisionInput, DecisionAction, RateLimitSnapshot, Priority, ChatAttachment } from '@planestro/shared';
 
 /**
@@ -209,7 +210,8 @@ export class Orchestrator {
   private readState(): OrchState {
     try { return { wakes_served: 0, ...(YAML.parse(readFileSync(this.stateFile, 'utf8')) ?? {}) }; } catch { return { wakes_served: 0 }; }
   }
-  private writeState(s: OrchState): void { mkdirSync(join(this.store.dataDir, '.planestro'), { recursive: true }); writeFileSync(this.stateFile, YAML.stringify(s)); }
+  // Atomic: a crash mid-write left a torn file that readState took for none, and the orchestrator's session was lost.
+  private writeState(s: OrchState): void { atomicWrite(this.stateFile, YAML.stringify(s)); }
 
   async stop(): Promise<void> { this.stopped = true; this.activeAbort?.abort(); await this.activeWake?.catch(() => {}); }
 

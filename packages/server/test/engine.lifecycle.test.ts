@@ -31,6 +31,80 @@ const status = (s: DataStore, id: string) => s.getItem(id)!.file.frontmatter.sta
 const activityOf = (s: DataStore, id: string) => s.getItem(id)!.file.sections.find((x) => x.title === 'Activity')!.body;
 
 describe('LiveEngine lifecycle (dry-run ports)', () => {
+  it('a turn that says nothing for concurrency.turn_quiet_min is stopped and blocked turn_quiet', async () => {
+    const hung = () => ({
+      runTurn: (o: TurnOptions) => new Promise<TurnResult>((resolve) => {
+        o.signal?.addEventListener('abort', () => resolve({ subtype: 'killed', isError: false, costUsd: 0, numTurns: 0, text: '' }), { once: true });
+      }),
+    });
+    const { store, engine } = await setup({ claude: hung as any });
+    store.updateConfig((doc) => { doc.setIn(['concurrency', 'turn_quiet_min'], 0.002); }, 'config: quiet');
+    const item = store.createItem({ title: 'Hangs', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => store.getItem(item.id)!.file.frontmatter.blocked_reason === 'turn_quiet', 6000);
+    expect(activityOf(store, item.id)).toMatch(/turn stopped: no output for 0\.002 min \(concurrency\.turn_quiet_min\)/);
+    expect(engine.sessions()).toEqual([]);   // its slot is free
+  });
+
+  it('a turn waiting for a session slot stops waiting when it is stopped (Discard, take over, shutdown)', async () => {
+    const started: string[] = [];
+    const hung = () => ({
+      runTurn: (o: TurnOptions) => new Promise<TurnResult>((resolve) => {
+        started.push(o.itemId);
+        o.signal?.addEventListener('abort', () => resolve({ subtype: 'killed', isError: false, costUsd: 0, numTurns: 0, text: '' }), { once: true });
+      }),
+    });
+    const { store, engine } = await setup({ claude: hung as any });
+    store.updateConfig((doc) => { doc.setIn(['concurrency', 'max_sessions'], 1); }, 'config: one');
+    const a = store.createItem({ title: 'A', description: 'x' }); const b = store.createItem({ title: 'B', description: 'x' });
+    store.transition(a.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => started.length === 1);
+    store.mutateItem(b.id, [{ set: { status: 'PLAN_IN_PROGRESS', worktree: store.getItem(a.id)!.file.frontmatter.worktree!, branch: 'tp/2-b' } }], 'engine');
+    (engine as any).queueTurn(b.id, 'plan', 'go');   // as an unblock or a plan approval does: it never passed admission
+    await waitFor(() => (engine as any).sessionWaiters.length === 1);   // B is queued for the one slot A holds
+    // Discarding B waits on B's job, which waited on A's slot: it hung until A's turn ended, however long.
+    const t0 = Date.now();
+    await engine.discard(b.id, 'not wanted', {});
+    expect(Date.now() - t0).toBeLessThan(3000);
+    expect((engine as any).sessionWaiters).toHaveLength(0);
+    expect(started).toEqual([a.id]);
+    await engine.stop();
+  });
+
+  it('a GitHub outage longer than its retries is waited through in the CI wait, never an engine_error block', async () => {
+    const { store, engine } = await setup();
+    const gh = (engine as any).ports.gh;
+    const real = gh.ciForSha.bind(gh);
+    let fails = 3;
+    gh.ciForSha = async (...a: unknown[]) => { if (fails-- > 0) throw new Error('gh run list failed: HTTP 502: Bad Gateway'); return real(...a); };
+    const item = store.createItem({ title: 'Outage', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
+    expect(activityOf(store, item.id).match(/GitHub did not answer about CI for \w{7} \(gh run list failed: HTTP 502: Bad Gateway\); still waiting/g)).toHaveLength(1);
+    expect(activityOf(store, item.id)).not.toContain('engine_error');
+  });
+
+  it('reconcile says a finished item\'s leftover remote branch once per tip, and never runs two passes at once', async () => {
+    const { store, engine, world } = await setup();
+    const item = store.createItem({ title: 'Left', description: 'x' });
+    world.remoteBranches.set('tp/1-left', world.sha());
+    store.mutateItem(item.id, [{ set: { status: 'FINISHED', branch: 'tp/1-left' } }], 'engine');
+    const [a, b] = [engine.reconcile('manual'), engine.reconcile('periodic')];
+    expect(a).toBe(b);
+    const leftover = (c: string[]) => c.filter((x) => /remote branch tp\/1-left still exists after finish/.test(x));
+    expect(leftover(await a)).toHaveLength(1);
+    const before = store.getItem(item.id)!.file.frontmatter.updated_at;
+    expect(leftover(await engine.reconcile('periodic'))).toHaveLength(0);   // the item is not rewritten every pass
+    expect(store.getItem(item.id)!.file.frontmatter.updated_at).toBe(before);
+    world.remoteBranches.set('tp/1-left', world.sha());
+    expect(leftover(await engine.reconcile('periodic'))).toHaveLength(1);   // a new tip is news
+  });
+
   it('drives one item NOT_YET_SUBMITTED → FINISHED with a user plan approval in the middle', async () => {
     const { store, engine, world, dataDir } = await setup();
     const item = store.createItem({ title: 'Add version flag', description: 'print the version' });
