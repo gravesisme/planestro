@@ -109,6 +109,13 @@ The data dir is a git repository: every semantic change is a commit, `git.auto_p
 it to its remote at each checkpoint, and the journal records every operation's begin and
 end. `git log -- items/MP-12.md` is an item's full history.
 
+The journal itself is machine-local and not versioned: it is appended to all day, and committing it at every
+checkpoint grew one planning repository past 3 GiB. A data dir that tracked it is fixed at the next start with one
+commit, `planestro: stop tracking journal`, which leaves the files on disk and the history as it was. Back
+`journal/` up with the rest of the machine if you want it kept. Shrinking a repository that carried it means
+rewriting its history (`git filter-repo --invert-paths --path journal`, then a force push to its remote); planestro
+never does that for you.
+
 ## Spending
 
 - Claude: `budget_usd_per_item` caps an item across all of its turns, counted turn by turn (a

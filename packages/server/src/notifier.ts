@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { joinLines } from '@planestro/shared';
 
 /**
  * A desktop notification from the shell (`planestro notify <title> <message>`, #70): osascript on a Mac,
@@ -18,7 +19,7 @@ const run: Run = (file, args) => new Promise((resolve) => {
 });
 
 /** AppleScript string literal: backslashes and quotes escaped, line breaks as spaces. */
-export const appleString = (s: string) => `"${s.replace(/\s*\n\s*/g, ' ').replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+export const appleString = (s: string) => `"${joinLines(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 
 export async function desktopNotify(title: string, message: string, deps: { platform?: NodeJS.Platform; run?: Run } = {}): Promise<'osascript' | 'notify-send' | 'none'> {
   const platform = deps.platform ?? process.platform; const exec = deps.run ?? run;

@@ -1,11 +1,11 @@
 import { ItemFrontmatter, ITEM_KEY_ORDER, SECTION_TITLES, type SectionTitle } from './schema.ts';
 import { splitFrontmatter, serializeFrontmatter } from './frontmatter.ts';
 import { canonicalTimestamp, isoLocal } from './timestamps.ts';
+import { h1Title, joinLines, trimLineEnds } from './textScan.ts';
 
 export interface Section { title: string; body: string }
 export interface ItemFile { frontmatter: ItemFrontmatter; sections: Section[] }
 
-const H1 = /^# (.+?)\s*$/;
 
 /** Parse an item file. Throws with a readable message on schema violations. */
 export function parseItemFile(text: string): ItemFile {
@@ -32,12 +32,12 @@ export function splitSections(body: string): Section[] {
   let current: Section | null = null;
   let preamble: string[] = [];
   for (const line of lines) {
-    const m = H1.exec(line);
-    if (m) { current = { title: m[1], body: '' }; sections.push(current); continue; }
+    const title = h1Title(line);
+    if (title !== undefined) { current = { title, body: '' }; sections.push(current); continue; }
     if (current) current.body += (current.body ? '\n' : '') + line; else preamble.push(line);
   }
   if (preamble.join('\n').trim()) sections.unshift({ title: '', body: preamble.join('\n') });
-  for (const s of sections) s.body = s.body.replace(/\s+$/, '').replace(/^\n+/, '');
+  for (const s of sections) s.body = s.body.trimEnd().replace(/^\n+/, '');
   return sections;
 }
 
@@ -59,7 +59,7 @@ export function serializeItemFile(file: ItemFile): string {
   const fm = serializeFrontmatter(file.frontmatter as Record<string, unknown>, ITEM_KEY_ORDER);
   const sections = ensureKnownSections(file.sections);
   const body = sections.map((s) => {
-    const text = s.body.replace(/[ \t]+$/gm, '').replace(/\s+$/, '');
+    const text = trimLineEnds(s.body).trimEnd();
     if (s.title === '') return text ? `${text}\n` : '';
     return text ? `# ${s.title}\n\n${text}\n` : `# ${s.title}\n`;
   }).filter(Boolean).join('\n');
@@ -86,7 +86,7 @@ export type ActivityActor = 'user' | 'app' | 'orchestrator' | 'worker' | 'operat
 
 /** Append one bullet to `# Activity`: `- <ts> [actor] text` (single line; newlines become spaces). */
 export function appendActivity(file: ItemFile, actor: ActivityActor, text: string, when: string = isoLocal()): void {
-  const line = `- ${when} [${actor}] ${text.replace(/\s*\n\s*/g, ' ').trim()}`;
+  const line = `- ${when} [${actor}] ${joinLines(text).trim()}`;
   const current = getSection(file, 'Activity');
   setSection(file, 'Activity', current ? `${current}\n${line}` : line);
 }

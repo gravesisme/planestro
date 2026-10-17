@@ -486,8 +486,9 @@ export class LiveGhPort implements GhPort {
     if (f.head) args.push('--head', f.head); if (f.base) args.push('--base', f.base);
     return (JSON.parse(await ghRead(args)) as any[]).map(toPr);
   }
+  // By commit as well: the branch's last ten runs held none for this head once ten newer pushes had run (the same branch, re-runs).
   async ciForSha(repo: string, branch: string, sha: string, workflow: string): Promise<CiStatus> {
-    const runs = JSON.parse(await ghRead(['run', 'list', '--repo', repo, '--branch', branch, '--workflow', workflow, '--limit', '10', '--json', 'databaseId,status,conclusion,headSha,url,createdAt,attempt'])) as any[];
+    const runs = JSON.parse(await ghRead(['run', 'list', '--repo', repo, '--branch', branch, '--commit', sha, '--workflow', workflow, '--limit', '10', '--json', 'databaseId,status,conclusion,headSha,url,createdAt,attempt'])) as any[];
     const ci = ciFromRuns(runs.filter((r) => r.headSha === sha), sha);
     if (ci.state !== 'failure' || !ci.runId) return ci;
     // GitHub's `failure` is not proof that anything failed: read the jobs (#213).

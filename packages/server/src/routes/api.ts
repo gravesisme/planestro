@@ -93,7 +93,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   api.post('/providers/apply', async (c) => { try { return c.json(applySwitch(store, engine, await c.req.json())); } catch (e) { return fail(c, e); } });
   api.post('/providers/:runner/retry', (c) => { try { const runner = z.enum(['claude', 'codex']).parse(c.req.param('runner')); engine.retryProvider?.(runner); return c.json({ ok: true }); } catch (e) { return fail(c, e); } });
   api.get('/orchestrator/selection', (c) => c.json((engine as any).orchestrator?.selection ?? { restart_required: false }));
-  api.get('/state', async (c) => c.json(stateView(store, engine, await store.git.status())));
+  api.get('/state', async (c) => c.json(stateView(store, engine, await store.git.status({ maxAgeMs: 2000 }))));
   // Every project on this machine (#235), read-only: the others are asked server-side, so the page makes no cross-origin read.
   api.get('/projects', async (c) => c.json(await projectsOverview({ dataDir: store.dataDir, name: store.config.project.name, state: () => stateView(store, engine, null) }, opts.projects ?? liveOverviewDeps())));
   api.post('/reload', async (c) => { store.reload(); return c.json({ ok: true, invalid: store.invalid }); });
@@ -161,7 +161,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   // Cost and tokens by stage, fresh sessions, parks and startup weight, from the journal (#346); an orchestrator wake shares its cost among its items.
   api.get('/items/:id/efficiency', (c) => {
     const types = new Set(EFFICIENCY_TYPES);
-    return c.json(itemEfficiency(store.journal.read().filter((e) => types.has(e.type)), c.req.param('id')));
+    return c.json(itemEfficiency(store.journal.read({ types }), c.req.param('id')));
   });
   api.get('/items/:id/console', (c) => c.json({ lines: consoles?.get(c.req.param('id')) ?? [] }));
   api.get('/items/:id/transitions', (c) => {
@@ -541,7 +541,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   // The chat: what the user said, what the orchestrator answered or asked, and how each wake about a message ended.
   api.get('/orchestrator/chat', (c) => {
     const e = engine as Engine & { orchestrator?: { enabled: boolean } };
-    const entries = store.journal.read().filter((j) => CHAT_TYPES.has(j.type) && (j.type !== 'orchestrator.done' || ((j.data?.events as string[] | undefined) ?? []).includes('user_message'))).slice(-100);
+    const entries = store.journal.read({ types: CHAT_TYPES }).filter((j) => (j.type !== 'orchestrator.done' || ((j.data?.events as string[] | undefined) ?? []).includes('user_message'))).slice(-100);
     return c.json({ enabled: Boolean(e.orchestrator?.enabled), entries });
   });
   api.get('/orchestrator/questions', (c) => c.json(store.journal.read({ type: 'orchestrator.question', limit: 20 })));
@@ -595,21 +595,21 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
     const days = Math.min(366, Math.max(1, Math.floor(Number(c.req.query('days') ?? 30)) || 30));
     const today = isoLocal().slice(0, 10);
     const types = new Set(USAGE_REPORT_TYPES);
-    return c.json(usageReport(store.journal.read({ since: dayBefore(today, days - 1) }).filter((e) => types.has(e.type)), { days, today }));
+    return c.json(usageReport(store.journal.read({ since: dayBefore(today, days - 1), types }), { days, today }));
   });
   // The last days' items ranked by cost, by stage and by starting context (#346).
   api.get('/usage/items', (c) => {
     const days = Math.min(90, Math.max(1, Math.floor(Number(c.req.query('days') ?? 7)) || 7));
     const today = isoLocal().slice(0, 10);
     const types = new Set(EFFICIENCY_TYPES);
-    return c.json(efficiencyRanking(store.journal.read({ since: dayBefore(today, days - 1) }).filter((e) => types.has(e.type)), { days, today }));
+    return c.json(efficiencyRanking(store.journal.read({ since: dayBefore(today, days - 1), types }), { days, today }));
   });
   // Allow rules suggested from the ruling history, replayed so none would have let a past denial through (#169). Read-only.
   api.get('/permissions/suggest', (c) => {
     const num = (k: string) => { const v = Number(c.req.query(k)); return Number.isFinite(v) && v > 0 ? v : undefined; };
     return c.json(suggestForStore(store, { minApprovals: num('min'), minItems: num('min_items') }));
   });
-  api.get('/parks', (c) => c.json(parkSummary(store.journal.read().filter((e) => e.type.startsWith('permission.') || e.type === 'op.begin' || e.type === 'op.end'))));
+  api.get('/parks', (c) => c.json(parkSummary(store.journal.read({ types: (t) => t.startsWith('permission.') || t === 'op.begin' || t === 'op.end' }))));
   api.get('/engine', (c) => c.json({ mode: engine.mode, modes: modeView(store, engine.mode), paused: engine.paused, ...guardView(store, engine.paused), sessions: engine.sessions(), ...(engine.ciQueue ? { ci_queue: engine.ciQueue } : {}), ...runnerStallsView(engine), ...(engine.restartReadiness ? { restart: engine.restartReadiness() } : {}), log: engine.log.slice(-200) }));
   // The orchestrator's suggestions about planestro itself (dogfood f8): a list of their own, not buried in Activity.
   // Each with what became of it (#231): the issues it was filed as, or handled by hand.

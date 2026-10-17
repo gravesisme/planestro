@@ -1,6 +1,8 @@
 import { isoLocal, type ServerEvent } from '@planestro/shared';
 
 const MAX_LINES = 800;
+/** Consoles kept, the least recently written dropped first: one per item ever run, for the server's whole life, otherwise. */
+const MAX_ITEMS = 64;
 
 /**
  * Per-item console: a ring buffer of session output and engine lines, fed from the same
@@ -23,7 +25,9 @@ export class ConsoleBuffer {
     const stamp = isoLocal().slice(11, 19);
     for (const line of text.split('\n')) if (line.trim()) arr.push(`${stamp}  ${line}`);
     if (arr.length > MAX_LINES) arr.splice(0, arr.length - MAX_LINES);
+    this.buffers.delete(id);
     this.buffers.set(id, arr);
+    if (this.buffers.size > MAX_ITEMS) this.buffers.delete(this.buffers.keys().next().value!);
   }
 
   get(id: string): string[] { return this.buffers.get(id) ?? []; }

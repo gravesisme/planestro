@@ -3036,10 +3036,17 @@ export class LiveEngine implements Engine {
   private async readRunners(maxAgeMs = 30_000): Promise<{ report: RunnerReport; at: string } | undefined> {
     if (!this.ports.gh.runners || !this.store.config.code_repo.github) return undefined;
     if (this.runnerReport && Date.now() - this.runnersAt < maxAgeMs) return this.runnerReport;
+    // A read under way is shared: a caller arriving during the first one got "cannot tell", and each started its own.
+    if (this.runnersRead) return this.runnersRead;
     this.runnersAt = Date.now();
-    try { this.runnerReport = { report: await this.ports.gh.runners(this.github, this.ciWorkflow), at: this.now() }; } catch (e) { if (!this.runnerReport) throw e; }
-    return this.runnerReport;
+    const gh = this.ports.gh;
+    this.runnersRead = (async () => {
+      try { this.runnerReport = { report: await gh.runners!(this.github, this.ciWorkflow), at: this.now() }; } catch (e) { if (!this.runnerReport) throw e; }
+      return this.runnerReport;
+    })().finally(() => { this.runnersRead = undefined; });
+    return this.runnersRead;
   }
+  private runnersRead?: Promise<{ report: RunnerReport; at: string } | undefined>;
   /** What the orchestrator's runner_status and a worker's runners_busy answer: read by planestro's own gh, so no session needs a Bash rule for it. */
   async runnerStatus(): Promise<string> {
     if (!this.store.config.code_repo.github) return 'not available: code_repo.github is not configured, so there are no GitHub runners to read';
