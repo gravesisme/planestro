@@ -11,9 +11,11 @@ const DOING: Record<string, string> = { plan: 'planning…', implement: 'impleme
 /** "planning…" for a busy session's phase. */
 export const runningLabel = (op?: string): string => (op && DOING[op]) ?? 'running…';
 
-export function agentStateOf(item: ItemView, state: State | null | undefined): AgentState | undefined {
+/** `lastOutput`: the newest line from the event stream, newer than the state's own when there is one. */
+export function agentStateOf(item: ItemView, state: State | null | undefined, lastOutput?: string): AgentState | undefined {
   const session = state?.engine.sessions.find((s) => s.item === item.id);
-  if (session?.busy) return { kind: 'running', label: runningLabel(session.op), ...(session.last_output ? { output: session.last_output } : {}) };
+  const output = lastOutput ?? session?.last_output;
+  if (session?.busy) return { kind: 'running', label: runningLabel(session.op), ...(output ? { output } : {}) };
   const wait = pendingTurnWait(item.frontmatter, state);
   if (wait && wait !== SLOT_WAIT) return { kind: 'wait', reason: wait };
   if (wait) return { kind: 'slot', reason: wait };
@@ -25,4 +27,12 @@ export function agentStateOf(item: ItemView, state: State | null | undefined): A
 /** The sessions with an agent running, each with its item when the board has it, in the engine's order. */
 export function runningItems(state: State): { session: SessionView; item?: ItemView }[] {
   return state.engine.sessions.filter((s) => s.busy).map((session) => ({ session, item: state.items.find((i) => i.id === session.item) }));
+}
+
+const byIdCache = new WeakMap<ItemView[], Map<string, ItemView>>();
+/** The items by id, built once per list the server sent: each card looked up its children in the whole list. */
+export function itemsById(items: ItemView[]): Map<string, ItemView> {
+  let m = byIdCache.get(items);
+  if (!m) { m = new Map(items.map((i) => [i.id, i])); byIdCache.set(items, m); }
+  return m;
 }

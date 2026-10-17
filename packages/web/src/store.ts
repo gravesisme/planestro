@@ -3,6 +3,7 @@ import type { JournalEntry } from '@planestro/shared';
 import { api, type State, type ItemView, type QuestionView, type NoteView } from './api.ts';
 import { showIfNotification } from './desktopNotify.ts';
 import { watchInput } from './heartbeat.ts';
+import { appendConsole, keepConsole, parseEvent, reconnectDelay, refreshesState, throttled } from './liveEvents.ts';
 
 /** Journal entries the orchestrator chat shows (a wake's `done` only when it answered a message). */
 export const isChatEntry = (j: JournalEntry) => ['orchestrator.user_message', 'orchestrator.reply', 'orchestrator.question'].includes(j.type) || (j.type === 'orchestrator.done' && ((j.data?.events as string[] | undefined) ?? []).includes('user_message'));
@@ -25,6 +26,8 @@ interface Store {
   /** A newer UI bundle is being served, but reloading now would lose what the user is typing. */
   updateReady: boolean;
   consoles: Record<string, string[]>;
+  /** Each running session's last output, from the stream: kept apart from `state` so a line printed re-renders its own card, not the board. */
+  lastOutput: Record<string, string>;
   seedConsole(id: string, lines: string[]): void;
   refresh(): Promise<void>; connect(): void; item(id: string): ItemView | undefined; flash(msg: string): void;
   /** The orchestrator chat: its thread (loaded when first opened, then kept live from the journal stream) and what it opens with. */
@@ -40,11 +43,13 @@ interface Store {
   loadQuestions(): Promise<void>;
 }
 
-let refreshTimer: ReturnType<typeof setTimeout> | undefined;
 let questionsTimer: ReturnType<typeof setTimeout> | undefined;
 let questionsSeq = 0;
 /** The live connection, for the input heartbeat (#224). */
 let socket: WebSocket | undefined;
+let failures = 0;
+let refreshSeq = 0;
+const scheduleRefresh = throttled(() => void useStore.getState().refresh(), { gap: 1000, settle: 120, now: () => Date.now(), later: (f, ms) => setTimeout(f, ms) });
 
 // ---- self-reload: `planestro serve --watch` rebuilds the UI, and an open page should pick it up
 const BUNDLE = /\/assets\/index-[\w-]+\.js/;
@@ -67,7 +72,7 @@ if (typeof window !== 'undefined') {
 }
 
 export const useStore = create<Store>((set, get) => ({
-  connected: false, events: [], consoles: {}, updateReady: false, chat: { open: false }, notes: [], notesSeen: '', questionRev: {},
+  connected: false, events: [], consoles: {}, lastOutput: {}, updateReady: false, chat: { open: false }, notes: [], notesSeen: '', questionRev: {},
   openChat(opts = {}) { set({ chat: { ...get().chat, open: true, item: opts.item, draft: opts.draft } }); void get().loadChat(); },
   closeChat() { set({ chat: { ...get().chat, open: false } }); },
   async loadChat() { try { const r = await api.orchestratorChat(); if (Array.isArray(r?.entries)) set({ chat: { ...get().chat, entries: r.entries, enabled: r.enabled } }); } catch { /* the panel says it could not load */ } },
@@ -90,29 +95,44 @@ export const useStore = create<Store>((set, get) => ({
   },
   // Only the newest request's answer is kept: an older one that returns late would bring back a stale list.
   async loadQuestions() { const n = ++questionsSeq; try { const questions = await api.questions(); if (n === questionsSeq && Array.isArray(questions)) set({ questions }); } catch { /* the Console keeps what it had */ } },
-  seedConsole(id, lines) { set({ consoles: { ...get().consoles, [id]: lines } }); },
+  seedConsole(id, lines) { set({ consoles: keepConsole(get().consoles, id, lines) }); },
+  // Only the newest request's answer is kept, as for questions: a slow one landing last would put back an older board.
   async refresh() {
-    try { set({ state: await api.state(), error: undefined }); } catch (e) { set({ error: (e as Error).message }); }
+    const n = ++refreshSeq;
+    try { const state = await api.state(); if (n === refreshSeq) set({ state, error: undefined }); } catch (e) { if (n === refreshSeq) set({ error: (e as Error).message }); }
   },
+  // Once: React's strict mode runs the effect twice, and each call used to open a socket of its own, every event handled twice.
   connect() {
+    if (socket && socket.readyState !== WebSocket.CLOSED && socket.readyState !== WebSocket.CLOSING) return;
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const ws = new WebSocket(`${proto}://${location.host}/ws`);
     if (!socket) watchInput(() => socket);
     socket = ws;
-    ws.onopen = () => { set({ connected: true }); void get().refresh(); void get().loadNotes(); void get().loadQuestions(); void checkForNewBundle(); };
-    ws.onclose = () => { set({ connected: false }); setTimeout(() => get().connect(), 2000); };
+    ws.onopen = () => { failures = 0; set({ connected: true }); void get().refresh(); void get().loadNotes(); void get().loadQuestions(); void checkForNewBundle(); };
+    ws.onclose = () => {
+      if (socket !== ws) return;
+      set({ connected: false });
+      setTimeout(() => get().connect(), reconnectDelay(failures++));
+    };
     ws.onmessage = (m) => {
-      const e = JSON.parse(m.data);
-      const appendConsole = (id: string, line: string) => { const cur = get().consoles[id] ?? []; set({ consoles: { ...get().consoles, [id]: [...cur.slice(-799), `${new Date().toTimeString().slice(0, 8)}  ${line}`] } }); };
-      if (e.type === 'session.started') appendConsole(e.id, `── session ${e.session_id ? e.session_id.slice(0, 8) + ' ' : ''}turn started ──`);
-      if (e.type === 'session.output') for (const l of String(e.text).split('\n')) if (l.trim()) appendConsole(e.id, l);
-      if (e.type === 'session.ended') appendConsole(e.id, `── turn ended (${e.subtype ?? 'success'}) ──`);
-      if (e.type === 'engine.log' && e.item) appendConsole(e.item, `[engine] ${e.message}`);
+      const e = parseEvent(m.data);
+      if (!e) return;
+      const stamp = new Date().toTimeString().slice(0, 8);
+      const toConsole = (id: string, lines: string[]) => { const next = appendConsole(get().consoles[id], lines, stamp); if (next !== get().consoles[id]) set({ consoles: keepConsole(get().consoles, id, next) }); };
+      if (e.type === 'session.started') toConsole(e.id, [`── session ${e.session_id ? e.session_id.slice(0, 8) + ' ' : ''}turn started ──`]);
+      if (e.type === 'session.output') {
+        toConsole(e.id, String(e.text).split('\n'));
+        if (String(e.text).trim()) set({ lastOutput: { ...get().lastOutput, [e.id]: String(e.text).slice(-400) } });
+      }
+      if (e.type === 'session.ended') {
+        toConsole(e.id, [`── turn ended (${e.subtype ?? 'success'}) ──`]);
+        const { [e.id]: _, ...rest } = get().lastOutput; set({ lastOutput: rest });
+      }
+      if (e.type === 'engine.log' && e.item) toConsole(e.item, [`[engine] ${e.message}`]);
       if (e.type === 'engine.log') set({ events: [...get().events.slice(-199), `${e.level}: ${e.message}`] });
       if (e.type === 'question.updated') {
         set({ questionRev: { ...get().questionRev, [e.id]: (get().questionRev[e.id] ?? 0) + 1 } });
         clearTimeout(questionsTimer); questionsTimer = setTimeout(() => void get().loadQuestions(), 120);
-        return;
       }
       if (e.type === 'journal.appended') {
         showIfNotification(e.entry);
@@ -120,10 +140,8 @@ export const useStore = create<Store>((set, get) => ({
         if (e.entry?.type === 'orchestrator.planestro_note_link') void get().loadNotes();
         if (e.entry?.type === NOTES_SEEN_TYPE) set({ notesSeen: later(get().notesSeen, String(e.entry.data?.up_to ?? '')) });
         const c = get().chat; if (c.entries && isChatEntry(e.entry) && !c.entries.some((x) => x.ts === e.entry.ts && x.type === e.entry.type)) set({ chat: { ...c, entries: [...c.entries.slice(-199), e.entry] } });
-        return;
       }
-      clearTimeout(refreshTimer);
-      refreshTimer = setTimeout(() => void get().refresh(), 120);
+      if (refreshesState(e.type)) scheduleRefresh();
     };
   },
   item(id) { return get().state?.items.find((i) => i.id === id); },

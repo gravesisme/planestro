@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { heldReasonOf, type JournalEntry } from '@planestro/shared';
 import { DndContext, MouseSensor, TouchSensor, useSensor, useSensors, closestCenter, type DragEndEvent } from '@dnd-kit/core';
@@ -18,7 +18,9 @@ export function ConsolePage() {
   const [journal, setJournal] = useState<JournalEntry[]>([]);
   const [itemFilter, setItemFilter] = useState('');
   const [reconcileOut, setReconcileOut] = useState<string[] | null>(null);
-  const refresh = () => { void api.journal({ item: itemFilter || undefined, limit: 120 }).then((j) => setJournal(j.reverse())); };
+  // Only the newest answer lands (a filter changed while one was out), and a failed poll keeps what is shown.
+  const journalSeq = useRef(0);
+  const refresh = () => { const n = ++journalSeq.current; void api.journal({ item: itemFilter || undefined, limit: 120 }).then((j) => { if (n === journalSeq.current) setJournal(j.reverse()); }).catch(() => undefined); };
   useEffect(() => { refresh(); const t = setInterval(refresh, 5000); return () => clearInterval(t); }, [itemFilter]);
   const queue = (state?.items ?? []).filter((i) => i.frontmatter.status === 'IN_REVIEW').sort((a, b) => (a.frontmatter.merge_order ?? 1e9) - (b.frontmatter.merge_order ?? 1e9) || (a.frontmatter.rank ?? 0) - (b.frontmatter.rank ?? 0));
   // A finger that moves is scrolling the page; one that rests on a row first is picking it up.

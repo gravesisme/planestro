@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router';
+import { useShallow } from 'zustand/react/shallow';
 import { useStore, act } from './store.ts';
 import { api } from './api.ts';
 import { findModel, usageWindowLabel, usagePercent, localClock, limitsLabel, type UsageGuardState } from '@planestro/shared';
@@ -31,8 +32,15 @@ function guardPill(g: UsageGuardState): string {
 }
 const onBoardTab = (path: string) => path === '/' || /^\/(icebox|done|items)(\/|$)/.test(path);
 
+/** A running session's last output, live from the stream: subscribed here alone, so a printed line redraws one line. */
+function RunLine({ item, fallback }: { item: string; fallback?: string }) {
+  const text = useStore((s) => s.lastOutput?.[item]) ?? fallback;
+  return text ? <div className="small muted run-line" title={text}>{text}</div> : null;
+}
+
 export function App() {
-  const { state, error, connected, connect, updateReady } = useStore();
+  // Only what it draws: the whole store changes with every console line.
+  const { state, error, connected, connect, updateReady } = useStore(useShallow((s) => ({ state: s.state, error: s.error, connected: s.connected, connect: s.connect, updateReady: s.updateReady })));
   const nav = useNavigate();
   const { pathname, search } = useLocation();
   const needsFilter = pathname === '/' && new URLSearchParams(search).get('needs') === '1';
@@ -87,7 +95,7 @@ export function App() {
             <div className="status-popover-heading"><strong>Automation · {engineLabel}</strong><button popoverTarget="engine-status" popoverTargetAction="hide" aria-label="Close automation status">×</button></div>
             {state && <ConcurrencyControl slots={slots} open={statusOpen} />}
             {running > 0 && <div className="status-running"><div className="status-running-head"><span>Running now</span><Link to="/?running=1">Show on the board</Link></div>
-              <ul>{runningNow.map(({ session, item }) => <li key={session.item}><Link to={`/items/${session.item}`}><span className="id">{session.item}</span> {item?.frontmatter.title ?? ''}</Link><span className="small muted"> · {runningLabel(session.op)}</span>{session.last_output && <div className="small muted run-line" title={session.last_output}>{session.last_output}</div>}</li>)}</ul></div>}
+              <ul>{runningNow.map(({ session, item }) => <li key={session.item}><Link to={`/items/${session.item}`}><span className="id">{session.item}</span> {item?.frontmatter.title ?? ''}</Link><span className="small muted"> · {runningLabel(session.op)}</span><RunLine item={session.item} fallback={session.last_output} /></li>)}</ul></div>}
             <dl><dt>Agents running</dt><dd>{running}</dd><dt>Active items</dt><dd>{active.length}</dd><dt>PRs in review</dt><dd>{inReview.length}</dd><dt>Connection</dt><dd>{connected ? 'Connected' : 'Reconnecting'}</dd></dl>
             {restart?.draining && <p>{restart.by === 'update' ? `Updating planestro: ${restart.idle ? 'restarting now' : `waiting for ${restart.running.join(', ')} to finish`}. Automation resumes after the restart.` : restart.idle ? 'Safe to restart: nothing is running.' : `Draining: waiting for ${restart.running.join(', ')} to finish. Nothing new starts meanwhile.`}</p>}
             {paused && state?.engine.paused_by === 'disk' && state.engine.disk_guard && <p className="status-notice">Disk nearly full · {state.engine.disk_guard.free_gib} GiB free on {state.engine.disk_guard.path}. Automation resumes once there is {state.config.disk_guard.resume_free_gib} GiB free.</p>}
