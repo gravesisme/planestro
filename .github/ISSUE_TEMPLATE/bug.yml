@@ -1,0 +1,36 @@
+name: Bug report
+description: Something planestro did wrong, or failed to do
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Don't paste planning data, transcripts, logs with tokens, or anything private.** Describe what happened, and trim any output to the lines that show it.
+        A security problem goes to private reporting (Security tab → Report a vulnerability), not here.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to make it happen again
+      description: The smallest set of steps you know of. `planestro sample` reproductions are ideal.
+  - type: input
+    id: blocked
+    attributes:
+      label: blocked_reason (if an item stopped)
+      placeholder: e.g. sync_conflict, ci_red_parked, engine_error
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: planestro commit (`git rev-parse --short HEAD`), Node, OS, and `claude --version` / `codex --version` / `gh --version` as relevant
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Engine mode
+      options: [live, dry-run, sample]

@@ -125,9 +125,12 @@ ignore rules while adding the private exclusions. planestro refuses startup or a
 commits when machine-local settings or runtime files are tracked, and refuses pushes
 whose outgoing history includes them. See the
 [recovery instructions](docs/troubleshooting.md#machine-local-files-are-tracked).
-Everything else in the data dir (items, plans, prompts, the journal) is committed to its
-git repository and pushed to its remote if it has one. Keep that remote private, and
-don't paste secrets into items.
+Everything else in the data dir (items, plans, prompts, questions, attachments) is committed
+to its git repository and pushed to its remote if it has one. Keep that remote private, and
+don't paste secrets into items. The journal stays on this machine: it is ignored by git, and
+token-shaped strings (GitHub, Anthropic/OpenAI, Slack, AWS keys, bearer headers) are redacted
+before a line is written. Nothing is sent anywhere you did not configure: see
+[What planestro sends](docs/what-planestro-sends.md).
 
 **Attachments.** Managed attachments are restricted to real files in a known item's
 attachment directory; symlinks and traversals are rejected. Active document formats
