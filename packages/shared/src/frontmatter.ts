@@ -2,14 +2,16 @@ import YAML from 'yaml';
 
 /** Split `---\n<yaml>\n---\n<body>`; a file without frontmatter yields {} and the whole text as body. */
 export function splitFrontmatter(text: string): { data: Record<string, unknown>; body: string } {
-  const normalized = text.replace(/\r\n/g, '\n');
+  // An editor that saves a byte-order mark would otherwise hide the frontmatter, and the item would read as invalid.
+  const normalized = text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
   const m = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/.exec(normalized);
   if (!m) return { data: {}, body: normalized };
   const parsed = YAML.parse(m[1]) ?? {};
   if (typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('frontmatter must be a mapping');
   // `key: null` (or `key:`) means unset — the same as omitting the key.
   const data: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) if (v !== null) data[k] = v;
+  // `__proto__:` would replace the object's prototype on assignment: a hand-edited file is not trusted with that.
+  for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) if (v !== null && k !== '__proto__') data[k] = v;
   return { data, body: m[2] };
 }
 

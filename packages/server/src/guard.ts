@@ -17,7 +17,8 @@ export function isLanAddress(address: string): boolean {
   if (a.startsWith('::ffff:') && isIPv4(a.slice(7))) a = a.slice(7);
   if (isIPv4(a)) {
     const [x, y] = a.split('.').map(Number);
-    return x === 127 || x === 10 || (x === 172 && y >= 16 && y <= 31) || (x === 192 && y === 168) || (x === 169 && y === 254);
+    // 100.64.0.0/10 is carrier-grade NAT, which is where Tailscale hands out addresses (SECURITY.md recommends it).
+    return x === 127 || x === 10 || (x === 172 && y >= 16 && y <= 31) || (x === 192 && y === 168) || (x === 169 && y === 254) || (x === 100 && y >= 64 && y <= 127);
   }
   if (!isIPv6(a)) return false;
   if (a === '::1') return true;
@@ -25,11 +26,28 @@ export function isLanAddress(address: string): boolean {
   return (first & 0xffc0) === 0xfe80 || (first & 0xfe00) === 0xfc00;
 }
 
+/** A bind that only this machine can reach. Anything else answers only the local network (`lanOnly`), whatever lan_access says. */
+export function isLoopbackBind(host: string): boolean {
+  const h = host.trim().toLowerCase();
+  return h === 'localhost' || h === '::1' || h.startsWith('127.');
+}
+
 /** Why a link to this URL would get a 403 from the guard, or undefined when the guard lets its Host in. */
 export function linkRefusal(url: string, hosts: ReadonlySet<string>): string | undefined {
   let name: string;
   try { name = hostnameOf(new URL(url).host); } catch { return `${url} is not a URL`; }
   return hosts.has(name) ? undefined : `${name} is not one of this machine's names, so a link to ${url} gets a 403: add it to allowed_hosts in planestro.local.yml, or change notifications.base_url`;
+}
+
+/**
+ * A request from this machine: a loopback peer, or an in-process one with no socket. What a setting
+ * runs (a command, a program, an MCP server) is changed only from here, never from a phone on the LAN.
+ */
+export function fromThisMachine(c: Context): boolean {
+  const peer = remoteAddress(c);
+  if (peer === undefined) return true;
+  const a = peer.trim().toLowerCase().replace(/^::ffff:/, '');
+  return a === '::1' || a.startsWith('127.');
 }
 
 /** The peer's address on the node server; undefined where there is no socket (an in-process request). */
@@ -62,8 +80,27 @@ export function hostnameOf(hostHeader: string): string {
   return h.replace(/:\d+$/, '');
 }
 
+/**
+ * The UI is served by this server, so its requests carry an Origin naming the Host they are sent to
+ * (the Vite dev proxy keeps both at :5173). A hostname match alone would let a page on any other
+ * localhost port in: the port is compared too.
+ */
+const LOOPBACK = new Set(['localhost', '127.0.0.1', '::1']);
+const originHostname = (origin: string) => { try { return hostnameOf(new URL(origin).host); } catch { return ''; } };
+
+export function sameOrigin(origin: string, host: string): boolean {
+  let u: URL;
+  try { u = new URL(origin); } catch { return false; }   // "null" or garbage
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+  const port = (h: string, def: string) => { const m = /:(\d+)$/.exec(h.replace(/^\[[^\]]*\]/, '')); return m ? m[1] : def; };
+  const def = u.protocol === 'https:' ? '443' : '80';
+  return hostnameOf(u.host) === hostnameOf(host) && port(u.host, def) === port(host.trim().toLowerCase(), def);
+}
+
 /** `lanOnly` (with `lan_access`, #255): also refuse a peer outside the local network, and one whose address is unknown. */
-export function requestGuard(hosts: ReadonlySet<string>, log?: (level: 'warn', msg: string) => void, o: { lanOnly?: boolean } = {}): MiddlewareHandler {
+export function requestGuard(hosts: ReadonlySet<string>, log?: (level: 'warn', msg: string) => void, o: { lanOnly?: boolean; declared?: readonly string[] } = {}): MiddlewareHandler {
+  // A name the user put in allowed_hosts is trusted as an Origin on any port (a proxy in front may rewrite Host); loopback never is.
+  const declared = new Set((o.declared ?? []).map((h) => h.toLowerCase()).filter((h) => !LOOPBACK.has(h)));
   return async (c, next) => {
     const refuse = (why: string) => { log?.('warn', `refused ${c.req.method} ${c.req.path}: ${why}`); return c.json({ error: `planestro only answers its own UI (${why})` }, 403); };
     if (o.lanOnly) {
@@ -72,13 +109,15 @@ export function requestGuard(hosts: ReadonlySet<string>, log?: (level: 'warn', m
     }
     const host = c.req.header('host');
     if (!host || !hosts.has(hostnameOf(host))) return refuse(`unexpected Host ${host ?? '(none)'}; add it to allowed_hosts in planestro.local.yml if it is this machine`);
-    if (c.req.header('sec-fetch-site') === 'cross-site') return refuse('cross-site request');
+    const site = c.req.header('sec-fetch-site');
+    const safe = c.req.method === 'GET' || c.req.method === 'HEAD' || c.req.method === 'OPTIONS';
+    if (site === 'cross-site') return refuse('cross-site request');
+    // Another port on this machine is "same-site" to the browser: a dev server or a page a worker just built.
+    if (site === 'same-site' && !safe) return refuse('request from another site on this machine');
     const origin = c.req.header('origin');
-    if (origin !== undefined) {
-      let o: string | undefined;
-      try { o = new URL(origin).hostname; } catch { /* "null" or garbage */ }
-      if (!o || !hosts.has(hostnameOf(o))) return refuse(`request from ${origin}`);
-    }
+    if (origin !== undefined && !sameOrigin(origin, host) && !declared.has(originHostname(origin))) return refuse(`request from ${origin}`);
+    // A form or text/plain body skips the CORS preflight; the UI only ever sends JSON or a multipart upload.
+    if (!safe && /^\s*(text\/plain|application\/x-www-form-urlencoded)/i.test(c.req.header('content-type') ?? '')) return refuse('a form or text/plain body');
     await next();
   };
 }

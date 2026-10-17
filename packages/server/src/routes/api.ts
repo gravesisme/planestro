@@ -17,7 +17,8 @@ import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Engine } from '../engine/Engine.ts';
 import type { ConsoleBuffer } from '../store/ConsoleBuffer.ts';
 import { itemView, promptView, releaseView, scheduleView, questionView, stateView, guardView, modeView, runnerStallsView, publicLocal } from './views.ts';
-import { applyConfigSettings, applyLocalSettings, putModel, removeModel } from '../settingsWrite.ts';
+import { applyConfigSettings, applyLocalSettings, putModel, removeModel, runningKeys } from '../settingsWrite.ts';
+import { fromThisMachine } from '../guard.ts';
 import { projectsOverview, liveOverviewDeps, type OverviewDeps } from '../projects.ts';
 import { importCandidates, importMcpServers, putMcpServer, removeMcpServer, testMcpServer } from '../mcpServers.ts';
 import { changeConcurrency, concurrencyView, hostLoad, rollbackConcurrency } from '../concurrency.ts';
@@ -71,10 +72,19 @@ function uploadLimit(store: DataStore, maxFiles: number): MiddlewareHandler {
   };
 }
 /** More files than a route takes: refused whole, with 413 like an oversized body. */
+/** `?limit=` for the journal: 1 to 1000, 200 when absent or not a number (NaN once meant the whole journal, megabytes). */
+export function journalLimit(raw: string | undefined): number {
+  const n = Math.floor(Number(raw ?? 200));
+  return Number.isFinite(n) ? Math.min(1000, Math.max(1, n)) : 200;
+}
+
 class TooManyFiles extends Error {}
 
 export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBuffer, opts: { projects?: OverviewDeps; hostLoad?: () => HostLoad | undefined } = {}): Hono {
   const api = new Hono();
+  /** A change to what runs on this machine, asked from another one: refused before anything is written. */
+  const remoteRunRefusal = (c: Context, what: string) => fromThisMachine(c) ? undefined
+    : c.json({ error: `${what} can only be changed from this machine itself, not over the network` }, 403);
   const fail = (c: any, e: unknown, status = 400) => c.json({ error: (e as Error).message ?? String(e) }, e instanceof TooManyFiles ? 413 : status);
   const pending = (id: string) => Boolean(orchestratorOf(engine)?.questionPending?.(id));
   const awake = (): Orch => { const o = orchestratorOf(engine); if (!o?.enabled) throw new Error('the orchestrator is not available with this engine'); return o; };
@@ -320,7 +330,13 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
       return c.json(itemView(store, store.requireItem(c.req.param('id'))));
     } catch (e) { return fail(c, e); }
   });
-  api.post('/items/:id/respond', async (c) => { try { await engine.respond(c.req.param('id'), await c.req.json()); return c.json({ ok: true }); } catch (e) { return fail(c, e); } });
+  // Each kind's fields checked here: they are written into the item and put in the session's next message.
+  const Respond = z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('question'), answers: z.record(z.string(), z.string().max(20_000)) }).passthrough(),
+    z.object({ kind: z.literal('permission'), decision: z.enum(['allow', 'always', 'deny']), reason: z.string().max(4_000).optional() }).passthrough(),
+    z.object({ kind: z.literal('audition') }).passthrough(),
+  ]);
+  api.post('/items/:id/respond', async (c) => { try { await engine.respond(c.req.param('id'), Respond.parse(await c.req.json())); return c.json({ ok: true }); } catch (e) { return fail(c, e); } });
 
   api.post('/items/:id/attachments', uploadLimit(store, 1), async (c) => {
     try {
@@ -406,7 +422,13 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
 
   api.get('/config', (c) => c.json({ config: store.config, local: publicLocal(store.local), configText: readFileSync(join(store.dataDir, 'planestro.yml'), 'utf8') }));
   // Settings writes: only keys the shared registry marks editable, validated through the schema (settingsWrite.ts).
-  api.put('/config', async (c) => { try { return c.json({ config: applyConfigSettings(store, await c.req.json()) }); } catch (e) { return fail(c, e); } });
+  api.put('/config', async (c) => {
+    try {
+      const body = await c.req.json();
+      const runs = runningKeys('config', body);
+      return (runs.length && remoteRunRefusal(c, runs.join(', '))) || c.json({ config: applyConfigSettings(store, body) });
+    } catch (e) { return fail(c, e); }
+  });
   // The concurrency control (#330): the same write path, journaled with who and why; a raise above the recommendation needs `confirm`.
   const host = () => (opts.hostLoad ?? hostLoad)();
   const concurrencyFail = (c: Context, e: unknown) => {
@@ -421,6 +443,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   api.delete('/config/models/:id', (c) => { try { return c.json({ config: removeModel(store, c.req.param('id')) }); } catch (e) { return fail(c, e); } });
   // Settings → Notifications → Test: the saved command, run the way its event runs it (dry-run only logs it).
   api.post('/config/notifications/test', async (c) => {
+    const refused = remoteRunRefusal(c, 'running a notification command'); if (refused) return refused;
     try {
       const { event } = z.object({ event: z.enum(['on_merge', 'on_usage_pause', 'on_needs_you']) }).parse(await c.req.json());
       if (!engine.testNotification) throw new Error('no engine is running to run it');
@@ -449,13 +472,20 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
     engine.poke();
     return c.json({ local: publicLocal(store.local) });
   });
-  api.put('/config/local', async (c) => { try { return c.json({ local: publicLocal(applyLocalSettings(store, await c.req.json())) }); } catch (e) { return fail(c, e); } });
+  api.put('/config/local', async (c) => {
+    try {
+      const body = await c.req.json();
+      const runs = runningKeys('local', body);
+      return (runs.length && remoteRunRefusal(c, runs.join(', '))) || c.json({ local: publicLocal(applyLocalSettings(store, body)) });
+    } catch (e) { return fail(c, e); }
+  });
   // Settings → MCP servers (#237): machine-local, keys write-only (mcpServers.ts).
   api.get('/config/mcp-servers/import', (c) => { try { return c.json({ candidates: importCandidates(store) }); } catch (e) { return fail(c, e); } });
-  api.post('/config/mcp-servers/import', async (c) => { try { const { local, added } = importMcpServers(store, await c.req.json().catch(() => ({}))); return c.json({ local: publicLocal(local), added }); } catch (e) { return fail(c, e); } });
-  api.put('/config/mcp-servers/:name', async (c) => { try { return c.json({ local: publicLocal(putMcpServer(store, c.req.param('name'), await c.req.json())) }); } catch (e) { return fail(c, e); } });
+  api.post('/config/mcp-servers/import', async (c) => { const refused = remoteRunRefusal(c, 'MCP servers'); if (refused) return refused; try { const { local, added } = importMcpServers(store, await c.req.json().catch(() => ({}))); return c.json({ local: publicLocal(local), added }); } catch (e) { return fail(c, e); } });
+  api.put('/config/mcp-servers/:name', async (c) => { const refused = remoteRunRefusal(c, 'MCP servers'); if (refused) return refused; try { return c.json({ local: publicLocal(putMcpServer(store, c.req.param('name'), await c.req.json())) }); } catch (e) { return fail(c, e); } });
   api.delete('/config/mcp-servers/:name', (c) => { try { return c.json({ local: publicLocal(removeMcpServer(store, c.req.param('name'))) }); } catch (e) { return fail(c, e); } });
   api.post('/config/mcp-servers/:name/test', async (c) => {
+    const refused = remoteRunRefusal(c, 'testing an MCP server'); if (refused) return refused;
     const spec = store.local.mcp_servers[c.req.param('name')];
     if (!spec) return fail(c, new Error(`no MCP server ${c.req.param('name')} on this machine`));
     return c.json(await testMcpServer(spec));
@@ -629,7 +659,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   });
   api.delete('/engine/drain', (c) => { engine.undrain?.(); return c.json(engine.restartReadiness?.() ?? { draining: false, idle: true, running: [] }); });
   api.post('/engine/resume', (c) => { engine.resume(); return c.json({ paused: false }); });
-  api.get('/journal', (c) => c.json(store.journal.read({ item: c.req.query('item') ?? undefined, since: c.req.query('since') ?? undefined, type: c.req.query('type') ?? undefined, limit: Number(c.req.query('limit') ?? 200) })));
+  api.get('/journal', (c) => c.json(store.journal.read({ item: c.req.query('item') ?? undefined, since: c.req.query('since') ?? undefined, type: c.req.query('type') ?? undefined, limit: journalLimit(c.req.query('limit')) })));
   api.get('/git', async (c) => c.json(await store.git.status()));
   api.post('/git/commit', async (c) => { await store.flushCommits(); return c.json({ committed: store.git.checkpoint() }); });
   api.post('/git/push', async (c) => c.json({ pushed: await store.git.push() }));
