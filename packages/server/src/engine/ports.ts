@@ -204,11 +204,11 @@ export interface TurnTools {
   submit_plan(plan: string): Promise<string>;
   /** An epic's plan and its proposed children (a rejection is returned as text for the planner to fix); on a plain item, a flagged plan that says it is really an epic (#69). */
   submit_breakdown(plan: string, children: unknown): Promise<string>;
-  add_note(markdown: string, attach?: string[]): Promise<string>;
+  add_note(markdown: string, attach?: string[], flags?: unknown): Promise<string>;
   append_activity(text: string): Promise<string>;
   /** `hold`: the pull request must not merge yet, and why ("until the release is cut"); it is held out of the merge queue until the user releases it (#97). */
   /** `review`: a loop item's hand-off (#171), the markdown of its REVIEW.md; planestro files it on the item. A loop that is not green is answered "Rejected: …" and nothing is recorded. */
-  report_done(summary: string, parts?: unknown, hold?: string, attach?: string[], review?: string): Promise<string>;
+  report_done(summary: string, parts?: unknown, hold?: string, attach?: string[], review?: string, flags?: unknown): Promise<string>;
   /** A loop item's iteration (#171): how many of its checks pass now, of how many, and one line on what changed. Counts against `loop.max_iterations`. */
   report_iteration(passing: number, total: number, note: string): Promise<string>;
   report_blocked(reason: string, parts?: unknown): Promise<string>;

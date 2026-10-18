@@ -24,3 +24,12 @@ export function chatAttachmentRefusal(files: { name: string; size: number }[], m
   }
   return null;
 }
+
+const PICTURE = /\.(png|jpe?g|gif|webp)$/i;
+/**
+ * The largest file of this name copied onto an item: a picture may be `image_max_bytes` (#355: an art review's
+ * full-quality captures), anything else `managed_max_bytes`; the larger of the two applies to a picture.
+ */
+export function managedLimit(limits: { managed_max_bytes: number; image_max_bytes?: number }, name: string): number {
+  return PICTURE.test(name) ? Math.max(limits.managed_max_bytes, limits.image_max_bytes ?? 0) : limits.managed_max_bytes;
+}

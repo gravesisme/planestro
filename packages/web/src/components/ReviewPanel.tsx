@@ -5,7 +5,7 @@ import { prepareUpload } from '../uploadImage.ts';
 import { usePhone } from '../usePhone.ts';
 import { FileDiff } from './FileDiff.tsx';
 import { ActionButton, ActionGroup } from './ActionButton.tsx';
-import { FOLD_FILES_AFTER, ImageZoom } from './ReviewImages.tsx';
+import { FOLD_FILES_AFTER, FlagReasons, ImageZoom, flagsFor, reviewFlagsOf, worstSeverity } from './ReviewImages.tsx';
 
 const src = (id: string, path: string, side: 'before' | 'after', v: string) => `/api/items/${id}/image?path=${encodeURIComponent(path)}&side=${side}&v=${encodeURIComponent(v)}`;
 const kb = (n?: number) => n === undefined ? '' : n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
@@ -32,7 +32,8 @@ export function ReviewPanel({ item, compact = false }: { item: ItemView; compact
   const [picks, setPicks] = useState<string[]>([]);
   const togglePick = (path: string) => setPicks((p) => p.includes(path) ? p.filter((x) => x !== path) : [...p, path]);
   const [pasted, setPasted] = useState<string[]>([]);
-  const maxBytes = useStore((s) => s.state?.config.attachments.managed_max_bytes) ?? 8_000_000;
+  // A picture's limit (#355): the larger of the attachment and picture limits.
+  const maxBytes = useStore((s) => { const a = s.state?.config.attachments; return a ? Math.max(a.managed_max_bytes, a.image_max_bytes ?? 0) : 8_000_000; });
   // Paste on desktop, the picker on a phone (which can't paste from Photos); both convert HEIC and shrink to the limit.
   const attach = (files: File[]) => { for (const f of files) void act(async () => api.uploadAttachment(item.id, await prepareUpload(f, maxBytes))).then((r) => { if (r) setPasted((p) => [...p, r.path.split('/').pop() || f.name || 'screenshot']); }); };
   const awaiting = fm.status === 'IN_REVIEW' && fm.awaiting === 'review';
@@ -50,13 +51,19 @@ export function ReviewPanel({ item, compact = false }: { item: ItemView; compact
   const merged = fm.status === 'MERGED' || fm.status === 'FINISHED';
   const folded = !unfolded && (images?.length ?? 0) > FOLD_FILES_AFTER;
   const texts = images?.filter((f) => f.kind === 'text') ?? [];
-  const media = images?.filter((f) => f.kind !== 'text') ?? [];
+  // The worker's flags (#372) put their files first, boxed, with the reason; advisory, they never hold the merge.
+  const flags = reviewFlagsOf(item);
+  const flagsOn = (path: string) => flagsFor(flags, { path });
+  const media = [...(images?.filter((f) => f.kind !== 'text') ?? [])].sort((a, b) => Number(flagsOn(b.path).length > 0) - Number(flagsOn(a.path).length > 0));
+  const flaggedMedia = media.filter((f) => flagsOn(f.path).length);
+  const flaggedCount = images?.filter((f) => flagsOn(f.path).length).length ?? 0;
   // Picked lines join the note the Request changes button sends.
   const quote = awaiting ? (q: string) => setNote((n) => `${n.trimEnd()}${n.trim() ? '\n\n' : ''}${q}\n`) : undefined;
   const candidate = (f: ReviewImage) => {
     const url = src(item.id, f.path, 'after', v);
     return (
-      <div key={f.path} className="review-card">
+      <div key={f.path} className={`review-card${flagsOn(f.path).length ? ` flagged sev-${worstSeverity(flagsOn(f.path))}` : ''}`}>
+        <FlagReasons flags={flagsOn(f.path)} />
         <div className="small"><code>{f.path}</code> <span className={`tag ${f.change === 'added' ? 'ok' : f.change === 'deleted' ? 'hot' : ''}`}>{f.change}</span> <span className="muted">{kb(f.bytes)}</span>{awaiting && f.change !== 'deleted' && <label className="small" style={{ marginLeft: 8 }}><input type="checkbox" checked={picks.includes(f.path)} onChange={() => togglePick(f.path)} /> pick</label>}</div>
         {f.change === 'deleted' ? <div className="review-none small muted">removed</div>
           : f.kind === 'audio' ? <audio controls preload="none" src={url} style={{ width: '100%', marginTop: 6 }} />
@@ -78,23 +85,28 @@ export function ReviewPanel({ item, compact = false }: { item: ItemView; compact
   return (
     <div className={awaiting ? 'approval' : 'section'} id={awaiting ? 'review' : 'files'} data-nav={`${merged ? 'Files changed' : 'Files to review'} · ${images?.length ?? 0}`} data-wait={awaiting || undefined}>
       <h2 style={{ margin: '0 0 8px' }}>
-        <span>{awaiting ? 'Waiting for your review before it merges' : merged ? `Files changed${fm.pr ? ` by PR #${fm.pr}` : ''} · ${images?.length ?? 0}` : `Files to review on this branch · ${images?.length ?? 0}`}</span>
+        <span>{awaiting ? 'Waiting for your review before it merges' : merged ? `Files changed${fm.pr ? ` by PR #${fm.pr}` : ''} · ${images?.length ?? 0}` : `Files to review on this branch · ${images?.length ?? 0}`}{flaggedCount > 0 && <span className="flag-count"> · {flaggedCount} flagged</span>}</span>
         {texts.length > 0 && <button className="small" onClick={() => setSplit(!sideBySide)}>{sideBySide ? 'side by side — show unified' : 'unified — show side by side'}</button>}
         {scaleN > 1 && media.length > 0 && <button className="small" onClick={() => setScaled(!scaled)}>{scaled ? `showing ${scaleN}× — show 1×` : `showing 1× — show ${scaleN}×`}</button>}
       </h2>
       {awaiting && <p className="small" style={{ marginTop: 0 }}>Synced and CI is green{fm.pr ? ` (PR #${fm.pr})` : ''}. Everything a machine can check has passed; this part is yours.</p>}
       {folded && <p className="small row" style={{ flexWrap: 'wrap' }}><button className="small" onClick={() => setUnfolded(true)}>Show all {images!.length} files</button><span className="muted">{media.length} image or media file{media.length === 1 ? '' : 's'}, {texts.length} other{texts.length === 1 ? '' : 's'}: folded because the list is long.</span></p>}
-      {folded ? null : images === null ? <p className="small muted">Reading the branch…</p> : !images.length ? <p className="small muted">This branch changes no files{awaiting ? ' — review the pull request itself.' : '.'}</p> : media.length > 0 && (
+      {(folded ? flaggedMedia : media).length > 0 && images !== null && (
         <div className={`review-grid ${compact ? 'compact' : ''}`}>
-          {media.filter((f) => f.kind && f.kind !== 'image').map(candidate)}
-          {media.filter((f) => !f.kind || f.kind === 'image').map((img) => (
-            <div key={img.path} className="review-card">
-              <div className="small"><code>{img.path}</code> <span className={`tag ${img.change === 'added' ? 'ok' : img.change === 'deleted' ? 'hot' : ''}`}>{img.change}</span> <span className="muted">{img.width ? `${img.width}×${img.height} · ` : ''}{kb(img.bytes)}</span></div>
-              <div className="review-pair">{img.change !== 'added' && picture(img, 'before')}{picture(img, 'after')}</div>
-            </div>
-          ))}
+          {(folded ? flaggedMedia : media).filter((f) => f.kind && f.kind !== 'image').map(candidate)}
+          {(folded ? flaggedMedia : media).filter((f) => !f.kind || f.kind === 'image').map((img) => {
+            const own = flagsOn(img.path);
+            return (
+              <div key={img.path} className={`review-card${own.length ? ` flagged sev-${worstSeverity(own)}` : ''}`}>
+                <div className="small"><code>{img.path}</code> <span className={`tag ${img.change === 'added' ? 'ok' : img.change === 'deleted' ? 'hot' : ''}`}>{img.change}</span> <span className="muted">{img.width ? `${img.width}×${img.height} · ` : ''}{kb(img.bytes)}</span></div>
+                <FlagReasons flags={own} />
+                <div className="review-pair">{img.change !== 'added' && picture(img, 'before')}{picture(img, 'after')}</div>
+              </div>
+            );
+          })}
         </div>
       )}
+      {folded ? null : images === null ? <p className="small muted">Reading the branch…</p> : !images.length ? <p className="small muted">This branch changes no files{awaiting ? ' — review the pull request itself.' : '.'}</p> : null}
       {!folded && texts.length > 0 && (
         <div className="diff-list">
           {awaiting && <p className="small muted" style={{ margin: 0 }}>Open a file for its diff; pick line numbers (shift for a range) to quote them in your note.</p>}

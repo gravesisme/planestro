@@ -605,3 +605,8 @@ input.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 /* The pictures a review is about, first (#355, #372): large thumbnails that open full size. */
 .review-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; } .review-gallery .checker { width: 100%; } .review-gallery .checker img { width: 100%; max-height: 300px; object-fit: contain; }
 .review-gallery figcaption { margin-top: 4px; overflow-wrap: anywhere; } .review-gallery figcaption a { margin-left: 6px; }
+.review-group { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px; background: var(--panel2); border: 1px solid var(--line); border-radius: var(--radius); padding: 8px; }
+.review-side.flagged, .review-card.flagged { border: 2px solid var(--warn); border-radius: var(--radius); padding: 6px; background: color-mix(in srgb, var(--warn) 8%, var(--panel2)); }
+.review-side.flagged.sev-problem, .review-card.flagged.sev-problem { border-color: var(--hot); background: color-mix(in srgb, var(--hot) 8%, var(--panel2)); } .review-side.flagged.sev-info, .review-card.flagged.sev-info { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--panel2)); }
+.flag-reasons { margin: 4px 0; padding-left: 18px; } .flag-reasons li.sev-problem::marker { color: var(--hot); } .flag-reasons li.sev-warn::marker { color: var(--warn); } .flag-reasons li.sev-info::marker { color: var(--accent); }
+.flag-count { color: var(--warn); } .needs-look { margin-bottom: 12px; } .needs-look h3 { margin: 0 0 6px; text-transform: none; letter-spacing: 0; }

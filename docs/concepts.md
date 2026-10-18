@@ -111,7 +111,11 @@ planned at once, an item is queued. It is committed as `HH-198: convert to epic`
 - **Review hold** — a model marked `hold_for_review` (art, typically) gets its pull request
   synced and through CI as usual; then, instead of merging, the item parks on
   `awaiting: review` with before/after images. Approve, or send it back to the same session
-  with a note.
+  with a note. A held or waiting item shows its pictures first: the worker's latest hand-off
+  (what it attached since the one before), compare pairs (`*_before`, `*_after`, `*_compare`)
+  side by side, and anything it flagged (`flags` on `report_done` / `add_note`: a path, an
+  optional frame, a reason) under **Needs a look**, boxed. Flags are advisory: they never
+  hold approval or the merge.
 - **`skip_merge`** — takes an item out of the merge queue, with the reason on the item
   (`hold_reason`, shown as **Held: …** on its page and card). Four things set it: you, at plan
   approval; the orchestrator (`skip_merge`, or approving a plan that states a hold); the worker,

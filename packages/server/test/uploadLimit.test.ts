@@ -18,7 +18,7 @@ const CHUNK = 64 * 1024;
 async function setup() {
   const { dataDir } = makeFixture();
   store = await DataStore.open(dataDir);
-  store.updateConfig((doc) => { doc.setIn(['attachments', 'managed_max_bytes'], 100_000); }, 'config: small attachments');
+  store.updateConfig((doc) => { doc.setIn(['attachments', 'managed_max_bytes'], 100_000); doc.setIn(['attachments', 'image_max_bytes'], 100_000); }, 'config: small attachments');
   const world = new FakeWorld(() => {}, { 'origin/trunk': 'f'.repeat(40) });
   const ports: Ports = { mode: 'dry-run', git: new DryRunGitPort(world), gh: new DryRunGhPort(world), proc: new DryRunProcPort(world), agents: { claude: new DryRunClaudePort(world) } };
   engine = new LiveEngine(store, ports, () => {}, { sleep: async () => {}, tickMs: 50 });

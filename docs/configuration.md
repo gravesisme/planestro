@@ -346,6 +346,7 @@ Recorded only: nothing is refused or slowed.
 | `git.auto_push` | `true` | Push the data dir at checkpoints, if it has a remote. |
 | `git.checkpoint_interval_min` | `60` | Telemetry (costs, timestamps) is checkpointed this often rather than per change. |
 | `attachments.managed_max_bytes` | `2000000` | Larger attachments are referenced in place instead of copied into the data dir. |
+| `attachments.image_max_bytes` | `8000000` | A picture (png, jpg, gif, webp) may be up to this instead: an art review's full-quality captures. The larger of the two applies to pictures. |
 
 ### Daily efficiency audit
 
