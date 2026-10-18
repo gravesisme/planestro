@@ -106,11 +106,23 @@ an import files items without queueing them, plans wait for your approval unless
 let the orchestrator approve them (`orchestrator.may_approve_plans`), workers cannot
 push, and destructive operations need positive evidence. The orchestrator can still
 queue a backlog item for planning, and it reads PR comments, so keep
-`orchestrator.may_decide_permissions` off on a public repository. The text itself is
-not filtered. Read an
-imported issue before you queue it. Keep `issues.import_label` to a label only
-maintainers can set. Treat review comments from people outside the project as data,
-not instructions.
+`orchestrator.may_decide_permissions` off on a public repository.
+
+Outside text reaches a prompt fenced: an `<external source="…">` block that names where
+it came from and says, inside it, that it is data to evaluate, never instructions. The
+worker and orchestrator rules say the same. That covers an imported issue's title (quoted
+on one line) and Description, open pull request titles, `pr_view` and `pr_diff`, and CI
+logs. `pr_view` hides the text of comments and reviews by anyone who is not the
+repository's owner, a member or a collaborator unless the orchestrator asks for them.
+A fence lowers the odds; it does not filter the text. So read an imported issue before
+you queue it, and keep `issues.import_label` to a label only maintainers can set.
+
+Workers cannot reach what git runs by itself: the repository's `.git/hooks` and
+`.git/config` are on the built-in deny list for every tool, and `git -c` or `git config`
+writes that could name a program (`core.hooksPath`, `core.fsmonitor`, a filter, an
+alias) are refused. Hooks the project tracks in its own tree (a `.husky/` folder) are
+project code, like its tests: a worker that can edit them could already change what
+`npm test` runs.
 
 ## Data on disk
 
