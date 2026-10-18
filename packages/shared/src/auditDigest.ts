@@ -61,8 +61,7 @@ export function auditDigest(entries: JournalEntry[], opts: { today: string; days
     return [s, c] as const;
   }).filter(([, c]) => c.turns);
   if (stages.length) out.push('', '## By stage (item turns, and wakes about items)', ...stages.map(([s, c]) => `- ${s}: ${cost(c)}, ${c.turns} turns`));
-  const unattributed = Math.max(0, (t.by.role.orchestrator?.usd ?? 0) - (stages.find(([s]) => s === 'orchestrator')?.[1].usd ?? 0));
-  if (unattributed >= 0.01) out.push(`- orchestrator wakes about no item: ${money(unattributed)}`);
+  out.push(...unattributedLines(inRange));
   const costliest = [...items].sort((a, b) => b.usd - a.usd || b.tokens - a.tokens).slice(0, top);
   if (costliest.length) out.push('', '## Costliest items', ...costliest.map(itemLine));
   const heavy = items.filter((e) => e.startup).sort((a, b) => b.startup!.max - a.startup!.max).slice(0, 5);
@@ -74,6 +73,27 @@ export function auditDigest(entries: JournalEntry[], opts: { today: string; days
   out.push(...parkLines(inRange, top));
   out.push('', '## Last recommendation', opts.previous ? `${opts.previous.at.slice(0, 10)} [${opts.previous.key}] ${opts.previous.what} — ${opts.previous.acted ? 'acted on (filed as an issue or marked handled)' : 'not acted on yet'}` : 'none');
   return out.join('\n');
+}
+
+/**
+ * The orchestrator's spend that no item carries, read entry by entry (#416). A wake journaled before #346 recorded no
+ * `items` (nor `stage`): it is not "about no item", and the old subtraction put a week of item wakes ($75 of HH's $80) there.
+ */
+function unattributedLines(entries: JournalEntry[]): string[] {
+  const sum = () => ({ usd: 0, tokens: 0, turns: 0 });
+  const none = sum(), unknown = sum(), audits = sum();
+  for (const e of entries) {
+    if (e.type !== USAGE_TURN) continue;
+    const u = e.data as { role?: string; op?: string; stage?: string; items?: unknown; usd?: number; tokens?: number };
+    if (u.role !== 'orchestrator' || e.item || (Array.isArray(u.items) && u.items.length)) continue;
+    const c = u.op === 'efficiency_audit' ? audits : u.stage ? none : unknown;
+    c.usd += u.usd ?? 0; c.tokens += u.tokens ?? 0; c.turns += 1;
+  }
+  return [
+    ...(none.turns ? [`- orchestrator wakes about no item: ${cost(none)}, ${none.turns} wakes`] : []),
+    ...(unknown.turns ? [`- orchestrator wakes journaled before their items were recorded (#346; not "no item"): ${cost(unknown)}, ${unknown.turns} wakes`] : []),
+    ...(audits.turns ? [`- the efficiency audit itself: ${cost(audits)}, ${audits.turns} runs`] : []),
+  ];
 }
 
 function itemLine(e: ItemEfficiency): string {
