@@ -926,6 +926,11 @@ describe('reconciler (chaos: crash markers left on disk)', () => {
       expect((await engine.reconcile('manual')).join('\n')).toContain(name);
     }
     expect(wakes.filter((w) => w === 'orphans_found')).toHaveLength(2);
+    // an epic's leftover merge worktree is planestro's own: it still wakes
+    const merge = join(store.worktreesRoot(), `merge-${store.config.project.id_prefix.toLowerCase()}-77`);
+    world.worktrees.set(merge, { path: merge, head: world.sha(), branch: 'feature/x' });
+    await engine.reconcile('manual');
+    expect(wakes.filter((w) => w === 'orphans_found')).toHaveLength(3);
   });
 });
 

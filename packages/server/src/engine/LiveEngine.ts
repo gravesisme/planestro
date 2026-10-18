@@ -3522,7 +3522,9 @@ export class LiveEngine implements Engine {
       const last = this.store.journal.read({ type: 'reconcile.orphans_reported', limit: 1 })[0];
       const told = new Set(String(last?.data?.key ?? '').split('|').filter(Boolean));
       const ours = plannedWorktreeName(this.store.config.worktrees.dir_pattern, this.store.config.project.id_prefix.toLowerCase());
-      const planned = orphans.filter((o) => ours.test(relative(root, o.path)));
+      const prefix = this.store.config.project.id_prefix.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const epicMerge = new RegExp(`^merge-${prefix}-\\d+$`); // an epic's own merge worktree (mergeEpic) is planestro's too
+      const planned = orphans.filter((o) => ours.test(relative(root, o.path)) || epicMerge.test(relative(root, o.path)));
       if (planned.some((o) => !told.has(o.path))) {
         this.store.journal.append({ type: 'reconcile.orphans_reported', actor: 'engine', data: { key, count: orphans.length } });
         this.wakeOrchestrator('orphans_found', undefined, { worktrees: planned.map((o) => `${o.path} (${o.branch ?? o.head})`).join('\n') });
