@@ -152,12 +152,14 @@ try {
       const host = bindHost(values.host, readLocalConfig(dir)); const port = values.port ? Number(values.port) : 4300;
       if (values.watch) {
         const { supervise } = await import('./supervise.ts');
-        await supervise({ dataDir: dir, serveArgs: [dir, ...(values.port ? ['--port', values.port] : []), ...(values.host ? ['--host', values.host] : []), ...(values.mock ? ['--mock'] : [])], host, port, open: values.open });
+        await supervise({ dataDir: dir, serveArgs: [dir, ...(values.port ? ['--port', values.port] : []), ...(values.host ? ['--host', values.host] : []), ...(values.mock ? ['--mock'] : [])], host, hostFlag: values.host, port, open: values.open });
         break;
       }
       if (values.open) void import('./supervise.ts').then((m) => m.openWhenUp(`http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`, log));
       const { startServer } = await import('./server.ts');
-      await startServer({ dataDir: dir, port: values.port ? Number(values.port) : undefined, host: values.host, mock: values.mock });
+      // Under `serve --watch`, the supervisor's socket (#354); otherwise, or from an older supervisor, bind as before.
+      const listen = await (await import('./portHandoff.ts')).receivePort();
+      await startServer({ dataDir: dir, port: values.port ? Number(values.port) : undefined, host: values.host, mock: values.mock, listen });
       break;
     }
     case 'start': {
