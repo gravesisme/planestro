@@ -33,9 +33,9 @@
     "sample": "tsx packages/server/src/cli.ts sample"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
+    "@types/node": "^24.19.2",
     "typescript": "^5.8.0",
-    "zod": "^4.0.0",
+    "zod": "^4.6.7",
     "vitest": "^4.1.11"
   }
 }
