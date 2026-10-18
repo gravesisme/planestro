@@ -14,12 +14,21 @@ export interface InitOptions {
   defaultBranch?: string;
   releaseBranch?: string;
   github?: string;
-  layout?: 'dir' | 'orphan-branch';
   gdignore?: boolean;          // default: auto-detect project.godot in the code repo (keeps the Godot editor out of the data dir)
   categories?: string[];       // default: DEFAULT_CATEGORIES; the last one is where uncategorized items land
   register?: boolean;          // remember it in ~/.planestro so a bare `planestro serve` finds it (default true)
   commit?: boolean;            // git commit the seed (default true when the data dir is a git checkout)
   log?: (m: string) => void;
+}
+
+/**
+ * `--layout` is withdrawn (#332, D3): `orphan-branch` only wrote an exclude entry and made no branch, worktree or
+ * repository. A data dir nested in the code repo (an orphan branch checked out there as a worktree) is still excluded
+ * by `init`; the flag's refusal says how. `dir` is what `init` does anyway.
+ */
+export function layoutRefusal(layout: string | undefined): string | null {
+  if (layout === undefined || layout === 'dir') return null;
+  return `--layout ${layout} was withdrawn: it never made a branch or a worktree. Use a separate folder (the default), or check out the branch yourself as a worktree inside the code repo (git worktree add --orphan -b planning <code_repo>/planning) and run init on that folder: init keeps it out of the code repo's status.`;
 }
 
 export const DEFAULT_CATEGORIES = ['Feature', 'Bug', 'Chore', 'Docs', 'Not Yet Categorized'];
@@ -44,7 +53,7 @@ export function initDataDir(o: InitOptions): { created: string[] } {
   // The data dir's history is the audit trail: a separate planning repository is created when there is none (O1), so
   // the shortest recipe does not leave unversioned files behind. Not inside the code repo, which keeps its own layout.
   const nested = dataDir === codeRepo || dataDir.startsWith(codeRepo + '/');
-  if ((o.commit ?? true) && o.layout !== 'orphan-branch' && !nested && !insideGitRepo(dataDir)) {
+  if ((o.commit ?? true) && !nested && !insideGitRepo(dataDir)) {
     execFileSync('git', ['-C', dataDir, 'init', '-q']);
     log(`created a git repository for the planning data in ${dataDir}`);
   }
@@ -147,7 +156,7 @@ releases:
     const dest = join(dataDir, 'prompts', f);
     if (!existsSync(dest)) { copyFileSync(new URL(f, SHIPPED_PROMPTS), dest); created.push(`prompts/${f}`); }
   }
-  if (o.layout === 'orphan-branch' || dataDir.startsWith(codeRepo + '/')) {
+  if (dataDir.startsWith(codeRepo + '/')) {
     // Through git: in a linked worktree `.git` is a file, and `.git/info/exclude` beneath it does not exist (O3).
     const exclude = resolve(codeRepo, execFileSync('git', ['-C', codeRepo, 'rev-parse', '--git-path', 'info/exclude'], { encoding: 'utf8' }).trim());
     mkdirSync(join(exclude, '..'), { recursive: true });

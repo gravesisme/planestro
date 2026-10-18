@@ -4,7 +4,7 @@ import { resolve, join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { SCHEMA_VERSION } from '@planestro/shared';
 import { DataStore } from './store/DataStore.ts';
-import { initDataDir } from './init.ts';
+import { initDataDir, layoutRefusal } from './init.ts';
 import { migrate } from './migrations/index.ts';
 import { locateDataDir, readLocalConfig, TOOL_VERSION, CONFIG_FILE } from './config.ts';
 import { bindHost } from './guard.ts';
@@ -13,7 +13,7 @@ import { desktopNotify } from './notifier.ts';
 
 const USAGE = `planestro ${TOOL_VERSION}
 
-  planestro init <data_dir> --repo <code_repo> [--name N] [--prefix HH] [--default-branch B] [--release-branch B] [--github owner/repo] [--layout dir|orphan-branch] [--no-commit]
+  planestro init <data_dir> --repo <code_repo> [--name N] [--prefix HH] [--default-branch B] [--release-branch B] [--github owner/repo] [--no-commit]
   planestro check [data_dir]        validate every file and report
   planestro check [data_dir] --preflight [--offline] [--port N] [--json]
                                     what a first task would stop on, found on this machine with no model call (#337): Node,
@@ -71,9 +71,10 @@ try {
   switch (cmd) {
     case 'init': {
       if (!arg || !values.repo) throw new Error('usage: planestro init <data_dir> --repo <code_repo>');
+      const withdrawn = layoutRefusal(values.layout); if (withdrawn) throw new Error(withdrawn);
       const { created } = initDataDir({
         dataDir: arg, codeRepo: values.repo, name: values.name, prefix: values.prefix, defaultBranch: values['default-branch'],
-        releaseBranch: values['release-branch'], github: values.github, layout: values.layout as 'dir' | 'orphan-branch' | undefined,
+        releaseBranch: values['release-branch'], github: values.github,
         commit: !values['no-commit'], log,
       });
       log(`initialized ${resolve(arg)} (${created.length} files created)`);

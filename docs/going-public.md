@@ -299,7 +299,7 @@ own steps, not engine work. They stay as checklists below and are not issues.
 
 | # | Proposed issue | Covers | Size | Status |
 | --- | --- | --- | --- | --- |
-| P1 | `init` creates and verifies a planning git repo, resolves the base or refuses to guess, and validates before writing | O1, O3 (base fallback, linked-worktree `ENOTDIR` via `git rev-parse --git-path`), D3 (withdraw `orphan-branch`) | M | Filed #332 |
+| P1 | `init` creates and verifies a planning git repo, resolves the base or refuses to guess, and validates before writing | O1, O3 (base fallback, linked-worktree `ENOTDIR` via `git rev-parse --git-path`), D3 (withdraw `orphan-branch`) | M | Done (#332) |
 | P2 | One correct install path across README, Getting started and the site quick start | O1/O2/O4 docs, loopback-only examples, D6 "existing login" wording on the site, platform/Node statement, Codex-only recipe linked from the main path | M (docs) | Filed #333 |
 | P4 | Public-repo hygiene | A2 (document platforms, CI timeout 20), A3 (SDK dependency, `engines`), A4 (CONTRIBUTING, templates, Dependabot), A5 (`what-planestro-sends.md`) | M | Filed #334 |
 | P5 | Show running vs saved engine mode | D4 indicator | S | Filed #335 |
@@ -672,7 +672,8 @@ redesign and site redesign can follow a clearly labeled experimental release.
   *(Pre-open-source audit, 2026-10-17: `init` creates and commits the planning repository,
   resolves the base without a literal fallback, and excludes a nested folder through git;
   README and Getting started give the restart and loopback recipe, and document
-  `--layout orphan-branch` as needing its worktree first.)*
+  `--layout orphan-branch` as needing its worktree first. #332, 2026-10-18: `--layout` is withdrawn
+  (D3); a planning worktree nested in the code repo is documented and committed on its branch.)*
 - [x] State support/contribution expectations and supported Node/platform versions;
   declare Node compatibility in package metadata. *(CONTRIBUTING.md, `engines`, `.nvmrc`, 2026-10-17.)* Clone/install/build is an
   acceptable first distribution; the private workspace package flags do not

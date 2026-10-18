@@ -59,9 +59,11 @@ prompt library, yours to edit), `attachments/`, `journal/`. A separate sibling f
 above, is the recommended layout: `init` makes it a git repository of its own when it is not
 one and commits the seed files, so planning history never touches the code's branches. Keep
 any remote for it private. The base branch is the code repo's `origin/HEAD`, else the branch
-checked out (it says so); pass `--default-branch` to choose another. `--layout orphan-branch`
-expects the orphan branch already checked out as a worktree at the data dir: `init` writes the
-files and keeps the folder out of the code repo's status, nothing more.
+checked out (it says so); pass `--default-branch` to choose another. To keep planning on an
+orphan branch of the code repo instead, check it out as a worktree inside the code repo first
+(`git -C <code_repo> worktree add --orphan -b planning <code_repo>/planning`) and run `init` on
+that folder: the seed is committed on that branch, and the folder is kept out of the code
+repo's status.
 Re-running `init` on an existing data dir adds files that are missing (new shipped prompts
 after an upgrade) and never overwrites one.
 
