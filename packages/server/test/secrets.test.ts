@@ -69,7 +69,7 @@ describe('the built-in deny list for secret files (#227)', () => {
     expect(policy.deny({ tool: 'Read', input: { file_path: join(home, '.ssh', 'id_ed25519') } })).toMatch(/secret file/);
     expect(policy.deny({ tool: 'Read', input: { file_path: join(wt, 'notes.txt') } })).toMatch(/secret file/);
     expect(policy.deny({ tool: 'Write', input: { file_path: join(wt, '.env'), content: 'x' } })).toMatch(/secret file/);
-    expect(policy.deny({ tool: 'Edit', input: { file_path: join(wt, '.git', 'config') } })).toMatch(/secret file/);
+    expect(policy.deny({ tool: 'Edit', input: { file_path: join(wt, '.git', 'config') } })).toMatch(/git's own config/);
     expect(policy.deny({ tool: 'Grep', input: { pattern: 'TOKEN', path: '.env' } })).toMatch(/secret file/);
     expect(policy.deny({ tool: 'Grep', input: { pattern: 'TOKEN', glob: '**/.env*' } })).toMatch(/secret file/);
     expect(policy.deny({ tool: 'Glob', input: { pattern: '~/.ssh/*' } })).toMatch(/secret file/);
