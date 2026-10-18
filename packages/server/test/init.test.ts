@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { initDataDir } from '../src/init.ts';
+import { initDataDir, layoutRefusal } from '../src/init.ts';
 import { git } from './helpers.ts';
 
 function codeRepo(branch = 'trunk'): { root: string; repo: string } {
@@ -50,5 +50,23 @@ describe('planestro init on the shortest recipe (going-public O1, O3)', () => {
     expect(readFileSync(resolve(linked, exclude), 'utf8')).toContain('planning/');
     expect(git(linked, 'status', '--porcelain').trim()).toBe('');
     expect(existsSync(join(dataDir, '.git'))).toBe(false); // nested: not a repository of its own
+  });
+
+  it('commits the seed on an orphan branch checked out as a worktree inside the code repo, and keeps it out of the code repo', () => {
+    const { repo } = codeRepo();
+    const dataDir = join(repo, 'planning');
+    git(repo, 'worktree', 'add', '-q', '--orphan', '-b', 'planning', dataDir);
+    initDataDir({ dataDir, codeRepo: repo, register: false });
+    expect(git(dataDir, 'log', '--format=%s', 'planning').trim()).toMatch(/^planestro: init schema \d+$/);
+    expect(git(repo, 'log', '--format=%s', 'trunk').trim()).toBe('init'); // the code's branch is untouched
+    expect(git(repo, 'status', '--porcelain').trim()).toBe('');
+  });
+});
+
+describe('--layout is withdrawn (#332, D3)', () => {
+  it('refuses orphan-branch with the recipe that replaces it, and takes dir as the default it always was', () => {
+    expect(layoutRefusal(undefined)).toBeNull();
+    expect(layoutRefusal('dir')).toBeNull();
+    expect(layoutRefusal('orphan-branch')).toMatch(/withdrawn.*worktree add --orphan -b planning/);
   });
 });
