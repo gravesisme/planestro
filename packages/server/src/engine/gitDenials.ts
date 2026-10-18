@@ -18,6 +18,7 @@ export function gitDenial(command: string): string | null {
     const { config, sub, rest } = args;
     const key = config.find((k) => !SAFE_CONFIG.test(k));
     if (key !== undefined) return `git -c ${key || '(config)'} can make git run a program; leave git's configuration as it is.`;
+    if (sub === 'config') { const w = configWrite(rest); if (w !== null && !SAFE_CONFIG.test(w)) return `git config ${w || '(edit)'} changes what git runs; leave git's configuration as it is.`; }
     if (sub === 'rebase' && rest.some((a) => a === '--exec' || a.startsWith('--exec=') || /^-[A-Za-z]*x/.test(a))) return 'git rebase --exec runs a command for each commit; run it yourself after the rebase.';
     if (rest.some((a) => /^--(upload-pack|receive-pack|exec)(=|$)/.test(a) || ((sub === 'fetch' || sub === 'clone' || sub === 'ls-remote' || sub === 'pull') && /^-u/.test(a)))) return 'that option runs a program on the remote side; planestro fetches for you.';
     if (rest.some((a) => a === '--output' || a.startsWith('--output='))) return 'git --output writes a file wherever it is told; print to the terminal or redirect inside your worktree.';
@@ -31,6 +32,27 @@ export function gitDenial(command: string): string | null {
 
 /** `-c` keys that change only how git prints or who a commit is by; anything else (core.*, alias.*, a pager, an ssh command) may run a program. */
 const SAFE_CONFIG = /^(user\.(name|email)|color(\.[\w.-]+)?|advice\.[\w-]+|log\.[\w-]+|diff\.(renames|noprefix|mnemonicprefix|relative|context|algorithm)|merge\.conflictstyle|commit\.gpgsign|init\.defaultbranch)$/i;
+
+/**
+ * The key a `git config` call writes, '' when it writes without naming one (`--edit`), or null for a read. Both forms:
+ * `git config set|unset|… <key>` and `git config [--add|--unset…] <key> [<value>]`, where two operands are a write.
+ */
+function configWrite(rest: string[]): string | null {
+  const first = rest[0];
+  if (first && !first.startsWith('-')) {
+    if (first === 'get' || first === 'list') return null;
+    if (/^(set|unset|rename-section|remove-section|edit)$/.test(first)) return rest.slice(1).find((a) => !a.startsWith('-')) ?? '';
+  }
+  const operands: string[] = [];
+  let write = false;
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (/^(-e|--edit|--add|--replace-all|--unset|--unset-all|--rename-section|--remove-section)$/.test(a)) write = true;
+    else if (/^(-f|--file|--blob|--type|--default|--comment)$/.test(a)) i++;
+    else if (!a.startsWith('-')) operands.push(a);
+  }
+  return write || operands.length >= 2 ? operands[0] ?? '' : null;
+}
 
 /** A git call's `-c` keys, subcommand and arguments, past `-C dir` and the like; null for anything but git. */
 function gitArgs(words: string[]): { config: string[]; sub: string; rest: string[] } | null {

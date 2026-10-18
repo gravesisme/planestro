@@ -234,7 +234,7 @@ export function makePolicy(config: Config, baseBranch: string, worktree: string,
       if (secret) return secret;
       if (req.tool !== 'Bash') {
         const path = String(req.input.file_path ?? req.input.path ?? '');
-        if ((req.tool === 'Write' || req.tool === 'Edit' || req.tool === 'MultiEdit') && path.startsWith('/') && !path.startsWith(worktree + '/')) return `writes outside your worktree (${worktree}) are not allowed.`;
+        if ((req.tool === 'Write' || req.tool === 'Edit' || req.tool === 'MultiEdit') && path && !resolve(worktree, path).startsWith(worktree + '/')) return `writes outside your worktree (${worktree}) are not allowed.`;
         return null;
       }
       const cmd = String(req.input.command ?? '');

@@ -62,7 +62,10 @@ function listed(abs: string, o: SecretOptions): string | null {
   // Claude Code's login where no keychain holds it (Linux), in the home folder and in each account's (#242, #340).
   if (abs.endsWith('/.credentials.json') && [join(home, '.claude'), ...(o.dirs ?? []).map((d) => resolve(d.startsWith('~/') ? join(home, d.slice(2)) : d))].includes(dirname(abs))) return "Claude Code's login (.credentials.json)";
   if (/^\/proc\/[^/]+\/environ$/.test(abs)) return "a process's environment (/proc/*/environ)";
-  if (abs.endsWith('/.git/config')) return '.git/config';
+  // What git runs by itself (#340): a hook before an allowed `git commit`, or a program its configuration names
+  // (core.hooksPath, core.fsmonitor, a filter), so a worker that wrote one would run code without a park.
+  if (/\/\.git\/(worktrees\/[^/]+\/)?config(\.worktree)?$/.test(abs)) return '.git/config';
+  if (/\/\.git\/hooks(\/|$)/.test(abs)) return '.git/hooks';
   const name = basename(abs);
   for (const n of SECRET_NAMES) if (n.re.test(name)) return n.what;
   return null;
@@ -135,7 +138,9 @@ const PATH_FIELDS = ['file_path', 'notebook_path', 'path', 'glob'];
  */
 export function secretDenial(req: PermissionRequest, cwd: string, o: SecretOptions = {}): string | null {
   if (req.tool.startsWith('mcp__')) return null;
-  const say = (path: string, what: string) => `${path} is a secret file (${what}): planestro's built-in deny list lets no worker read or write it, and no rule overrides that. Do the work without it; if it truly needs the file, report_blocked saying why.`;
+  const say = (path: string, what: string) => what.startsWith('.git/')
+    ? `${path} is git's own ${what.slice(5)}: git runs what it holds or names, so planestro's built-in deny list lets no worker read or write it, and no rule overrides that. Commit as you are; if the work truly needs it changed, report_blocked saying why.`
+    : `${path} is a secret file (${what}): planestro's built-in deny list lets no worker read or write it, and no rule overrides that. Do the work without it; if it truly needs the file, report_blocked saying why.`;
   if (req.tool === 'Bash') {
     const hit = secretInCommand(String(req.input.command ?? ''), cwd, o);
     return hit ? say(hit.path, hit.what) : null;

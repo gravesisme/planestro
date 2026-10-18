@@ -5,7 +5,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import type YAML from 'yaml';
 import { planReviewByDefault,
   parseItemFile, serializeItemFile, setSection, appendActivity, getSection, idNumber, slugify,
-  parsePromptFile, serializePromptFile, renderPrompt,
+  parsePromptFile, serializePromptFile, renderPrompt, fenceExternal, outsideTitle,
   parseReleaseFile, serializeReleaseFile, setReleaseSection, sortReleases, compareVersions, getReleaseSection, VERSION_RE, DATE_RE,
   parseScheduleFile, serializeScheduleFile, setScheduleDescription, scheduleDescription, scheduleContext, withHistory, parseCron, validTimeZone, RenderError, SCHEDULE_NAME_RE, PRIORITIES, KINDS,
   parseQuestionFile, serializeQuestionFile, setQuestionSection, appendThread, questionNumber, QUESTION_SECTIONS,
@@ -99,9 +99,13 @@ const EDIT_COMMIT_DELAY_MS = 30_000;
  * Bodies (sha256 of the trimmed body) of shipped prompts that were replaced because what they told a session was wrong, by
  * prompt name. refreshRetiredPrompts brings a data dir's untouched copy of one up to the shipped prompt.
  * rebase-conflict: told the worker to fetch and rebase itself, against its own rules and a sandbox with no network (HH-532).
+ * worker-system, worker-system-codex, orchestrator-system: had no rule for fenced outside text (#340).
  */
 const RETIRED_PROMPT_BODIES: Record<string, string[]> = {
   'rebase-conflict': ['3b868d163e28783dd271e700b8e135f6b6a603b4c2d808aec39efa8c384f2eb2'],
+  'worker-system': ['048e94005de0dc03b4ac45200cce36e00aad028f8f68ef496c17237c86b029f6', 'a5ccba8e13276e686568da7250c6cefb83997c9c5bfd2865e2fa1654241780f0'],
+  'worker-system-codex': ['29460426202cf6779271e00b5dd643bfd519dea91b16d2650905f800ed1c3579'],
+  'orchestrator-system': ['ffb60234562377fb687a2e44bb7f3ff21ccd3225f6a4ea1b344581b05c9fba2e'],
 };
 
 export class DataStore {
@@ -879,9 +883,12 @@ export class DataStore {
     if (item) {
       const fm = item.file.frontmatter;
       const d = this.derived(item);
+      // An item imported from an issue (#231) has a stranger's title and Description: quoted on one line, and fenced (#340).
+      const issue = fm.source?.github_issue;
+      const description = getSection(item.file, 'Description');
       base.item = {
-        id: fm.id, number: idNumber(fm.id), slug: slugify(fm.title), title: fm.title, file: item.path, category: fm.category, status: fm.status,
-        description: getSection(item.file, 'Description'), notes: this.notesWithEpic(item), plan: getSection(item.file, 'Plan'),
+        id: fm.id, number: idNumber(fm.id), slug: slugify(fm.title), title: issue ? outsideTitle(fm.title) : fm.title, file: item.path, category: fm.category, status: fm.status,
+        description: issue ? fenceExternal(description, `github-issue #${issue}`) : description, notes: this.notesWithEpic(item), plan: getSection(item.file, 'Plan'),
         branch: fm.branch, worktree: fm.worktree, pr: fm.pr, planner: fm.planner, implementer: fm.implementer,
       };
       base.base_branch = d.base_branch;
