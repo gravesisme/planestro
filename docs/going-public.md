@@ -300,14 +300,14 @@ own steps, not engine work. They stay as checklists below and are not issues.
 | # | Proposed issue | Covers | Size | Status |
 | --- | --- | --- | --- | --- |
 | P1 | `init` creates and verifies a planning git repo, resolves the base or refuses to guess, and validates before writing | O1, O3 (base fallback, linked-worktree `ENOTDIR` via `git rev-parse --git-path`), D3 (withdraw `orphan-branch`) | M | Done (#332) |
-| P2 | One correct install path across README, Getting started and the site quick start | O1/O2/O4 docs, loopback-only examples, D6 "existing login" wording on the site, platform/Node statement, Codex-only recipe linked from the main path | M (docs) | Filed #333 |
-| P4 | Public-repo hygiene | A2 (document platforms, CI timeout 20), A3 (SDK dependency, `engines`), A4 (CONTRIBUTING, templates, Dependabot), A5 (`what-planestro-sends.md`) | M | Filed #334 |
-| P5 | Show running vs saved engine mode | D4 indicator | S | Filed #335 |
-| P6 | Bound multipart uploads before buffering | Body/file-count limits on both upload routes; bounded audition/media reads | S | Filed #336 |
-| P7 | Setup check: `planestro check --preflight` | D5: Node, git identity/HEAD, code repo remote and base, `gh auth status`, `claude`/`codex` on PATH and signed in (without a model call), port, planning git; one repair per failure | M | Filed #337 |
+| P2 | One correct install path across README, Getting started and the site quick start | O1/O2/O4 docs, loopback-only examples, D6 "existing login" wording on the site, platform/Node statement, Codex-only recipe linked from the main path | M (docs) | Done (#333) |
+| P4 | Public-repo hygiene | A2 (document platforms, CI timeout 20), A3 (SDK dependency, `engines`), A4 (CONTRIBUTING, templates, Dependabot), A5 (`what-planestro-sends.md`) | M | Done (#334) |
+| P5 | Show running vs saved engine mode | D4 indicator | S | Done (#335) |
+| P6 | Bound multipart uploads before buffering | Body/file-count limits on both upload routes; bounded audition/media reads | S | Done (#336) |
+| P7 | Setup check: `planestro check --preflight` | D5: Node, git identity/HEAD, code repo remote and base, `gh auth status`, `claude`/`codex` on PATH and signed in (without a model call), port, planning git; one repair per failure | M | Done (#337) |
 | P10 | Site redesign for v1.0.0 | M1–M7: product demonstration, one primary CTA, audience/prerequisites/cost, current screenshots, FAQ, repo/licence/support links, "coming soon / private" copy updated at the flip | L | Filed #338 |
-| P11 | The orchestrator cannot release a person's hold or queue an imported item outside the chat | A1: `unskip_merge` vs `hold_waits_on: person`; `submit_item` vs `source.github_issue` | S | Filed #339 |
-| P12 | Treat outside text as data | A1: fence imported issues, PR comments/reviews/titles and CI logs in prompts; secret list (`gh`, `claude` credentials, `/proc/*/environ`); drop `GH_TOKEN` from Claude workers; test the unverified code-execution routes | M | Filed #340 |
+| P11 | The orchestrator cannot release a person's hold or queue an imported item outside the chat | A1: `unskip_merge` vs `hold_waits_on: person`; `submit_item` vs `source.github_issue` | S | Done (#339) |
+| P12 | Treat outside text as data | A1: fence imported issues, PR comments/reviews/titles and CI logs in prompts; secret list (`gh`, `claude` credentials, `/proc/*/environ`); drop `GH_TOKEN` from Claude workers; test the unverified code-execution routes | M | Done (#340) |
 | P3 | SECURITY.md and trust-model refresh | | | Done on this branch |
 | P9 | Remove the model API-key paths | | | Done on this branch |
 | P8 | Release v1.0.0 | Version bump, release notes, tag | | Checklist, not an issue |
@@ -622,9 +622,8 @@ investment: a reliable, short path to a reviewed change is.
 
 ## Security and operational qualifications for launch
 
-- **Keep the advertised launch path on loopback.** README background examples
-  still use `--host 0.0.0.0 --watch`. Replace those routine examples before
-  inviting newcomers. `lan_access` now filters socket peer addresses, but it
+- **Keep the advertised launch path on loopback.** *Done (#333):* every routine
+  example binds `127.0.0.1`; `--host 0.0.0.0` appears only beside its warning. `lan_access` now filters socket peer addresses, but it
   does not authenticate a person; an allowed private address or a local proxy
   is not proof of trust. Explicit `--host` binding and `lan_access` filtering
   are separate controls. Do not promise that all forwarding/proxy setups are

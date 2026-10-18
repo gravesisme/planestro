@@ -2,10 +2,13 @@
 
 ## Requirements
 
-- Node 24, git (with a `user.name` and `user.email`). macOS and Linux.
+- Node 24, git (with a `user.name` and `user.email`). macOS is where planestro is used day to
+  day, Linux runs its CI, Windows is untried.
 - For real work: the GitHub CLI (`gh`, authenticated) and the agent CLI for each runner your
   models use: Claude Code (`claude`, logged in), the Codex CLI (`codex`, logged in), or both.
-  `planestro check <data_dir> --preflight` lists what is missing, each with its repair.
+  `planestro check <data_dir> --preflight` lists what is missing, each with its repair. There is
+  no planestro account and no API key: sessions run on the `claude` and `codex` logins already on
+  your machine.
 - None of those for the sample: it runs on in-memory fakes.
 
 ```sh
@@ -50,9 +53,14 @@ what you did.
 ## Your own project
 
 ```sh
-npx tsx packages/server/src/cli.ts init ../myproject-planning --repo ../myproject --name "My Project" --prefix MP
+npm run planestro -- init ../myproject-planning --repo ../myproject --name "My Project" --prefix MP
+npm run planestro -- check ../myproject-planning --preflight
 npm start -- ../myproject-planning --open       # http://127.0.0.1:4300
 ```
+
+Pick the agent once. Claude plans, implements and orchestrates by default; add `--provider codex`
+to `init` for Codex instead, with no Claude installed ([Codex-only setup](switching-providers.md#codex-only-setup)).
+A mixed fleet (say Codex for art, Claude for code) is set up afterwards in Settings → Models.
 
 `init` creates a *data dir*: `planestro.yml`, `items/`, `prompts/` (a copy of the shipped
 prompt library, yours to edit), `attachments/`, `journal/`. A separate sibling folder, as
@@ -72,8 +80,8 @@ Then:
 1. **Settings** — check the base branch, models and categories. The engine starts in
    `dry-run`; queue an item and read the Console to see exactly what it would do to *your*
    repository.
-2. Switch `engine.mode` to `live`, then **restart the server**: the mode is read at startup,
-   and the header shows the one running. Until then it is still simulating.
+2. Switch `engine.mode` to `live`, then stop the server (Ctrl+C) and start it again: the mode
+   is read at startup. Work is real only once the header says **Live**, not **Dry-run**.
 3. Write an item (or start one from a prompt), queue it, approve its plan.
 
 To add an art model, see [Agents](agents.md#adding-a-codex-model). Project rules —

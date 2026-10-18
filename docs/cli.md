@@ -6,7 +6,7 @@ npm run planestro -- <command> …        # or: npx tsx packages/server/src/cli.
 
 | Command | |
 |---|---|
-| `init <data_dir> --repo <code_repo>` | Create (or top up) a data dir. `--name`, `--prefix HH`, `--default-branch`, `--release-branch`, `--github owner/repo`, `--no-commit`. Idempotent: adds what is missing, never overwrites. Remembers the project in `~/.planestro` so a bare `serve` finds it. |
+| `init <data_dir> --repo <code_repo>` | Create (or top up) a data dir. `--name`, `--prefix HH`, `--provider claude|codex` (who plans, implements and orchestrates; default claude), `--default-branch`, `--release-branch`, `--github owner/repo`, `--no-commit`. Idempotent: adds what is missing, never overwrites. Remembers the project in `~/.planestro` so a bare `serve` finds it. |
 | `serve [data_dir]` | The web UI and the engine. `--port N` (4300), `--host H` (127.0.0.1; `0.0.0.0` for your LAN — the UI has no authentication), `--mock` (no engine, UI only), `--open` (open a browser once it is up), `--watch` (see [Operations](operations.md#watch-mode)). |
 | `sample [dir]` | Build the fictional *tidepool* project and serve it in dry-run on port 4310. `--reset` rebuilds it, `--no-serve` only builds it, `--port N`. |
 | `check [data_dir]` | Validate every file and report; commits hand edits as `manual: …`. |

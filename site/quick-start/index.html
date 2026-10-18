@@ -106,14 +106,16 @@
 git --version
 gh auth login --scopes workflow
 gh auth status
-claude --version</code></pre>
+claude --version   # or, for Codex: codex --version</code></pre>
             </div>
             <div class="note">
               <h3>Choose Claude or Codex.</h3>
               <p>
-                Claude remains the default. Codex app-server can also plan,
-                orchestrate, and implement using your Codex login. A Codex-only
-                setup does not require Claude installed.
+                Pick one now; you can mix them later. Claude is the default.
+                With <code>--provider codex</code> in step 3, Codex plans,
+                implements and orchestrates on your Codex login, and Claude need
+                not be installed
+                (<a href="https://github.com/gravesisme/planestro/blob/main/docs/switching-providers.md#codex-only-setup">Codex-only setup</a>).
               </p>
               <p>
                 <strong>There is no Planestro account or login.</strong>
@@ -121,8 +123,9 @@ claude --version</code></pre>
                 credentials available on your machine.
               </p>
               <p>
-                Run <code>claude</code> once, complete Claude Code’s sign-in,
-                then exit back to your terminal before starting Planestro.
+                Sign in once before starting Planestro: run <code>claude</code>
+                and complete Claude Code’s sign-in, or run
+                <code>codex login</code>. There is no API key to set.
                 GitHub and agent logins belong to those local tools, not to
                 Planestro.
               </p>
@@ -299,13 +302,15 @@ cd ../planestro</code></pre>
                 </button>
               </div>
               <pre><code id="init-code"># Run from your Planestro checkout; planning files stay outside the code repo.
-git init ../myproject-planning
-npm run planestro -- init ../myproject-planning --repo ../myproject --name &quot;My Project&quot; --prefix MP --default-branch main</code></pre>
+# Add --provider codex for a Codex-only setup. init creates the planning Git repository.
+npm run planestro -- init ../myproject-planning --repo ../myproject --name &quot;My Project&quot; --prefix MP --default-branch main
+npm run planestro -- check ../myproject-planning --preflight</code></pre>
             </div>
             <p class="expected">
               Ready when: <code>myproject-planning</code> contains
               <code>planestro.yml</code>, an initial Git commit, and directories
-              for items, prompts, and activity. The engine starts in
+              for items, prompts, and activity, and the preflight check reports
+              no failures (each one prints its repair). The engine starts in
               <strong>dry-run</strong>.
             </p>
           </section>
@@ -336,9 +341,9 @@ npm run planestro -- init ../myproject-planning --repo ../myproject --name &quot
               <li>
                 <strong>Check Settings.</strong> Confirm the project’s base
                 branch, keep <code>engine.mode</code> in <code>dry-run</code>,
-                and check that the configured Claude model IDs are available to
-                your account. Confirm Claude Code is signed in on this machine
-                and review per-item budgets before enabling live work.
+                and check that the configured model IDs are available to your
+                Claude or Codex account. Review per-item budgets before enabling
+                live work.
               </li>
               <li>
                 <strong>Try the lifecycle.</strong> Queue a clearly labeled
@@ -350,7 +355,10 @@ npm run planestro -- init ../myproject-planning --repo ../myproject --name &quot
               <li>
                 <strong>Start real work deliberately.</strong> Once GitHub
                 authentication and base CI are green, switch
-                <code>engine.mode</code> to <code>live</code>. Create a new item
+                <code>engine.mode</code> to <code>live</code>, then stop the
+                server (Ctrl+C) and start it again: the mode is read at startup.
+                Work is real only once the header says <strong>Live</strong>,
+                not Dry-run. Create a new item
                 for your actual task; a completed dry-run item is only a
                 simulation.
               </li>
