@@ -1,8 +1,8 @@
 import { closesLine } from './issueImport.ts';
-import { itemModelSwitchOps, clearUsageStopOps } from '../providerSwitch.ts';
+import { itemModelSwitchOps } from '../providerSwitch.ts';
 import { join, relative, isAbsolute, extname, basename, matchesGlob } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { DEBUG_MARKER, mcpServersNamed, debugMarkerRefusal, Audition, AuditionPicks, auditionPicksProblem, auditionPickLines, auditionNote, auditionComplete, runnerTurnSettings, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem, usageTurnData, USAGE_TURN, type UsageStage, testRunShape, TEST_RUN, stepDownDue, timeoutKilledIn, limitsLabel, type HostLoad, type UsageRole, type ModelDef, resolveAccount, accountList, guardKey, unavailableKey, unavailableView, sameSessionStore, DEFAULT_ACCOUNT, type Account, fenceExternal } from '@planestro/shared';
+import { DEBUG_MARKER, mcpServersNamed, debugMarkerRefusal, Audition, AuditionPicks, auditionPicksProblem, auditionPickLines, auditionNote, auditionComplete, runnerTurnSettings, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, type RateLimitSnapshot, demoteH1, loopGreen, loopLine, loopTallyProblem, usageTurnData, USAGE_TURN, type UsageStage, testRunShape, TEST_RUN, stepDownDue, timeoutKilledIn, limitsLabel, type HostLoad, type UsageRole, type ModelDef, resolveAccount, accountList, guardKey, unavailableView, sameSessionStore, DEFAULT_ACCOUNT, type Account, fenceExternal } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote, type CiQueue, type RunnerReport, type UndeliveredReport, type ConnectionDrop, type AccountCredentials } from './ports.ts';
@@ -25,6 +25,7 @@ import { HeavyLock, ciOnSharedHost, heavyRedirects, heavyAllowRules, took } from
 import type { ReviewImage, ReviewDiff, UndoTurnPreview } from './Engine.ts';
 import { ReviewUndo } from './reviewUndo.ts';
 import { WorkerTools, ATTACH_PER_CALL } from './workerTools.ts';
+import { Guards, USAGE_RESUME_GRACE_MS } from './guards.ts';
 
 /** `schedule` runs `fn` after `ms` and returns a cancel (tests capture it instead of waiting). */
 /** `listenUrl`: where the server answers (`http://127.0.0.1:4300`), the start of notification links unless notifications.base_url says otherwise. */
@@ -124,13 +125,8 @@ const PREVIEW_TRIES = 10;
 const LOOK_AT_PICTURES = /captur|screenshot|render|image|picture|before\/after|contact sheet|art review|frames?\b|sprites?\b/i;
 /** Looks (5 s apart) at a just-pushed PR's head before it is marked ready anyway. */
 const READY_AFTER_PUSH_POLLS = 6;
-/** A guard-made pause resumes this long after its window's reset, so the first turn lands in the fresh window. */
-const USAGE_RESUME_GRACE_MS = 60_000;
 /** The op_data keys of retries the tick runs once at a due time. */
 type TimedRetry = 'transient_retry' | 'usage_retry';
-/** Two readings of one window whose resets differ by less than this are the same crossing. */
-const SAME_CROSSING_MS = 5 * 60_000;
-const MAX_TIMER_MS = 2 ** 31 - 1;
 
 /** What a sync with the base did (LiveEngine.syncBranch). */
 /** An epic's red run that is likely its base's, waiting for the base to move (#204); `synced` is the base tip merged in once it did. */
@@ -179,7 +175,6 @@ function syncFailed(r: RebaseResult): string {
 export class LiveEngine implements Engine {
   readonly mode: 'live' | 'dry-run';
   log: ServerEvent[] = [];
-  private _paused: boolean;
   private jobs = new Map<string, Promise<void>>();
   /** Turns this engine started. `waiting` names the slot the turn is still queued for, a runner's (concurrency.runner_limits) or `session` (max_sessions): no process yet. */
   /** `lastOutputAt`: when it last said anything, or was admitted to run (epoch ms), for `concurrency.turn_quiet_min`. */
@@ -194,7 +189,6 @@ export class LiveEngine implements Engine {
   private stopping = false;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly schedule: (fn: () => void, ms: number) => () => void;
-  private cancelGuardResume?: () => void;
   private readonly now: () => string;
   private readonly ciWorkflow: string;
   private localJobs = 0;
@@ -207,10 +201,11 @@ export class LiveEngine implements Engine {
   private readonly workerTools: WorkerTools;
   /** The review panel and Undo last turn with its checkpoints (#404, seam 2). */
   private readonly reviewUndo: ReviewUndo;
+  /** The pause, the usage and disk guards, model outages and drain (#404, seam 3). */
+  private readonly guards: Guards;
 
   constructor(private readonly store: DataStore, private readonly ports: Ports, private readonly emit: (e: ServerEvent) => void, private readonly opts: EngineOptions = {}) {
     this.mode = ports.mode;
-    this._paused = store.local.engine.paused;
     this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     const schedule = opts.schedule ?? ((fn, ms) => { const t = setTimeout(fn, ms); t.unref?.(); return () => clearTimeout(t); });
     // A timer's callback runs outside any caller's try: one that throws (a full disk under a journal write) is noted, never the process's end.
@@ -242,6 +237,23 @@ export class LiveEngine implements Engine {
       absWorktree: (rel) => this.absWorktree(rel),
       note: (level, message) => this.note(level, message),
       deliverQueued: (id, when) => this.deliverQueued(id, when),
+    });
+    const orchestrator = () => this.orchestrator;
+    const stopping = () => this.stopping;
+    this.guards = new Guards({
+      store,
+      ports,
+      get repo() { return repo(); },
+      get stopping() { return stopping(); },
+      turns: this.turns,
+      jobs: this.jobs,
+      get orchestrator() { return orchestrator(); },
+      emit,
+      note: (level, message) => this.note(level, message),
+      announce: (event, title, message) => this.announce(event, title, message),
+      schedule: (fn, ms) => this.schedule(fn, ms),
+      tick: () => this.tick(),
+      accountFor: (fm, def) => this.accountFor(fm, def),
     });
     this.orchestrator = new Orchestrator(store, ports, {
       message: (id, text) => this.message(id, text, 'orchestrator'),
@@ -281,8 +293,8 @@ export class LiveEngine implements Engine {
       withdrawDecision: (id, reason) => this.withdrawDecision(id, reason),
       triageEnded: (id) => this.endTriage(id, 'the orchestrator looked at it without resolving it'),
       poke: () => this.poke(),
-      usageSeen: (r, runner) => this.usageSeen(r, runner),
-    }, emit, (l, m) => this.note(l, m), () => this._paused || this.draining);
+      usageSeen: (r, runner) => this.guards.usageSeen(r, runner),
+    }, emit, (l, m) => this.note(l, m), () => this.guards.paused || this.guards.draining);
     this.needsYou = new NeedsYouWatch(store, {
       announce: (w) => this.announceWait(w),
       now: () => Date.parse(this.now()),
@@ -297,7 +309,7 @@ export class LiveEngine implements Engine {
     this.orchestrator.wake({ type, item, data });
   }
 
-  get paused(): boolean { return this._paused; }
+  get paused(): boolean { return this.guards.paused; }
   private get repo(): string { return this.store.codeRepoPath(); }
   private get github(): string { const g = this.store.config.code_repo.github; if (!g) throw new Error('code_repo.github is not configured'); return g; }
 
@@ -305,12 +317,12 @@ export class LiveEngine implements Engine {
   private reconcileTimer?: NodeJS.Timeout;
 
   async start(): Promise<void> {
-    this.note('info', `engine ${this.mode} starting${this._paused ? ' (paused)' : ''}`);
+    this.note('info', `engine ${this.mode} starting${this.guards.paused ? ' (paused)' : ''}`);
     await this.reconcile('startup').catch((e) => this.note('error', `reconcile: ${(e as Error).message}`));
     await this.resumeInterrupted();
     for (const q of this.orchestrator.resumeQuestions()) this.note('info', `${q}: answering the message a restart left unanswered`);
-    this.armGuardResume();
-    this.armModelResume();
+    this.guards.armGuardResume();
+    this.guards.armModelResume();
     this.needsYou.start();
     this.timer = setInterval(() => void this.tick(), this.opts.tickMs ?? 10_000);
     this.timer.unref?.();
@@ -321,8 +333,7 @@ export class LiveEngine implements Engine {
   async stop(): Promise<void> {
     this.stopping = true;
     const orchestratorStopped = this.orchestrator.stop();
-    this.cancelGuardResume?.(); this.cancelGuardResume = undefined;
-    this.cancelModelResume?.(); this.cancelModelResume = undefined;
+    this.guards.stop();
     this.needsYou.stop();
     if (this.timer) clearInterval(this.timer);
     if (this.reconcileTimer) clearInterval(this.reconcileTimer);
@@ -331,62 +342,24 @@ export class LiveEngine implements Engine {
     this.auditAbort?.abort();
     await Promise.allSettled([...this.jobs.values(), orchestratorStopped, this.auditing]);
   }
-  /** The lever by hand. A manual pause is the user's: the usage guard never resumes it. */
-  pause(): void { this.setPaused(true, 'user'); this.note('warn', 'AUTOMATION PAUSED — running steps finish, nothing new starts'); }
-  /** Global automation control is independent of provider usage guards. */
-  resume(message = 'automation resumed'): void { this.setPaused(false); this.note('info', message); this.orchestrator.kick(); void this.tick(); }
-  private setPaused(paused: boolean, by?: 'user' | 'disk', guard?: UsageGuardState, disk?: { free_gib: number; path: string; tripped_at: string }): void {
-    this._paused = paused;
-    this.store.updateLocal({ engine: { ...this.store.local.engine, paused, paused_by: paused ? by : undefined, disk_guard: paused ? disk : undefined } });
-    this.emit({ type: 'engine.paused', paused, ...(paused && by ? { by } : {}) });
-  }
+
+  // ---- guards (#404, seam 3): the pause, the usage and disk guards, model outages and drain live in guards.ts ----
+  pause(): void { this.guards.pause(); }
+  resume(message?: string): void { this.guards.resume(message); }
+  retryProvider(runner: string): void { this.guards.retryProvider(runner); }
+  recordUnavailable(def: { id: string; label: string }, limit: TurnResult['usageLimit'], manual = false, account?: string): string { return this.guards.recordUnavailable(def, limit, manual, account); }
+  checkDisk(force = false): Promise<void> { return this.guards.checkDisk(force); }
+  drain(by: 'user' | 'update' = 'user'): void { this.guards.drain(by); }
+  undrain(): void { this.guards.undrain(); }
+  restartReadiness(): { draining: boolean; by?: 'user' | 'update'; idle: boolean; running: string[] } { return this.guards.restartReadiness(); }
+  private usageSeen(r: RateLimitSnapshot | undefined, runner?: string): void { this.guards.usageSeen(r, runner); }
+  private guardResume(): void { this.guards.guardResume(); }
+  private armModelResume(): void { this.guards.armModelResume(); }
 
   /** What a turn spent, journaled as it ends (#236): the Usage page's facts, never rebuilt from item totals later. */
   private recordUsage(item: string, def: ModelDef, model: string, role: UsageRole, op: string, result: TurnResult, at: { stage: UsageStage; resumed?: boolean }): void {
     const data = usageTurnData({ provider: def.runner ?? 'claude', model, role, op, accounting: modelCapabilities(def).accounting, ...at, result });
     if (data) this.store.journal.append({ type: USAGE_TURN, item, actor: 'engine', data: { ...data } });
-  }
-
-  // ---- usage guard: pause before a subscription window runs out, resume once it resets ----
-  /** Read after turns and wakes with verified telemetry; trips once per provider/window crossing. */
-  private usageSeen(r: RateLimitSnapshot | undefined, runner = 'claude'): void {
-    const cfg = this.store.config.usage_guard;
-    if (!r || this.stopping || !usageGuardTrips(cfg, r)) return;
-    const last = this.store.local.engine.provider_guard_last?.[runner];
-    if (last && last.window === r.window && (r.resetsAt && last.resets_at ? Math.abs(Date.parse(r.resetsAt) - Date.parse(last.resets_at)) < SAME_CROSSING_MS : !r.resetsAt && !last.resets_at && Date.now() - Date.parse(last.tripped_at) < 3_600_000)) return;
-    const resumeAt = cfg.auto_resume && r.resetsAt ? new Date(Date.parse(r.resetsAt) + USAGE_RESUME_GRACE_MS).toISOString() : undefined;
-    const guard: UsageGuardState = { window: r.window, status: r.status, ...(r.utilization !== undefined ? { utilization: r.utilization } : {}), ...(r.resetsAt ? { resets_at: r.resetsAt } : {}), tripped_at: new Date(Date.now()).toISOString(), ...(resumeAt ? { resume_at: resumeAt } : {}) };
-    this.store.updateLocal({ engine: { ...this.store.local.engine, provider_guards: { ...this.store.local.engine.provider_guards, [runner]: guard }, provider_guard_last: { ...this.store.local.engine.provider_guard_last, [runner]: guard } } });
-    this.store.journal.append({ type: 'usage.guard_tripped', actor: 'engine', data: { provider: runner, ...guard, threshold: cfg.threshold } });
-    this.note('warn', `${runner} USAGE GUARD: ${usageWindowLabel(r.window)} window ${usagePercent(r.utilization) ? `at ${usagePercent(r.utilization)}` : r.status === 'rejected' ? 'is exhausted' : 'sent a usage warning'} — ${runner} paused ${resumeAt ? `until ${localClock(resumeAt)}` : r.resetsAt ? `(the window resets at ${localClock(r.resetsAt)}; resume by hand)` : 'until you resume it'}; running turns finish, nothing new starts`);
-    this.announce('on_usage_pause', `${runner} paused for usage`, `${runner} paused: the ${usageWindowLabel(r.window)} usage window ${usagePercent(r.utilization) ? `is at ${usagePercent(r.utilization)}` : 'is near its limit'}`);
-    this.armGuardResume();
-  }
-
-  // ---- disk guard (#161, HH-355): a full disk fails every worker one by one; pause before it does ----
-  private diskCheckedAt = 0;
-  /** Free space on the volumes the work is written to (the repo, its worktrees), at most once a minute; `force` reads now. */
-  async checkDisk(force = false): Promise<void> {
-    const cfg = this.store.config.disk_guard;
-    if (!cfg.enabled || this.stopping || !this.ports.proc.freeBytes || (!force && Date.now() - this.diskCheckedAt < 60_000)) return;
-    this.diskCheckedAt = Date.now();
-    const paths = [...new Set([this.repo, this.store.worktreesRoot()])];
-    const reads = await Promise.all(paths.map(async (path) => ({ path, free: await this.ports.proc.freeBytes!(path) })));
-    const known = reads.filter((r): r is { path: string; free: number } => typeof r.free === 'number');
-    if (!known.length) return;
-    const low = known.reduce((a, b) => (b.free < a.free ? b : a));
-    const gib = Math.round((low.free / 2 ** 30) * 10) / 10;
-    const e = this.store.local.engine;
-    if (this._paused && e.paused_by === 'disk') {
-      if (gib >= cfg.resume_free_gib) { this.store.journal.append({ type: 'disk.guard_resumed', actor: 'engine', data: { free_gib: gib, path: low.path } }); this.resume(`automation resumed: ${gib} GiB free again on ${low.path}`); }
-      return;
-    }
-    if (this._paused || gib >= cfg.min_free_gib) return;
-    const disk = { free_gib: gib, path: low.path, tripped_at: new Date(Date.now()).toISOString() };
-    this.setPaused(true, 'disk', undefined, disk);
-    this.store.journal.append({ type: 'disk.guard_tripped', actor: 'engine', data: { ...disk, min_free_gib: cfg.min_free_gib } });
-    this.note('warn', `DISK GUARD: ${gib} GiB free on ${low.path} (under ${cfg.min_free_gib}) — automation paused; running steps finish, nothing new starts until ${cfg.resume_free_gib} GiB is free`);
-    this.announce('on_usage_pause', 'planestro paused', `Disk nearly full: ${gib} GiB free on ${low.path}. Nothing new starts until ${cfg.resume_free_gib} GiB is free.`);
   }
 
   /**
@@ -413,7 +386,7 @@ export class LiveEngine implements Engine {
     return `${(this.store.config.notifications.base_url ?? this.opts.listenUrl ?? 'http://127.0.0.1:4300').replace(/\/+$/, '')}${path}`;
   }
   /** A store event: whether an item now needs you, or a question opened (NeedsYouWatch). */
-  observe(e: ServerEvent): void { this.needsYou.observe(e); if (e.type === 'config.updated') { this.armModelResume(); this.wakeSlotWaiters(); } }
+  observe(e: ServerEvent): void { this.needsYou.observe(e); if (e.type === 'config.updated') { this.guards.armModelResume(); this.wakeSlotWaiters(); } }
   /** A client's heartbeat: someone is at a planestro tab, so a wait can be answered there before it is announced. */
   clientActive(): void { this.needsYou.clientActive(); }
 
@@ -425,127 +398,6 @@ export class LiveEngine implements Engine {
     return { code: r.code, output: `${r.stdout}${r.stderr}`.trim().slice(0, 2000) };
   }
 
-  /** (Re)arm the guard's resume from local config — at trip and at startup; one already due resumes now. */
-  private armGuardResume(): void {
-    this.cancelGuardResume?.(); this.cancelGuardResume = undefined;
-    const due = this.guardResumeDue();
-    if (due === undefined || this.stopping) return;
-    const ms = due - Date.now();
-    if (ms <= 0) { this.guardResume(); return; }
-    this.cancelGuardResume = this.schedule(() => { this.cancelGuardResume = undefined; if (ms > MAX_TIMER_MS) this.armGuardResume(); else this.guardResume(); }, Math.min(ms, MAX_TIMER_MS));
-  }
-  /** When a guard-made pause is due to resume (epoch ms), or undefined when nothing will resume it. */
-  private guardResumeDue(): number | undefined {
-    if (!this.store.config.usage_guard.auto_resume) return undefined;
-    const due = Object.values(this.store.local.engine.provider_guards ?? {}).flatMap((g) => g.resume_at && Number.isFinite(Date.parse(g.resume_at)) ? [Date.parse(g.resume_at)] : []);
-    return due.length ? Math.min(...due) : undefined;
-  }
-  retryProvider(runner: string): void {
-    const { [runner]: _guard, ...guards } = this.store.local.engine.provider_guards ?? {};
-    this.store.updateLocal({ engine: { ...this.store.local.engine, provider_guards: guards } });
-    for (const item of this.store.listItems()) {
-      const fm = item.file.frontmatter;
-      const def = findModel(this.store.config, fm.status === 'PLAN_IN_PROGRESS' ? fm.planner : fm.implementer);
-      const acct = def ? this.accountFor(fm, def) : undefined;
-      if (fm.blocked_reason === 'provider_usage' && def && acct && 'account' in acct && guardKey(def.runner ?? 'claude', acct.account.name) === runner)
-        this.store.mutateItem(item.id, clearUsageStopOps(fm), 'engine');
-    }
-    this.store.journal.append({ type: 'usage.guard_resumed', actor: 'engine', data: { provider: runner } });
-    this.armGuardResume(); this.orchestrator.kick(); void this.tick();
-  }
-  private guardResume(): void {
-    if (this.stopping || !this.store.config.usage_guard.auto_resume) return;
-    for (const [runner, guard] of Object.entries(this.store.local.engine.provider_guards ?? {}))
-      if (guard.resume_at && Date.parse(guard.resume_at) <= Date.now()) this.retryProvider(runner);
-    this.armGuardResume();
-  }
-
-  // ---- model outages (#244): when a model's remembered unavailability ends, its usage_exhausted items are unblocked ----
-  private cancelModelResume?: () => void;
-  /** (Re)arm the earliest `model_unavailable` expiry from local config (at startup, when one is recorded); one already past runs now. */
-  private armModelResume(): void {
-    this.cancelModelResume?.(); this.cancelModelResume = undefined;
-    const due = this.modelResumeDue();
-    if (due === undefined || this.stopping) return;
-    const ms = due - Date.now();
-    if (ms <= 0) { if (this.modelResume()) void this.tick(); return; }
-    this.cancelModelResume = this.schedule(() => { this.cancelModelResume = undefined; if (ms > MAX_TIMER_MS) this.armModelResume(); else if (this.modelResume()) void this.tick(); }, Math.min(ms, MAX_TIMER_MS));
-  }
-  /** When the next model outage ends (epoch ms), or undefined when none will unblock anything by itself. */
-  private modelResumeDue(): number | undefined {
-    if (!this.store.config.usage_guard.auto_resume) return undefined;
-    const due = Object.values(this.store.local.model_unavailable ?? {}).map((e) => Date.parse(e.until)).map((t) => (Number.isFinite(t) ? t : 0));
-    return due.length ? Math.min(...due) : undefined;
-  }
-  /**
-   * Each ended outage is dropped from `model_unavailable` first, so it unblocks at most once, then the items it
-   * kept out are unblocked. Returns whether any outage ended.
-   */
-  private modelResume(): boolean {
-    if (this.stopping || !this.store.config.usage_guard.auto_resume) return false;
-    const map = this.store.local.model_unavailable ?? {};
-    const ended = Object.keys(map).filter((id) => !unavailableEntry(map, id, new Date(Date.now())));
-    if (ended.length) {
-      this.store.updateLocal({ model_unavailable: Object.fromEntries(Object.entries(map).filter(([id]) => !ended.includes(id))) });
-      for (const id of ended) this.unblockModel(id);
-    }
-    this.armModelResume();
-    return ended.length > 0;
-  }
-  /**
-   * Clear `usage_exhausted` on the items whose next turn can now run on `modelId`: their current-phase model
-   * (planner while planning, otherwise implementer) is that model, or, when they allow a fallback, has it in its chain.
-   * Items blocked for anything else, held, or taken over are left alone; they re-enter through ordinary admission.
-   */
-  private unblockModel(key: string): void {
-    // A named account's outage is keyed `<model>@<account>` (#242): only items on that account were held by it.
-    const at = key.lastIndexOf('@');
-    const modelId = at > 0 ? key.slice(0, at) : key;
-    const account = at > 0 ? key.slice(at + 1) : DEFAULT_ACCOUNT;
-    const label = findModel(this.store.config, modelId)?.label ?? modelId;
-    for (const item of this.store.listItems()) {
-      const fm = item.file.frontmatter;
-      if (fm.blocked_reason !== 'usage_exhausted' || fm.taken_over || fm.skip_merge) continue;
-      const requested = findModel(this.store.config, fm.status === 'PLAN_IN_PROGRESS' ? fm.planner : fm.implementer);
-      if (!requested) continue;
-      const chain = fm.allow_model_fallback === true ? fallbackChain(this.store.config, requested) : [requested];
-      if (!chain.some((m) => m.id === modelId)) continue;
-      const acct = this.accountFor(fm, requested);
-      if (!('account' in acct) || acct.account.name !== account) continue;
-      this.store.mutateItem(item.id, [...clearUsageStopOps(fm), { activity: { actor: 'app', text: `unblocked: ${label} usage window reset${account !== DEFAULT_ACCOUNT ? ` on account ${account}` : ''}` } }], 'engine', { commit: `${item.id}: unblock (${key} usage window reset)` });
-    }
-  }
-  /**
-   * Getting ready for a restart (f3). Like PAUSE AUTOMATION, nothing new starts (no admissions, no
-   * merge steps, no orchestrator wakes) and what runs finishes, but it is not persisted: planestro
-   * comes back from the restart running. Items in triage keep waiting (the wake after the restart
-   * picks them up). restartReadiness says when nothing is left running.
-   */
-  private draining = false;
-  /** Who asked: the Console's button (`user`), or `serve --watch` restarting onto new planestro code (`update`, #90). */
-  private drainedBy: 'user' | 'update' = 'user';
-  drain(by: 'user' | 'update' = 'user'): void {
-    this.draining = true; this.drainedBy = by;
-    this.emit({ type: 'engine.paused', paused: this._paused });
-    this.note('warn', by === 'update' ? 'updating planestro: running steps finish, nothing new starts, then it restarts and carries on' : 'preparing to restart: running steps finish, nothing new starts');
-  }
-  undrain(): void { this.draining = false; this.drainedBy = 'user'; this.emit({ type: 'engine.paused', paused: this._paused }); this.note('info', 'restart preparation cancelled; carrying on'); this.orchestrator.kick(); void this.tick(); }
-  /**
-   * What still runs (turns, engine steps, ops in flight, an orchestrator wake): empty means a restart loses nothing.
-   * A wait for CI (`op: awaiting_ci`) is not counted: it is GitHub's to finish, and the next start picks the wait
-   * up where it was (watchCi leaves the op for exactly that). Counting it held every restart for a whole CI run,
-   * and a drain starts no poll, so an item waiting when the drain began kept it from ever being idle (#90).
-   */
-  restartReadiness(): { draining: boolean; by?: 'user' | 'update'; idle: boolean; running: string[] } {
-    const waitingCi = (id: string) => this.store.getItem(id)?.file.frontmatter.op === 'awaiting_ci';
-    const running = [
-      ...[...this.turns.entries()].map(([id, t]) => `${id}: ${t.phase} turn`),
-      ...[...this.jobs.keys()].filter((id) => !this.turns.has(id) && !waitingCi(id)).map((id) => `${id}: engine step`),
-      ...this.store.listItems().filter((i) => i.file.frontmatter.op && i.file.frontmatter.op !== 'awaiting_ci' && !this.jobs.has(i.id) && !this.turns.has(i.id)).map((i) => `${i.id}: ${i.file.frontmatter.op}`),
-      ...(this.orchestrator.busy ? ['orchestrator: a wake'] : []),
-    ];
-    return { draining: this.draining, ...(this.draining ? { by: this.drainedBy } : {}), idle: running.length === 0, running };
-  }
   poke(): void { void this.tick(); }
   sessions(): SessionView[] {
     return [...this.turns.entries()].map(([item, t]) => ({ item, session_id: this.store.getItem(item)?.file.frontmatter.session_id, model: t.model, op: t.waiting ? `${t.phase}: waiting for a ${t.waiting} slot` : t.phase, started_at: t.startedAt, busy: !t.waiting, last_output: t.lastOutput }));
@@ -595,19 +447,19 @@ export class LiveEngine implements Engine {
   private async tickOnce(): Promise<void> {
     if (this.stopping) return;
     // Before the pause check: while automation is paused the orchestrator is not woken, so nothing may sit in triage.
-    if (this.draining) return;
+    if (this.guards.draining) return;
     try { this.driveTriage(); } catch (e) { this.note('error', `triage: ${(e as Error).message}`); }
     // Before the pause check too: a paused engine's running turns still finish, or hang.
     this.driveQuietTurns();
     // A backstop for the guard's timer (a machine that slept through it): resume once the reset has passed.
-    const due = this.guardResumeDue();
-    if (due !== undefined && due <= Date.now()) { this.guardResume(); return; }
-    const modelDue = this.modelResumeDue();
-    if (modelDue !== undefined && modelDue <= Date.now()) this.modelResume();
+    const due = this.guards.guardResumeDue();
+    if (due !== undefined && due <= Date.now()) { this.guards.guardResume(); return; }
+    const modelDue = this.guards.modelResumeDue();
+    if (modelDue !== undefined && modelDue <= Date.now()) this.guards.modelResume();
     // Read off the tick, not awaited in it: an await here let overlapping ticks interleave. A pause it sets holds from the next tick.
-    void this.checkDisk().catch(() => undefined);
+    void this.guards.checkDisk().catch(() => undefined);
     void this.refreshCiQueue().catch(() => undefined);
-    if (this._paused) return;
+    if (this.guards.paused) return;
     try {
       this.orchestrator.kick();
       // Before admission, so an item a schedule submits starts on this pass.
@@ -1162,7 +1014,7 @@ export class LiveEngine implements Engine {
     const current = this.store.requireItem(id).file.frontmatter.op_data?.pending_turn as PendingTurn | undefined;
     if (current?.key !== turn.key) return Promise.resolve(undefined);
     if (turn.opts.clearsStop) this.clearSupersededStop(id);
-    if (turn.opts.syncFirst && !(this._paused || this.draining || this.stopping) && !this.store.requireItem(id).file.frontmatter.taken_over) {
+    if (turn.opts.syncFirst && !(this.guards.paused || this.guards.draining || this.stopping) && !this.store.requireItem(id).file.frontmatter.taken_over) {
       return this.syncBeforeTurn(id, turn).then((synced) => { this.savePendingTurn(id, synced); return this.runPendingTurn(id, synced); });
     }
     const data = this.store.requireItem(id).file.frontmatter.op_data ?? {};
@@ -1546,7 +1398,7 @@ export class LiveEngine implements Engine {
       this.store.mutateItem(id, [{ set: { op_data: data } }, { activity: { actor: 'app', text: `not starting its ${phase} turn: you have this item (taken over)` } }], 'engine');
       return undefined;
     }
-    if (this.stopping || this._paused || this.draining) return defer();
+    if (this.stopping || this.guards.paused || this.guards.draining) return defer();
     const d = this.store.derived(item);
     // No worktree, no turn (#439): an epic past planning, or an item whose worktree cleanup removed (HH-357), has no session
     // to run in. Its saved instruction is dropped and said; an active worker item stops as worktree_missing, never engine_error.
@@ -1690,7 +1542,7 @@ export class LiveEngine implements Engine {
     };
     try {
       result = await this.withRunnerSlot(runner, () => this.withSessionSlot(id, () => { if (abort.signal.aborted && !this.stopping) return Promise.resolve<TurnResult>({ subtype: 'killed', isError: false, costUsd: 0, numTurns: 0, text: '' });
-        if (this.stopping || this._paused || this.draining || this.guarded(runner, account.name)) return Promise.resolve<TurnResult>({ subtype: 'deferred', isError: false, costUsd: 0, numTurns: 0, text: '' }); admitted(); return beforeRun().then(() => agent.runTurn({
+        if (this.stopping || this.guards.paused || this.guards.draining || this.guarded(runner, account.name)) return Promise.resolve<TurnResult>({ subtype: 'deferred', isError: false, costUsd: 0, numTurns: 0, text: '' }); admitted(); return beforeRun().then(() => agent.runTurn({
         itemId: id, phase, cwd, model: model as string,
         transport: modelCapabilities(def).transport, ...runnerTurnSettings(def), ...this.accountTurnOptions(account),
         maxTokens: metered ? undefined : Math.min(budget.tokens - (fm.tokens ?? 0), phase === 'plan' ? fm.op_data?.plan_retry_turns ? 10_000 : this.store.config.budget_tokens_per_plan_turn : Infinity),
@@ -1842,7 +1694,7 @@ export class LiveEngine implements Engine {
     // The quote beside what the turn really cost, so an estimate that drifts from the bill is seen (HH-247's resume was quoted nowhere).
     this.store.journal.end(opId, id, result.isError ? 'failed' : 'ok', { subtype: result.subtype, cost: result.costUsd, parked: result.parked, ...(result.sessionTotalUsd !== undefined ? { session_total: result.sessionTotalUsd } : {}), ...(result.contextTokens ? { context_tokens: result.contextTokens } : {}), ...(result.resumeQuote ? { quoted_reload_usd: result.resumeQuote.cacheWriteUsd, quoted_tokens: result.resumeQuote.contextTokens, quoted_cache_expired: result.resumeQuote.cacheExpired } : {}), ...(replaced !== undefined ? { fresh: true, replaced_session: replaced } : {}) });
     if (started) this.store.journal.append({ type: 'session.replaced', item: id, actor: 'engine', data: { from: replaced, to: result.sessionId, why: path.path === 'fresh' ? path.why : 'fresh' } });
-    this.usageSeen(result.rateLimit, guardKey(runner, account.name));
+    this.guards.usageSeen(result.rateLimit, guardKey(runner, account.name));
     this.emit({ type: 'session.ended', id, subtype: result.subtype });
     for (const f of result.toolFailures ?? []) this.store.mutateItem(id, [{ activity: { actor: 'app', text: `planestro tool ${f.tool} failed before reaching planestro (nothing was recorded): ${f.error}` } }], 'engine');
     // A report lost on its way here is applied now (#167); a turn the engine's stop killed keeps it for the restart, one a person stopped drops it.
@@ -1865,7 +1717,7 @@ export class LiveEngine implements Engine {
     if (result.subtype === 'usage_exhausted') {
       // Remember the outage for every item on this machine, then run the same turn again: with
       // fallback allowed it resolves to the next model in the chain; without, it blocks.
-      const until = this.recordUnavailable(def, result.usageLimit, false, account.name);
+      const until = this.guards.recordUnavailable(def, result.usageLimit, false, account.name);
       if (allowFallback && !this.stopping && fallbackChain(this.store.config, requested).some((m) => m.id !== def.id && !unavailableEntry(unavailableView(this.store.local.model_unavailable, account.name), m.id, new Date(Date.now())))) {
         this.store.mutateItem(id, [{ activity: { actor: 'app', text: `${def.label} is out of usage until ${until}; retrying this ${phase} turn on its fallback` } }], 'engine');
         return this.runTurnFor(id, phase, prompt, extraAllowed, oneShotCommands, { ...opts, final: true, ...(replaced !== undefined ? { fresh: true as const } : {}) });
@@ -2361,7 +2213,7 @@ export class LiveEngine implements Engine {
    * driveHeld reads the verdict.
    */
   private async mergeStep(id: string, { hold = false }: { hold?: boolean } = {}): Promise<void> {
-    if (this._paused || this.draining || this.stopping) return;
+    if (this.guards.paused || this.guards.draining || this.stopping) return;
     let item = this.store.requireItem(id);
     let fm = item.file.frontmatter;
     if (fm.status !== 'IN_REVIEW' || fm.blocked || fm.awaiting || fm.taken_over || fm.op_data?.pending_turn) return;
@@ -4348,23 +4200,13 @@ export class LiveEngine implements Engine {
     return `${id} waits, not needing anyone, and planestro retries once at ${due}`;
   }
 
-  /** Mark a model out of usage on this machine until its reset (or the default window); returns the time, for messages. */
-  recordUnavailable(def: { id: string; label: string }, limit: TurnResult['usageLimit'], manual = false, account?: string): string {
-    const now = new Date(Date.now());
-    const until = unavailableUntil(limit?.resetsAt, now);
-    this.store.updateLocal({ model_unavailable: markUnavailable(this.store.local.model_unavailable, unavailableKey(def.id, account), { until, reason: limit?.message ?? 'usage limit', manual }, now) });
-    this.store.journal.append({ type: 'model.unavailable', actor: manual ? 'user' : 'engine', data: { model: def.id, until: until.toISOString(), reason: limit?.message ?? '', ...(account && account !== DEFAULT_ACCOUNT ? { account } : {}) } });
-    this.note('warn', `${def.label} is out of usage${account && account !== DEFAULT_ACCOUNT ? ` on account ${account}` : ''} until ${until.toISOString()}`);
-    this.armModelResume();
-    return until.toISOString();
-  }
 
   /** `stall`: the runner the stop waits on (#216): it joins that runner's one signal instead of a triage of its own. */
   private block(id: string, reason: string, detail: string, awaiting: 'user' | undefined = 'user', stall?: RunnerStall, card?: Omit<Decision, 'requested_at' | 'reason'>): void {
     // No space left (#161): whatever stopped on it, the cause is the disk, which no instruction fixes. Said as such, never
     // triaged, and the guard reads the disk at once (it pauses everything else rather than let each item fail in turn).
     // Only a generic stop is renamed: one with its own reason (cleanup_dirty keeps its invariant-7 story) keeps it, and the disk is still read.
-    if (/\bENOSPC\b|No space left on device/i.test(detail)) { if (['agent_blocked', 'engine_error', 'turn_error'].includes(reason)) reason = 'disk_full'; void this.checkDisk(true); }
+    if (/\bENOSPC\b|No space left on device/i.test(detail)) { if (['agent_blocked', 'engine_error', 'turn_error'].includes(reason)) reason = 'disk_full'; void this.guards.checkDisk(true); }
     try {
       const cur = this.store.requireItem(id).file.frontmatter;
       // The person who has the item is already looking at it: a stop is said, not raised (dogfood p28: a worker still
@@ -4391,7 +4233,7 @@ export class LiveEngine implements Engine {
 
   // ---- needs-you triage: the orchestrator looks at a stop before the user does ----
   /** On in config, an orchestrator to ask, and automation running (a paused orchestrator is never woken). */
-  private triageAvailable(): boolean { return this.store.config.orchestrator.triage && this.orchestrator.enabled && !this._paused && !this.stopping; }
+  private triageAvailable(): boolean { return this.store.config.orchestrator.triage && this.orchestrator.enabled && !this.guards.paused && !this.stopping; }
 
   /** A stop usually happens inside the turn that is still ending: wake once it has, so every tool finds the item idle. */
   private wakeWhenIdle(id: string, type: string, data?: Record<string, unknown>): void {
@@ -4422,7 +4264,7 @@ export class LiveEngine implements Engine {
       if (!fm.triage) continue;
       // A step is running: the stop's own turn still ending (its wake follows), or a repair, which ends by unblocking or by blocking again.
       if (this.jobs.has(item.id) || this.turns.has(item.id) || this.pendingWakes.has(item.id)) continue;
-      if (!this.triageAvailable()) this.endTriage(item.id, this._paused ? 'automation is paused' : 'the orchestrator is not available');
+      if (!this.triageAvailable()) this.endTriage(item.id, this.guards.paused ? 'automation is paused' : 'the orchestrator is not available');
       else if (Date.now() - Date.parse(fm.triage.started_at) > timeoutMs) this.endTriage(item.id, `triage took longer than ${this.store.config.orchestrator.triage_timeout_min} min (orchestrator.triage_timeout_min)`);
       else if (!this.orchestrator.reviewing(item.id)) this.wakeOrchestrator(fm.triage.reason === 'decision' ? 'decision_answered' : fm.triage.reason === 'question' ? 'worker_question' : `blocked_${fm.triage.reason}`, item.id, { note: 'woken again: the earlier wake was lost (a restart)' });
     }
@@ -4438,7 +4280,7 @@ export class LiveEngine implements Engine {
 
   continueAfterProviderSwitch(id: string): void {
     const fm = this.store.requireItem(id).file.frontmatter;
-    if (this._paused || this.draining || this.stopping || !fm.op_data?.fresh_brief || fm.awaiting || fm.blocked || fm.taken_over || fm.resume_after || fm.op_data?.pending_turn || this.busyWith(id)) return;
+    if (this.guards.paused || this.guards.draining || this.stopping || !fm.op_data?.fresh_brief || fm.awaiting || fm.blocked || fm.taken_over || fm.resume_after || fm.op_data?.pending_turn || this.busyWith(id)) return;
     if (fm.status !== 'IN_PROGRESS' && fm.status !== 'PLAN_IN_PROGRESS') return;
     if (findModel(this.store.config, fm.status === 'PLAN_IN_PROGRESS' ? fm.planner : fm.implementer)?.external) return;
     if ((fm.op_data.fresh_brief as { role?: string }).role === 'plan' && fm.status !== 'PLAN_IN_PROGRESS') return;
@@ -4469,7 +4311,7 @@ export class LiveEngine implements Engine {
   async commitPaths(id: string, paths: string[], message: string, by: 'user' | 'orchestrator' = 'orchestrator'): Promise<string> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
-    if (this._paused || this.draining || this.stopping) return `not now: automation is ${this._paused ? 'paused' : 'stopping'}; nothing was committed`;
+    if (this.guards.paused || this.guards.draining || this.stopping) return `not now: automation is ${this.guards.paused ? 'paused' : 'stopping'}; nothing was committed`;
     if (this.store.derived(item).flavor !== 'worker' || (fm.status !== 'IN_PROGRESS' && fm.status !== 'IN_REVIEW')) return `not possible: ${id} is ${fm.status}; only a worker item in progress or in review has work to commit`;
     if (fm.taken_over) return `not now: the user has taken ${id} over`;
     if (!fm.worktree || !fm.branch) return `not possible: ${id} has no worktree or branch`;
@@ -5201,7 +5043,7 @@ export class LiveEngine implements Engine {
     const fm = item.file.frontmatter;
     const d = this.store.derived(item);
     const epic = fm.kind === 'epic';
-    if (this._paused || this.draining || this.stopping) return `not now: automation is ${this._paused ? 'paused' : 'stopping'}; nothing was synced`;
+    if (this.guards.paused || this.guards.draining || this.stopping) return `not now: automation is ${this.guards.paused ? 'paused' : 'stopping'}; nothing was synced`;
     // A pull request is synced by the merge pipeline (HH-532): a stopped one re-enters it, so a sync conflict goes to the
     // held-rebase continuation from there, instead of a refusal that pointed the orchestrator back at the same loop.
     if (!epic && d.flavor === 'worker' && fm.status === 'IN_REVIEW') {
@@ -5343,7 +5185,7 @@ export class LiveEngine implements Engine {
     if (pick.exhaustedUntil) return `${requested.label} is out of usage until ${pick.exhaustedUntil}`;
     const def = pick.def;
     const runner = def.runner ?? 'claude';
-    if (this._paused || this.guarded(runner, account.name)) return `${runner} is paused`;
+    if (this.guards.paused || this.guarded(runner, account.name)) return `${runner} is paused`;
     const agent = this.ports.agents[runner];
     if (!agent) return `${def.label} needs the ${runner} runner, which is not available here`;
     const model = runner === 'claude' ? def.claude_model : def[`${runner}_model`];
@@ -5389,7 +5231,7 @@ export class LiveEngine implements Engine {
     try {
       result = await this.withRunnerSlot(runner, () => this.withSessionSlot(id, async () => {
         // A pause may arrive while this turn is waiting for another runner to release its slot.
-        if (this._paused || this.draining || this.stopping || abort.signal.aborted || this.guarded(runner, account.name))
+        if (this.guards.paused || this.guards.draining || this.stopping || abort.signal.aborted || this.guarded(runner, account.name))
           return { subtype: 'killed', isError: false, costUsd: 0, numTurns: 0, text: '' };
         return agent.runTurn({
         itemId: id, phase: 'fix', cwd, model: model as string, transport: modelCapabilities(def).transport, ...runnerTurnSettings(def), ...this.accountTurnOptions(account), maxTokens: remainingTokens, permissionMode: 'acceptEdits', prompt,
@@ -5413,7 +5255,7 @@ export class LiveEngine implements Engine {
     this.recordUsage(id, def, model ?? def.label, 'worker', 'conflict_session', result, { stage: 'conflict', resumed: false });
     const after = this.store.requireItem(id).file.frontmatter;
     this.store.mutateItem(id, [{ set: { cost_usd: Math.round(((after.cost_usd ?? 0) + result.costUsd) * 10000) / 10000, turns: (after.turns ?? 0) + result.numTurns, tokens: (after.tokens ?? 0) + (result.tokens ?? 0), agent_turns: (after.agent_turns ?? 0) + (result.numTurns > 0 ? 1 : 0) } }, { unset: ['op', 'op_started_at'] }], 'engine');
-    this.usageSeen(result.rateLimit, guardKey(runner, account.name));
+    this.guards.usageSeen(result.rateLimit, guardKey(runner, account.name));
     const spendLabel = tokenAccounting ? `${(result.tokens ?? 0).toLocaleString()} tokens; dollar cost not reported` : `$${result.costUsd.toFixed(2)}`;
     const fail = async (why: string): Promise<string> => {
       await this.ports.git.abortInProgress(cwd).catch(() => undefined);
@@ -5458,7 +5300,7 @@ export class LiveEngine implements Engine {
     if (fm.kind !== 'epic') return `not possible: ${id} is not an epic (a worker item's session resolves its own conflicts)`;
     if (!['IN_PROGRESS', 'IN_REVIEW'].includes(fm.status) || !fm.branch) return `not possible: ${id} is ${fm.status}; only an open epic's branch is merged with its base`;
     if (!(this.store.config.epics.conflict_budget_usd > 0)) return 'not possible: conflict sessions are off (epics.conflict_budget_usd is 0)';
-    if (this._paused || this.draining || this.stopping) return 'not now: automation is paused';
+    if (this.guards.paused || this.guards.draining || this.stopping) return 'not now: automation is paused';
     const busy = this.busyWith(id); if (busy) return `not now: ${busy}`;
     if (fm.op) return `not now: ${id} is ${fm.op.replace(/_/g, ' ')}`;
     if (fm.blocked && fm.blocked_reason !== 'sync_conflict') return `not possible: ${id} is blocked for ${fm.blocked_reason}, not a sync conflict`;
