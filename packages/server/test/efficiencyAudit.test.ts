@@ -129,15 +129,30 @@ describe('the audit digest (#348)', () => {
     const e = (ts: string, type: string, data: Record<string, unknown>, item?: string) => ({ ts, type, actor: 'engine', ...(item ? { item } : {}), data });
     const text = auditDigest([
       e('2026-10-14T09:00:00-07:00', USAGE_TURN, { provider: 'claude', model: 'fable', role: 'planner', op: 'planning_turn', usd: 97, subtype: 'success', input: 10, cache_read: 90, cache_write: 0, output: 5 }, 'HH-2'),
-      e('2026-10-14T10:00:00-07:00', USAGE_TURN, { provider: 'claude', model: 'opus', role: 'orchestrator', op: 'orchestrator_wake', usd: 2, subtype: 'success' }),
+      e('2026-10-14T10:00:00-07:00', USAGE_TURN, { provider: 'claude', model: 'opus', role: 'orchestrator', op: 'orchestrator_wake', usd: 2, subtype: 'success', stage: 'orchestrator' }),
       e('2026-10-14T11:00:00-07:00', 'permission.parked', { park: 'p', shape: 'godot --headless' }, 'HH-2'),
     ], { today: '2026-10-14', days: 7, previous: { at: '2026-10-14T03:30:00-07:00', key: 'fable-planner', what: 'Fable plans cost most', acted: false } });
     expect(text).toContain('## Totals, 2026-10-08 to 2026-10-14\n$99.00 over 2 turns and wakes; cache hits 90%');
     expect(text).toContain('- planner: $97.00, 1 turns');
     expect(text).toContain('- planning: $97.00, 1 turns');
-    expect(text).toContain('- orchestrator wakes about no item: $2.00');
+    expect(text).toContain('- orchestrator wakes about no item: $2.00, 1 wakes');
     expect(text).toContain('- HH-2: $97.00 (planning $97.00); 1 turns, 0 wakes, 0 fresh, 1 parks');
     expect(text).toContain('- `godot --headless`: 1 parks on 1 items');
     expect(text).toContain('2026-10-14 [fable-planner] Fable plans cost most — not acted on yet');
+  });
+
+  it('never calls a wake journaled before its items were recorded "about no item" (#416)', () => {
+    const e = (ts: string, data: Record<string, unknown>) => ({ ts, type: USAGE_TURN, actor: 'orchestrator', data: { provider: 'claude', model: 'opus', role: 'orchestrator', subtype: 'success', ...data } });
+    const text = auditDigest([
+      e('2026-10-12T10:00:00-07:00', { op: 'orchestrator_wake', usd: 75 }),
+      e('2026-10-14T10:00:00-07:00', { op: 'orchestrator_wake', usd: 4, stage: 'orchestrator', items: ['HH-2'] }),
+      e('2026-10-14T11:00:00-07:00', { op: 'orchestrator_wake', usd: 1, stage: 'orchestrator' }),
+      e('2026-10-14T03:30:00-07:00', { op: 'efficiency_audit', usd: 0.3, stage: 'orchestrator' }),
+    ], { today: '2026-10-14', days: 7 });
+    expect(text).toContain('- orchestrator: $4.00, 1 turns');
+    expect(text).toContain('- orchestrator wakes about no item: $1.00, 1 wakes');
+    expect(text).toContain('- orchestrator wakes journaled before their items were recorded (#346; not "no item"): $75.00, 1 wakes');
+    expect(text).toContain('- the efficiency audit itself: $0.30, 1 runs');
+    expect(text).not.toContain('about no item: $76');
   });
 });

@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DataStore } from '../src/store/DataStore.ts';
-import { LiveEngine } from '../src/engine/LiveEngine.ts';
+import { LiveEngine, plannedWorktreeName } from '../src/engine/LiveEngine.ts';
 import { FakeWorld, DryRunGitPort, DryRunGhPort, DryRunProcPort, DryRunClaudePort } from '../src/engine/dryrun-ports.ts';
 import type { Ports, TurnOptions, TurnResult } from '../src/engine/ports.ts';
 import type { ServerEvent } from '@planestro/shared';
@@ -919,6 +919,28 @@ describe('reconciler (chaos: crash markers left on disk)', () => {
     world.worktrees.set(second, { path: second, head: world.sha(), branch: 'tp/98-other' });
     await engine.reconcile('manual');
     expect(wakes.filter((w) => w === 'orphans_found')).toHaveLength(2);   // gone and back, or fewer: nothing new to tell
+    // #416: another tool's worktree in the shared root (Claude Code's agent-*, a person's perf-*) is listed, never woken on
+    for (const name of ['agent-a4c58be5', 'perf-audit', 'tp-feature']) {
+      const p = join(store.worktreesRoot(), name);
+      world.worktrees.set(p, { path: p, head: world.sha(), branch: `worktree-${name}` });
+      expect((await engine.reconcile('manual')).join('\n')).toContain(name);
+    }
+    expect(wakes.filter((w) => w === 'orphans_found')).toHaveLength(2);
+    // an epic's leftover merge worktree is planestro's own: it still wakes
+    const merge = join(store.worktreesRoot(), `merge-${store.config.project.id_prefix.toLowerCase()}-77`);
+    world.worktrees.set(merge, { path: merge, head: world.sha(), branch: 'feature/x' });
+    await engine.reconcile('manual');
+    expect(wakes.filter((w) => w === 'orphans_found')).toHaveLength(3);
+  });
+});
+
+describe('plannedWorktreeName (#416)', () => {
+  it('matches the folders dir_pattern can make, and nothing else in the shared root', () => {
+    const re = plannedWorktreeName('{{prefix_lower}}-{{number}}-{{slug}}', 'hh');
+    expect(['hh-532-forge-golem', 'hh-1-x'].every((n) => re.test(n))).toBe(true);
+    expect(['agent-a4c58be5', 'perf-audit', 'hh-forge', 'xhh-5-a', 'lm-5-a'].some((n) => re.test(n))).toBe(false);
+    expect(plannedWorktreeName('wt/{{prefix_lower}}.{{number}}', 'a.b').test('wt/a.b.12')).toBe(true);
+    expect(plannedWorktreeName('wt/{{prefix_lower}}.{{number}}', 'a.b').test('wt/aXb.12')).toBe(false);
   });
 });
 

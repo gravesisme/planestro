@@ -166,6 +166,19 @@ type HeldRebase = { base: string; base_sha: string; before: string; expected: st
 const MAX_REBASE_ROUNDS = 5;
 
 /** A sync that failed, in words (#212): the files it conflicted in, or what git would not overwrite to start it. */
+/**
+ * A folder name planestro's `worktrees.dir_pattern` could have made (#416): the shared `.claude/worktrees` root also holds
+ * other tools' worktrees (Claude Code's agent-*, a person's perf-*), which no item can own, so they are listed, never woken on.
+ */
+export function plannedWorktreeName(pattern: string, prefixLower: string): RegExp {
+  const parts = pattern.split(/(\{\{\s*\w+\s*\}\})/).map((p) => {
+    const ph = /^\{\{\s*(\w+)\s*\}\}$/.exec(p)?.[1];
+    if (!ph) return p.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+    return ph === 'prefix_lower' ? prefixLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : ph === 'number' ? '\\d+' : '.*';
+  });
+  return new RegExp(`^${parts.join('')}$`);
+}
+
 function syncFailed(r: RebaseResult): string {
   if (!r.refused) return `conflicted in ${r.conflicts.join(', ')}`;
   const { paths, message } = r.refused;
@@ -3504,12 +3517,17 @@ export class LiveEngine implements Engine {
       corrections.push(`orphan worktrees: ${orphans.map((o) => o.path).join(', ')}`);
       // Wake the orchestrator only for an orphan it has not been told about: a wake per reconcile pass would re-ask the same
       // question every five minutes, and one per change re-asked about LM's four July worktrees whenever a fifth came and went.
+      // Only a folder planestro's dir_pattern could have made is woken on: other tools share the root (#416, HH's agent-*).
       const key = orphans.map((o) => o.path).sort().join('|');
       const last = this.store.journal.read({ type: 'reconcile.orphans_reported', limit: 1 })[0];
       const told = new Set(String(last?.data?.key ?? '').split('|').filter(Boolean));
-      if (orphans.some((o) => !told.has(o.path))) {
+      const ours = plannedWorktreeName(this.store.config.worktrees.dir_pattern, this.store.config.project.id_prefix.toLowerCase());
+      const prefix = this.store.config.project.id_prefix.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const epicMerge = new RegExp(`^merge-${prefix}-\\d+$`); // an epic's own merge worktree (mergeEpic) is planestro's too
+      const planned = orphans.filter((o) => ours.test(relative(root, o.path)) || epicMerge.test(relative(root, o.path)));
+      if (planned.some((o) => !told.has(o.path))) {
         this.store.journal.append({ type: 'reconcile.orphans_reported', actor: 'engine', data: { key, count: orphans.length } });
-        this.wakeOrchestrator('orphans_found', undefined, { worktrees: orphans.map((o) => `${o.path} (${o.branch ?? o.head})`).join('\n') });
+        this.wakeOrchestrator('orphans_found', undefined, { worktrees: planned.map((o) => `${o.path} (${o.branch ?? o.head})`).join('\n') });
       }
     }
     this.store.journal.append({ type: 'reconcile.done', actor: 'engine', data: { source, corrections } });
