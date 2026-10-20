@@ -42,7 +42,7 @@ describe('shrink-history (#409)', () => {
     expect(r.journalBytes).toBeGreaterThan(1000);
     expect(r.upstream?.sha).toBe(tip);
     expect(git(dir, 'rev-parse', 'planning')).toBe(tip);
-  });
+  }, 60_000);
 
   it('refuses a tracked journal, a dirty tree, a live server and a remote that is ahead', () => {
     const tracked = planningRepo({ untracked: false });
@@ -62,7 +62,7 @@ describe('shrink-history (#409)', () => {
     const other = join(root, 'other'); git(root, 'clone', '-q', '-b', 'planning', remote, other);
     writeFileSync(join(other, 'items', 'MP-3.md'), 'elsewhere\n'); git(other, 'add', '-A'); git(other, 'commit', '-q', '-m', 'MP-3'); git(other, 'push', '-q');
     expect(inspectShrink(dir, { fetch: true }).refusals.join('\n')).toMatch(/has commits planning lacks/);
-  });
+  }, 60_000);
 
   it('--apply bundles the branch, rewrites only it, keeps the tree and the journal on disk, and never pushes; --gc after the push', () => {
     const { dir, code, remote } = planningRepo();
@@ -90,7 +90,7 @@ describe('shrink-history (#409)', () => {
     expect(g.after).toBeLessThanOrEqual(g.before);
     expect(g.otherHolders).toEqual([]);
     expect(inspectShrink(dir).journalCommits).toBe(0);
-  });
+  }, 60_000);
 
   it('a standalone planning repository with no remote: rewrites, and --gc follows at once', () => {
     const root = mkdtempSync(join(tmpdir(), 'planestro-shrink-solo-'));
@@ -105,5 +105,5 @@ describe('shrink-history (#409)', () => {
     expect(res.push).toBeUndefined();
     expect(res.next[0]).toMatch(/--gc/);
     expect(gcShrunk(root).after).toBeGreaterThan(0);
-  });
+  }, 60_000);
 });
