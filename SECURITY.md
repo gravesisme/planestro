@@ -6,7 +6,7 @@ Use GitHub's private reporting: the repository's **Security** tab → **Report a
 vulnerability**. Please don't open a public issue for something exploitable. This is a
 personal project maintained by one person, so expect an answer in days, not hours.
 
-Only the latest `main` is supported.
+Only the latest release is supported: the newest `vX.Y.Z` tag, which is what `main` holds.
 
 ## The trust model: access to the machine is the access control
 

@@ -12,7 +12,7 @@
 - None of those for the sample: it runs on in-memory fakes.
 
 ```sh
-git clone https://github.com/gravesisme/planestro && cd planestro
+git clone --branch main https://github.com/gravesisme/planestro && cd planestro
 npm install && npm run build
 ```
 
