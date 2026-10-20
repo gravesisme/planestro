@@ -71,8 +71,15 @@ describe('shrink-history (#409)', () => {
     const tree = git(dir, 'rev-parse', 'HEAD^{tree}');
     const journal = readFileSync(join(dir, 'journal', '2026-10.ndjson'), 'utf8');
 
-    const res = applyShrink(dir, { tool: 'filter-branch', now: () => new Date('2026-10-20T12:00:00Z') });
+    const home = mkdtempSync(join(tmpdir(), 'planestro-home-'));
+    const prevHome = process.env.PLANESTRO_HOME;
+    process.env.PLANESTRO_HOME = home;
+    let res: ReturnType<typeof applyShrink>;
+    try { res = applyShrink(dir, { tool: 'filter-branch', now: () => new Date('2026-10-20T12:00:00Z') }); }
+    finally { if (prevHome === undefined) delete process.env.PLANESTRO_HOME; else process.env.PLANESTRO_HOME = prevHome; }
     expect(existsSync(res.bundle)).toBe(true);
+    expect(res.bundle.startsWith(join(home, 'backups') + '/')).toBe(true); // never in the code repository's working tree
+    expect(git(code, 'status', '--porcelain')).toBe('');
     expect(git(dir, 'bundle', 'list-heads', res.bundle)).toContain(res.before.tip);
     expect(git(dir, 'rev-list', '--count', 'planning', '--', 'journal')).toBe('0');
     expect(res.after.commits).toBe(3); // init, MP-1: edit, stop tracking: the four checkpoint-only commits are gone
@@ -92,6 +99,27 @@ describe('shrink-history (#409)', () => {
     expect(inspectShrink(dir).journalCommits).toBe(0);
   }, 60_000);
 
+  // CI has no git filter-repo; run where it is installed (brew install git-filter-repo).
+  const hasFilterRepo = (() => { try { execSync('git filter-repo --version', { stdio: 'ignore' }); return true; } catch { return false; } })();
+  it.skipIf(!hasFilterRepo)('with git filter-repo: rewrites only the branch, keeps the remote and the journal on disk', () => {
+    const { dir, code, remote } = planningRepo();
+    const mainBefore = git(code, 'rev-parse', 'main');
+    const remoteBefore = git(remote, 'rev-parse', 'planning');
+    const tree = git(dir, 'rev-parse', 'HEAD^{tree}');
+    const journal = readFileSync(join(dir, 'journal', '2026-10.ndjson'), 'utf8');
+    const res = applyShrink(dir, { tool: 'filter-repo', backupDir: mkdtempSync(join(tmpdir(), 'planestro-bundle-')) });
+    expect(res.after.commits).toBe(3);
+    expect(git(dir, 'rev-list', '--count', 'planning', '--', 'journal')).toBe('0');
+    expect(git(dir, 'rev-parse', 'HEAD^{tree}')).toBe(tree);
+    expect(readFileSync(join(dir, 'journal', '2026-10.ndjson'), 'utf8')).toBe(journal);
+    expect(git(code, 'rev-parse', 'main')).toBe(mainBefore);
+    expect(git(code, 'remote')).toBe('origin'); // filter-repo drops origin only on a fresh clone; --refs keeps it
+    expect(git(remote, 'rev-parse', 'planning')).toBe(remoteBefore);
+    execSync(res.push!, { stdio: 'ignore' });
+    expect(gcShrunk(dir).otherHolders).toEqual([]);
+    expect(inspectShrink(dir).journalCommits).toBe(0);
+  }, 60_000);
+
   it('a standalone planning repository with no remote: rewrites, and --gc follows at once', () => {
     const root = mkdtempSync(join(tmpdir(), 'planestro-shrink-solo-'));
     git(root, 'init', '-q', '-b', 'main');
@@ -101,7 +129,8 @@ describe('shrink-history (#409)', () => {
     const r = inspectShrink(root, { tool: 'filter-branch' });
     expect(r.shared).toBe(false);
     expect(r.upstream).toBeUndefined();
-    const res = applyShrink(root, { tool: 'filter-branch', backupDir: mkdtempSync(join(tmpdir(), 'planestro-bundle-')) });
+    const res = applyShrink(root, { tool: 'filter-branch', backupDir: join(mkdtempSync(join(tmpdir(), 'planestro-bundle-')), 'not', 'yet') });
+    expect(existsSync(res.bundle)).toBe(true); // the backup dir is created
     expect(res.push).toBeUndefined();
     expect(res.next[0]).toMatch(/--gc/);
     expect(gcShrunk(root).after).toBeGreaterThan(0);

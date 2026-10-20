@@ -137,7 +137,7 @@ planestro shrink-history ../myproject-planning --gc           # after the push: 
   the branch lacks. It fetches the upstream first, so it knows that tip.
 - **Only the data dir's branch is rewritten.** A planning branch checked out as a worktree of the code repository
   shares the code's object store; no other branch, tag or worktree is touched.
-- **The backup comes first:** a `git bundle` of the branch beside the data dir (`--backup-dir` to choose), verified to
+- **The backup comes first:** a `git bundle` of the branch in `~/.planestro/backups/` (`--backup-dir` to choose; created if missing), verified to
   hold the branch tip. Then the rewrite: `git filter-repo` when it is installed, else `git filter-branch`, which is
   much slower on a long history (thousands of hourly checkpoints can take an hour: `brew install git-filter-repo` or
   `pip install git-filter-repo` first). Commits that only touched the journal, the hourly checkpoints, go empty and
