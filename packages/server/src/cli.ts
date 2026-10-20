@@ -20,6 +20,11 @@ const USAGE = `planestro ${TOOL_VERSION}
                                     git and its identity, the code repo's HEAD, remote and base branch, gh sign-in, the
                                     claude / codex CLIs the models use and their sign-in, named accounts, the planning repo,
                                     the port, a worktree setup hook. Each problem with its repair; --offline skips the network
+  planestro shrink-history [data_dir] [--apply | --gc] [--backup-dir D]
+                                    take journal/ out of a planning repository's history (#409), for one that tracked it before
+                                    #400. A dry run by default: what it would rewrite and the sizes. --apply (planestro stopped,
+                                    tree clean) bundles the branch, rewrites only it and prints the force push for you to run;
+                                    --gc afterwards reclaims the space. Never pushes
   planestro migrate [data_dir]      apply schema migrations (${SCHEMA_VERSION} is current)
   planestro serve [data_dir] [--port N] [--host H] [--mock] [--watch] [--open]
                                     run the web UI + engine (default host 127.0.0.1, or 0.0.0.0 with lan_access in planestro.local.yml)
@@ -61,7 +66,7 @@ const { values, positionals } = parseArgs({
     repo: { type: 'string' }, name: { type: 'string' }, prefix: { type: 'string' }, 'default-branch': { type: 'string' }, provider: { type: 'string' },
     'release-branch': { type: 'string' }, github: { type: 'string' }, layout: { type: 'string' }, 'no-commit': { type: 'boolean' },
     commit: { type: 'boolean' }, 'copy-small': { type: 'boolean' }, data: { type: 'string' },
-    help: { type: 'boolean', short: 'h' }, port: { type: 'string' }, host: { type: 'string' }, mock: { type: 'boolean' }, watch: { type: 'boolean' }, open: { type: 'boolean' }, reset: { type: 'boolean' }, 'no-serve': { type: 'boolean' }, all: { type: 'boolean' }, json: { type: 'boolean' }, min: { type: 'string' }, label: { type: 'string' }, closes: { type: 'boolean' }, preflight: { type: 'boolean' }, offline: { type: 'boolean' },
+    help: { type: 'boolean', short: 'h' }, port: { type: 'string' }, host: { type: 'string' }, mock: { type: 'boolean' }, watch: { type: 'boolean' }, open: { type: 'boolean' }, reset: { type: 'boolean' }, 'no-serve': { type: 'boolean' }, all: { type: 'boolean' }, json: { type: 'boolean' }, min: { type: 'string' }, label: { type: 'string' }, closes: { type: 'boolean' }, preflight: { type: 'boolean' }, offline: { type: 'boolean' }, apply: { type: 'boolean' }, gc: { type: 'boolean' }, 'backup-dir': { type: 'string' },
   },
 });
 const [cmd, arg] = positionals;
@@ -116,6 +121,27 @@ try {
       for (const line of accessReport(store.local, store.config.notifications, values.port ? Number(values.port) : 4300)) log(line);
       store.close();
       if (store.invalid.length) process.exit(1);
+      break;
+    }
+    case 'shrink-history': {
+      const dir = locateDataDir(arg);
+      const sh = await import('./shrinkHistory.ts');
+      if (values.apply && values.gc) throw new Error('--apply and --gc are two steps: --apply, push, then --gc');
+      if (values.gc) {
+        const g = sh.gcShrunk(dir, { log });
+        log(`object store: ${sh.human(g.before)} → ${sh.human(g.after)}`);
+        if (g.otherHolders.length) log(`still holding the old journal history (delete them to reclaim the rest): ${g.otherHolders.join(', ')}`);
+        break;
+      }
+      if (!values.apply) {
+        const r = sh.inspectShrink(dir, { fetch: true });
+        for (const line of sh.formatInspect(r)) log(line);
+        if (r.refusals.length) process.exit(1);
+        break;
+      }
+      const res = sh.applyShrink(dir, { backupDir: values['backup-dir'], log });
+      log(`done: ${res.before.commits} → ${res.after.commits} commits on the branch (${res.before.tip.slice(0, 12)} → ${res.after.tip.slice(0, 12)}). Nothing was pushed.`);
+      for (const line of res.next) log(line);
       break;
     }
     case 'migrate': {
