@@ -10,9 +10,9 @@ Only the latest `main` is supported.
 
 ## The trust model: access to the machine is the access control
 
-planestro is a local tool for one developer's own workstation. It has no accounts, no
-login and no access token. A pairing token for a server bound beyond loopback is
-planned (#403); until then, binding beyond loopback is yours to protect. Whoever can use the machine as you can
+planestro is a local tool for one developer's own workstation. It has no accounts and
+no login. On this machine it needs no token; another device must be paired first (below).
+Whoever can use the machine as you can
 drive planestro, just as they could already run `git`, `gh`, `claude` or `codex` in
 your terminal. Protect it the way you protect the machine: disk encryption, a screen
 lock, and no other people's accounts on it.
@@ -51,12 +51,18 @@ in it pointing anywhere else is shown as a link, never fetched.
 
 What's left is everything that reaches the port *as this machine*: other processes and
 other user accounts on it. **`--host 0.0.0.0` or `lan_access` moves the boundary
-outward:** anyone who can reach the port is treated as you, with no login to stop them.
-Any bind other than loopback refuses remote addresses outside loopback, private
-(RFC 1918), link-local, Tailscale's 100.64.0.0/10 and IPv6 ULA ranges, so a port-forward
-gets a 403. It filters addresses; it does not identify people. Only use it on a network
-where every device is yours, such as a private overlay like Tailscale. Names you reach it
-by go in `allowed_hosts` in `planestro.local.yml`.
+outward**, behind two locks. Any bind other than loopback refuses remote addresses outside
+loopback, private (RFC 1918), link-local, Tailscale's 100.64.0.0/10 and IPv6 ULA ranges,
+so a port-forward gets a 403. And every request not from this machine must carry a
+**paired device's token** (#403): `planestro pair` on this machine mints a one-time code
+(10 minutes; ten wrong guesses void it), the device trades it at `/pair` for a random
+256-bit token kept in an HttpOnly, SameSite=Strict cookie, or sent as `Authorization:
+Bearer` by an MCP client. Without one the API, `/ws`, `/mcp` and attachments answer 401.
+Only each token's sha256 is stored (in `planestro.local.yml`), and **Revoke** in
+Settings → Access ends a device at its next request. Codes are minted only from this
+machine. Pairing runs over plain HTTP, so the token is as private as the network it
+crosses: use it at home or over a VPN like Tailscale, not on shared Wi-Fi. A paired device
+is treated as you. Names you reach it by go in `allowed_hosts` in `planestro.local.yml`.
 
 From another device you can answer, approve and steer, but not change what runs on this
 machine: settings that are commands or programs (setup hooks, the local check, generated

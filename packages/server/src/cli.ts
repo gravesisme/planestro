@@ -49,6 +49,9 @@ const USAGE = `planestro ${TOOL_VERSION}
                                     or every open issue with --label (default issues.import_label). One already imported is
                                     skipped. --closes: their PRs say "Closes #N". Goes through the running server when there is one
                                     (one started with serve rather than start: name its --port)
+  planestro pair [data_dir] [--port N]
+                                    a one-time code (10 min) that pairs another device with the running server (#403): enter
+                                    it at /pair there. Requests from anywhere but this machine need a paired device's token
   planestro notify <title> <message>
                                     show a desktop notification (osascript on a Mac, notify-send on Linux); for notifications.* commands,
                                     which also get PLANESTRO_TITLE and PLANESTRO_MESSAGE
@@ -282,6 +285,19 @@ try {
       for (const x of r.imported) log(`imported #${x.issue} as ${x.item}: ${x.title}`);
       for (const x of r.skipped) log(`skipped  #${x.issue}: ${x.reason}`);
       log(`${r.imported.length} imported from ${r.repo}, ${r.skipped.length} skipped${r.imported.length ? ' (not submitted: queue them when you want them worked on)' : ''}`);
+      break;
+    }
+    case 'pair': {
+      // The code is minted by the running server, from this machine only (#403): it lives in that server's memory.
+      const dir = locateDataDir(arg);
+      const { liveInstance } = await import('./instances.ts');
+      const server = liveInstance(dir)?.url ?? (values.port ? `http://127.0.0.1:${values.port}` : undefined);
+      if (!server) throw new Error(`no running server for ${dir}: start it first (one run with serve is named by --port)`);
+      const res = await fetch(`${server}/api/pairing/code`, { method: 'POST', headers: { 'content-type': 'application/json' } });
+      const json = await res.json() as { code?: string; expires_at?: string; error?: string };
+      if (!res.ok || !json.code) throw new Error(json.error ?? `the server answered ${res.status}`);
+      log(`pairing code: ${json.code} (once, until ${new Date(json.expires_at!).toLocaleTimeString()})`);
+      log(`on the device, open http://<this machine>:${new URL(server).port || 80}/pair and enter it; revoke a device in Settings → Access → Paired devices`);
       break;
     }
     case 'notify': {

@@ -123,7 +123,7 @@ Network, model-entitlement and CI checks stay post-1.0.
 **D6 — Authentication: decided.** Planestro uses the `claude` and `codex` logins
 already on the machine. Model API keys are dropped. It is a local developer
 workstation tool, so access to the machine is the access control. There is no
-Planestro login or access token, and none is planned. SECURITY.md has been
+Planestro login. (Revised: a pairing token for devices other than this machine shipped in #403.) SECURITY.md has been
 rewritten for this model (P3), and the key paths are removed (P9). Both are done
 on this branch:
 
@@ -628,9 +628,10 @@ investment: a reliable, short path to a reviewed change is.
   is not proof of trust. Explicit `--host` binding and `lan_access` filtering
   are separate controls. Do not promise that all forwarding/proxy setups are
   blocked. No account system is required for a local-only first release.
-- **Reconcile the network roadmap.** *Resolved (second review, D6):* no access
-  token is planned. Machine access is the access control, and LAN/phone use is
-  documented as extending it to a network where every device is yours.
+- **Reconcile the network roadmap.** *Resolved (#403):* machine access is the access
+  control on this machine; any other device must be paired (`planestro pair`, a one-time
+  code traded at `/pair` for a revocable token), and LAN/phone use is documented as
+  plain HTTP on a network you trust.
 - **Document provider permission boundaries accurately.** Claude policies are
   guardrails, not OS isolation. Codex has separate exec/app-server capabilities;
   app-server can park a native command approval and use an exact one-time grant.

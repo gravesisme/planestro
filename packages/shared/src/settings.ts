@@ -35,7 +35,7 @@ export type SettingsTabId = (typeof SETTINGS_TABS)[number]['id'];
  * can plan); `models`, `categories` and `sections` are whole editors of their own; `secret` shows
  * set / not set and takes a replacement, never the value.
  */
-export type SettingControl = 'number' | 'toggle' | 'text' | 'select' | 'model' | 'list' | 'record' | 'commands' | 'mcp' | 'categories' | 'models' | 'sections';
+export type SettingControl = 'number' | 'toggle' | 'text' | 'select' | 'model' | 'list' | 'record' | 'commands' | 'mcp' | 'categories' | 'models' | 'sections' | 'devices';
 export type SettingFile = 'config' | 'local';
 
 export interface SettingDef {
@@ -263,10 +263,12 @@ export const SETTINGS: readonly SettingDef[] = [
   L({ key: 'claude_bin', runs: true, group: 'Programs', label: 'Claude Code', summary: 'Which claude the sessions run. Empty: the newer of the one on PATH and the one the SDK bundles.', control: 'text', mono: true, placeholder: 'claude (on PATH)', restart: true,
     detail: ['A path uses that executable; bundled forces the SDK\'s own. A new model can need a newer CLI; startup logs which one is used.'] }),
   L({ key: 'codex_bin', runs: true, group: 'Programs', label: 'Codex', summary: 'Only used by models with runner codex.', control: 'text', mono: true, placeholder: 'codex (on PATH)', restart: true }),
-  L({ key: 'lan_access', group: 'Access', label: 'Local network access', summary: 'Anyone on the same network can use planestro while this is on. Fine at home, not on shared Wi-Fi.', control: 'toggle', restart: true,
-    detail: ['The server listens on every interface (unless --host says otherwise) so a phone on the same Wi-Fi can open the links in alerts: http://<this machine>.local:<port>. There is no login, so only the local network is answered: a request from any other address (a port-forward, a public address) gets a 403.', 'Test the whole chain with the Test button under Notifications → When something needs you, then tap the alert on the phone.'] }),
+  L({ key: 'lan_access', group: 'Access', label: 'Local network access', summary: 'A paired phone or laptop on the same network can use planestro while this is on.', control: 'toggle', restart: true,
+    detail: ['The server listens on every interface (unless --host says otherwise) so a phone on the same Wi-Fi can open the links in alerts: http://<this machine>.local:<port>. Only the local network is answered: a request from any other address (a port-forward, a public address) gets a 403.', 'A device other than this machine must be paired first (Paired devices, below): without its token every request gets a 401 and a page load goes to /pair.', 'Test the whole chain with the Test button under Notifications → When something needs you, then tap the alert on the phone.'] }),
   L({ key: 'allowed_hosts', group: 'Access', label: 'Reachable as', summary: 'Extra names for this machine, e.g. a Tailscale name for your phone.', control: 'list', mono: true, placeholder: 'macbook.tailnet.ts.net', restart: true,
     detail: ['The server answers only requests addressed to localhost, 127.0.0.1, the host it is bound to and these; anything else, and any request from another website, gets a 403.'] }),
+  L({ key: 'paired_devices', group: 'Access', label: 'Paired devices', summary: 'Phones and laptops that may use planestro from another machine. This machine never needs pairing.', control: 'devices',
+    detail: ['Pair a device shows a one-time code (also: planestro pair in a terminal here), good for 10 minutes; enter it at http://<this machine>:<port>/pair on the device. Its browser keeps a token in a cookie, and the page shows the token once for an MCP client (Authorization: Bearer).', 'Revoke removes the device: its next request gets a 401. Only a hash of each token is stored, in planestro.local.yml.'] }),
   L({ key: 'mcp_servers', group: 'Access', label: 'MCP servers', summary: 'Services a model may name in its MCP list, with their keys. Add one, import yours from Claude Code or Codex, test it, turn it off.', control: 'mcp', covers: ['mcp_import_skip'],
     detail: ['A stdio server (command, args, env) or an HTTP one (url, headers). Env values and headers are keys: stored only in planestro.local.yml, which is gitignored, and never shown back; leave one empty to keep it.', 'A server reaches a worker only through a model that lists it (Models → Edit). One turned off stops that model\'s items as mcp_missing instead of running them without their tools. Removing an imported one keeps it from being imported again.'] }),
   L({ key: 'engine.mode', group: 'Engine', label: 'Engine mode on this machine', summary: 'Overrides Project → Live or dry-run here only.', control: 'select', restart: true,
@@ -334,7 +336,7 @@ export function getPath(obj: unknown, key: string): unknown {
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 /** Whether the current value differs from what planestro would use unset (never for required keys or the whole-list editors). */
 export function settingChanged(def: SettingDef, value: unknown): boolean {
-  if (def.control === 'models' || def.control === 'categories' || def.control === 'mcp') return false;
+  if (def.control === 'models' || def.control === 'categories' || def.control === 'mcp' || def.control === 'devices') return false;
   const d = settingDefault(def.file, def.key);
   if (!d) return false;
   if ('none' in d) return value !== undefined && value !== '' && !(Array.isArray(value) && !value.length);

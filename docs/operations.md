@@ -11,8 +11,9 @@ review: all of it is in the item file.
 ## From a phone
 
 `serve --host 0.0.0.0` makes the UI reachable on your network at `http://<this machine>.local:4300`
-(or its LAN address). **There is no authentication**: anyone on that network can approve plans and
-start agents, so only do it on a network you trust.
+(or its LAN address). The phone must be paired first (#403): run `planestro pair` here and enter the code at
+`/pair` on the phone; an unpaired device gets a 401. A paired device can approve plans and start agents, and
+pairing is plain HTTP, so only do it on a network you trust (home Wi-Fi, a VPN).
 
 The API's JSON is gzipped for any client that accepts it (the board's first load is several
 megabytes on a large backlog: 18.9 MB down to 4.3 MB on one of 499 items), so a phone on slow Wi-Fi

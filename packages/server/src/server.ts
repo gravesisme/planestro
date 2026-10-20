@@ -20,6 +20,7 @@ import { VALIDATED_CLAUDE_VERSION, VALIDATED_CODEX_VERSION } from './compat.ts';
 import { TOOL_VERSION } from './config.ts';
 import { allowedHosts, bindHost, isLoopbackBind, linkRefusal, requestGuard } from './guard.ts';
 import { PortInUseError } from './exitCodes.ts';
+import { Pairing, pairingGuard, pairingRoutes } from './pairing.ts';
 import type { HandedPort } from './portHandoff.ts';
 
 export interface ServeOptions { dataDir: string; port?: number; host?: string; mock?: boolean; engineFactory?: (store: DataStore, emit: (e: ServerEvent) => void) => Engine; log?: (level: string, msg: string) => void;
@@ -84,6 +85,10 @@ export async function startServer(o: ServeOptions) {
   const app = new Hono();
   // Before every route, the WebSocket upgrade included: see guard.ts.
   app.use('*', requestGuard(allowedHosts(host, store.local.allowed_hosts), (l, m) => log(l, m), { lanOnly: store.local.lan_access || !isLoopbackBind(host), declared: store.local.allowed_hosts }));
+  // Then a paired device's token from anywhere but this machine (#403): this machine needs none, as before.
+  const pairing = new Pairing(store);
+  app.use('*', pairingGuard(pairing, (l, m) => log(l, m)));
+  pairingRoutes(app, pairing);
   const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
   // The API's JSON only (the state payload runs to megabytes, too slow for a phone on slow Wi-Fi); never /ws or /mcp's streams.
   app.use('/api/*', compress({ contentTypeFilter: /^application\/json/ }));
@@ -170,7 +175,7 @@ export function accessReport(local: Pick<LocalConfig, 'lan_access' | 'allowed_ho
   const link = notifications.base_url ?? listenUrl(host, port);
   const refusal = linkRefusal(link, allowedHosts(host, local.allowed_hosts));
   return [
-    `lan_access: ${local.lan_access ? 'on' : 'off'}, listening on ${host}:${port} unless --host says otherwise${local.lan_access ? ' (anyone on this network can use planestro)' : ''}`,
+    `lan_access: ${local.lan_access ? 'on' : 'off'}, listening on ${host}:${port} unless --host says otherwise${local.lan_access ? ' (a paired device on this network can use planestro: planestro pair)' : ''}`,
     `link address: ${link}${notifications.base_url ? ' (notifications.base_url)' : ''}`,
     ...(refusal ? [`WARN ${refusal}`] : []),
   ];

@@ -88,6 +88,6 @@ To add an art model, see [Agents](agents.md#adding-a-codex-model). Project rules
 conventions, how to run the tests, where assets live — belong in your repository's own
 `CLAUDE.md` / `AGENTS.md`; both agents read them. planestro adds nothing project-specific.
 
-> **The web UI has no authentication.** It binds to `127.0.0.1` and can start agents that
-> edit and push code. Other websites can't drive it, but `--host 0.0.0.0` exposes it to your
-> network. See [SECURITY.md](../SECURITY.md).
+> **The web UI has no login on this machine.** It binds to `127.0.0.1` and can start agents that
+> edit and push code. Other websites can't drive it. With `--host 0.0.0.0` (or `lan_access`) another
+> device must be paired first (`planestro pair`). See [SECURITY.md](../SECURITY.md).

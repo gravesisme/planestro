@@ -279,6 +279,11 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   (`on_needs_you`, with an absolute link) per wait key and runs `notifications.on_needs_you`. It holds back while a
   client's input heartbeat (`client.active` on the WebSocket) is under `notifications.idle_after_min` old; its memory
   across restarts is the journal.
+- A request from this machine (a loopback peer) needs no token; any other must carry a paired device's (#403:
+  `pairingGuard`, after `requestGuard`): the `planestro_token` cookie or `Authorization: Bearer`, else 401 (a page load
+  goes to `/pair`). `planestro pair` asks the running server, from this machine only, for a one-time code (in memory,
+  10 min); `/pair` trades it for a token whose sha256 alone lands in `paired_devices` (planestro.local.yml), read on
+  every request so a revocation applies to the next one. The page never sees a hash (`publicLocal`).
 - Schema changes go through `packages/server/src/migrations` and bump
   `SCHEMA_VERSION`; a newer data dir opens read-only.
 - `planestro sample` (`packages/server/src/sample.ts`) is the no-credentials demo
