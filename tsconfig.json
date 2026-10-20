@@ -14,13 +14,12 @@
     ],
     "paths": {
       "@planestro/shared": [
-        "packages/shared/src/index.ts"
+        "./packages/shared/src/index.ts"
       ],
       "@planestro/shared/view": [
-        "packages/shared/src/view.ts"
+        "./packages/shared/src/view.ts"
       ]
     },
-    "baseUrl": ".",
     "allowImportingTsExtensions": true
   },
   "include": [
