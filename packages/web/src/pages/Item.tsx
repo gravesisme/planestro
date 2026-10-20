@@ -30,6 +30,7 @@ import { WaitShortcut, promptReleaseHold } from '../components/WaitShortcut.tsx'
 import { SectionNav } from '../components/SectionNav.tsx';
 import { EfficiencyPanel } from '../components/EfficiencyPanel.tsx';
 import { ImageZoom, ReviewGallery, isImageAttachment } from '../components/ReviewImages.tsx';
+import { CiBreakdownDetail } from '../components/CiBreakdown.tsx';
 
 function useAutosave(id: string, section: 'Description' | 'Notes' | 'Plan', initial: string) {
   const [text, setText] = useState(initial);
@@ -298,7 +299,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           <dt>PR</dt><dd>{fm.pr ? <a href={`https://github.com/${state.config.code_repo.github}/pull/${fm.pr}`} target="_blank" rel="noreferrer">#{fm.pr}</a> : '—'}</dd>
           {preview && <><dt>preview</dt><dd><a href={preview.url} target="_blank" rel="noreferrer">{preview.url.replace(/^https?:\/\//, '')}</a></dd></>}
           <dt>session</dt><dd>{fm.session_id ?? '—'}{Object.entries(fm.agent_sessions ?? {}).map(([r, sid]) => <div key={r}>{r}: {sid.session_id}</div>)}</dd>
-          <dt>CI</dt><dd>{fm.ci_result ?? '—'}{fm.ci_failed_count ? ` (${fm.ci_failed_count} red)` : ''}</dd>
+          <dt>CI</dt><dd>{fm.ci_result ?? '—'}{fm.ci_failed_count ? ` (${fm.ci_failed_count} red)` : ''}<CiBreakdownDetail fm={fm} /></dd>
           <dt>cost</dt><dd>
             <div title={DOLLAR_HINT}>{modelCapabilities(findModel(state.config, fm.status === 'PLAN_IN_PROGRESS' ? fm.planner : fm.implementer) ?? { runner: 'claude', external: false }).accounting === 'tokens' && <strong>Codex cost: not reported · Historical Claude: </strong>}{fm.cost_usd !== undefined ? `$${fm.cost_usd.toFixed(2)} · ${fm.turns ?? 0} turns` : '$0.00'} <span className="muted small">{DOLLAR_HINT}</span>{(fm.cost_usd ?? 0) / budget.usd >= 0.8 && <> <span className={`tag ${(fm.cost_usd ?? 0) >= budget.usd ? 'hot' : 'wait'}`}>{Math.round((fm.cost_usd ?? 0) / budget.usd * 100)}% spent</span></>}</div>
             {estimate && <div className="muted small" title="What the next resume of this item's conversation sends again before it does any work. planestro starts a fresh conversation with a brief instead when that costs more than the item has left, or more than budget_usd_fresh_above.">resume: {reloadText(estimate)}</div>}

@@ -131,3 +131,16 @@ never does that for you.
   `claude` login, never an API key: the dollars are an API-price yardstick against your plan.
 - Codex: `budget_turns_per_item` and `budget_tokens_per_item`; it bills your Codex login.
 - `concurrency.max_sessions` and `concurrency.runner_limits` bound how much runs at once.
+
+## CI time
+
+Each wait for a pull request's checks keeps the run's timing as it ends (#179): when the
+attempt started, when a runner took its first job, when it ended, every job by the name GitHub
+gives it, and the re-runs on that head with why. Nothing extra is asked of GitHub to show it:
+
+- An item in review shows it on its card (`CI 41s queued · 6m 28s · 1 re-run`, every job in
+  the tooltip) and, in full, under **CI** on its page (#181).
+- The **Usage** page's **CI** section (`GET /api/usage/ci?days=N`) gives p50 and p90 of queue
+  and run time, CI waits and re-runs per day, over the page's range (up to 90 days) (#182). An
+  attempt is counted once, however many waits recorded it; a re-run is any attempt after the
+  first, whether planestro or a person asked for it.

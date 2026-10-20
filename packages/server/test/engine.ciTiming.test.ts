@@ -6,6 +6,8 @@ import { LiveEngine } from '../src/engine/LiveEngine.ts';
 import { FakeWorld, DryRunGitPort, DryRunGhPort, DryRunProcPort, DryRunClaudePort } from '../src/engine/dryrun-ports.ts';
 import { attemptTiming } from '../src/engine/live-ports.ts';
 import type { CiStatus, Ports } from '../src/engine/ports.ts';
+import { apiRoutes } from '../src/routes/api.ts';
+import { ciBreakdown } from '@planestro/shared';
 import { makeFixture, sleep } from './helpers.ts';
 
 // #179: a CI wait's end keeps the run's timing (queue, first job, end, jobs, re-runs). #180: a merge records what proved it green.
@@ -50,7 +52,11 @@ describe('CI run timing at the end of a CI wait (#179)', () => {
     const timing = ends(store, id, 'ci_wait').find((d) => d.timing)!.timing;
     expect(timing).toMatchObject({ run_id: 3, attempt: 1, url: 'https://example/run/3', reruns: [] });
     expect(timing.attempts).toHaveLength(1);
-    expect(timing.attempts[0]).toMatchObject({ attempt: 1, created_at: expect.any(String), queued_at: expect.any(String), first_job_started_at: expect.any(String), completed_at: expect.any(String), jobs: [{ name: 'test', runner: 'fake-runner' }] });
+    expect(timing.attempts[0]).toMatchObject({ attempt: 1, created_at: expect.any(String), queued_at: expect.any(String), first_job_started_at: expect.any(String), completed_at: expect.any(String), jobs: [{ name: 'test', runner: 'fake-runner' }] });    // #181: the item's breakdown reads it; #182: the Usage page's CI aggregates count the wait and its run, nothing asked of GitHub again
+    expect(ciBreakdown(timing)).toMatchObject({ run_id: 3, reruns: 0, latest: { attempt: 1, jobs: [{ name: 'test' }] } });
+    const ci = await (await apiRoutes(store, engine).request('/usage/ci?days=1')).json();
+    expect(ci.totals).toMatchObject({ waits: 1, runs: 1, reruns: 0 });
+    expect(ci.run.n).toBe(1);
   });
 
   it('a cancelled run that is re-run: both attempts, and the re-run with its reason', async () => {

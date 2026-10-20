@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { managedAttachmentPath } from '../store/managedAttachments.ts';
 import { existsSync, readFileSync } from 'node:fs';
 import YAML from 'yaml';
-import { allowedTransitions, parsePromptFile, RenderError, STATUSES, PRIORITIES, type Priority, PROMPT_KINDS, RELEASE_STATUSES, KINDS, markUnavailable, CHAT_ATTACHMENTS_DIR, CHAT_MAX_FILES, type Status, type Actor, usageReport, dayBefore, USAGE_REPORT_TYPES, itemEfficiency, efficiencyRanking, EFFICIENCY_TYPES, isoLocal, HEX_COLOR, suggestCategoryColor } from '@planestro/shared';
+import { allowedTransitions, parsePromptFile, RenderError, STATUSES, PRIORITIES, type Priority, PROMPT_KINDS, RELEASE_STATUSES, KINDS, markUnavailable, CHAT_ATTACHMENTS_DIR, CHAT_MAX_FILES, type Status, type Actor, usageReport, dayBefore, USAGE_REPORT_TYPES, itemEfficiency, efficiencyRanking, EFFICIENCY_TYPES, ciAggregates, CI_INSIGHT_TYPES, isoLocal, HEX_COLOR, suggestCategoryColor } from '@planestro/shared';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Engine } from '../engine/Engine.ts';
 import type { ConsoleBuffer } from '../store/ConsoleBuffer.ts';
@@ -605,6 +605,13 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
     const today = isoLocal().slice(0, 10);
     const types = new Set(EFFICIENCY_TYPES);
     return c.json(efficiencyRanking(store.journal.read({ since: dayBefore(today, days - 1), types }), { days, today }));
+  });
+  // CI over the last days (#182): waits and re-runs per day, p50/p90 queue and run time, from what each CI wait recorded (#179).
+  api.get('/usage/ci', (c) => {
+    const days = Math.min(90, Math.max(1, Math.floor(Number(c.req.query('days') ?? 7)) || 7));
+    const today = isoLocal().slice(0, 10);
+    const types = new Set<string>(CI_INSIGHT_TYPES);
+    return c.json(ciAggregates(store.journal.read({ since: dayBefore(today, days - 1), types }), { days, today }));
   });
   // Allow rules suggested from the ruling history, replayed so none would have let a past denial through (#169). Read-only.
   api.get('/permissions/suggest', (c) => {
