@@ -1,5 +1,5 @@
 import { basename, matchesGlob } from 'node:path';
-import type { Runner, RateLimitSnapshot, CodexEffort, CodexTier, TokenSplit } from '@planestro/shared';
+import type { Runner, RateLimitSnapshot, CodexEffort, CodexTier, TokenSplit, CiAttemptTiming, CiJobTiming } from '@planestro/shared';
 /**
  * Everything that touches the world goes through a port. `Live*` ports act; `DryRun*`
  * ports log `Would …` and keep an in-memory fake world so the pipeline still advances.
@@ -127,13 +127,8 @@ export type CiState = 'none' | 'pending' | 'success' | 'failure' | 'cancelled' |
 /** `queued` (pending only): the run is waiting for a runner and no job has started, so it is not using its time yet (#170). */
 /** `timedOut` (cancelled only): GitHub called the run a failure though its jobs only ended cancelled, as a job past its `timeout-minutes` does (#330). */
 export interface CiStatus { state: CiState; runId?: number; url?: string; sha?: string; startedAt?: string; attempt?: number; queued?: boolean; timedOut?: boolean }
-/**
- * One attempt of a CI run, timed as GitHub reports it (#179): when the run was created, when this attempt was queued
- * (`run_started_at`), when it ended, and each job as GitHub names it, with no interpretation. `runner` is set only on
- * a job a runner took, so a job that never left the queue has no start that counts.
- */
-export interface CiJobTiming { name: string; status?: string; conclusion?: string; created_at?: string; started_at?: string; completed_at?: string; runner?: string }
-export interface CiAttemptTiming { attempt: number; status?: string; conclusion?: string; created_at?: string; queued_at?: string; first_job_started_at?: string; completed_at?: string; jobs: CiJobTiming[] }
+/** One attempt of a CI run, timed as GitHub reports it (#179); shared, so the item page and the Usage page read it (#181, #182). */
+export type { CiAttemptTiming, CiJobTiming };
 /** Runs of the CI workflow across the repository that are waiting for a runner, and running (#170). */
 export interface CiQueue { queued: number; running: number }
 /** A self-hosted runner as GitHub lists it for the repository, or its organization (#216). */

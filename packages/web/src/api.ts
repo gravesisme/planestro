@@ -1,5 +1,5 @@
 import type { EngineModes } from './engineMode.ts';
-import type { ConcurrencyAdvice, ConcurrencyChange, ConcurrencyGuard, ConcurrencyLimits, HostLoad, ItemFrontmatter, PromptFrontmatter, ReleaseFrontmatter, ReleaseStatus, Config, LocalConfig, ModelDef, Status, JournalEntry, UsageGuardState, QuestionFrontmatter, ThreadEntry, ScheduleFrontmatter, UsageReport, ItemEfficiency, EfficiencyRanking } from '@planestro/shared';
+import type { ConcurrencyAdvice, ConcurrencyChange, ConcurrencyGuard, ConcurrencyLimits, HostLoad, ItemFrontmatter, PromptFrontmatter, ReleaseFrontmatter, ReleaseStatus, Config, LocalConfig, ModelDef, Status, JournalEntry, UsageGuardState, QuestionFrontmatter, ThreadEntry, ScheduleFrontmatter, UsageReport, ItemEfficiency, EfficiencyRanking, CiAggregates } from '@planestro/shared';
 import type { BreakdownChild, Priority, SourcedRule } from '@planestro/shared';
 
 export interface OrchestratorSpend {
@@ -200,6 +200,7 @@ export const api = {
   resume: () => req<{ paused: boolean }>('POST', '/api/engine/resume'),
   usage: (days: number) => req<UsageReport>('GET', `/api/usage?days=${days}`),
   usageItems: (days: number) => req<EfficiencyRanking>('GET', `/api/usage/items?days=${days}`),
+  usageCi: (days: number) => req<CiAggregates>('GET', `/api/usage/ci?days=${days}`),
   itemEfficiency: (id: string) => req<ItemEfficiency>('GET', `/api/items/${encodeURIComponent(id)}/efficiency`),
   orchestratorSpend: () => req<OrchestratorSpend>('GET', '/api/orchestrator/spend'),
   parks: () => req<ParkSummary[]>('GET', '/api/parks'),

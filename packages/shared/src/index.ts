@@ -36,3 +36,4 @@ export * from './accounts.ts';
 export * from './concurrency.ts';
 export * from './categoryColors.ts';
 export * from './external.ts';
+export * from './ciInsight.ts';

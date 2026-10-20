@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { UsageGroup, UsageReport } from '@planestro/shared';
+import type { CiAggregates, UsageGroup, UsageReport } from '@planestro/shared';
+import { formatCiDuration } from '@planestro/shared';
 import { api } from '../api.ts';
 import { setTitle } from '../tabBadge.ts';
 import { EfficiencyRankingSection } from '../components/EfficiencyPanel.tsx';
 import { usageSeries, dayValues, niceTicks, formatValue, labelOf, type UsageMeasure, type Series } from '../usageChart.ts';
 
 // ---- usage over time (#236): what every turn and wake spent, per day, by provider, model or role ----
-// Facts the engine journals as each turn ends (`usage.turn`); nothing before them is rebuilt. #182's CI timing will share this page.
+// Facts the engine journals as each turn ends (`usage.turn`); nothing before them is rebuilt. CI timing (#182) shares the page.
 
 const RANGES = [7, 30, 90];
 const GROUPS: { key: UsageGroup; label: string }[] = [{ key: 'provider', label: 'Provider' }, { key: 'model', label: 'Model' }, { key: 'role', label: 'Role' }];
@@ -123,6 +124,7 @@ export function UsagePage() {
           <p className="small muted">{measure === 'usd' ? 'Dollars are what Claude reports for each turn; Codex reports tokens only.' : 'Tokens are the work each turn paid for in full: uncached input, cache writes and output. Cache reads are counted below.'} {since ? `Recorded from ${longDay(since)}: earlier turns are not counted.` : 'Spend from before per-turn recording is not counted.'}</p>
         </section>
         <EfficiencyRankingSection days={Math.min(days, 90)} />
+        <CiSection days={Math.min(days, 90)} />
         {report.totals.input + report.totals.cache_read + report.totals.cache_write + report.totals.output > 0 && <TokenSplitTable report={report} group={group} />}
         <section className="usage-section">
           <h3>Usage windows and pauses</h3>
@@ -164,5 +166,42 @@ function UsageTable({ report, series, group, measure }: { report: UsageReport; s
         <tbody>{rows.map((d) => { const v = dayValues(d, series, group, measure); return <tr key={d.day}><th scope="row">{shortDay(d.day)}</th>{v.map((n, i) => <td key={series[i].key}>{n > 0 ? formatValue(n, measure) : '–'}</td>)}<td>{formatValue(measure === 'usd' ? d.usd : d.tokens, measure)}</td><td>{d.turns}</td></tr>; })}</tbody>
       </table>
     </div>
+  );
+}
+
+/** CI waits, re-runs and how long runs queued and ran (#182), from what each CI wait recorded as it ended (#179). */
+function CiSection({ days }: { days: number }) {
+  const [ci, setCi] = useState<CiAggregates | undefined>();
+  const [error, setError] = useState<string | undefined>();
+  useEffect(() => {
+    let live = true;
+    const load = () => api.usageCi(days).then((r) => { if (live) { setCi(r); setError(undefined); } }, (e: Error) => { if (live) setError(e.message); });
+    void load(); const t = setInterval(() => void load(), REFRESH_MS);
+    return () => { live = false; clearInterval(t); };
+  }, [days]);
+  const rows = ci ? [...ci.days].reverse().filter((d) => d.waits || d.runs) : [];
+  const perDay = (n: number) => (ci ? (n / ci.days.length).toFixed(1) : '0');
+  return (
+    <section className="usage-section">
+      <h3>CI</h3>
+      {error && <div className="banner error">{error}</div>}
+      {!ci ? <p className="muted small">Loading…</p> : ci.totals.waits + ci.totals.runs === 0 ? <p className="muted small">No CI waits in the last {days} days. Each wait for a pull request's checks is recorded here as it ends.</p> : <>
+        <div className="usage-stats">
+          <div><strong>{formatCiDuration(ci.queue.p50)}</strong><span>queued, p50</span></div>
+          <div><strong>{formatCiDuration(ci.queue.p90)}</strong><span>queued, p90</span></div>
+          <div><strong>{formatCiDuration(ci.run.p50)}</strong><span>running, p50</span></div>
+          <div><strong>{formatCiDuration(ci.run.p90)}</strong><span>running, p90</span></div>
+          <div><strong>{perDay(ci.totals.waits)}</strong><span>CI waits a day</span></div>
+          <div><strong>{perDay(ci.totals.reruns)}</strong><span>re-runs a day</span></div>
+        </div>
+        <div className="usage-table-wrap">
+          <table className="usage-table">
+            <thead><tr><th scope="col">Day</th><th scope="col">CI waits</th><th scope="col">Runs timed</th><th scope="col">Re-runs</th></tr></thead>
+            <tbody>{rows.map((d) => <tr key={d.day}><th scope="row">{shortDay(d.day)}</th><td>{d.waits}</td><td>{d.runs}</td><td>{d.reruns || '–'}</td></tr>)}</tbody>
+          </table>
+        </div>
+        <p className="small muted">Queued is an attempt's start until a runner took its first job; running, from then until it ended. Over {ci.queue.n} queued and {ci.run.n} finished attempts, each counted once. A re-run is any attempt after the first, by planestro or by hand.</p>
+      </>}
+    </section>
   );
 }

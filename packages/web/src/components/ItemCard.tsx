@@ -8,6 +8,7 @@ import { act, useStore } from '../store.ts';
 import { agentStateOf, itemsById } from '../agentState.ts';
 import { confirmMove } from './QuickActions.tsx';
 import { CategoryTag } from './CategoryTag.tsx';
+import { CiCardTag } from './CiBreakdown.tsx';
 import { afterChoices, columnOf, stepMove } from '../reorder.ts';
 import { connectionDropOf, decisionOf, heldReasonOf, previewOf, waitsFor } from '@planestro/shared';
 
@@ -47,6 +48,7 @@ export function ItemCard({ item, sortable = true, onSelect, selection }: {
             {fm.parent && <span className="tag">↳ {fm.parent}</span>}
             {d.external ? <span className="tag">{modelLabel(fm.implementer)} (external)</span> : <span className="tag">{modelLabel(fm.planner)} → {modelLabel(fm.implementer)}</span>}
             {fm.pr && <span className="tag ok">PR #{fm.pr}</span>}
+            {fm.status === 'IN_REVIEW' && <CiCardTag fm={fm} />}
             {previewOf(fm) && <span className="tag" title={`Preview deployment: ${previewOf(fm)!.url}`}>preview</span>}
             {fm.status === 'IN_REVIEW' && fm.skip_merge && <span className={`tag ${fm.ci_result === 'red' ? 'hot' : ''}`} title={`Held out of the merge queue${heldReasonOf(fm) ? ` (${heldReasonOf(fm)})` : ''}: it waits for you to release the hold. Its commits are pushed and its CI is watched${fm.ci_result === 'red' ? '; the red run is being fixed meanwhile (its session, or the orchestrator for an epic)' : ''}, but it does not merge`}>{fm.op_data?.pr_draft ? 'held for you · draft PR' : `${fm.hold_waits_on === 'person' || fm.review_hold ? 'held for you' : 'held'} · CI ${fm.ci_result ?? 'pending'}`}</span>}
             {fm.status === 'IN_PROGRESS' && fm.skip_merge && <span className="tag" title={`Its pull request will be held out of the merge queue${heldReasonOf(fm) ? `: ${heldReasonOf(fm)}` : ''}`}>PR will be held</span>}
