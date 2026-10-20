@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { testRunShape, testWaste, efficiencyRanking, TEST_RUN, USAGE_TURN, type JournalEntry } from '../src/index.ts';
+import { testRunShape, testRunKey, stripWrappers, testWaste, efficiencyRanking, TEST_RUN, USAGE_TURN, type JournalEntry } from '../src/index.ts';
 
 const cfg = { patterns: ['npm test', './tools/run_checks.sh', 'Bash(npx vitest run *)'], filters: ['--only-file', '--shard', '-t'], repeat_flags: ['--repeat', '--stress'] };
 
@@ -42,5 +42,38 @@ describe('test runs (#347)', () => {
     const r = efficiencyRanking(entries, { days: 1, today: '2026-10-08' });
     expect(r.wasted_runs).toEqual([expect.objectContaining({ item: 'HH-1', wasted: { runs: 4, ms: 480_000 } })]);
     expect(r.items[0].test_runs?.runs).toBe(8);
+  });
+
+  it('reads past leading wrappers that do not change what runs (#396)', () => {
+    const hh = { patterns: ['./tools/run_checks.sh', 'tools/run_checks.sh', 'godot --headless', 'npm test'], filters: ['--only-file'], repeat_flags: ['--stress'] };
+    const whole = { whole_suite: true, load: false };
+    expect(testRunShape('CHECK_JOBS=5 ./tools/run_checks.sh', hh)).toEqual(whole);
+    expect(testRunShape('GODOT_LOG_DIR="$PWD/tmp/x y" CHECK_TIMEOUT=120 ./tools/run_checks.sh boss 2>&1 | tail -40', hh)).toEqual({ whole_suite: false, load: false });
+    expect(testRunShape('timeout 120 godot --headless -s tests/run.gd', hh)).toEqual({ whole_suite: false, load: false });
+    expect(testRunShape('timeout -k 5 -s KILL 2m godot --headless', hh)).toEqual(whole);
+    expect(testRunShape('env FOO=1 npm test', hh)).toEqual(whole);
+    expect(testRunShape('env -u HOME BAR=2 npm test', hh)).toEqual(whole);
+    expect(testRunShape('nice -n 10 npm test', hh)).toEqual(whole);
+    expect(testRunShape('time npm test', hh)).toEqual(whole);
+    expect(testRunShape('command npm test', hh)).toEqual(whole);
+    expect(testRunShape('exec npm test', hh)).toEqual(whole);
+    expect(testRunShape('cd tools && CHECK_JOBS=8 nice timeout 10m ./tools/run_checks.sh --stress 3', hh)).toEqual({ whole_suite: true, load: true });
+    // A pattern written with its wrapper, as HH's were before, still matches.
+    expect(testRunShape('CHECK_JOBS=3 ./tools/run_checks.sh', { ...hh, patterns: ['CHECK_JOBS=1 ./tools/run_checks.sh'] })).toEqual(whole);
+    // Not wrappers: `command -v` runs nothing, a timeout with no duration is left as written, a lone assignment runs nothing.
+    expect(testRunShape('command -v npm test', hh)).toBeUndefined();
+    expect(testRunShape('timeout npm test', hh)).toBeUndefined();
+    expect(stripWrappers(['FOO=1'])).toEqual(['FOO=1']);
+    expect(testRunShape('echo CHECK_JOBS=5 ./tools/run_checks.sh', hh)).toBeUndefined();
+  });
+
+  it('counts a wrapper-only change as the same run repeated (#396)', () => {
+    expect(testRunKey('CHECK_JOBS=4 ./tools/run_checks.sh boss 2>&1 | tail')).toBe(testRunKey('CHECK_JOBS=8 timeout 300 ./tools/run_checks.sh boss | tail'));
+    const waste = testWaste([
+      run('2026-10-08T09:00:00-07:00', { command: 'CHECK_JOBS=4 ./tools/run_checks.sh boss', tree: 't1' }),
+      run('2026-10-08T09:05:00-07:00', { command: 'CHECK_JOBS=8 ./tools/run_checks.sh boss', tree: 't1' }),
+      run('2026-10-08T09:10:00-07:00', { command: './tools/run_checks.sh ruins', tree: 't1' }),
+    ]).get('HH-1')!;
+    expect(waste.repeats.runs).toBe(1);
   });
 });
