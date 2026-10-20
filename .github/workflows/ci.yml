@@ -27,6 +27,7 @@ jobs:
           git config --global user.email "ci@planestro.invalid"
           git config --global init.defaultBranch main
       - run: npm run typecheck
+      - run: npm run lint
       # The suites drive real git in temp dirs; none of them touches the network, GitHub or Claude.
       - run: npm test
       - run: npm run build

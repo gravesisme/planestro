@@ -498,7 +498,7 @@ describe('a worker with no tool for a server another model has (#366, HH-538)', 
     let prompt = '';
     const noTool = async (o: TurnOptions): Promise<TurnResult> => { await o.tools.report_blocked('I cannot generate the takes: this session has no ElevenLabs tool'); return { ...ok, blocked: 'no ElevenLabs tool' }; };
     const a = agents({ firstTurn: noTool, orchestrate: async (w) => { if (w.label.startsWith('blocked_')) prompt = w.prompt; } });
-    const { store: s, engine: e, id } = await setup(a.claude, (y) => y.replace('  - { id: opus-5, label: Opus 5, claude_model: claude-opus-5 }\n', '  - { id: opus-5, label: Opus 5, claude_model: claude-opus-5 }\n  - { id: sfx, label: Sound worker, claude_model: claude-opus-5, mcp: [ElevenLabs] }\n'));
+    const { store: s, engine: e } = await setup(a.claude, (y) => y.replace('  - { id: opus-5, label: Opus 5, claude_model: claude-opus-5 }\n', '  - { id: opus-5, label: Opus 5, claude_model: claude-opus-5 }\n  - { id: sfx, label: Sound worker, claude_model: claude-opus-5, mcp: [ElevenLabs] }\n'));
     s.updateLocal({ mcp_servers: { ElevenLabs: { command: 'uvx', args: ['elevenlabs-mcp'] } } } as any);
     await e.start();
     await waitFor(() => prompt !== '');

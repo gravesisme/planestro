@@ -25,6 +25,7 @@
     "spike:codex-live": "tsx spikes/codex-live.ts",
     "planestro": "tsx packages/server/src/cli.ts",
     "test": "vitest run",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p packages/web/tsconfig.json",
     "dev": "tsx watch packages/server/src/cli.ts serve",
     "dev:web": "npm --workspace packages/web run dev",
@@ -34,8 +35,11 @@
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
+    "eslint": "10.12.0",
+    "eslint-plugin-react-hooks": "7.1.1",
     "typescript": "^5.8.0",
-    "zod": "^4.6.7",
-    "vitest": "^4.1.11"
+    "typescript-eslint": "8.71.0",
+    "vitest": "^4.1.11",
+    "zod": "^4.6.7"
   }
 }

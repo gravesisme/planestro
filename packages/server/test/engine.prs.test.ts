@@ -642,8 +642,7 @@ describe('structured parts (f4)', () => {
 
   it('report_progress stores the parts, summarises them in Activity, and the orchestrator packet quotes them', async () => {
     let packet = ''; const replies: string[] = [];
-    const claude = (world: FakeWorld) => {
-      const inner = new DryRunClaudePort(world);
+    const claude = (_world: FakeWorld) => {
       return {
         async runTurn(o: TurnOptions): Promise<TurnResult> {
           if (o.phase === 'plan') { await o.tools.submit_plan('# p'); return { ...ok, planSubmitted: '# p' }; }

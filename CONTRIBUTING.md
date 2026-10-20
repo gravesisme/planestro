@@ -15,6 +15,7 @@ keeping that sustainable.
 nvm use            # Node 24 (.nvmrc)
 npm install
 npm run typecheck
+npm run lint       # eslint: floating promises, unused code, new `any`s, rules of hooks
 npm test           # vitest; real git in temp dirs, never the network, GitHub or a model
 npm run build
 npm run sample     # the no-credentials demo
@@ -24,6 +25,12 @@ A change is reviewed against the design invariants in [CLAUDE.md](CLAUDE.md): wh
 waits on a person, destructive operations only on positive evidence, nothing project-specific.
 Every fix comes with a test that fails without it. The engine's lifecycle code never names a branch
 literally (a test checks).
+
+`npm run lint` is type-aware and deliberately small (`eslint.config.js`). A promise nobody waits on
+gets `await`, or `void` plus a `.catch` that logs when it can fail. The `any`s already in `src` are
+grandfathered in `eslint-suppressions.json`: removing one makes lint ask you to run
+`npx eslint . --prune-suppressions`; a new one fails unless you type it. A suppression of anything
+else is an `eslint-disable-next-line` with its reason.
 
 `CLAUDE.md` and `AGENTS.md` are one document for two agents and must stay byte-identical: edit one
 and copy it over the other (a test checks this too). A schema change goes through

@@ -44,7 +44,7 @@ function NewPromptDialog({ taken, onClose }: { taken: Set<string>; onClose: () =
         {clash && <p className="small" style={{ margin: 0, color: 'var(--hot)' }}>A prompt named {file} already exists.</p>}
         <input placeholder="Description (one line, optional)" value={description} onChange={(e) => setDescription(e.target.value)} />
         <textarea placeholder={'The prompt (markdown). {{placeholders}} are asked for when an item is created from it.'} value={body} onChange={(e) => setBody(e.target.value)} required />
-        <div className="row"><span className="grow" /><button type="button" onClick={onClose}>Cancel</button><ActionButton className="primary" type="submit" disabled={clash || !file} working="Creating…" onAct={async () => { const r = await act(() => api.createPrompt({ name: file, title: title.trim(), kind, description: description.trim() || undefined, body })); if (r) { onClose(); nav(`/prompts/${r.name}`); } }}>Create</ActionButton></div>
+        <div className="row"><span className="grow" /><button type="button" onClick={onClose}>Cancel</button><ActionButton className="primary" type="submit" disabled={clash || !file} working="Creating…" onAct={async () => { const r = await act(() => api.createPrompt({ name: file, title: title.trim(), kind, description: description.trim() || undefined, body })); if (r) { onClose(); void nav(`/prompts/${r.name}`); } }}>Create</ActionButton></div>
       </form>
     </div>
   );
