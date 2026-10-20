@@ -29,6 +29,35 @@ literally (a test checks).
 and copy it over the other (a test checks this too). A schema change goes through
 `packages/server/src/migrations` and bumps `SCHEMA_VERSION`.
 
+### Testing the web UI
+
+Logic that can live in a plain module (`packages/web/src/*.ts`) is tested there, without a DOM. What
+only shows when a component renders (a badge that follows the stream, a board that must not redraw,
+a click that opens a zoom) goes in a DOM test: a `packages/web/test/**/*.dom.test.tsx` file runs
+under jsdom with Testing Library, and every other test file stays in Node. Start from
+`packages/web/test/dom/fixture.tsx`:
+
+- `item(id, frontmatter?, derived?)` and `state(items, { sessions?, mode? })` build what `/api/state`
+  sends, through the real schemas;
+- `mockApi({ '/api/state': () => s, … })` answers `fetch` from a table (anything else is a 404) and
+  counts the requests;
+- `installSocket()` replaces `WebSocket`: after `useStore.getState().connect()`,
+  `FakeSocket.last.open()` connects and `FakeSocket.last.emit(event)` is the server sending one.
+
+```tsx
+it("shows a running agent's last output", () => {
+  const tp1 = item('TP-1', { status: 'IN_PROGRESS' });
+  useStore.setState({ state: state([tp1], { sessions: [{ item: 'TP-1', op: 'implement', busy: true }] }) });
+  render(<MemoryRouter><ItemCard item={tp1} /></MemoryRouter>);
+  act(() => useStore.setState({ lastOutput: { 'TP-1': 'Running npm test' } }));
+  expect(screen.getByRole('button', { name: 'implementing…' }).title).toBe('Last output: Running npm test');
+});
+```
+
+Query by role and text, as a person finds things, before reaching for class names. Wrap anything that
+changes the store in `act`, and use fake timers (`vi.useFakeTimers()`, `vi.runAllTimersAsync()`)
+where the store throttles. `npx vitest run --project dom` runs only these.
+
 Commit messages say what changed for the user, in a sentence, with the issue number: `A merged
 child's worktree is removed only once its branch is on the base (#123)`.
 

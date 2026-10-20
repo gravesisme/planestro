@@ -4,5 +4,5 @@
     "strict": true, "skipLibCheck": true, "noEmit": true, "allowImportingTsExtensions": true, "types": ["vite/client"],
     "paths": { "@planestro/shared": ["../shared/src/index.ts"] }, "baseUrl": "."
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "test/dom/**/*.tsx", "vite.config.ts"]
 }
