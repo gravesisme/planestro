@@ -116,7 +116,6 @@ function insideWorktree(raw: string, worktree: string, from: string = worktree):
 }
 
 const GIT_C = /^git\s+-C\s+('[^']*'|"[^"]*"|\S+)\s+/;
-const CD = /^cd\s+('[^']*'|"[^"]*"|\S+)$/;
 const SEPARATORS = /&&|\|\||;|\|/; // its parts are trimmed: `\s*` on either side backtracked on a long run of spaces
 const HEREDOC = /<<-?\s*'?"?\w+'?"?\s*$/;
 

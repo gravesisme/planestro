@@ -288,7 +288,7 @@ describe('LiveEngine lifecycle (dry-run ports)', () => {
 
   it('a question parks the session with awaiting=question; answering resumes the same session', async () => {
     let calls = 0;
-    const asking = (world: FakeWorld) => ({
+    const asking = (_world: FakeWorld) => ({
       async runTurn(o: TurnOptions): Promise<TurnResult> {
         calls += 1;
         if (calls === 1) { await o.onQuestion([{ question: 'Short or long?', options: [{ label: 'Short' }, { label: 'Long' }] }]); return { sessionId: 'sess-1', subtype: 'success', isError: false, costUsd: 0.1, numTurns: 1, text: 'asked', parked: 'question' }; }

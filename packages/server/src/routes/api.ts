@@ -10,7 +10,7 @@ import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import { join } from 'node:path';
 import { managedAttachmentPath } from '../store/managedAttachments.ts';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import YAML from 'yaml';
 import { allowedTransitions, parsePromptFile, RenderError, STATUSES, PRIORITIES, type Priority, PROMPT_KINDS, RELEASE_STATUSES, KINDS, markUnavailable, CHAT_ATTACHMENTS_DIR, CHAT_MAX_FILES, type Status, type Actor, usageReport, dayBefore, USAGE_REPORT_TYPES, itemEfficiency, efficiencyRanking, EFFICIENCY_TYPES, ciAggregates, CI_INSIGHT_TYPES, isoLocal, HEX_COLOR, suggestCategoryColor } from '@planestro/shared';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';

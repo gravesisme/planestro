@@ -721,7 +721,7 @@ describe('a pull request attached by hand (p44)', () => {
 describe('finish from here (f2)', () => {
   async function stuck(extra: Record<string, unknown> = {}) {
     const ctx = await setup();
-    const { store, engine, world } = ctx;
+    const { store, engine } = ctx;
     const item = store.createItem({ title: 'Done by hand', description: 'x' });
     store.transition(item.id, 'QUEUED', 'user');
     await engine.start();

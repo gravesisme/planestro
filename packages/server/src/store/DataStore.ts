@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, existsSync, mkdirSync, unlinkSync, statSync, writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, mkdirSync, unlinkSync, statSync } from 'node:fs';
 import { join, basename, relative } from 'node:path';
 import { createHash } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -442,7 +442,7 @@ export class DataStore {
   }
 
   transition(id: string, to: Status, actor: Actor): StoredItem {
-    const item = this.requireItem(id);
+    this.requireItem(id);
     const label = to.toLowerCase().replace(/_/g, ' ');
     return this.mutateItem(id, [{ transition: { to, actor } }], actor, { commit: `${id}: ${label}` });
   }
