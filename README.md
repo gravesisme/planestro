@@ -314,6 +314,11 @@ server is the one on `PLANESTRO_URL` (default `http://127.0.0.1:4300`). Install
 the plugin at **user scope** (the default): workers load project settings, and a
 project-scope install would put the skill in front of them too.
 
+If a Claude Code session shows `plugin:planestro:planestro` as failed (planestro
+was down when the session tried it), the tools stay gone for that session until
+you run `/mcp reconnect plugin:planestro:planestro`. `serve --watch` keeps the
+port open across its own restarts, so those no longer cause it.
+
 > **The web UI has no authentication.** It binds to `127.0.0.1` by default and
 > can start agents that edit and push code. Requests from other websites and
 > DNS-rebinding tricks are refused, but `--host 0.0.0.0` exposes the UI to your

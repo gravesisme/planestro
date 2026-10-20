@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { serve } from '@hono/node-server';
+import { createAdaptorServer } from '@hono/node-server';
 import { compress } from 'hono/compress';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { createNodeWebSocket } from '@hono/node-ws';
@@ -20,8 +20,11 @@ import { VALIDATED_CLAUDE_VERSION, VALIDATED_CODEX_VERSION } from './compat.ts';
 import { TOOL_VERSION } from './config.ts';
 import { allowedHosts, bindHost, isLoopbackBind, linkRefusal, requestGuard } from './guard.ts';
 import { PortInUseError } from './exitCodes.ts';
+import type { HandedPort } from './portHandoff.ts';
 
-export interface ServeOptions { dataDir: string; port?: number; host?: string; mock?: boolean; engineFactory?: (store: DataStore, emit: (e: ServerEvent) => void) => Engine; log?: (level: string, msg: string) => void }
+export interface ServeOptions { dataDir: string; port?: number; host?: string; mock?: boolean; engineFactory?: (store: DataStore, emit: (e: ServerEvent) => void) => Engine; log?: (level: string, msg: string) => void;
+  /** The socket `serve --watch` holds across restarts (#354): its host and port win over the flags and lan_access. */
+  listen?: HandedPort }
 
 /**
  * The app shell's Content-Security-Policy: everything from planestro itself. Model-written text is shown as markdown,
@@ -69,8 +72,8 @@ export async function startServer(o: ServeOptions) {
   let observer: Engine | undefined;
   const emit = (e: ServerEvent) => { consoles.handle(e); const data = JSON.stringify(e); for (const s of sockets) { try { s.send(data); } catch { /* closed */ } } observer?.observe?.(e); };
   const store = await DataStore.open(o.dataDir, { emit, log: (l, m) => log(l, m) });
-  const port = o.port ?? 4300;
-  const host = bindHost(o.host, store.local);
+  const port = o.listen?.port ?? o.port ?? 4300;
+  const host = o.listen?.host ?? bindHost(o.host, store.local);
   const defaultFactory = (s: DataStore, em: (e: ServerEvent) => void): Engine => {
     if (o.mock) return new MockEngine(s, em);
     const mode = s.local.engine.mode ?? s.config.engine.mode;
@@ -104,7 +107,8 @@ export async function startServer(o: ServeOptions) {
     app.get('/', (c) => c.text(`planestro ${TOOL_VERSION} API is up; the web UI is not built (run \`npm run build\`, or \`npm run dev:web\` for Vite on :5173).`));
   }
 
-  const server = serve({ fetch: app.fetch, port, hostname: host }, () => log('info', `planestro ${TOOL_VERSION} on http://${host}:${port} — data ${store.dataDir} (${store.schema}, ${store.items.size} items) — engine ${engine.mode}${engine.paused ? ' PAUSED' : ''}`));
+  const server = createAdaptorServer({ fetch: app.fetch });
+  server.listen(o.listen ? o.listen.handle as never : { port, host }, () => log('info', `planestro ${TOOL_VERSION} on http://${host}:${port} — data ${store.dataDir} (${store.schema}, ${store.items.size} items) — engine ${engine.mode}${engine.paused ? ' PAUSED' : ''}`));
   injectWebSocket(server);
   // Own the port before the engine starts anything: a taken port used to surface as an uncaught
   // 'error' after the engine was already up. Release the data-dir lock and say which it was, so
@@ -127,6 +131,8 @@ export async function startServer(o: ServeOptions) {
   const shutdown = async () => {
     if (shuttingDown) return; shuttingDown = true;
     log('info', 'shutting down');
+    // On a held port, stop accepting first: what arrives from here on waits for the next server, not for this one to exit under it.
+    if (o.listen) { server.close(); (server as { closeIdleConnections?: () => void }).closeIdleConnections?.(); }
     clearInterval(checkpoint);
     // Commit first and synchronously: a supervisor (tsx relays SIGINT to its child) may kill us
     // before anything async completes. Everything after this line is best-effort.

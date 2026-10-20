@@ -37,6 +37,12 @@ home screen it opens full-screen.
   automation is paused so running turns finish and nothing new starts, the restart happens
   in that gap, and automation resumes if the supervisor was what paused it.
 - A server that dies on a syntax error is restarted by your next save, not in a loop.
+- **The port stays open across a restart** (#354). The supervisor binds the port and hands the
+  socket to each server it starts, so a request that arrives while one server stops and the next
+  starts waits for the new one instead of being refused (an MCP client that is refused once can
+  give up on planestro for the rest of its session). Each restart is logged with a timestamp:
+  `[watch] restarted <time>: pid N …`. A `--host` that is a name rather than an IP address is
+  not held: that server binds it itself, as before.
 - **One supervisor per data dir.** It holds `<data_dir>/.planestro/supervisor` (`pid`, `port`,
   `host`, `started_at`); a second `serve --watch` on the same data dir exits with the pid and
   URL of the first. A lock whose pid is dead is replaced.

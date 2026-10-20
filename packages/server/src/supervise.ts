@@ -5,8 +5,15 @@ import { fileURLToPath } from 'node:url';
 import { EXIT_DATA_DIR_IN_USE, EXIT_PORT_IN_USE } from './exitCodes.ts';
 import { pidAlive, takePidLock } from './store/pidLock.ts';
 import { checkForUpdate, readUpdateSettings } from './autoUpdate.ts';
+import { readLocalConfig } from './config.ts';
+import { bindHost } from './guard.ts';
+import { holdPort, offerPort, PORT_HANDOFF_ENV, type HeldPort } from './portHandoff.ts';
 
-export interface SuperviseOptions { dataDir: string; serveArgs: string[]; host: string; port: number; open?: boolean; log?: (m: string) => void }
+export interface SuperviseOptions {
+  dataDir: string; serveArgs: string[]; host: string; port: number; open?: boolean; log?: (m: string) => void;
+  /** `--host` as given: each start re-reads lan_access for the port it holds, as the child does (#255). */
+  hostFlag?: string;
+}
 
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const CLI = fileURLToPath(new URL('./cli.ts', import.meta.url));
@@ -108,18 +115,35 @@ export async function supervise(o: SuperviseOptions): Promise<void> {
   let child: ChildProcess | undefined;
   let stopping = false;
   let expectedExit = false;
+  // The port, held here across restarts (#354): a request between two children waits instead of being refused.
+  let held: HeldPort | undefined;
+  const holdForStart = (): HeldPort | undefined => {
+    let host = o.host;
+    try { host = bindHost(o.hostFlag, readLocalConfig(o.dataDir)); } catch { /* unreadable: keep the one we started with */ }
+    if (held && held.host === host) return held;
+    held?.close(); held = undefined;
+    const h = holdPort(host, o.port);
+    if ('error' in h) { log(`could not hold port ${o.port} across restarts (${h.error}); the server binds it itself, so a restart refuses connections for a moment`); return undefined; }
+    return held = h;
+  };
 
   const start = () => {
     expectedExit = false;
-    child = spawn(process.execPath, [...process.execArgv, CLI, 'serve', ...o.serveArgs], { cwd: process.cwd(), stdio: 'inherit' });
+    const port = holdForStart();
+    child = spawn(process.execPath, [...process.execArgv, CLI, 'serve', ...o.serveArgs], {
+      cwd: process.cwd(),
+      stdio: port ? ['inherit', 'inherit', 'inherit', 'ipc'] : 'inherit',
+      env: port ? { ...process.env, [PORT_HANDOFF_ENV]: '1' } : process.env,
+    });
     const mine = child;
+    if (port) offerPort(mine, port);
     mine.once('exit', (code, signal) => {
       if (child === mine) child = undefined;
       if (stopping || expectedExit) return;
       const v = childExitVerdict(code, signal, o);
       if (!v.fatal) return log(v.message);
       log(`ERROR: ${v.message}`);
-      stopping = true; clearTimeout(timer); releaseSupervisorLock(o.dataDir); process.exit(code ?? 1);
+      stopping = true; clearTimeout(timer); held?.close(); releaseSupervisorLock(o.dataDir); process.exit(code ?? 1);
     });
   };
   // Every start, not only restarts: a child that never answers is otherwise invisible (#85).
@@ -165,11 +189,11 @@ export async function supervise(o: SuperviseOptions): Promise<void> {
           await nap(BUSY_POLL_MS);
         }
         if (stopping) break;
-        log('server source changed: restarting');
+        log(`server source changed: restarting (${new Date().toISOString()})`);
         await stop();
         if (stopping) break;
         start();
-        if (await confirmUp()) log('restarted on the new planestro code');
+        if (await confirmUp()) log(`restarted ${new Date().toISOString()}: pid ${child?.pid ?? '?'} on the new planestro code${held ? `, port ${held.port} held open throughout` : ''}`);
       }
     } finally { working = false; }
   };
@@ -185,7 +209,7 @@ export async function supervise(o: SuperviseOptions): Promise<void> {
     watch(abs, { recursive: true }, (_event, file) => changed(file && !rel.endsWith('.html') ? `${rel}/${String(file).replace(/\\/g, '/')}` : rel));
   }
 
-  const shutdown = async () => { if (stopping) return; stopping = true; clearTimeout(timer); clearTimeout(updateTimer); await stop(); releaseSupervisorLock(o.dataDir); process.exit(0); };
+  const shutdown = async () => { if (stopping) return; stopping = true; clearTimeout(timer); clearTimeout(updateTimer); await stop(); held?.close(); releaseSupervisorLock(o.dataDir); process.exit(0); };
   process.once('SIGINT', () => void shutdown());
   process.once('SIGTERM', () => void shutdown());
 
