@@ -64,6 +64,15 @@ machine. Pairing runs over plain HTTP, so the token is as private as the network
 crosses: use it at home or over a VPN like Tailscale, not on shared Wi-Fi. A paired device
 is treated as you. Names you reach it by go in `allowed_hosts` in `planestro.local.yml`.
 
+"This machine" means a loopback peer whose request carries no proxy's forwarding header
+(`Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Real-IP`,
+`Tailscale-User-Login`, `Tailscale-User-Name`, `Via`). A proxy on this machine that adds one
+(Tailscale Serve, nginx, caddy) is treated as another device: it must be paired, and cannot
+mint a code or change what runs. **A forward that adds no header looks local:** `ssh -L`,
+`socat`, or a reverse proxy configured to strip those headers delivers someone else's request
+from 127.0.0.1 with nothing to tell it apart, and planestro answers it as you, unpaired. Never
+expose such a forward to anyone but yourself.
+
 From another device you can answer, approve and steer, but not change what runs on this
 machine: settings that are commands or programs (setup hooks, the local check, generated
 file commands, notification commands, `permissions.allow`, the Claude and Codex binaries,

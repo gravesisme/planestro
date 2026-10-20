@@ -39,11 +39,18 @@ export function linkRefusal(url: string, hosts: ReadonlySet<string>): string | u
   return hosts.has(name) ? undefined : `${name} is not one of this machine's names, so a link to ${url} gets a 403: add it to allowed_hosts in planestro.local.yml, or change notifications.base_url`;
 }
 
+/** Headers a proxy adds when it relays a request: their presence means the request came from somewhere else. */
+export const FORWARDING_HEADERS = ['forwarded', 'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto', 'x-real-ip', 'tailscale-user-login', 'tailscale-user-name', 'via'] as const;
+
 /**
- * A request from this machine: a loopback peer, or an in-process one with no socket. What a setting
+ * A request from this machine: a loopback peer, or an in-process one with no socket, carrying no proxy's forwarding header. What a setting
  * runs (a command, a program, an MCP server) is changed only from here, never from a phone on the LAN.
  */
 export function fromThisMachine(c: Context): boolean {
+  // A proxy on this machine (Tailscale Serve, nginx, caddy) delivers someone else's request from loopback; the header it
+  // adds says so, and such a request is not this machine's (#403). A forward that adds none (ssh -L, socat) looks local:
+  // SECURITY.md says not to expose one.
+  if (FORWARDING_HEADERS.some((h) => c.req.header(h) !== undefined)) return false;
   const peer = remoteAddress(c);
   if (peer === undefined) return true;
   const a = peer.trim().toLowerCase().replace(/^::ffff:/, '');

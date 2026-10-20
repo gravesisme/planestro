@@ -4,7 +4,7 @@ import { request as httpRequest } from 'node:http';
 import { createServer } from 'node:net';
 import { networkInterfaces } from 'node:os';
 import type { LocalConfig } from '@planestro/shared';
-import { allowedHosts, isLanAddress, requestGuard } from '../src/guard.ts';
+import { allowedHosts, fromThisMachine, isLanAddress, requestGuard } from '../src/guard.ts';
 import { CODE_TTL_MS, MAX_FAILURES, Pairing, TOKEN_COOKIE, normalizeCode, pairingGuard, pairingRoutes, type PairingStore } from '../src/pairing.ts';
 import { publicLocal } from '../src/routes/views.ts';
 import { startServer } from '../src/server.ts';
@@ -76,6 +76,14 @@ function app(store = memoryStore()) {
 }
 const LAN = { incoming: { socket: { remoteAddress: '192.168.1.20' } } };
 const LOOP = { incoming: { socket: { remoteAddress: '127.0.0.1' } } };
+/** fromThisMachine on a bare loopback request with these headers (it also guards settings that run commands). */
+function fromThisMachineOf(headers: Record<string, string>): boolean {
+  let seen = false;
+  const a = new Hono();
+  a.get('/', (c) => { seen = fromThisMachine(c); return c.text(''); });
+  void a.request('/', { headers }, LOOP);
+  return seen;
+}
 const req = (method: string, headers: Record<string, string> = {}, body?: unknown) => ({ method, headers: { host: '127.0.0.1:4300', ...(body ? { 'content-type': 'application/json' } : {}), ...headers }, ...(body ? { body: JSON.stringify(body) } : {}) });
 
 describe('the pairing guard (#403)', () => {
@@ -123,6 +131,29 @@ describe('the pairing guard (#403)', () => {
     expect((await a.request(`/api/pairing/devices/${device.id}`, req('DELETE'), LOOP)).status).toBe(200);
     expect((await a.request('/api/state', req('GET', jar), LAN)).status).toBe(401);
     expect((await a.request('/mcp', req('POST', { authorization: `Bearer ${token}` }, {}), LAN)).status).toBe(401);
+  });
+
+  it('a loopback request a proxy relayed (a forwarding header) is not this machine: it must pair, and cannot mint', async () => {
+    const { a } = app();
+    const proxied: Record<string, string>[] = [{ forwarded: 'for=192.168.1.20' }, { 'x-forwarded-for': '192.168.1.20' }, { 'x-forwarded-host': 'mac.tailnet.ts.net' }, { 'x-forwarded-proto': 'https' },
+      { 'x-real-ip': '100.101.102.103' }, { 'tailscale-user-login': 'someone@example.com' }, { 'tailscale-user-name': 'Someone' }, { via: '1.1 caddy' }];
+    for (const h of proxied) {
+      expect((await a.request('/api/state', req('GET', h), LOOP)).status, JSON.stringify(h)).toBe(401);
+      expect((await a.request('/mcp', req('POST', h, {}), LOOP)).status, JSON.stringify(h)).toBe(401);
+      expect((await a.request('/api/pairing/code', req('POST', h, {}), LOOP)).status, JSON.stringify(h)).toBe(401);
+    }
+    // Paired, a proxied device gets in, but still mints nothing.
+    const { code } = await (await a.request('/api/pairing/code', req('POST', {}, {}), LOOP)).json() as { code: string };
+    const via = { 'x-forwarded-for': '192.168.1.20' };
+    const paired = await a.request('/api/pair', req('POST', via, { code, name: 'via proxy' }), LOOP);
+    expect(paired.status).toBe(200);
+    const jar = { ...via, cookie: paired.headers.get('set-cookie')!.split(';')[0] };
+    expect((await a.request('/api/state', req('GET', jar), LOOP)).status).toBe(200);
+    expect((await a.request('/api/pairing/code', req('POST', jar, {}), LOOP)).status).toBe(403);
+    // Loopback with no forwarding header stays token-free.
+    expect((await a.request('/api/state', req('GET'), LOOP)).status).toBe(200);
+    expect(fromThisMachineOf({ 'x-forwarded-for': '1.2.3.4' })).toBe(false);
+    expect(fromThisMachineOf({})).toBe(true);
   });
 
   it('a request from outside the LAN is still refused by the request guard first, token or not', async () => {
