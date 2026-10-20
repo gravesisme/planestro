@@ -156,16 +156,22 @@ and can instruct workers or escalate to you; it never owns state.
 
 ```sh
 npm install && npm run build
-npx tsx packages/server/src/cli.ts init ../myproject-planning --repo ../myproject --name "My Project" --prefix MP
+npm run planestro -- init ../myproject-planning --repo ../myproject --name "My Project" --prefix MP
+npm run planestro -- check ../myproject-planning --preflight
 npm start -- ../myproject-planning --open     # http://127.0.0.1:4300
 ```
 
+Pick the agent once: Claude by default, or add `--provider codex` to `init` and Codex plans,
+implements and orchestrates, with no Claude installed
+([Codex-only setup](docs/switching-providers.md#codex-only-setup)). Mixing both, item by item,
+is set up later in Settings → Models.
+
 Requirements: Node 24, git (with a `user.name` and `user.email`), the GitHub CLI
 (`gh`, authenticated), and an agent CLI for each runner your models use: Claude
-Code (`claude`, logged in), the Codex CLI (`codex`, logged in), or both.
-`npx tsx packages/server/src/cli.ts check ../myproject-planning --preflight`
-checks all of them on this machine, with no model call, and prints the repair for
-anything missing. macOS is where planestro is used day to day; Linux runs its CI.
+Code (`claude`, logged in), the Codex CLI (`codex`, logged in), or both. `check
+--preflight` above checks the ones the project uses on this machine, with no model
+call, and prints the repair for anything missing. macOS is where planestro is used
+day to day; Linux runs its CI; Windows is untried.
 
 `init` makes the planning folder a git repository of its own when it is not one
 already, and commits the seed files: that history is the audit trail. Keep any
@@ -173,8 +179,9 @@ remote you push it to private. If `origin/HEAD` is not set in your code repo, it
 takes the branch checked out and says so; pass `--default-branch` to choose.
 
 The engine starts in `dry-run`; once you have watched a dry run against your repo,
-set `engine.mode` to `live` in Settings and **restart the server**: the mode is read
-at startup, and the header says which one is running.
+set `engine.mode` to `live` in Settings, then stop the server (Ctrl+C) and start it
+again: the mode is read at startup. Work is real only once the header says **Live**,
+not **Dry-run**.
 
 planestro is MIT-licensed. It depends on the Claude Agent SDK, which is distributed
 under Anthropic's own terms (see the SDK's README), and runs the agents on your
@@ -308,8 +315,8 @@ The skill runs only when you type it (`disable-model-invocation`), so it costs
 no context until then, and it never changes planestro's state. It finds the data
 dir from the current directory (`planestro.yml`, or `planning/planestro.yml` in
 the repo or its main checkout from a linked worktree), or from `PLANESTRO_DATA_DIR`.
-It runs the CLI from `PLANESTRO_DIR`, else `../planestro` beside the repo, else
-`~/Projects/planestro`. That checkout needs `npm install`. The registered MCP
+It runs the CLI from `PLANESTRO_DIR`, else the checkout the plugin was installed
+from, else `../planestro` beside the repo. That checkout needs `npm install`. The registered MCP
 server is the one on `PLANESTRO_URL` (default `http://127.0.0.1:4300`). Install
 the plugin at **user scope** (the default): workers load project settings, and a
 project-scope install would put the skill in front of them too.

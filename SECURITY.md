@@ -11,7 +11,8 @@ Only the latest `main` is supported.
 ## The trust model: access to the machine is the access control
 
 planestro is a local tool for one developer's own workstation. It has no accounts, no
-login and no access token, and none is planned. Whoever can use the machine as you can
+login and no access token. A pairing token for a server bound beyond loopback is
+planned (#403); until then, binding beyond loopback is yours to protect. Whoever can use the machine as you can
 drive planestro, just as they could already run `git`, `gh`, `claude` or `codex` in
 your terminal. Protect it the way you protect the machine: disk encryption, a screen
 lock, and no other people's accounts on it.

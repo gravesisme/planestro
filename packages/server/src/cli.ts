@@ -4,7 +4,7 @@ import { resolve, join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { SCHEMA_VERSION } from '@planestro/shared';
 import { DataStore } from './store/DataStore.ts';
-import { initDataDir, layoutRefusal } from './init.ts';
+import { initDataDir, layoutRefusal, providerRefusal } from './init.ts';
 import { migrate } from './migrations/index.ts';
 import { locateDataDir, readLocalConfig, TOOL_VERSION, CONFIG_FILE } from './config.ts';
 import { bindHost } from './guard.ts';
@@ -13,7 +13,7 @@ import { desktopNotify } from './notifier.ts';
 
 const USAGE = `planestro ${TOOL_VERSION}
 
-  planestro init <data_dir> --repo <code_repo> [--name N] [--prefix HH] [--default-branch B] [--release-branch B] [--github owner/repo] [--no-commit]
+  planestro init <data_dir> --repo <code_repo> [--name N] [--prefix HH] [--provider claude|codex] [--default-branch B] [--release-branch B] [--github owner/repo] [--no-commit]
   planestro check [data_dir]        validate every file and report
   planestro check [data_dir] --preflight [--offline] [--port N] [--json]
                                     what a first task would stop on, found on this machine with no model call (#337): Node,
@@ -58,7 +58,7 @@ const USAGE = `planestro ${TOOL_VERSION}
 const { values, positionals } = parseArgs({
   allowPositionals: true,
   options: {
-    repo: { type: 'string' }, name: { type: 'string' }, prefix: { type: 'string' }, 'default-branch': { type: 'string' },
+    repo: { type: 'string' }, name: { type: 'string' }, prefix: { type: 'string' }, 'default-branch': { type: 'string' }, provider: { type: 'string' },
     'release-branch': { type: 'string' }, github: { type: 'string' }, layout: { type: 'string' }, 'no-commit': { type: 'boolean' },
     commit: { type: 'boolean' }, 'copy-small': { type: 'boolean' }, data: { type: 'string' },
     help: { type: 'boolean', short: 'h' }, port: { type: 'string' }, host: { type: 'string' }, mock: { type: 'boolean' }, watch: { type: 'boolean' }, open: { type: 'boolean' }, reset: { type: 'boolean' }, 'no-serve': { type: 'boolean' }, all: { type: 'boolean' }, json: { type: 'boolean' }, min: { type: 'string' }, label: { type: 'string' }, closes: { type: 'boolean' }, preflight: { type: 'boolean' }, offline: { type: 'boolean' },
@@ -72,12 +72,14 @@ try {
     case 'init': {
       if (!arg || !values.repo) throw new Error('usage: planestro init <data_dir> --repo <code_repo>');
       const withdrawn = layoutRefusal(values.layout); if (withdrawn) throw new Error(withdrawn);
+      const badProvider = providerRefusal(values.provider); if (badProvider) throw new Error(badProvider);
       const { created } = initDataDir({
         dataDir: arg, codeRepo: values.repo, name: values.name, prefix: values.prefix, defaultBranch: values['default-branch'],
-        releaseBranch: values['release-branch'], github: values.github,
+        releaseBranch: values['release-branch'], github: values.github, provider: values.provider as 'claude' | 'codex' | undefined,
         commit: !values['no-commit'], log,
       });
       log(`initialized ${resolve(arg)} (${created.length} files created)`);
+      log(`next: npm run planestro -- check ${arg} --preflight`);
       break;
     }
     case 'check': {

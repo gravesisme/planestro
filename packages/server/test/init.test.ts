@@ -2,7 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { initDataDir, layoutRefusal } from '../src/init.ts';
+import { initDataDir, layoutRefusal, providerRefusal } from '../src/init.ts';
+import { readConfig } from '../src/config.ts';
+import { runnersInUse } from '../src/preflight.ts';
 import { git } from './helpers.ts';
 
 function codeRepo(branch = 'trunk'): { root: string; repo: string } {
@@ -68,5 +70,23 @@ describe('--layout is withdrawn (#332, D3)', () => {
     expect(layoutRefusal(undefined)).toBeNull();
     expect(layoutRefusal('dir')).toBeNull();
     expect(layoutRefusal('orphan-branch')).toMatch(/withdrawn.*worktree add --orphan -b planning/);
+  });
+});
+
+describe('--provider picks who plans, implements and orchestrates (#333)', () => {
+  it('seeds a Codex-only project whose preflight never asks for Claude, and Claude by default', () => {
+    const { root, repo } = codeRepo();
+    initDataDir({ dataDir: join(root, 'codex-planning'), codeRepo: repo, provider: 'codex', register: false });
+    const codex = readConfig(join(root, 'codex-planning'));
+    expect([codex.defaults.planner, codex.defaults.implementer, codex.orchestrator.model]).toEqual(['codex-gpt-6-astra', 'codex-gpt-6-astra', 'codex-gpt-6-astra']);
+    expect(runnersInUse(codex, [])).toEqual(['codex']);
+    initDataDir({ dataDir: join(root, 'claude-planning'), codeRepo: repo, register: false });
+    expect(runnersInUse(readConfig(join(root, 'claude-planning')), [])).toEqual(['claude']);
+  });
+
+  it('refuses anything but claude or codex', () => {
+    expect(providerRefusal(undefined)).toBeNull();
+    expect(providerRefusal('codex')).toBeNull();
+    expect(providerRefusal('gemini')).toMatch(/use claude or codex/);
   });
 });

@@ -14,6 +14,7 @@ export interface InitOptions {
   defaultBranch?: string;
   releaseBranch?: string;
   github?: string;
+  provider?: 'claude' | 'codex'; // who plans, implements and orchestrates by default (default claude); a Codex-only machine needs no Claude
   gdignore?: boolean;          // default: auto-detect project.godot in the code repo (keeps the Godot editor out of the data dir)
   categories?: string[];       // default: DEFAULT_CATEGORIES; the last one is where uncategorized items land
   register?: boolean;          // remember it in ~/.planestro so a bare `planestro serve` finds it (default true)
@@ -29,6 +30,12 @@ export interface InitOptions {
 export function layoutRefusal(layout: string | undefined): string | null {
   if (layout === undefined || layout === 'dir') return null;
   return `--layout ${layout} was withdrawn: it never made a branch or a worktree. Use a separate folder (the default), or check out the branch yourself as a worktree inside the code repo (git worktree add --orphan -b planning <code_repo>/planning) and run init on that folder: init keeps it out of the code repo's status.`;
+}
+
+/** `--provider` takes `claude` or `codex` (#333): the one choice the main install path asks for. */
+export function providerRefusal(provider: string | undefined): string | null {
+  if (provider === undefined || provider === 'claude' || provider === 'codex') return null;
+  return `--provider ${provider}: use claude or codex (a mixed fleet is set up in Settings → Models afterwards)`;
 }
 
 export const DEFAULT_CATEGORIES = ['Feature', 'Bug', 'Chore', 'Docs', 'Not Yet Categorized'];
@@ -67,6 +74,7 @@ export function initDataDir(o: InitOptions): { created: string[] } {
   const github = o.github ?? detectGithub(codeRepo);
   const relRepo = relative(dataDir, codeRepo) || '.';
   const categories = o.categories?.length ? o.categories : DEFAULT_CATEGORIES;
+  const main = o.provider === 'codex' ? 'codex-gpt-6-astra' : 'opus-5-5';
   const gd = o.gdignore ?? existsSync(join(codeRepo, 'project.godot'));
 
   write(CONFIG_FILE, `# planestro project config — versioned. Machine-specific paths go in planestro.local.yml.
@@ -94,12 +102,13 @@ models:
   - { id: opus-5-5, label: Opus 5.5, claude_model: claude-opus-5-5 }
   - { id: codex-gpt-6-astra, label: Codex GPT-6 Astra, runner: codex, codex_model: gpt-6-astra, codex_transport: app-server, engine_commits: true }
   - { id: fable-5-1, label: Fable 5.1, claude_model: claude-fable-5-1, fallback: opus-5-5 }
-  # A model on the Codex CLI implements but never plans. Its description is what the epic planner routes by;
+  # A Codex model on the exec transport (the default without codex_transport) implements but never plans; one on
+  # app-server, like the row above, plans and orchestrates too. Its description is what the epic planner routes by;
   # hold_for_review parks its pull requests for your eye before they merge.
   # - { id: codex-art, label: Codex Art, runner: codex, hold_for_review: true, description: "All raster art: icons, sprites, illustrations. The Claude models cannot generate images." }
 defaults:
-  planner: opus-5-5
-  implementer: opus-5-5
+  planner: ${main}
+  implementer: ${main}
   category: ${yamlStr(categories.at(-1)!)}
 categories:
 ${categories.map((c) => `  - ${yamlStr(c)}`).join('\n')}
@@ -118,7 +127,7 @@ ci:
   start_timeout_min: 10
   timeout_min: 45
 orchestrator:
-  model: opus-5-5
+  model: ${main}
   may_approve_plans: false
   max_plan_revisions: 2
   may_decide_permissions: false
