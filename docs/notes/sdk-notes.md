@@ -7,6 +7,57 @@ sessions in a throwaway worktree of a real project repo. Runner:
 are in `spikes/out/*.stdout` (gitignored). `packages/server/src/compat.ts`
 pins these versions so planestro can warn when the installed CLI drifts.
 
+## Re-validated 2026-10-20 against Claude Code 2.1.305 and SDK 0.3.305
+
+SDK 0.3.300 → 0.3.305, whose bundled CLI (2.1.305) is the installed one, so the spike ran
+it. Opus 5.5 as planner and implementer, in a throwaway `git init` repo, steps in the
+header's order plus `resume-park`. **Every assumption (a)–(n) passes again**, and gotcha
+19 was exercised for the first time. About $1.50 of usage.
+
+| Step | Result |
+|---|---|
+| `plan` (a)(b) | PASS: `submit_plan` reached via `ToolSearch` in plan mode, `success`, 4 turns, stable session id. Plan mode still routes the allow-listed `submit_plan` through `canUseTool` (gotcha 10), although the SDK's shadowing warning says it will not. |
+| `resume-impl` (c)(d)(j) | PASS: new process, `mode=acceptEdits`, same id, `PELICAN-42` recalled, `AskUserQuestion` reached `canUseTool` and the deny parked it. |
+| `resume-answer` (d)(e) | PASS: `Bash(echo spike-ok)` pre-approved; `uname -a` ran without the callback (gotcha 3). |
+| `resume-park` (e) | PASS: `node -e …` reached `canUseTool`, the deny parked it, no retry. (The step's "probe ran anyway: YES" is a false positive: the model's closing text quoted the command.) |
+| `kill` (f)(h) | PASS: foreground `sleep 25` blocked and backgrounded (gotcha 8); `claude agents --json` found the pid; SIGTERM → `exited with code 143`. The entry now carries `"status":"busy"` and `startedAt` (nothing in planestro reads it). |
+| `resume-after-kill` (f) | PASS: resumed, named the sleep. No zero-turn `result` came first this time (the background sleep died with the process); the engine handles either. |
+| `sessions` (g) | PASS: transcript at the derived path; `getSessionInfo` and `listSessions({dir})` find it. |
+| `budget` (i) | PASS: `error_max_turns`, `error_max_budget_usd`; `query()` still throws after the error result (gotcha 1). |
+| `resume-quote` (k)(l)(m)(n) | PASS: the command hook's quote arrives (16,457 tokens, equal to the stream's window), the SDK's `SessionStart` callback still does not fire on a resume; declining in `UserPromptSubmit` made 0 requests; `total_cost_usd` is the running total ($0.1318 → $0.1657) and the transcript's `cost-state` was the baseline; a cap below the running total still ran 2 requests. Cache TTL 3600 s (gotcha 17). |
+| gotcha 19 (scratch script, `secretHook` with `Bash(tail *)` allow-listed) | PASS: `tail -n 1 .env` (allow-listed) and `cat .env` (built-in read-only) were both refused by the PreToolUse hook before running; the file's content never reached the session. |
+
+Changelog 0.3.301–0.3.305 against what `LiveClaudePort` relies on:
+
+- **0.3.302: an omitted `permissionMode` starts in `default` (third-party providers, telemetry
+  off, fresh install).** No effect: every planestro `query()` passes it (`ports.ts` makes it
+  required). **Fork subagents are on by default** in SDK sessions; a fork run in the background
+  is a background task, which the prompt stream (gotcha 11) already waits on through
+  `background_tasks_changed`. Not exercised live.
+- **0.3.305: servers set with `setMcpServers` were replaced by a same-named server from user
+  settings.** planestro passes `mcpServers` at start with `strictMcpConfig: true` and
+  `settingSources: ['project']`, so neither the bug nor the fix touches it.
+- 0.3.301: per-tool `permission_policy` on sdk MCP server configs, `BUILTIN_TOOL_NAMES`; not used.
+  A full disk while refreshing the login now reads `invalid_request`, not `authentication_failed`.
+- Nothing about `canUseTool`, PreToolUse hooks, `cost-state`/`total_cost_usd`, the stdin
+  stream, `listSessions`/`getSessionInfo` or `maxBudgetUsd`. The rest is `startup()` /
+  `prewarm()` timeouts, the browser SDK and `getContextUsage()`, none of which planestro calls.
+
+**`CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` at server start is expected.** It names bare allow
+entries (`Read, Grep, Glob, mcp__planestro__…`), which only `customAllowedTools` sends,
+and only in `dontAsk` mode: the orchestrator's wakes and the efficiency audit (gotcha 4,
+#153). That mode never consults `canUseTool`, so the warning describes exactly the
+intended behaviour; worker turns (`splitAllowed`) send no bare names and print nothing.
+The SDK emits it from `query()` whenever a `canUseTool` is passed with a bare entry
+(`process.emitWarning`), so the only clean way to silence it is not to pass the
+callback in `dontAsk` mode; that was left as is (the callback is a harmless backstop),
+and the warning is documented here instead. Note the warning is not accurate for plan
+mode (see `plan` above): there the callback is still consulted.
+
+One observation: in the `budget` step the model said it had no `Glob` tool and listed
+files with `find` through Bash (read-only, auto-approved). planestro only allow-lists
+`Glob`, so a session without it loses nothing.
+
 ## Re-validated 2026-09-28 against Claude Code 2.1.284
 
 Same SDK (0.3.251), the installed CLI 2.1.284 (the spike now runs the CLI the engine
@@ -216,8 +267,9 @@ a live worker) would have matched it.
    allow-listed `Bash(tail *)`, gotcha 3's read-only commands, reads in `cwd`,
    edits under acceptEdits); a PreToolUse hook answering
    `permissionDecision: 'deny'` runs before all of them, per the SDK's typings
-   (0.3.251). Not yet exercised by the spike against a live CLI: re-validation
-   should run `tail ~/.ssh/<file>` in a worker turn and see it refused.
+   (0.3.251). Exercised live on 2026-10-20 (CLI 2.1.305, SDK 0.3.305): an
+   allow-listed `tail -n 1 .env` and a read-only `cat .env` were both refused by
+   the hook before running.
 
 ## Engine decisions confirmed by the spike
 

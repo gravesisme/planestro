@@ -718,7 +718,7 @@ redesign and site redesign can follow a clearly labeled experimental release.
   new user. Run additional platforms before expanding support claims.
 
 Current compatibility declarations, not newly executed live certifications:
-Claude Code **2.1.284**, Agent SDK **0.3.251** (validated September 28);
+Claude Code **2.1.305**, Agent SDK **0.3.305** (validated October 20);
 Codex CLI **0.154.0** (validated October 7), from
 [compat.ts](../packages/server/src/compat.ts). This audit spent no model quota
 and created no GitHub test repositories or PRs.
