@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
+import { planestroHome } from './machinePolicy.ts';
 import { pidAlive, takePidLock } from './store/pidLock.ts';
 import { supervisorLockPath } from './supervise.ts';
 
@@ -125,7 +126,7 @@ export function formatInspect(r: ShrinkReport): string[] {
     if (r.otherHolders.length) out.push(`  also holding the old journal history (their objects stay until they go): ${r.otherHolders.join(', ')}`);
   }
   for (const x of r.refusals) out.push(`  REFUSED: ${x}`);
-  if (!r.refusals.length) out.push(r.journalCommits ? '  dry run: nothing changed. --apply backs the branch up to a bundle, rewrites it, and prints the push for you to run.' : '  nothing to do: the branch never tracked journal/.');
+  if (!r.refusals.length) out.push(r.journalCommits ? '  dry run: nothing changed. --apply backs the branch up to a bundle, rewrites it, and prints the push for you to run.' : '  nothing to do: no commit on the branch touches journal/.');
   return out;
 }
 
@@ -139,7 +140,7 @@ export function applyShrink(dataDirIn: string, o: { backupDir?: string; tool?: S
   const log = o.log ?? (() => {});
   const r = inspectShrink(dataDirIn, { fetch: true, tool: o.tool });
   if (r.refusals.length) throw new Error(`refused:\n- ${r.refusals.join('\n- ')}`);
-  if (!r.journalCommits) throw new Error('nothing to do: the branch never tracked journal/');
+  if (!r.journalCommits) throw new Error('nothing to do: no commit on the branch touches journal/');
   const dataDir = r.dataDir, branch = r.branch!;
   const lockPath = join(dataDir, '.planestro', 'lock');
   mkdirSync(dirname(lockPath), { recursive: true });
@@ -152,7 +153,10 @@ export function applyShrink(dataDirIn: string, o: { backupDir?: string; tool?: S
 
     // 1. The backup, verified to hold the branch tip before anything is rewritten.
     const stamp = (o.now?.() ?? new Date()).toISOString().replace(/[:.]/g, '-');
-    const bundle = join(resolve(o.backupDir ?? dirname(dataDir)), `${basename(dataDir)}-${branch.replace(/[\/\\]/g, '-')}-before-shrink-${stamp}.bundle`);
+    // Never beside the data dir: a planning worktree's parent is the code repository's working tree (#409).
+    const backupDir = resolve(o.backupDir ?? join(planestroHome(), 'backups'));
+    mkdirSync(backupDir, { recursive: true });
+    const bundle = join(backupDir, `${basename(dirname(dataDir))}-${basename(dataDir)}-${branch.replace(/[\/\\]/g, '-')}-before-shrink-${stamp}.bundle`);
     log(`backing up ${branch} to ${bundle}`);
     run(dataDir, ['bundle', 'create', bundle, branch]);
     run(dataDir, ['bundle', 'verify', '-q', bundle]);
