@@ -311,6 +311,7 @@ own steps, not engine work. They stay as checklists below and are not issues.
 | P3 | SECURITY.md and trust-model refresh | | | Done on this branch |
 | P9 | Remove the model API-key paths | | | Done on this branch |
 | P8 | Release v1.0.0 | Version bump, release notes, tag | | Checklist, not an issue |
+| P13 | Branching: `main` ← `develop` ← feature branches | `develop` default and PR target (Dependabot too), CI on both, install from `main`, auto-update follows `main` (releases only), hotfix path in CONTRIBUTING; branch protection on both at the visibility flip (not available on a free private repo); the first `develop` → `main` merge is v1.0.0 | S | #443: set up 2026-10-20, protection pending the flip |
 
 Deferred until after 1.0 and not proposed as issues yet: guided onboarding and
 welcome screen, new-item simplification and sample tour (O6), user study,
@@ -657,6 +658,10 @@ investment: a reliable, short path to a reviewed change is.
 
 Complete this short gate before changing visibility. The complete onboarding
 redesign and site redesign can follow a clearly labeled experimental release.
+
+- [ ] Right after the flip, protect `main` and `develop` (#443): required `check`, no force
+  pushes, and `main` taking only PRs from `develop` or `hotfix/*`. GitHub offers branch protection
+  on a private repository only with Pro, so it waits for the repository to be public.
 
 - [x] Merge R1–R5's security/data-loss fixes; confirm the safeguards remain in the
   current source. They are already merged, not waiting in the old review worktree.

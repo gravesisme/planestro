@@ -9,7 +9,7 @@ import { atomicWrite } from './store/atomicWrite.ts';
 /**
  * `serve --watch` keeping its own planestro checkout current (#103). Each project runs planestro from a
  * clone of its own (HH and LM shared one, where planestro is also developed, and a branch switch went
- * live on both: 2026-09-28). This moves that clone, never the data dir, to the newest `main` commit whose
+ * live on both: 2026-09-28). This moves that clone, never the data dir, to the newest `main` commit (main is releases only, #443) whose
  * CI passed and has been green for `min_age_hours`; the supervisor's own watch then drains and restarts.
  * The choices are pure functions below; `checkForUpdate` does the git and GitHub around them.
  */

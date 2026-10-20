@@ -40,7 +40,7 @@ Codex draws the art and Claude writes the code that uses it.
 ## Try it in a minute — no repo, no GitHub, no Claude login
 
 ```sh
-git clone https://github.com/gravesisme/planestro && cd planestro
+git clone --branch main https://github.com/gravesisme/planestro && cd planestro
 npm install && npm run build
 npm run sample          # http://127.0.0.1:4310
 ```
