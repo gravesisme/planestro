@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { validateBreakdown, canPlan, childrenFromList, type BreakdownChild, type ChildListFormat } from '@planestro/shared';
+import { validateBreakdown, canPlan, childrenFromList, type BreakdownChild, type ChildListFormat } from '@planestro/shared/view';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { ActionButton, ActionGroup } from './ActionButton.tsx';

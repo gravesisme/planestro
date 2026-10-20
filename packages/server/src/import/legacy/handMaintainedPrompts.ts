@@ -1,5 +1,5 @@
 import { readFileSync, existsSync, statSync } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { basename, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { isoLocal, slugify } from '@planestro/shared';
 import type { DataStore } from '../../store/DataStore.ts';

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, NavLink, useNavigate, useParams } from 'react-router';
-import { charCount, nextVersions, releaseMarkdown, sectionPresetOf, RELEASE_STATUSES, type ReleaseSectionDef, type ReleaseStatus } from '@planestro/shared';
+import { charCount, nextVersions, releaseMarkdown, sectionPresetOf, RELEASE_STATUSES, type ReleaseSectionDef, type ReleaseStatus } from '@planestro/shared/view';
 import { api, type ReleaseFields, type ReleaseView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { statusLabel } from '../components/ItemCard.tsx';
@@ -32,7 +32,7 @@ function NewReleaseDialog({ latest, taken, onClose }: { latest?: string; taken: 
         <input placeholder="Title (optional: “Map update”)" value={title} onChange={(e) => setTitle(e.target.value)} />
         <label className="small muted">Aiming for <input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></label>
         {carried.length > 0 && latest && <p className="small muted" style={{ margin: 0 }}>{carried.join(', ')} start as {latest}'s text.</p>}
-        <div className="row"><span className="grow" /><button type="button" onClick={onClose}>Cancel</button><ActionButton className="primary" type="submit" disabled={!version.trim() || taken.has(version.trim())} working="Creating…" onAct={async () => { const r = await act(() => api.createRelease({ version: version.trim(), title: title.trim() || undefined, date: date || undefined })); if (r) { onClose(); nav(`/releases/${encodeURIComponent(r.version)}`); } }}>Create</ActionButton></div>
+        <div className="row"><span className="grow" /><button type="button" onClick={onClose}>Cancel</button><ActionButton className="primary" type="submit" disabled={!version.trim() || taken.has(version.trim())} working="Creating…" onAct={async () => { const r = await act(() => api.createRelease({ version: version.trim(), title: title.trim() || undefined, date: date || undefined })); if (r) { onClose(); void nav(`/releases/${encodeURIComponent(r.version)}`); } }}>Create</ActionButton></div>
       </form>
     </div>
   );
@@ -77,7 +77,7 @@ function ReleaseBody({ release }: { release: ReleaseView }) {
     const r = await act(() => api.patchRelease(release.version, { fields: { version: v } }));
     if (!r) return setVersion(release.version);
     if (planned && confirm(`${plannedLine}. Move them to ${r.version}? (Cancel leaves them naming ${release.version}.)`)) await act(() => api.retargetRelease(release.version, r.version));
-    nav(`/releases/${encodeURIComponent(r.version)}`, { replace: true });
+    void nav(`/releases/${encodeURIComponent(r.version)}`, { replace: true });
   };
   const setStatus = async (status: ReleaseStatus) => {
     const r = await patch({ status });

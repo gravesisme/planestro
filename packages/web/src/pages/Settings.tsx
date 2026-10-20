@@ -1,9 +1,11 @@
 import { Link, useLocation } from 'react-router';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
-  SETTINGS, SETTINGS_TABS, canPlan, fallbackChain, fallbackProblems, findModel, getPath, looksOneOff, settingChanged, settingDefault, shownNumber, storedNumber, suggestedAllowRules, unavailableEntry,
+  SETTINGS, SETTINGS_TABS, canPlan, fallbackChain, fallbackProblems, findModel, getPath, looksOneOff, shownNumber, storedNumber, suggestedAllowRules, unavailableEntry,
   RUNNERS, CODEX_EFFORTS, RELEASE_SECTION_PRESETS, applySectionPreset, sectionPresetOf, categoryColors, suggestCategoryColor, type Config, type ModelDef, type ReleaseSectionDef, type SettingDef, type SettingsTabId,
-} from '@planestro/shared';
+} from '@planestro/shared/view';
+// A key's default is read from the zod schema, so this lazy page alone loads the root entry and zod with it (#408).
+import { settingChanged, settingDefault } from '@planestro/shared';
 import { api, type McpImportCandidate, type McpServerBody, type State } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { DesktopNotifications } from '../components/DesktopNotifications.tsx';

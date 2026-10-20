@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { CiAggregates, UsageGroup, UsageReport } from '@planestro/shared';
-import { formatCiDuration } from '@planestro/shared';
+import type { CiAggregates, UsageGroup, UsageReport } from '@planestro/shared/view';
+import { formatCiDuration } from '@planestro/shared/view';
 import { api } from '../api.ts';
 import { setTitle } from '../tabBadge.ts';
 import { EfficiencyRankingSection } from '../components/EfficiencyPanel.tsx';

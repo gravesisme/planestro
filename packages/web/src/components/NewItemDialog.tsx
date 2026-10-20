@@ -1,7 +1,7 @@
 import { NO_RELEASE } from '../boardFilters.ts';
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
-import { planReviewByDefault, placeholdersIn, renderPrompt, fallbackChain, findModel, canPlan, PRIORITIES, type Config, type ModelDef, type Priority, defaultRelease, openReleases } from '@planestro/shared';
+import { planReviewByDefault, placeholdersIn, renderPrompt, fallbackChain, findModel, canPlan, PRIORITIES, type Config, type ModelDef, type Priority, defaultRelease, openReleases } from '@planestro/shared/view';
 import { api, type PromptView, type State } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { newItemModeNote } from '../engineMode.ts';
@@ -95,7 +95,7 @@ export function NewItemDialog({ onClose, icebox, from }: { onClose: () => void; 
     let text: string;
     try { text = render(); } catch (err) { useStore.setState({ error: (err as Error).message }); return; }
     const r = await act(() => api.createItem({ title, category, ...(priority ? { priority } : {}), ...(release ? { release: release === NO_RELEASE ? null : release } : {}), description: text, kind, planner: kind === 'epic' && planner ? planner : undefined, parent: parent || undefined, implementer: kind === 'item' ? implementer || undefined : undefined, auto_approve_plan: kind === 'item' && orch?.may_approve_plans ? delegate : undefined, allow_model_fallback: allowFallback, status: icebox ? 'ICEBOX' : undefined }));
-    if (r) { onClose(); nav(`/items/${r.id}`); }
+    if (r) { onClose(); void nav(`/items/${r.id}`); }
   };
 
   return (

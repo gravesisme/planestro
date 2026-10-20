@@ -1,6 +1,6 @@
 import { isValidElement, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { Link } from 'react-router';
-import { DISCARD, epicFlagOf, holdShapeOf, type Status } from '@planestro/shared';
+import { DISCARD, epicFlagOf, holdShapeOf, type Status } from '@planestro/shared/view';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { canTakeOver, TakeOverButton } from './TakeOver.tsx';

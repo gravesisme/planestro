@@ -1,7 +1,7 @@
 import { ReleasePicker } from '../components/ReleasePicker.tsx';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
-import { PRIORITIES, managedLimit, canPlan, findModel, modelCapabilities, connectionDropOf, decisionOf, DISCARD, planToolsMissing, mcpBudgetOf, DOLLAR_HINT, epicFlagOf, heldReasonOf, holdShapeOf, kindConversionRefusal, previewOf, loopLine, loopGreen, type Status } from '@planestro/shared';
+import { PRIORITIES, managedLimit, canPlan, findModel, modelCapabilities, connectionDropOf, decisionOf, DISCARD, planToolsMissing, mcpBudgetOf, DOLLAR_HINT, epicFlagOf, heldReasonOf, holdShapeOf, kindConversionRefusal, previewOf, loopLine, loopGreen, type Status } from '@planestro/shared/view';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { reloadText, useResumeEstimate } from '../resumeCost.ts';

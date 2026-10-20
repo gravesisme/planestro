@@ -141,7 +141,7 @@ if (cmd === 'resume-answer') {
       ...BIN_OPT, cwd: CWD, model: IMPLEMENTER, permissionMode: 'acceptEdits', resume: state.session_id,
       mcpServers: { planestro: planestroServer },
       allowedTools: ['mcp__planestro__report_done', 'Bash(echo spike-ok)'],
-      canUseTool: canUseToolLogger((t, input) => t === 'Bash' ? { behavior: 'deny', message: 'Permission requires user approval; the request has been recorded by planestro — end this turn.' } : null),
+      canUseTool: canUseToolLogger((t) => t === 'Bash' ? { behavior: 'deny', message: 'Permission requires user approval; the request has been recorded by planestro — end this turn.' } : null),
     },
   }));
   log(`\n(d2) resumed with the answer: ${r.sessionId === state.session_id ? 'PASS' : 'FAIL'}`);

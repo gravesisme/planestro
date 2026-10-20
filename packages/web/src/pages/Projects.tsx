@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router';
-import { localClock, usageWindowLabel } from '@planestro/shared';
+import { localClock, usageWindowLabel } from '@planestro/shared/view';
 import { api, type ProjectRow } from '../api.ts';
 import { setTitle } from '../tabBadge.ts';
 import { projectHref } from '../projectLink.ts';

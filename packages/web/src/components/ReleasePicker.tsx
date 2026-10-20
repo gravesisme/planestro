@@ -1,4 +1,4 @@
-import { openReleases } from '@planestro/shared';
+import { openReleases } from '@planestro/shared/view';
 import { useStore } from '../store.ts';
 
 /**

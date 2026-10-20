@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, NavLink, useNavigate, useParams } from 'react-router';
-import { parseCron, nextSlot, validTimeZone, PRIORITIES, type Priority } from '@planestro/shared';
+import { parseCron, nextSlot, validTimeZone, PRIORITIES, type Priority } from '@planestro/shared/view';
 import { api, type ScheduleFields, type ScheduleView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { statusLabel } from '../components/ItemCard.tsx';
@@ -61,7 +61,7 @@ function NewScheduleDialog({ taken, onClose }: { taken: Set<string>; onClose: ()
         <input placeholder="Item title (Weekly audit {{date}})" value={title} onChange={(e) => setTitle(e.target.value)} required />
         <textarea placeholder="Item description: what to do each time. {{date}}, {{slot}} and {{schedule}} are filled in." value={description} onChange={(e) => setDescription(e.target.value)} rows={5} />
         <Options value={opts} set={(f) => setOpts({ ...opts, ...f })} />
-        <div className="row"><span className="grow" /><button type="button" onClick={onClose}>Cancel</button><ActionButton className="primary" type="submit" disabled={!name.trim() || !title.trim() || clash} working="Creating…" onAct={async () => { const s = await act(() => api.createSchedule({ name: name.trim(), title: title.trim(), description, cron: cron.trim(), tz: tz.trim(), ...opts })); if (s) { onClose(); nav(`/schedules/${s.name}`); } }}>Create</ActionButton></div>
+        <div className="row"><span className="grow" /><button type="button" onClick={onClose}>Cancel</button><ActionButton className="primary" type="submit" disabled={!name.trim() || !title.trim() || clash} working="Creating…" onAct={async () => { const s = await act(() => api.createSchedule({ name: name.trim(), title: title.trim(), description, cron: cron.trim(), tz: tz.trim(), ...opts })); if (s) { onClose(); void nav(`/schedules/${s.name}`); } }}>Create</ActionButton></div>
       </form>
     </div>
   );

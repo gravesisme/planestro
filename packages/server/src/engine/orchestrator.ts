@@ -1,5 +1,5 @@
 import { nativeApprovalGuidance } from './sessions/nativeApproval.ts';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
 import YAML from 'yaml';
