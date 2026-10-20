@@ -64,6 +64,17 @@ describe('shrink-history (#409)', () => {
     expect(inspectShrink(dir, { fetch: true }).refusals.join('\n')).toMatch(/has commits planning lacks/);
   }, 60_000);
 
+  it("refuses a stash made on the branch, not the code repository's own (they share the store)", () => {
+    const { dir, code } = planningRepo();
+    writeFileSync(join(code, 'app.js'), 'wip\n'); git(code, 'stash', '-q');
+    expect(inspectShrink(dir).refusals).toEqual([]);
+    writeFileSync(join(dir, 'items', 'MP-1.md'), 'wip\n'); git(dir, 'stash', '-q');
+    expect(inspectShrink(dir).refusals.join('\n')).toMatch(/stash entries made on planning \(stash@\{0\}\)/);
+    git(dir, 'stash', 'drop', '-q');
+    expect(inspectShrink(dir).refusals).toEqual([]);
+    expect(git(code, 'stash', 'list')).toMatch(/stash@\{0\}/); // the code's stash is untouched
+  }, 60_000);
+
   it('--apply bundles the branch, rewrites only it, keeps the tree and the journal on disk, and never pushes; --gc after the push', () => {
     const { dir, code, remote } = planningRepo();
     const mainBefore = git(code, 'rev-parse', 'main');

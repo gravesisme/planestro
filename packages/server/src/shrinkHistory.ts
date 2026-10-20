@@ -14,6 +14,7 @@ import { supervisorLockPath } from './supervise.ts';
 // nothing is ever pushed: the force push, leased to the remote tip seen here, is printed for the user to run.
 
 const JOURNAL = 'journal';
+const STASH_REFUSAL = 'there are stash entries made';
 
 export type ShrinkTool = 'filter-repo' | 'filter-branch';
 
@@ -75,7 +76,11 @@ export function inspectShrink(dataDirIn: string, o: { fetch?: boolean; tool?: Sh
   for (const f of ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply', 'BISECT_LOG']) if (existsSync(join(gitDir, f))) r.refusals.push(`a git operation is in progress (${f}): finish or abort it`);
   if (run(dataDir, ['status', '--porcelain', '--untracked-files=normal'])) r.refusals.push('the working tree has changes: commit or move them first (planestro commits its own at startup)');
   if (run(dataDir, ['ls-files', '--cached', '--', JOURNAL]) || tryRun(dataDir, ['cat-file', '-e', `HEAD:${JOURNAL}`]) !== undefined) r.refusals.push('journal/ is still tracked: start planestro once and stop it (it commits "planestro: stop tracking journal"), then run this again');
-  if (tryRun(dataDir, ['rev-parse', '-q', '--verify', 'refs/stash'])) r.refusals.push('there are stash entries: apply or drop them first (git stash list)');
+  // The stash is the whole repository's: a planning worktree shares the code's, whose stashes the rewrite never touches.
+  // Only one made on this branch's history matters: it would hold the old journal and no longer fit the rewritten branch.
+  const stashes = tryRun(dataDir, ['log', '-g', '--format=%gd', 'refs/stash'])?.split('\n').filter(Boolean) ?? [];
+  const onBranch = stashes.filter((s) => tryRun(dataDir, ['merge-base', s, branch]) !== undefined);
+  if (onBranch.length) r.refusals.push(`${STASH_REFUSAL} on ${branch} (${onBranch.join(', ')}): apply or drop them first (git stash list)`);
   if (r.tool === 'filter-branch' && tryRun(dataDir, ['rev-parse', '-q', '--verify', `refs/original/refs/heads/${branch}`])) r.refusals.push(`refs/original/refs/heads/${branch} is left from an earlier rewrite: check it, then delete it (git update-ref -d refs/original/refs/heads/${branch})`);
 
   const remote = tryRun(dataDir, ['config', `branch.${branch}.remote`]);
@@ -206,7 +211,7 @@ export function applyShrink(dataDirIn: string, o: { backupDir?: string; tool?: S
 export function gcShrunk(dataDirIn: string, o: { log?: (m: string) => void } = {}): { before: number; after: number; otherHolders: string[] } {
   const log = o.log ?? (() => {});
   const r = inspectShrink(dataDirIn, { fetch: true, afterRewrite: true });
-  const blocking = r.refusals.filter((x) => !x.startsWith('there are stash entries'));
+  const blocking = r.refusals.filter((x) => !x.startsWith(STASH_REFUSAL));
   if (blocking.length) throw new Error(`refused:\n- ${blocking.join('\n- ')}`);
   if (r.journalCommits) throw new Error(`${r.branch} still carries journal/ (${r.journalCommits} commits): run --apply first`);
   if (r.upstream && run(r.dataDir, ['rev-parse', r.branch!]) !== r.upstream.sha) throw new Error(`${r.upstream.remote}/${r.upstream.ref} is not at ${r.branch}'s tip: push the rewritten branch first (the command --apply printed)`);
