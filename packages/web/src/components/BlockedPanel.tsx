@@ -1,10 +1,10 @@
 import { UsageProviderSwitch } from './UsageProviderSwitch.tsx';
-import { blockHelp } from '@planestro/shared';
+import { blockHelp } from '@planestro/shared/view';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { FINISH_HINT, promptFinishFromWorktree } from './QuickActions.tsx';
 import { Markdown } from './Markdown.tsx';
-import { decisionOf } from '@planestro/shared';
+import { decisionOf } from '@planestro/shared/view';
 import { TriageNote } from './DecisionCard.tsx';
 import { ResumeAfterButton } from './ResumeAfter.tsx';
 import { ActionButton, ActionGroup } from './ActionButton.tsx';

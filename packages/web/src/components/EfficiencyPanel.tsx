@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router';
-import { USAGE_STAGES, type EfficiencyRanking, type ItemEfficiency, type TestWaste, type UsageStage } from '@planestro/shared';
+import { USAGE_STAGES, type EfficiencyRanking, type ItemEfficiency, type TestWaste, type UsageStage } from '@planestro/shared/view';
 import { api } from '../api.ts';
 import { formatValue } from '../usageChart.ts';
 

@@ -1,4 +1,4 @@
-import { partsSummary, type Part } from '@planestro/shared';
+import { partsSummary, type Part } from '@planestro/shared/view';
 
 /** The worker's own progress on multi-part work (f4): one block per part, coloured by state, with the reasons under it. */
 export function PartsStrip({ parts, compact = false }: { parts: Part[]; compact?: boolean }) {

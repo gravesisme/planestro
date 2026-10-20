@@ -71,7 +71,7 @@
   },
   "packages/shared/src/settings.ts": {
     "@typescript-eslint/no-explicit-any": {
-      "count": 6
+      "count": 5
     }
   },
   "packages/shared/src/transitions.ts": {

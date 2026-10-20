@@ -1,4 +1,4 @@
-import { chatAttachmentKind } from '@planestro/shared';
+import { chatAttachmentKind } from '@planestro/shared/view';
 import { isImage } from './uploadImage.ts';
 
 /**

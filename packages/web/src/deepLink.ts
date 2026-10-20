@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { useLocation } from 'react-router';
-import type { JournalEntry } from '@planestro/shared';
+import type { JournalEntry } from '@planestro/shared/view';
 
 /**
  * Deep links that open straight to the decision (#226). A notification links `/items/:id#<kind>` (the server's wait

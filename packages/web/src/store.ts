@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { JournalEntry } from '@planestro/shared';
+import type { JournalEntry } from '@planestro/shared/view';
 import { api, type State, type ItemView, type QuestionView, type NoteView } from './api.ts';
 import { showIfNotification } from './desktopNotify.ts';
 import { watchInput } from './heartbeat.ts';

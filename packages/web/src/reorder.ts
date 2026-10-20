@@ -1,4 +1,4 @@
-import { priorityBand } from '@planestro/shared';
+import { priorityBand } from '@planestro/shared/view';
 import type { ItemView } from './api.ts';
 
 /** The items in `item`'s column (same lane and status), in the order the server lists them: priority band, then rank. */

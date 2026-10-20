@@ -1,5 +1,5 @@
 import { Link } from 'react-router';
-import { DOLLAR_HINT } from '@planestro/shared';
+import { DOLLAR_HINT } from '@planestro/shared/view';
 import { useStore } from '../store.ts';
 import { statusLabel } from '../components/ItemCard.tsx';
 

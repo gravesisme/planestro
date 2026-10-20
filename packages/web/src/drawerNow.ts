@@ -1,4 +1,4 @@
-import { decisionOf, findModel, heldReasonOf, modelCapabilities, waitsFor, type ItemFrontmatter } from '@planestro/shared';
+import { decisionOf, findModel, heldReasonOf, modelCapabilities, waitsFor, type ItemFrontmatter } from '@planestro/shared/view';
 import type { ItemView, State } from './api.ts';
 import { agentStateOf } from './agentState.ts';
 

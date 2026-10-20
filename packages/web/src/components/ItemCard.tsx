@@ -10,7 +10,7 @@ import { confirmMove } from './QuickActions.tsx';
 import { CategoryTag } from './CategoryTag.tsx';
 import { CiCardTag } from './CiBreakdown.tsx';
 import { afterChoices, columnOf, stepMove } from '../reorder.ts';
-import { connectionDropOf, decisionOf, heldReasonOf, previewOf, waitsFor } from '@planestro/shared';
+import { connectionDropOf, decisionOf, heldReasonOf, previewOf, waitsFor } from '@planestro/shared/view';
 
 export function statusLabel(s: string): string { return s.replace(/_/g, ' '); }
 

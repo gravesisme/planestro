@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from 'react';
 import { NavLink, useSearchParams } from 'react-router';
 import { DndContext, MouseSensor, TouchSensor, useSensor, useSensors, useDroppable, closestCenter, pointerWithin, type CollisionDetection, type DragEndEvent, type DragOverEvent } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
-import { findTransition, PRIORITIES, type Priority, type Status, openReleases } from '@planestro/shared';
+import { findTransition, PRIORITIES, type Priority, type Status, openReleases } from '@planestro/shared/view';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { ItemCard, statusLabel } from '../components/ItemCard.tsx';

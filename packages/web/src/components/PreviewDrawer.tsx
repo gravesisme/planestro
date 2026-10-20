@@ -16,7 +16,7 @@ import { DecisionCard } from './DecisionCard.tsx';
 import { PartsStrip } from './PartsStrip.tsx';
 import { ChildrenTable, epicChildren } from './EpicChildren.tsx';
 import { ActivityList } from './ActivityList.tsx';
-import { decisionOf, findModel, modelCapabilities } from '@planestro/shared';
+import { decisionOf, findModel, modelCapabilities } from '@planestro/shared/view';
 import { isActiveItem, nowOf, phaseTrack } from '../drawerNow.ts';
 import { useFullItem } from '../fullItem.ts';
 import { CategoryTag } from './CategoryTag.tsx';

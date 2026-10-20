@@ -1,5 +1,5 @@
-import type { ItemFrontmatter } from '@planestro/shared';
-import { ciBreakdown, formatCiDuration as dur } from '@planestro/shared';
+import type { ItemFrontmatter } from '@planestro/shared/view';
+import { ciBreakdown, formatCiDuration as dur } from '@planestro/shared/view';
 
 // ---- an item's CI at a glance (#181): queued, running, each job by GitHub's own name, re-runs ----
 // Read from what the last CI wait recorded (`op_data.ci_timing`, #179); nothing here asks GitHub again.

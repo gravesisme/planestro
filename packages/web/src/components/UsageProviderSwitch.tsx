@@ -1,5 +1,5 @@
 import { Link } from 'react-router';
-import { canPlan, findModel } from '@planestro/shared';
+import { canPlan, findModel } from '@planestro/shared/view';
 import type { ItemView } from '../api.ts';
 import { useStore } from '../store.ts';
 

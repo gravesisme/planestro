@@ -1,4 +1,4 @@
-import type { UsageCell, UsageGroup, UsageReport } from '@planestro/shared';
+import type { UsageCell, UsageGroup, UsageReport } from '@planestro/shared/view';
 
 // ---- the Usage page's chart, as data (#236): which series, in which colour, and how tall each day stands ----
 

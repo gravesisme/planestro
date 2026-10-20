@@ -1,4 +1,4 @@
-import { heldReasonOf, waitKindOf, type WaitKind } from '@planestro/shared';
+import { heldReasonOf, waitKindOf, type WaitKind } from '@planestro/shared/view';
 import { api, type ItemView } from '../api.ts';
 import { act } from '../store.ts';
 import { land, waitTarget } from '../deepLink.ts';

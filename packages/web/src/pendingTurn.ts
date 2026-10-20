@@ -1,4 +1,4 @@
-import { findModel, resolveTurnModel, unavailableEntry, type ItemFrontmatter } from '@planestro/shared';
+import { findModel, resolveTurnModel, unavailableEntry, type ItemFrontmatter } from '@planestro/shared/view';
 import type { State } from './api.ts';
 
 /** The reason a saved instruction gives when all it lacks is a session slot: the board calls this "waiting for a slot" (#299). */
