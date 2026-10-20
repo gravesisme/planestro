@@ -1,7 +1,9 @@
 import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import type { Context, Hono, MiddlewareHandler } from 'hono';
+import { hostname as osHostname, networkInterfaces, type NetworkInterfaceInfo } from 'node:os';
+import { encode } from 'uqr';
 import { isoLocal, type LocalConfig } from '@planestro/shared';
-import { fromThisMachine } from './guard.ts';
+import { fromThisMachine, isLanAddress, isLoopbackBind } from './guard.ts';
 
 // ---- pairing (#403) ----
 // A server reached from another machine (lan_access, --host) used to answer anyone on the local network. Now a
@@ -78,6 +80,54 @@ export class Pairing {
   private prune(): void { const t = this.now(); for (const [k, exp] of this.codes) if (exp <= t) this.codes.delete(k); }
 }
 
+/** Where the server listens, which decides whether another device can open a pairing link at all. */
+export interface PairBind { host: string; port: number }
+export interface PairNet { interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>; hostname: string }
+/** A QR code as one SVG path over a `size`×`size` grid (quiet zone included): the page draws it, no markup crosses the wire. */
+export interface PairQr { size: number; path: string }
+/** What minting answers: the code, and the links a device on the network can open with it already filled in. */
+export interface MintedCode {
+  code: string; expires_at: string;
+  /** The address the server is bound to, and whether that is loopback only (then no other device can reach it, and `links` is empty). */
+  host: string | null; loopback: boolean;
+  links: string[]; qr?: PairQr;
+}
+
+/**
+ * The /pair links a device on the network can open (#403): none on a loopback bind (nothing else can reach it); the bound
+ * address itself on a specific one; on every interface, each non-internal IPv4 the guard answers (private LAN first,
+ * Tailscale's 100.64/10 after) and the machine's `.local` name when that is what it reports. Only the code is in the
+ * link's query, never a token: the token is minted at /api/pair and kept in a cookie.
+ */
+export function pairLinks(bind: PairBind, code: string, net: PairNet = { interfaces: networkInterfaces(), hostname: osHostname() }): string[] {
+  if (isLoopbackBind(bind.host)) return [];
+  const url = (h: string) => `http://${h.includes(':') ? `[${h}]` : h}:${bind.port}/pair?code=${encodeURIComponent(code)}`;
+  if (bind.host !== '0.0.0.0' && bind.host !== '::') return [url(bind.host)];
+  const tailscale = (a: string) => a.startsWith('100.');
+  const ips = Object.values(net.interfaces).flat()
+    .filter((a): a is NetworkInterfaceInfo => Boolean(a) && a!.family === 'IPv4' && !a!.internal && isLanAddress(a!.address))
+    .map((a) => a.address)
+    .sort((a, b) => Number(tailscale(a)) - Number(tailscale(b)));
+  const name = net.hostname.toLowerCase();
+  return [...new Set([...ips, ...(name.endsWith('.local') ? [name] : [])])].map(url);
+}
+
+/** A QR code of `text`, as runs of dark modules in one path (medium error correction, a 4-module quiet zone). */
+export function qrOf(text: string): PairQr {
+  const { size, data } = encode(text, { ecc: 'M', border: 4 });
+  let path = '';
+  data.forEach((row, y) => {
+    for (let x = 0; x < size; x++) {
+      if (!row[x]) continue;
+      let run = 1;
+      while (x + run < size && row[x + run]) run++;
+      path += `M${x} ${y}h${run}v1h-${run}z`;
+      x += run - 1;
+    }
+  });
+  return { size, path };
+}
+
 /** The token a request carries: `Authorization: Bearer` (an MCP client), else the pairing cookie (the browser). */
 export function requestToken(c: Context): string | undefined {
   const auth = /^Bearer\s+(\S+)\s*$/i.exec(c.req.header('authorization') ?? '')?.[1];
@@ -128,7 +178,7 @@ code{word-break:break-all}
 </style></head>
 <body>
 <h1>Pair this device</h1>
-<p>On the machine running planestro, run <code>planestro pair</code> (or <b>Settings → Access → Paired devices → Pair a device</b> there) and enter the code it shows.</p>
+<p>On the machine running planestro, run <code>planestro pair</code> (or <b>Settings → Access → Paired devices → Pair a device</b> there) and enter the code it shows, or scan its QR code: the code is then filled in for you.</p>
 <form id="pair">
 <label for="code">Code</label><input id="code" name="code" autocomplete="one-time-code" autocapitalize="characters" placeholder="ABCD-EFGH" required>
 <label for="name">This device's name</label><input id="name" name="name" placeholder="phone" maxlength="80">
@@ -139,7 +189,17 @@ code{word-break:break-all}
 </body></html>
 `;
 
-export const PAIR_SCRIPT = `document.getElementById('pair').addEventListener('submit', async (e) => {
+export const PAIR_SCRIPT = `(() => {
+  // A link from Settings or planestro pair carries the one-time code (?code=): fill it in, then take it out of the address
+  // bar and history. Nothing is sent until Pair is tapped, so a wrong or stale link costs one try, like a typed code.
+  const given = new URLSearchParams(location.search).get('code');
+  if (given) {
+    document.getElementById('code').value = given;
+    history.replaceState(null, '', location.pathname);
+    document.getElementById('name').focus();
+  }
+})();
+document.getElementById('pair').addEventListener('submit', async (e) => {
   e.preventDefault();
   const out = document.getElementById('out');
   out.className = ''; out.textContent = 'Pairing…';
@@ -158,7 +218,7 @@ export const PAIR_SCRIPT = `document.getElementById('pair').addEventListener('su
 `;
 
 /** The pairing routes, on the app itself (before `/api`'s own): the page, the trade, minting (this machine only), devices. */
-export function pairingRoutes(app: Hono, pairing: Pairing): void {
+export function pairingRoutes(app: Hono, pairing: Pairing, bind?: PairBind, net?: PairNet): void {
   const asset = (body: string, type: string) => new Response(body, { headers: { 'content-type': type, 'cache-control': 'no-store', 'content-security-policy': `default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'` } });
   app.get('/pair', () => asset(PAIR_PAGE, 'text/html; charset=utf-8'));
   app.get('/pair.js', () => asset(PAIR_SCRIPT, 'text/javascript; charset=utf-8'));
@@ -170,7 +230,13 @@ export function pairingRoutes(app: Hono, pairing: Pairing): void {
     c.header('set-cookie', tokenCookie(r.token));
     return c.json(r);
   });
-  app.post('/api/pairing/code', (c) => fromThisMachine(c) ? c.json(pairing.mint()) : c.json({ error: 'a pairing code is minted only on the machine running planestro (planestro pair, or Settings there)' }, 403));
+  app.post('/api/pairing/code', (c) => {
+    if (!fromThisMachine(c)) return c.json({ error: 'a pairing code is minted only on the machine running planestro (planestro pair, or Settings there)' }, 403);
+    const minted = pairing.mint();
+    const links = bind ? pairLinks(bind, minted.code, net) : [];
+    const body: MintedCode = { ...minted, host: bind?.host ?? null, loopback: bind ? isLoopbackBind(bind.host) : false, links, ...(links[0] ? { qr: qrOf(links[0]) } : {}) };
+    return c.json(body);
+  });
   app.get('/api/pairing/devices', (c) => c.json({ devices: pairing.devices() }));
   app.delete('/api/pairing/devices/:id', (c) => pairing.revoke(c.req.param('id')) ? c.json({ devices: pairing.devices() }) : c.json({ error: `no paired device ${c.req.param('id')}` }, 404));
 }

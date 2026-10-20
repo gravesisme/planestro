@@ -6,7 +6,7 @@ import {
 } from '@planestro/shared/view';
 // A key's default is read from the zod schema, so this lazy page alone loads the root entry and zod with it (#408).
 import { settingChanged, settingDefault } from '@planestro/shared';
-import { api, type McpImportCandidate, type McpServerBody, type State } from '../api.ts';
+import { api, type McpImportCandidate, type McpServerBody, type PairingCode, type State } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { DesktopNotifications } from '../components/DesktopNotifications.tsx';
 import { ActionButton } from '../components/ActionButton.tsx';
@@ -580,9 +580,9 @@ function McpServersCtl({ state }: { state: State }) {
 }
 
 /** Paired devices (#403): a one-time code to pair another (minted only on this machine), and revoke. */
-function DevicesCtl({ state }: { state: State }) {
+export function DevicesCtl({ state }: { state: State }) {
   const devices = state.local.paired_devices ?? [];
-  const [code, setCode] = useState<{ code: string; expires_at: string }>();
+  const [code, setCode] = useState<PairingCode>();
   const mint = async () => { const r = await act(() => api.pairingCode()); if (r) setCode(r); };
   return (
     <div className="models">
@@ -593,8 +593,42 @@ function DevicesCtl({ state }: { state: State }) {
         </div>
       ))}
       {!devices.length && <p className="small muted" style={{ margin: 0 }}>None: only this machine can use planestro.</p>}
-      <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}><ActionButton className="primary" working="Minting…" onAct={mint}>Pair a device</ActionButton></div>
-      {code && <p role="status" className="small">On the device, open <span className="mono">/pair</span> on this server and enter <b className="mono">{code.code}</b> (good until {new Date(code.expires_at).toLocaleTimeString()}, once).</p>}
+      <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}><ActionButton className="primary" working="Minting…" onAct={mint}>{code ? 'New code' : 'Pair a device'}</ActionButton></div>
+      {code && <PairingCodeCard code={code} />}
+    </div>
+  );
+}
+
+/** A minted code: scan the QR on the phone, open a link, or type the code at /pair. One device, ten minutes. */
+function PairingCodeCard({ code }: { code: PairingCode }) {
+  const until = new Date(code.expires_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const [first, ...more] = code.links;
+  const copy = (text: string) => {
+    if (!navigator.clipboard) { complain('could not copy: select the link instead'); return; }
+    navigator.clipboard.writeText(text).then(() => useStore.getState().flash('link copied'), () => complain('could not copy: select the link instead'));
+  };
+  return (
+    <div className="pairing" role="group" aria-label="Pairing code">
+      {code.qr && first && (
+        <svg className="pairing-qr" role="img" aria-label={`QR code for ${first}`} viewBox={`0 0 ${code.qr.size} ${code.qr.size}`} shapeRendering="crispEdges">
+          <rect width={code.qr.size} height={code.qr.size} fill="#fff" /><path d={code.qr.path} fill="#000" />
+        </svg>
+      )}
+      <div className="pairing-text">
+        <div className="pairing-code mono">{code.code}</div>
+        <p className="small muted">For one device, until {until}: it stops working once used.</p>
+        {first
+          ? <>
+              <p className="small">Scan the QR code with the device's camera, or open this link on it. The code is filled in; tap Pair.</p>
+              <div className="pairing-link"><a className="mono" href={first} target="_blank" rel="noreferrer">{first}</a><button className="small" onClick={() => copy(first)}>Copy link</button></div>
+              {more.length > 0 && <details className="small"><summary>Other addresses ({more.length})</summary>
+                <ul>{more.map((l) => <li key={l} className="pairing-link"><a className="mono" href={l} target="_blank" rel="noreferrer">{l}</a><button className="small" onClick={() => copy(l)}>Copy</button></li>)}</ul>
+              </details>}
+            </>
+          : code.loopback
+            ? <p className="small pairing-warn">This server listens on {code.host} only, so another device can't reach it. Turn on <b>Local network access</b> above and restart, or start planestro with <code>--host 0.0.0.0</code>. Then pair again.</p>
+            : <p className="small">On the device, open <span className="mono">/pair</span> on this server (this machine's address and port) and enter the code.</p>}
+      </div>
     </div>
   );
 }
