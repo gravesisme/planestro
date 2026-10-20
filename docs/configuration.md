@@ -292,7 +292,7 @@ Recorded only: nothing is refused or slowed.
 
 | Key | Default | |
 |---|---|---|
-| `test_runs.patterns` | `[]` | Commands that run tests: a command prefix (`npm test`, `./tools/run_checks.sh`) or a `Bash(…)` rule. Empty: nothing is recorded. |
+| `test_runs.patterns` | `[]` | Commands that run tests: a command prefix (`npm test`, `./tools/run_checks.sh`) or a `Bash(…)` rule. Empty: nothing is recorded. Leading wrappers are read past, so one pattern covers `CHECK_JOBS=4 …`, `env FOO=1 …`, `timeout 120 …`, `nice -n 10 …`, `time …`, `command …` and `exec …`; the repeat check compares commands without them. (Permission rules do not: an allow rule still matches the command as written.) |
 | `test_runs.filters` | `[-t, --testNamePattern, --shard, --grep, --only-file]` | Flags that narrow a run to part of the suite. |
 | `test_runs.repeat_flags` | `[--repeat, --stress]` | Flags that make a run a repeated load pass. |
 
