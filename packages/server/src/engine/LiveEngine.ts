@@ -26,12 +26,13 @@ import type { ReviewImage, ReviewDiff, UndoTurnPreview } from './Engine.ts';
 import { ReviewUndo } from './reviewUndo.ts';
 import { WorkerTools, ATTACH_PER_CALL } from './workerTools.ts';
 import { Guards, USAGE_RESUME_GRACE_MS } from './guards.ts';
+import { CleanupReconcile } from './cleanupReconcile.ts';
+import { RESUMABLE_TURN_OPS } from './resumableOps.ts';
 
 /** `schedule` runs `fn` after `ms` and returns a cancel (tests capture it instead of waiting). */
 /** `listenUrl`: where the server answers (`http://127.0.0.1:4300`), the start of notification links unless notifications.base_url says otherwise. */
 export interface EngineOptions { sleep?: (ms: number) => Promise<void>; tickMs?: number; now?: () => string; ciWorkflow?: string; schedule?: (fn: () => void, ms: number) => () => void; listenUrl?: string; /** This machine's load, for the concurrency guard (#330); tests pin it. */ hostLoad?: () => HostLoad | undefined; /** The server's log (serve.log): a failed step's stack goes here (#439). */ log?: (level: 'info' | 'warn' | 'error', message: string) => void }
 
-const RESUMABLE_TURN_OPS = new Set(['planning_turn', 'implement_turn']);
 /** How many of one item's permission requests the orchestrator may refuse before they go to the user instead. */
 const MAX_ORCHESTRATOR_DENIALS = 3;
 const JUDGMENT_BLOCKS = ['turn_error', 'connection_lost', 'no_plan', 'no_commits', 'dirty_tree', 'sync_conflict', 'ci_red', 'ci_red_parked', 'ci_infra', 'ci_timeout', 'ci_blocked', 'ci_disagree', 'base_red', 'pr_closed_externally', 'merge_unverified', 'agent_blocked', 'engine_error'] as const;
@@ -153,19 +154,6 @@ type HeldRebase = { base: string; base_sha: string; before: string; expected: st
 const MAX_REBASE_ROUNDS = 5;
 
 /** A sync that failed, in words (#212): the files it conflicted in, or what git would not overwrite to start it. */
-/**
- * A folder name planestro's `worktrees.dir_pattern` could have made (#416): the shared `.claude/worktrees` root also holds
- * other tools' worktrees (Claude Code's agent-*, a person's perf-*), which no item can own, so they are listed, never woken on.
- */
-export function plannedWorktreeName(pattern: string, prefixLower: string): RegExp {
-  const parts = pattern.split(/(\{\{\s*\w+\s*\}\})/).map((p) => {
-    const ph = /^\{\{\s*(\w+)\s*\}\}$/.exec(p)?.[1];
-    if (!ph) return p.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
-    return ph === 'prefix_lower' ? prefixLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : ph === 'number' ? '\\d+' : '.*';
-  });
-  return new RegExp(`^${parts.join('')}$`);
-}
-
 function syncFailed(r: RebaseResult): string {
   if (!r.refused) return `conflicted in ${r.conflicts.join(', ')}`;
   const { paths, message } = r.refused;
@@ -203,6 +191,8 @@ export class LiveEngine implements Engine {
   private readonly reviewUndo: ReviewUndo;
   /** The pause, the usage and disk guards, model outages and drain (#404, seam 3). */
   private readonly guards: Guards;
+  /** Cleanup after a merge, the reconciler and every move-aside: invariant 7's destructive operations (#404, seam 4). */
+  private readonly cleanupReconcile: CleanupReconcile;
 
   constructor(private readonly store: DataStore, private readonly ports: Ports, private readonly emit: (e: ServerEvent) => void, private readonly opts: EngineOptions = {}) {
     this.mode = ports.mode;
@@ -254,6 +244,24 @@ export class LiveEngine implements Engine {
       schedule: (fn, ms) => this.schedule(fn, ms),
       tick: () => this.tick(),
       accountFor: (fm, def) => this.accountFor(fm, def),
+    });
+    this.cleanupReconcile = new CleanupReconcile({
+      store,
+      ports,
+      get repo() { return repo(); },
+      get github() { return github(); },
+      turns: this.turns,
+      jobs: this.jobs,
+      reviewUndo: this.reviewUndo,
+      now: () => this.now(),
+      absWorktree: (rel) => this.absWorktree(rel),
+      note: (level, message) => this.note(level, message),
+      block: (id, reason, detail) => this.block(id, reason, detail),
+      runJob: (id, fn) => this.runJob(id, fn),
+      blockClosedPr: (id, n) => this.blockClosedPr(id, n),
+      wakeOrchestrator: (type, item, data) => this.wakeOrchestrator(type, item, data),
+      isByproduct: (path) => this.isByproduct(path),
+      worktreeDirt: (cwd) => this.worktreeDirt(cwd),
     });
     this.orchestrator = new Orchestrator(store, ports, {
       message: (id, text) => this.message(id, text, 'orchestrator'),
@@ -2251,15 +2259,15 @@ export class LiveEngine implements Engine {
     // 1. sync with the base — worker branches rebase, integration branches merge (never rewritten)
     this.store.mutateItem(id, [{ set: { op: integration ? 'syncing_base' : 'rebasing', op_started_at: this.now(), op_data: { ...(fm.op_data ?? {}), base_sha: null } } }], 'engine');
     await this.ports.git.fetch(this.repo);
-    const inTheWay = integration ? await this.clearMergeWorktree(id, cwd, fm.branch!) : [];
-    if (!inTheWay.length) inTheWay.push(...await this.clearForSync(id, cwd, base));
+    const inTheWay = integration ? await this.cleanupReconcile.clearMergeWorktree(id, cwd, fm.branch!) : [];
+    if (!inTheWay.length) inTheWay.push(...await this.cleanupReconcile.clearForSync(id, cwd, base));
     if (inTheWay.length) { this.store.journal.end(opId, id, 'aborted', { reason: 'dirty' }); this.block(id, 'dirty_tree', `the worktree has uncommitted changes, so it cannot be synced: ${inTheWay.slice(0, 5).join(', ')}${inTheWay.length > 5 ? ` and ${inTheWay.length - 5} more` : ''}`); return; }
     const baseSha = await this.ports.git.revParse(this.repo, `origin/${base}`);
     const expected = await this.ports.git.remoteBranchSha(this.repo, fm.branch!);
     // An integration branch moves on GitHub whenever a child merges into it: take that in before merging
     // the base, or the push is refused as non-fast-forward, and a retry refuses the same way (dogfood p53, HH-172).
     if (integration && expected && !(await this.ports.git.isAncestor(cwd, expected, 'HEAD'))) {
-      const own = await this.syncAside(id, cwd, () => this.ports.git.merge(cwd, `origin/${fm.branch}`));
+      const own = await this.cleanupReconcile.syncAside(id, cwd, () => this.ports.git.merge(cwd, `origin/${fm.branch}`));
       if (!own.ok) {
         this.store.journal.end(opId, id, 'aborted', own.refused ? { reason: 'dirty', files: own.refused.paths } : { reason: 'conflict', files: own.conflicts });
         this.block(id, own.refused ? 'dirty_tree' : 'sync_conflict', `merging origin/${fm.branch} into its local copy in ${fm.worktree} ${syncFailed(own)}; resolve by hand`);
@@ -2574,7 +2582,7 @@ export class LiveEngine implements Engine {
     this.note('info', `${id}: PR #${fm.pr} merged into ${base}`);
     this.wakeOrchestrator('pr_merged', id);
     this.announce('on_merge', `${id} merged`, `PR #${fm.pr} merged into ${base}: ${fm.title}`, id);
-    await this.cleanup(id);
+    await this.cleanupReconcile.cleanup(id);
   }
 
   /**
@@ -2655,83 +2663,6 @@ export class LiveEngine implements Engine {
     const byproducts = untracked.filter((f) => this.isByproduct(f));
     const dirty = [...tracked, ...untracked.filter((f) => !this.isByproduct(f))];
     return { clean: dirty.length === 0, dirty, byproducts };
-  }
-
-  /**
-   * Clear the way for a sync, and return what is still in it (empty: go on). The one dirty tree the
-   * sync may clear by itself (dogfood p17): every change is an untracked file that the base now
-   * tracks under the same path. Those are artefacts regenerated in this worktree (a Godot import run
-   * leaves .import sidecars) that collide with the copies another item just merged. They are moved
-   * aside to a folder outside the worktree, never deleted (invariant 7), and the Activity log names
-   * them and where they went. Untracked byproducts are not in the way unless they collide too.
-   * Anything else leaves the tree as it is.
-   */
-  private async clearForSync(id: string, cwd: string, base: string): Promise<string[]> {
-    const { tracked, untracked } = await this.ports.git.dirtyDetail(cwd);
-    const work = untracked.filter((f) => !this.isByproduct(f));
-    if (tracked.length) return [...tracked, ...work];
-    if (!untracked.length) return [];
-    await this.ports.git.fetch(this.repo);
-    const colliding = await this.ports.git.trackedAt(cwd, `origin/${base}`, untracked);
-    const hit = new Set(colliding);
-    const stays = work.filter((f) => !hit.has(f));
-    if (stays.length) return stays;
-    if (!colliding.length) return [];
-    const dest = this.displacedDir(id);
-    await this.ports.git.moveAside(cwd, colliding, dest);
-    const left = (await this.worktreeDirt(cwd)).dirty;
-    if (left.length) return left;
-    this.store.mutateItem(id, [{ activity: { actor: 'app', text: `moved ${colliding.length} untracked file${colliding.length === 1 ? '' : 's'} that ${base} now tracks out of the way (regenerated copies; nothing deleted) to ${dest}: ${colliding.slice(0, 12).join(', ')}${colliding.length > 12 ? ', …' : ''}` } }], 'engine', { commit: `${id}: set regenerated files aside` });
-    return [];
-  }
-
-  /** Where a sync sets an item's files aside: outside every worktree, never deleted (invariant 7). */
-  private displacedDir(id: string): string {
-    return join(this.store.worktreesRoot(), '.displaced', `${id.toLowerCase()}-${this.now().replace(/[:+]/g, '-')}`);
-  }
-
-  /**
-   * Run a sync, and once more if git refused it only over untracked files it would overwrite (#212): files the
-   * incoming side now tracks (a byproduct regenerated here, an epic's child adding what this worktree made). They
-   * are set aside as clearForSync sets them aside, moved and never deleted. Any other refusal is returned as it is.
-   */
-  private async syncAside(id: string, cwd: string, run: () => Promise<RebaseResult>): Promise<RebaseResult> {
-    const r = await run();
-    const paths = r.refused?.paths ?? [];
-    if (!paths.length) return r;
-    const { untracked } = await this.ports.git.dirtyDetail(cwd);
-    if (!paths.every((p) => untracked.includes(p))) return r;
-    const dest = this.displacedDir(id);
-    await this.ports.git.moveAside(cwd, paths, dest);
-    this.store.mutateItem(id, [{ activity: { actor: 'app', text: `git would not overwrite ${paths.length} untracked file${paths.length === 1 ? '' : 's'} the sync brings in; moved ${paths.length === 1 ? 'it' : 'them'} aside (nothing deleted) to ${dest}: ${paths.slice(0, 12).join(', ')}${paths.length > 12 ? ', …' : ''}; syncing again` } }], 'engine', { commit: `${id}: set untracked files aside` });
-    return run();
-  }
-
-  /**
-   * An epic's merge worktree (`merge-<id>`) is written only by planestro and its one-shot sessions, so changes
-   * left in it are leftovers, not work (HH-260: a conflict session pushed, left the tree dirty, and the next sync
-   * was refused). Before merging, they are set aside (#212): the tips are logged first, untracked files are moved
-   * and changed tracked files copied to `.displaced/`, then the tree goes back to its own HEAD. Returns what is
-   * still in the way (empty: go on); a merge or rebase left half-done, or a path that cannot be copied, stays.
-   */
-  private async clearMergeWorktree(id: string, cwd: string, branch: string): Promise<string[]> {
-    if (basename(cwd) !== `merge-${id.toLowerCase()}`) return [];
-    const { tracked, untracked } = await this.ports.git.dirtyDetail(cwd);
-    const loose = untracked.filter((f) => !this.isByproduct(f));
-    const dirt = [...tracked, ...loose];
-    if (!dirt.length) return [];
-    // A rename shows as `old -> new`; a quoted path (unusual characters) cannot be copied by name, so a person looks.
-    const changed = tracked.flatMap((t) => t.split(' -> '));
-    if (changed.some((t) => t.startsWith('"')) || await this.ports.git.inProgressOp(cwd)) return dirt;
-    const head = await this.ports.git.revParse(cwd, 'HEAD');
-    const remote = await this.ports.git.remoteBranchSha(this.repo, branch);
-    const dest = this.displacedDir(id);
-    this.store.mutateItem(id, [{ activity: { actor: 'app', text: `the merge worktree ${cwd} has changes nothing committed (${dirt.slice(0, 12).join(', ')}${dirt.length > 12 ? ', …' : ''}) at ${head.slice(0, 7)}, origin/${branch} at ${remote ? remote.slice(0, 7) : '(not pushed)'}; setting them aside to ${dest} (nothing deleted) and putting the tree back on ${head.slice(0, 7)} before merging` } }], 'engine', { commit: `${id}: set merge worktree changes aside` });
-    if (loose.length) await this.ports.git.moveAside(cwd, loose, dest);
-    const files = await this.ports.git.filesUnder(cwd, changed);
-    if (files.length && (await this.ports.git.copyInto(cwd, files, dest)).collided.length) return dirt;
-    await this.ports.git.resetHard(cwd, head);
-    return (await this.worktreeDirt(cwd)).dirty;
   }
 
   private async onCiRed(id: string, opId: string, headSha: string, logText: string | undefined, source: 'github' | 'local', canFix = true): Promise<void> {
@@ -3180,255 +3111,11 @@ export class LiveEngine implements Engine {
     this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), ci_refired: sha } } }, { activity: { actor: 'app', text: `every CI run for ${sha.slice(0, 7)} skipped its jobs (the PR was a draft when they started) and no other run came; sent ready for review again so CI runs on it` } }], 'engine');
   }
 
-  /**
-   * Before a worktree goes: what `worktrees.keep_on_remove` names is set aside (dogfood p40: a merge
-   * removed HH-161's worktree and the art worker's raw sources in its git-ignored tmp/ with it).
-   * Moved, never deleted (invariant 7), to a folder the Activity log names. Returns that line.
-   */
-  private async setAsideBeforeRemove(id: string, cwd: string): Promise<string | undefined> {
-    const keep = this.keptPaths();
-    const byproducts = this.store.config.worktrees.byproducts.length ? (await this.worktreeDirt(cwd).catch(() => ({ byproducts: [] as string[] }))).byproducts : [];
-    if (!keep.length && !byproducts.length) return undefined;
-    // Only what git does not track: a tracked file (HH's tmp/.gdignore) moved away is a deletion,
-    // which leaves the worktree dirty and `git worktree remove` refuses it (dogfood p46). The
-    // branch is merged, so its tracked files are safe in history anyway.
-    const under = keep.length ? await this.ports.git.filesUnder(cwd, keep).catch(() => [] as string[]) : [];
-    const tracked = new Set(under.length ? await this.ports.git.trackedAt(cwd, 'HEAD', under).catch(() => under) : []);
-    const files = under.filter((f) => !tracked.has(f));
-    // Byproducts are untracked by definition; `git worktree remove` refuses a tree that has them.
-    const regenerated = byproducts.filter((f) => !files.includes(f));
-    if (!files.length && !regenerated.length) return undefined;
-    const dest = join(this.store.worktreesRoot(), '.displaced', `${id.toLowerCase()}-${this.now().replace(/[:+]/g, '-')}`);
-    await this.ports.git.moveAside(cwd, [...files, ...regenerated], dest);
-    const n = (k: number, what: string) => `${k} ${what}${k === 1 ? '' : 's'}`;
-    const what = [
-      ...(files.length ? [`${n(files.length, 'file')} under ${keep.join(', ')} (worktrees.keep_on_remove)`] : []),
-      ...(regenerated.length ? [`${n(regenerated.length, 'byproduct')} (worktrees.byproducts)`] : []),
-    ];
-    return `set aside ${what.join(' and ')} before removing the worktree: ${dest}`;
-  }
-
-  /**
-   * A merged item's worktree folder that git no longer lists (#356: a `git worktree remove` that dropped the registration
-   * and left files behind, so every retry failed with "is not a working tree"). Unlisted and holding no `.git`, it is not a
-   * worktree any more: its files are moved to `.displaced/`, never deleted (invariant 7), and the empty folder goes.
-   */
-  private async setAsideLeftover(id: string, cwd: string): Promise<void> {
-    const dest = this.displacedDir(id);
-    const files = await this.ports.git.setAsideLeftover(cwd, dest);
-    if (!files) return;
-    const n = files.length;
-    this.store.mutateItem(id, [{ activity: { actor: 'app', text: `the worktree ${cwd} was already unregistered in git; ${n ? `moved the ${n} file${n === 1 ? '' : 's'} left in it to ${dest} (${files.slice(0, 12).join(', ')}${n > 12 ? ', …' : ''}) and ` : ''}removed the empty folder` } }], 'engine');
-  }
-
-  /** What is set aside when a worktree goes: keep_on_remove, and what copy_to_checkout copies (a copy keeps its original too). */
-  private keptPaths(): string[] {
-    const w = this.store.config.worktrees;
-    return [...new Set([...w.keep_on_remove, ...w.copy_to_checkout])];
-  }
-
-  /**
-   * After a merge, before the worktree goes (#72): the untracked files under `worktrees.copy_to_checkout`
-   * are copied to the same paths in the main checkout. A sandboxed worker (the art runner) cannot write
-   * there, and every art brief's "copy the raws into the main tmp/" step waited on a person. Never
-   * over a file with other content: that one stays only in .displaced/. Throws when a copy fails.
-   */
-  private async copyToCheckout(cwd: string): Promise<string | undefined> {
-    const paths = this.store.config.worktrees.copy_to_checkout;
-    if (!paths.length) return undefined;
-    const under = await this.ports.git.filesUnder(cwd, paths);
-    const tracked = new Set(under.length ? await this.ports.git.trackedAt(cwd, 'HEAD', under) : []);
-    const files = under.filter((f) => !tracked.has(f) && !this.isByproduct(f));
-    if (!files.length) return undefined;
-    const { copied, identical, collided } = await this.ports.git.copyInto(cwd, files, this.repo);
-    const n = (k: number) => `${k} file${k === 1 ? '' : 's'}`;
-    return [
-      `copied ${n(copied.length)} under ${paths.join(', ')} into the main checkout (worktrees.copy_to_checkout)`,
-      ...(identical.length ? [`${n(identical.length)} already there`] : []),
-      ...(collided.length ? [`${n(collided.length)} not copied because the checkout has a different file at that path, kept only in .displaced/: ${collided.slice(0, 10).join(', ')}${collided.length > 10 ? ', …' : ''}`] : []),
-    ].join('; ');
-  }
-
-  private async cleanup(id: string): Promise<void> {
-    const item = this.store.requireItem(id);
-    const fm = item.file.frontmatter;
-    // Only a merged item is cleaned up: a second cleanup queued behind one that already finished it has nothing to do (#214).
-    if (fm.status !== 'MERGED') return;
-    // A person may be standing in the worktree: it and the branch stay until the item is handed back.
-    if (fm.taken_over) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: 'merged; its worktree and branch stay until you hand the item back' } }], 'engine'); return; }
-    const d = this.store.derived(item);
-    if (d.flavor === 'external' && (fm.merge_policy ?? 'watch') === 'watch') {
-      this.store.mutateItem(id, [{ transition: { to: 'FINISHED', actor: 'engine' } }, { activity: { actor: 'app', text: 'externally driven: no local resources to clean (the remote branch is not planestro\'s to delete)' } }], 'engine', { commit: `${id}: finish` });
-      return;
-    }
-    const base = d.base_branch!;
-    const opId = this.store.journal.begin('cleaning_up', id, { branch: fm.branch });
-    this.store.mutateItem(id, [{ set: { op: 'cleaning_up', op_started_at: this.now() } }], 'engine');
-    // invariant 7: positive evidence before anything is deleted
-    try {
-      // No worktree path left means it was already removed, like a worktree missing from `git worktree list`.
-      const cwd = fm.worktree ? this.absWorktree(fm.worktree) : undefined;
-      await this.ports.git.fetch(this.repo);
-      const view = await this.ports.gh.prView(this.github, fm.pr!);
-      // The proof covers exactly what is about to be deleted — the worktree's HEAD and the
-      // local and remote branch tips, whichever still exist — never a remembered sha: a branch
-      // pushed or merged outside planestro leaves ci_head_sha stale (dogfood p39). When all
-      // three are already gone (removed by hand), a merged PR leaves nothing to prove.
-      const tips: Array<[string, string]> = [];
-      const worktrees = await this.ports.git.worktreeList(this.repo);
-      if (cwd && worktrees.some((w) => w.path === cwd)) tips.push(['worktree HEAD', await this.ports.git.revParse(cwd, 'HEAD')]);
-      const localTip = fm.branch && await this.ports.git.localBranchExists(this.repo, fm.branch) ? await this.ports.git.revParse(this.repo, `refs/heads/${fm.branch}`) : null;
-      if (localTip) tips.push([fm.branch!, localTip]);
-      const remoteTip = fm.branch ? await this.ports.git.remoteBranchSha(this.repo, fm.branch) : null;
-      if (remoteTip) tips.push([`origin/${fm.branch}`, remoteTip]);
-      const stranded: string[] = [];
-      for (const [what, sha] of tips) if (!await this.ports.git.isAncestor(this.repo, sha, `origin/${base}`)) stranded.push(`${what} ${sha.slice(0, 7)}`);
-      if (view.state !== 'MERGED' || stranded.length) { this.store.journal.end(opId, id, 'aborted', { reason: 'unverifiable', stranded }); this.block(id, 'cleanup_unverifiable', view.state !== 'MERGED' ? `PR #${fm.pr} is ${view.state}; nothing was deleted` : `cannot prove ${stranded.join(', ')} reachable from origin/${base}; nothing was deleted`); return; }
-      const { clean } = cwd && worktrees.some((w) => w.path === cwd) ? await this.worktreeDirt(cwd) : { clean: true };
-      if (!clean) { this.store.journal.end(opId, id, 'aborted', { reason: 'dirty' }); this.block(id, 'cleanup_dirty', 'the worktree has uncommitted changes after the merge; remove it by hand or discard them'); return; }
-      if (cwd && !worktrees.some((w) => w.path === cwd)) await this.setAsideLeftover(id, cwd);
-      else if (cwd) {
-        let copied: string | undefined;
-        try { copied = await this.copyToCheckout(cwd); }
-        catch (e) { this.store.journal.end(opId, id, 'aborted', { reason: 'copy_failed' }); this.block(id, 'cleanup_dirty', `copying ${this.store.config.worktrees.copy_to_checkout.join(', ')} into the main checkout failed (${(e as Error).message.replace(/\s+/g, ' ').slice(0, 200)}); nothing was removed`); return; }
-        if (copied) this.store.mutateItem(id, [{ activity: { actor: 'app', text: copied } }], 'engine');
-        const kept = await this.setAsideBeforeRemove(id, cwd);
-        if (kept) this.store.mutateItem(id, [{ activity: { actor: 'app', text: kept } }], 'engine');
-        try { await this.ports.git.worktreeRemove(this.repo, cwd, false); }
-        catch (e) {
-          // Git can drop the registration and still fail to delete the folder (#356): unlisted now, what is left is a leftover.
-          if ((await this.ports.git.worktreeList(this.repo)).some((w) => w.path === cwd)) throw e;
-          await this.setAsideLeftover(id, cwd);
-        }
-      }
-      await this.ports.git.worktreePrune(this.repo);
-      await this.ports.git.deleteLocalBranch(this.repo, fm.branch!, localTip);
-      if (d.flavor !== 'external') await this.ports.git.deleteRemoteBranch(this.repo, fm.branch!, remoteTip);
-      const dropped = await this.reviewUndo.dropCheckpoints(id);
-      this.store.mutateItem(id, [
-        { transition: { to: 'FINISHED', actor: 'engine' } },
-        { unset: ['op', 'op_started_at'] },
-        { activity: { actor: 'app', text: `removed worktree and branch ${fm.branch} (local + remote)${dropped ? `; ${dropped}` : ''}` } },
-      ], 'engine', { commit: `${id}: finish` });
-      this.store.journal.end(opId, id, 'ok');
-      this.note('info', `${id}: finished`);
-    } catch (e) {
-      this.store.journal.end(opId, id, 'aborted', { reason: 'verification_failed' });
-      this.block(id, 'cleanup_unverifiable', `cleanup stopped; remaining resources were kept: ${(e as Error).message}`);
-    }
-  }
-
-  // ---- reconciliation (Phase 5): cross-check persisted state against the world ----
-  /**
-   * Never assumes an operation completed and never deletes on its own authority
-   * (invariant 7 — deletions still go through cleanup's positive-evidence checks).
-   * Every correction is logged to the item's Activity as `reconcile: …`.
-   * One pass at a time: its GitHub reads retry for about a minute each, and during an outage the five-minute timer stacked passes.
-   */
-  private reconciling?: Promise<string[]>;
-  reconcile(source: 'startup' | 'periodic' | 'manual'): Promise<string[]> {
-    if (this.reconciling) return this.reconciling;
-    this.reconciling = this.reconcileOnce(source).finally(() => { this.reconciling = undefined; });
-    return this.reconciling;
-  }
-  private async reconcileOnce(source: 'startup' | 'periodic' | 'manual'): Promise<string[]> {
-    const corrections: string[] = [];
-    const correct = (id: string, text: string, ops: ItemOp[] = []) => {
-      corrections.push(`${id}: ${text}`);
-      this.store.mutateItem(id, [...ops, { activity: { actor: 'app', text: `reconcile: ${text}` } }], 'engine');
-    };
-    await this.ports.git.fetch(this.repo).catch(() => undefined);
-    const worktrees = await this.ports.git.worktreeList(this.repo).catch(() => []);
-    const remoteHeads = await this.ports.git.remoteHeads(this.repo).catch(() => new Map<string, string>());
-    const github = this.store.config.code_repo.github;
-    for (const item of this.store.listItems()) {
-      const fm = item.file.frontmatter;
-      const id = item.id;
-      const d = this.store.derived(item);
-      const wtAbs = fm.worktree ? this.absWorktree(fm.worktree) : undefined;
-      const wtEntry = wtAbs ? worktrees.find((w) => w.path === wtAbs) : undefined;
-      try {
-        // stale in-flight ops (turn ops are handled by resumeInterrupted)
-        if (fm.op && !RESUMABLE_TURN_OPS.has(fm.op) && !this.jobs.has(id) && !this.turns.has(id)) {
-          if (fm.op === 'rebasing' || fm.op === 'syncing_base') {
-            // A sync between turns (syncWithBase) has no CI verdict to reset; the merge step's does.
-            const pendingCi: ItemOp[] = fm.status === 'IN_REVIEW' ? [{ set: { ci_result: 'pending' } }] : [];
-            if (wtAbs && wtEntry && await this.ports.git.inProgressOp(wtAbs)) { await this.ports.git.abortInProgress(wtAbs); correct(id, `aborted a half-done ${fm.op} left by a crash`, [{ unset: ['op', 'op_started_at'] }, ...pendingCi]); }
-            else correct(id, `cleared stale op ${fm.op}`, [{ unset: ['op', 'op_started_at'] }, ...pendingCi]);
-          } else if (fm.op === 'pushing' || fm.op === 'creating_pr') {
-            const pr = github && fm.branch ? (await this.ports.gh.prList(github, { head: fm.branch, state: 'open' }))[0] : undefined;
-            if (pr && fm.status === 'IN_PROGRESS') correct(id, `adopted PR #${pr.number} opened before the crash`, [{ transition: { to: 'IN_REVIEW', actor: 'engine' } }, { set: { pr: pr.number, ci_result: 'pending' } }, { unset: ['op', 'op_started_at'] }]);
-            else correct(id, `cleared stale op ${fm.op}; the pipeline will retry`, [{ unset: ['op', 'op_started_at'] }]);
-          } else if (fm.op === 'merging' || fm.op === 'cleaning_up' || fm.op === 'awaiting_ci' || fm.op === 'running_local_checks') {
-            correct(id, `cleared stale op ${fm.op}`, [{ unset: ['op', 'op_started_at'] }, ...(fm.status === 'IN_REVIEW' ? [{ set: { ci_result: 'pending' as const } }] : [])]);
-          } else if (fm.op === 'creating_worktree' || fm.op === 'importing') {
-            correct(id, `restart during ${fm.op}; re-running setup`, [{ unset: ['op', 'op_started_at'] }]);
-            if (fm.status === 'PLAN_IN_PROGRESS' && !wtEntry) this.store.mutateItem(id, [{ transition: { to: 'QUEUED', actor: 'engine' } }], 'engine');
-          }
-        }
-        // pull request truth
-        // Not while a job or turn drives the item: the merge queue merging it is not "merged outside planestro".
-        if (fm.pr && github && (fm.status === 'IN_REVIEW' || fm.status === 'MERGED' || fm.status === 'IN_PROGRESS') && !this.jobs.has(id) && !this.turns.has(id)) {
-          const pr = await this.ports.gh.prView(github, fm.pr).catch(() => undefined);
-          // The item as it is after that wait, not as it was read before it: LM-22's merge job moved it to MERGED in the
-          // same second, and the stale IN_REVIEW read tried MERGED → MERGED and blocked a finished item as engine_error.
-          const now = this.store.getItem(id)?.file.frontmatter;
-          if (!now || now.status !== fm.status || this.jobs.has(id) || this.turns.has(id)) continue;
-          if (pr?.state === 'MERGED' && (fm.status === 'IN_REVIEW' || fm.status === 'IN_PROGRESS')) {
-            if (fm.status === 'IN_PROGRESS') this.store.mutateItem(id, [{ transition: { to: 'IN_REVIEW', actor: 'engine' } }], 'engine');
-            correct(id, `PR #${fm.pr} was merged outside planestro`, [{ transition: { to: 'MERGED', actor: 'engine' } }, { set: { merged_at: pr.mergedAt ? isoLocal(new Date(pr.mergedAt)) : this.now(), ci_result: 'green' } }]);
-            this.runJob(id, () => this.cleanup(id));
-          } else if (pr?.state === 'CLOSED' && fm.status === 'IN_REVIEW' && !fm.blocked && !fm.taken_over) {
-            await this.blockClosedPr(id, fm.pr);
-            corrections.push(`${id}: PR #${fm.pr} closed externally`);
-          } else if (pr?.state === 'OPEN' && fm.status === 'IN_REVIEW' && fm.ci_head_sha && pr.headRefOid !== fm.ci_head_sha && fm.ci_result !== 'pending') {
-            correct(id, `branch tip moved (${pr.headRefOid.slice(0, 7)}); CI verdict discarded`, [{ set: { ci_result: 'pending' } }]);
-          }
-        }
-        // worktree truth (never recreate silently: local commits could be lost). Not while a job owns the item or
-        // its worktree is being made, and only on a fresh read: the list and `fm` above can predate the
-        // `git worktree add` of startItem / recreateWorktree / planEpic (dogfood p55, LM-12).
-        const gone = d.flavor === 'worker' && wtAbs && !wtEntry && !this.jobs.has(id) && !(await this.ports.git.worktreeList(this.repo).catch(() => worktrees)).some((w) => w.path === wtAbs);
-        const cur = gone && !this.jobs.has(id) ? this.store.getItem(id)?.file.frontmatter : undefined;
-        if (cur && cur.worktree === fm.worktree && cur.op !== 'creating_worktree' && cur.op !== 'importing' && ['PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW'].includes(cur.status) && !cur.blocked && !cur.taken_over) {
-          this.block(id, 'worktree_missing', `the worktree ${fm.worktree} no longer exists; status preserved, nothing recreated`);
-          corrections.push(`${id}: worktree missing`);
-        }
-        // MERGED but never finished, or FINISHED leftovers
-        if (fm.status === 'MERGED' && !fm.op && !this.jobs.has(id) && !fm.blocked && !fm.taken_over) { corrections.push(`${id}: resuming cleanup`); this.runJob(id, () => this.cleanup(id)); }
-        // Said once per tip: every five minutes it rewrote the item, its journal and a commit, forever.
-        const leftTip = fm.status === 'FINISHED' && fm.branch && d.flavor !== 'external' ? remoteHeads.get(fm.branch) : undefined;
-        if (leftTip && fm.op_data?.leftover_branch !== leftTip) correct(id, `remote branch ${fm.branch} still exists after finish (left in place; delete by hand or re-run cleanup)`, [{ set: { op_data: { ...(fm.op_data ?? {}), leftover_branch: leftTip } } }]);
-      } catch (e) { corrections.push(`${id}: reconcile error ${(e as Error).message}`); }
-    }
-    // orphans: worktrees under our root that no item references
-    const root = this.store.worktreesRoot();
-    const referenced = new Set(this.store.listItems().map((i) => i.file.frontmatter.worktree && this.absWorktree(i.file.frontmatter.worktree!)).filter(Boolean));
-    // A worktree inside an item's worktree is that item's (a project tool made it: LM-24's look-compare baseline), not an orphan (#100).
-    const inReferenced = (p: string) => [...referenced].some((r) => p.startsWith(`${r}/`));
-    const orphans = worktrees.filter((w) => w.path.startsWith(root + '/') && !referenced.has(w.path) && !inReferenced(w.path));
-    if (orphans.length) {
-      corrections.push(`orphan worktrees: ${orphans.map((o) => o.path).join(', ')}`);
-      // Wake the orchestrator only for an orphan it has not been told about: a wake per reconcile pass would re-ask the same
-      // question every five minutes, and one per change re-asked about LM's four July worktrees whenever a fifth came and went.
-      // Only a folder planestro's dir_pattern could have made is woken on: other tools share the root (#416, HH's agent-*).
-      const key = orphans.map((o) => o.path).sort().join('|');
-      const last = this.store.journal.read({ type: 'reconcile.orphans_reported', limit: 1 })[0];
-      const told = new Set(String(last?.data?.key ?? '').split('|').filter(Boolean));
-      const ours = plannedWorktreeName(this.store.config.worktrees.dir_pattern, this.store.config.project.id_prefix.toLowerCase());
-      const prefix = this.store.config.project.id_prefix.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const epicMerge = new RegExp(`^merge-${prefix}-\\d+$`); // an epic's own merge worktree (mergeEpic) is planestro's too
-      const planned = orphans.filter((o) => ours.test(relative(root, o.path)) || epicMerge.test(relative(root, o.path)));
-      if (planned.some((o) => !told.has(o.path))) {
-        this.store.journal.append({ type: 'reconcile.orphans_reported', actor: 'engine', data: { key, count: orphans.length } });
-        this.wakeOrchestrator('orphans_found', undefined, { worktrees: planned.map((o) => `${o.path} (${o.branch ?? o.head})`).join('\n') });
-      }
-    }
-    this.store.journal.append({ type: 'reconcile.done', actor: 'engine', data: { source, corrections } });
-    if (corrections.length) this.note('warn', `reconcile (${source}): ${corrections.length} correction(s): ${corrections.slice(0, 5).join(' | ')}`);
-    else if (source === 'manual') this.note('info', 'reconcile: everything matches');
-    return corrections;
-  }
+  // ---- cleanup and reconcile (#404, seam 4): cleanup, the reconciler and every move-aside live in cleanupReconcile.ts ----
+  /** Cross-check persisted state against the world, one pass at a time (CleanupReconcile.reconcile). */
+  reconcile(source: 'startup' | 'periodic' | 'manual'): Promise<string[]> { return this.cleanupReconcile.reconcile(source); }
+  /** A merged item's worktree and branches, removed on positive evidence (CleanupReconcile.cleanup). */
+  private cleanup(id: string): Promise<void> { return this.cleanupReconcile.cleanup(id); }
 
   // ---- restart recovery (Phase 3 subset; Phase 5 adds the full reconciler) ----
   private async resumeInterrupted(): Promise<void> {
@@ -3730,7 +3417,7 @@ export class LiveEngine implements Engine {
             { activity: { actor: 'app', text: `observed merge of PR #${pr.number} into ${pr.baseRefName}` } },
           ], 'engine', { commit: `${item.id}: merge (observed)` });
           this.announce('on_merge', `${item.id} merged`, `PR #${pr.number} merged into ${pr.baseRefName}: ${item.file.frontmatter.title}`, item.id);
-          await this.cleanup(item.id);
+          await this.cleanupReconcile.cleanup(item.id);
         } else if (pr.state === 'CLOSED') {
           await this.blockClosedPr(item.id, pr.number);
         }
@@ -4446,7 +4133,7 @@ export class LiveEngine implements Engine {
     this.runJob(id, async () => {
       const opId = this.store.journal.begin('creating_worktree', id, { branch, dir, base, recreate: true });
       this.store.mutateItem(id, [{ set: { op: 'creating_worktree', op_started_at: this.now() } }, { activity: { actor: 'orchestrator', text: `recreating ${fm.worktree} on ${branch} from origin/${base}${hadWorktree ? '' : ' (the old one was gone)'}` } }], 'engine', { commit: `${id}: recreate worktree` });
-      if (hadWorktree) { const kept = await this.setAsideBeforeRemove(id, dir); if (kept) this.store.mutateItem(id, [{ activity: { actor: 'app', text: kept } }], 'engine'); }
+      if (hadWorktree) { const kept = await this.cleanupReconcile.setAsideBeforeRemove(id, dir); if (kept) this.store.mutateItem(id, [{ activity: { actor: 'app', text: kept } }], 'engine'); }
       if (hadWorktree) await this.ports.git.worktreeRemove(this.repo, dir, false);
       await this.ports.git.worktreePrune(this.repo);
       await this.ports.git.deleteLocalBranch(this.repo, branch, localTip);
@@ -4572,7 +4259,7 @@ export class LiveEngine implements Engine {
       : `The user unblocked this item (it had stopped: ${reason}). Nothing of yours was lost: check your worktree and continue where you left off.`) + (message ? `\n\n${message}` : '');
     // A conflict once handed to a session that never finished it is the pipeline's again: it re-syncs, and a conflict comes back to a session.
     if (fm.status === 'IN_REVIEW') { clear(`retrying the merge pipeline after ${reason}`, [{ set: { ci_result: 'pending', op_data: { ...(opData ?? {}), needs_session_rebase: false } } }]); this.poke(); return /^ci_red/.test(reason) ? 'retrying: it re-enters the merge pipeline, which reads the same CI run again (it does not run CI again: use rerun_ci to re-run its failed jobs)' : 'retrying: it re-enters the merge pipeline'; }
-    if (fm.status === 'MERGED') { clear(`retrying cleanup after ${reason}`); this.runJob(id, () => this.cleanup(id)); return 'retrying the cleanup (it still needs positive evidence before deleting anything)'; }
+    if (fm.status === 'MERGED') { clear(`retrying cleanup after ${reason}`); this.runJob(id, () => this.cleanupReconcile.cleanup(id)); return 'retrying the cleanup (it still needs positive evidence before deleting anything)'; }
     // An epic in progress has no session and no worktree (#439): what it can retry is its integration branch; its children drive the rest.
     if (fm.kind === 'epic' && fm.status === 'IN_PROGRESS') {
       clear(`retrying after ${reason}: checking the integration branch; the children drive the rest`);
@@ -5123,14 +4810,14 @@ export class LiveEngine implements Engine {
     const patterns = Object.keys(this.store.config.worktrees.generated);
     const before = patterns.length ? await this.ports.git.revParse(cwd, 'HEAD') : '';
     // `stop` (HH-532): a worker rebase's real conflict is left stopped for its session, not aborted.
-    const sync = await this.syncAside(id, cwd, () => integration ? this.ports.git.merge(cwd, `origin/${base}`, patterns) : this.ports.git.rebase(cwd, `origin/${base}`, patterns, stop ? { stop: true } : undefined));
+    const sync = await this.cleanupReconcile.syncAside(id, cwd, () => integration ? this.ports.git.merge(cwd, `origin/${base}`, patterns) : this.ports.git.rebase(cwd, `origin/${base}`, patterns, stop ? { stop: true } : undefined));
     const took = sync.tookBase ?? [];
     if (!sync.ok || !took.length) return sync;
     const r = await this.regenerate(id, cwd, base, took, before, sync.head);
     if (!('undo' in r)) return { ...sync, head: r.head, note: r.note };
     // The generated file is the session's after all (HH-532): rebased again without taking the base's copy, left stopped at it.
     if (stop && !integration) {
-      const again = await this.syncAside(id, cwd, () => this.ports.git.rebase(cwd, `origin/${base}`, [], { stop: true }));
+      const again = await this.cleanupReconcile.syncAside(id, cwd, () => this.ports.git.rebase(cwd, `origin/${base}`, [], { stop: true }));
       if (again.stopped) return { ...again, note: `${r.undo}; the sync was undone and rebased again, left stopped at the conflict` };
       if (again.ok) await this.ports.git.resetHard(cwd, before);
     }
@@ -5468,14 +5155,14 @@ export class LiveEngine implements Engine {
       cwd = fm.worktree ? this.absWorktree(fm.worktree) : join(this.store.worktreesRoot(), `merge-${id.toLowerCase()}`);
       if (!(await this.ports.git.worktreeList(this.repo)).some((w) => w.path === cwd && !w.prunable)) await this.ports.git.worktreeAdd(this.repo, cwd, branch, `origin/${branch}`);
       if (!fm.worktree) { this.store.mutateItem(id, [{ set: { worktree: cwd } }], 'engine'); fm = this.store.requireItem(id).file.frontmatter; }
-      const left = await this.clearMergeWorktree(id, cwd, branch);
+      const left = await this.cleanupReconcile.clearMergeWorktree(id, cwd, branch);
       if (left.length) {
         const { behind } = await this.ports.git.aheadBehind(cwd, `origin/${base}`, 'HEAD');
         done('aborted', { reason: 'dirty' }, `not synced with origin/${base}: the merge worktree has changes that could not be set aside (${left.slice(0, 5).join(', ')})`);
         return { kind: 'dirty', base, behind, files: left };
       }
       if (await this.ports.git.remoteBranchSha(this.repo, branch)) {
-        const own = await this.syncAside(id, cwd, () => this.ports.git.merge(cwd, `origin/${branch}`));
+        const own = await this.cleanupReconcile.syncAside(id, cwd, () => this.ports.git.merge(cwd, `origin/${branch}`));
         if (own.refused) {
           const { behind } = await this.ports.git.aheadBehind(cwd, `origin/${base}`, 'HEAD');
           done('aborted', { reason: 'dirty', files: own.refused.paths }, `merge of origin/${branch} into its local copy ${syncFailed(own)}`);
@@ -5484,7 +5171,7 @@ export class LiveEngine implements Engine {
         if (!own.ok) { done('aborted', { reason: 'conflict', files: own.conflicts }, `merge of origin/${branch} into its local copy conflicted in ${own.conflicts.join(', ')}`); return { kind: 'conflict', base, baseSha: await this.ports.git.revParse(this.repo, `origin/${base}`), files: own.conflicts, integration, cwd }; }
       }
     } else cwd = this.absWorktree(fm.worktree!);
-    const dirty = await this.clearForSync(id, cwd, base);
+    const dirty = await this.cleanupReconcile.clearForSync(id, cwd, base);
     if (dirty.length) {
       const { behind } = await this.ports.git.aheadBehind(cwd, `origin/${base}`, 'HEAD');
       done('aborted', { reason: 'dirty' }, `not synced with origin/${base}: the worktree has uncommitted changes (${dirty.slice(0, 5).join(', ')})`);
@@ -5562,7 +5249,7 @@ export class LiveEngine implements Engine {
     if (message && phase) this.queueTurn(id, phase, message, [], [], { fresh: opts.fresh ? true : 'auto', note: by === 'orchestrator' ? 'the orchestrator' : by === 'engine' ? 'planestro, retrying a turn that failed before it did anything' : 'a decision from the user' });
     // p50: a merged item that stopped in cleanup (a worktree removal failed) retries it now, the path reconcile takes
     // five minutes later; with a message, or a retry that declined, clearing the flag alone left it MERGED until then.
-    else if (fm.status === 'MERGED') this.runJob(id, () => this.cleanup(id));
+    else if (fm.status === 'MERGED') this.runJob(id, () => this.cleanupReconcile.cleanup(id));
     else void this.tick();
   }
 
@@ -5870,7 +5557,7 @@ export class LiveEngine implements Engine {
                 const aside = dirty.length ? join(this.store.worktreesRoot(), '.displaced', `${branch.replace(/[\/\\]/g, '-')}-${this.now().replace(/[:+]/g, '-')}`) : undefined;
                 if (aside) { await this.ports.git.moveAside(cwd, dirty, aside); said.push(`set ${dirty.length} uncommitted file${dirty.length === 1 ? '' : 's'} aside in ${relative(this.repo, aside)}`); }
                 // What git ignores goes with a forced remove: worktrees.keep_on_remove is set aside first, as cleanup does (invariant 7).
-                const kept = await this.setAsideBeforeRemove(id, cwd); if (kept) said.push(kept);
+                const kept = await this.cleanupReconcile.setAsideBeforeRemove(id, cwd); if (kept) said.push(kept);
                 await this.ports.git.worktreeRemove(this.repo, cwd, true);
                 await this.ports.git.worktreePrune(this.repo);
                 await this.ports.git.deleteLocalBranch(this.repo, branch, head);
@@ -5884,7 +5571,7 @@ export class LiveEngine implements Engine {
           else if (!clean) said.push(`kept its worktree and branch ${branch}: it has uncommitted changes`);
           else if (head !== remote) said.push(`kept its worktree and branch ${branch}: its local commits are not all on the remote`);
           else {
-            try { const kept = await this.setAsideBeforeRemove(id, cwd); if (kept) said.push(kept); await this.ports.git.worktreeRemove(this.repo, cwd, false); await this.ports.git.worktreePrune(this.repo); await this.ports.git.deleteLocalBranch(this.repo, branch, head); removed = true; said.push(`removed its worktree and local branch (everything is on the remote branch ${branch}, which is kept)`); }
+            try { const kept = await this.cleanupReconcile.setAsideBeforeRemove(id, cwd); if (kept) said.push(kept); await this.ports.git.worktreeRemove(this.repo, cwd, false); await this.ports.git.worktreePrune(this.repo); await this.ports.git.deleteLocalBranch(this.repo, branch, head); removed = true; said.push(`removed its worktree and local branch (everything is on the remote branch ${branch}, which is kept)`); }
             catch (e) { said.push(`removing its worktree stopped partway (${brief(e)}); finish it by hand`); }
           }
         }
@@ -5922,7 +5609,7 @@ export class LiveEngine implements Engine {
     const d = this.store.derived(item);
     const refusal = this.closeAsDoneRefusal(id);
     if (refusal) throw new Error(refusal);
-    const left = d.flavor === 'worker' && fm.worktree && fm.branch ? await this.releaseUnusedWorktree(this.absWorktree(fm.worktree), fm.branch, d.base_branch) : undefined;
+    const left = d.flavor === 'worker' && fm.worktree && fm.branch ? await this.cleanupReconcile.releaseUnusedWorktree(this.absWorktree(fm.worktree), fm.branch, d.base_branch) : undefined;
     this.store.mutateItem(id, [
       { transition: { to: 'FINISHED', actor: 'user' } },
       { activity: { actor: 'user', text: `closed as done without a pull request${reason?.trim() ? `: ${reason.trim()}` : ''}` } },
@@ -5993,9 +5680,9 @@ export class LiveEngine implements Engine {
         if (st && !st.clean) throw new Error(`not converted: the breakdown's planning checkout ${fm.worktree} has uncommitted changes`);
         if (st) { await this.ports.git.worktreeRemove(this.repo, cwd, false); await this.ports.git.worktreePrune(this.repo); released = `removed the breakdown's read-only planning checkout ${fm.worktree}`; }
       } else if (fm.branch) {
-        const unused = await this.unusedWorktree(cwd, fm.branch, this.store.derived(item).base_branch);
+        const unused = await this.cleanupReconcile.unusedWorktree(cwd, fm.branch, this.store.derived(item).base_branch);
         if ('keep' in unused) throw new Error(`not converted: ${id}'s worktree ${fm.worktree} may hold work (${unused.keep}), and nothing with work in it is removed. Clear it by hand first, or keep it as an item`);
-        released = await this.removeUnusedWorktree(cwd, fm.branch, this.store.derived(item).base_branch!, unused.remote, unused.local);
+        released = await this.cleanupReconcile.removeUnusedWorktree(cwd, fm.branch, this.store.derived(item).base_branch!, unused.remote, unused.local);
       }
     }
     // The text crosses over: the new kind's planner reads Notes (plan-item and plan-epic both quote them).
@@ -6117,7 +5804,7 @@ export class LiveEngine implements Engine {
       { activity: { actor: 'user', text: `handed back to planestro${said}; ${next}` } },
     ], 'user', { commit: `${id}: hand back` });
     // queued, not dropped: the turn the take-over stopped may still be winding down
-    if (fm.status === 'MERGED') this.queueFollowUp(id, () => this.cleanup(id));
+    if (fm.status === 'MERGED') this.queueFollowUp(id, () => this.cleanupReconcile.cleanup(id));
     else if (carryOn) this.queueFollowUp(id, () => this.carryOnStalled(id, { why: 'handed back', who: 'the user handing the item back', say: `The user took this item over and worked on it by hand, and has now handed it back to you${said}. Your worktree may have changed while they had it: check \`git status\` and \`git log\` first, then continue from where the work stands.` }));
     else void this.tick();
   }
@@ -6132,42 +5819,6 @@ export class LiveEngine implements Engine {
     const { ops, said } = this.stopSessionWork(id, 'the item was moved into review by hand');
     if (!said.length) return;
     this.store.mutateItem(id, [...ops, { activity: { actor: 'app', text: `moved into review by hand: stopped ${said.join(', ')}` } }], 'engine', { commit: `${id}: stop the session (moved to review)` });
-  }
-
-  /** Returns the Activity line describing what was removed, or what was left in place and why. */
-  private async releaseUnusedWorktree(cwd: string, branch: string, base: string | undefined): Promise<string> {
-    const unused = await this.unusedWorktree(cwd, branch, base);
-    return 'keep' in unused ? `left worktree ${cwd} and branch ${branch} in place: ${unused.keep}` : this.removeUnusedWorktree(cwd, branch, base!, unused.remote, unused.local);
-  }
-
-  /** Positive evidence that a worktree and its branch hold no work (invariant 7): a clean tree and nothing ahead of a freshly fetched base. Otherwise why not. */
-  private async unusedWorktree(cwd: string, branch: string, base: string | undefined): Promise<{ keep: string } | { remote: string | null; local: string | null }> {
-    if (!base) return { keep: 'the base branch could not be resolved' };
-    try {
-      const { clean, dirty } = await this.worktreeDirt(cwd);
-      if (!clean) return { keep: `uncommitted changes (${dirty.slice(0, 5).join(', ')})` };
-      await this.ports.git.fetch(this.repo);
-      const { ahead } = await this.ports.git.aheadBehind(cwd, `origin/${base}`, 'HEAD');
-      if (ahead > 0) return { keep: `${ahead} commit(s) are not on origin/${base}` };
-      const remote = await this.ports.git.remoteBranchSha(this.repo, branch);
-      if (remote && !await this.ports.git.isAncestor(this.repo, remote, `origin/${base}`)) return { keep: `the pushed branch has commits that are not on origin/${base}` };
-      const local = await this.ports.git.localBranchExists(this.repo, branch) ? await this.ports.git.revParse(this.repo, `refs/heads/${branch}`) : null;
-      if (local && !await this.ports.git.isAncestor(this.repo, local, `origin/${base}`)) return { keep: 'the local branch has unmerged commits' };
-      return { remote, local };
-    } catch (e) { return { keep: `could not verify it is unused (${(e as Error).message.replace(/\s+/g, ' ').slice(0, 200)})` }; }
-  }
-
-  private async removeUnusedWorktree(cwd: string, branch: string, base: string, remote: string | null, local: string | null): Promise<string> {
-    const brief = (e: unknown) => (e as Error).message.replace(/\s+/g, ' ').slice(0, 200);
-    let kept: string | undefined;
-    try {
-      kept = await this.setAsideBeforeRemove(branch.replace(/[\/\\]/g, '-'), cwd);
-      await this.ports.git.worktreeRemove(this.repo, cwd, false);
-      await this.ports.git.worktreePrune(this.repo);
-      await this.ports.git.deleteLocalBranch(this.repo, branch, local);
-      await this.ports.git.deleteRemoteBranch(this.repo, branch, remote);
-    } catch (e) { return `removing the unused worktree ${cwd} / branch ${branch} stopped partway (${brief(e)}); finish it by hand`; }
-    return `removed unused worktree and branch ${branch} (clean, nothing ahead of origin/${base})${kept ? `; ${kept}` : ''}`;
   }
 
   /** A limit raised in place (#330): every turn waiting for a session or runner slot looks again, and those that now fit start. */
