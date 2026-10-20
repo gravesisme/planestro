@@ -1,6 +1,6 @@
 import { UsageProviderSwitch } from './UsageProviderSwitch.tsx';
 import { useState } from 'react';
-import { decisionOf, describeAction, DOLLAR_HINT } from '@planestro/shared';
+import { decisionOf, describeAction, DOLLAR_HINT } from '@planestro/shared/view';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { reloadText, useResumeEstimate } from '../resumeCost.ts';

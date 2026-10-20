@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, NavLink, useNavigate, useParams } from 'react-router';
-import { parseCron, nextSlot, validTimeZone, PRIORITIES, type Priority } from '@planestro/shared';
+import { parseCron, nextSlot, validTimeZone, PRIORITIES, type Priority } from '@planestro/shared/view';
 import { api, type ScheduleFields, type ScheduleView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { statusLabel } from '../components/ItemCard.tsx';

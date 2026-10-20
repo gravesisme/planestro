@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router';
-import { limitsLabel, raiseNeedsConfirm, localClock, type ConcurrencyChange } from '@planestro/shared';
+import { limitsLabel, raiseNeedsConfirm, localClock, type ConcurrencyChange } from '@planestro/shared/view';
 import { api, type ConcurrencyView, type SlotsView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { ActionButton, ActionGroup } from './ActionButton.tsx';

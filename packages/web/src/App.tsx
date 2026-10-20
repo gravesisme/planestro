@@ -3,7 +3,7 @@ import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore, act } from './store.ts';
 import { api } from './api.ts';
-import { findModel, usageWindowLabel, usagePercent, localClock, limitsLabel, type UsageGuardState } from '@planestro/shared';
+import { findModel, usageWindowLabel, usagePercent, localClock, limitsLabel, type UsageGuardState } from '@planestro/shared/view';
 import { OrchestratorChat } from './components/OrchestratorChat.tsx';
 import { setTitle, setNeeds } from './tabBadge.ts';
 import { setNotificationNavigate } from './desktopNotify.ts';

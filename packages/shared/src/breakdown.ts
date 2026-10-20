@@ -1,4 +1,5 @@
-import { canPlan, type ModelDef } from './schema.ts';
+import type { ModelDef } from './schema.ts';
+import { canPlan } from './schemaView.ts';
 import { atxHeading, isTableSeparator } from './textScan.ts';
 
 /** What a breakdown needs to know of a model: its id, and whether it can plan. */

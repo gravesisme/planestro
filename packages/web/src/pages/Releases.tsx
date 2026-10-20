@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, NavLink, useNavigate, useParams } from 'react-router';
-import { charCount, nextVersions, releaseMarkdown, sectionPresetOf, RELEASE_STATUSES, type ReleaseSectionDef, type ReleaseStatus } from '@planestro/shared';
+import { charCount, nextVersions, releaseMarkdown, sectionPresetOf, RELEASE_STATUSES, type ReleaseSectionDef, type ReleaseStatus } from '@planestro/shared/view';
 import { api, type ReleaseFields, type ReleaseView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { statusLabel } from '../components/ItemCard.tsx';

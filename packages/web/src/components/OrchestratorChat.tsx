@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { Link, useLocation } from 'react-router';
-import { CHAT_ACCEPT, CHAT_MAX_FILES, chatAttachmentRefusal, type ChatAttachment, type JournalEntry } from '@planestro/shared';
+import { CHAT_ACCEPT, CHAT_MAX_FILES, chatAttachmentRefusal, type ChatAttachment, type JournalEntry } from '@planestro/shared/view';
 import { api, type QuestionView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { enterSends, growTo, isTouch, pickable } from '../chatInput.ts';

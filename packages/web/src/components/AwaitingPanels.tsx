@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import { api, type ItemView } from '../api.ts';
 import { act } from '../store.ts';
-import { decisionOf, auditionPicksProblem, auditionNeed, type Audition, type AuditionPick } from '@planestro/shared';
+import { decisionOf, auditionPicksProblem, auditionNeed, type Audition, type AuditionPick } from '@planestro/shared/view';
 import { TriageNote } from './DecisionCard.tsx';
 import { useSending } from '../sending.ts';
 import { Sending } from './Sending.tsx';

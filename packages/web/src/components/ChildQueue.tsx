@@ -1,6 +1,6 @@
 import { Fragment } from 'react';
 import { Link } from 'react-router';
-import { isDone, type ItemFrontmatter, type Status } from '@planestro/shared';
+import { isDone, type ItemFrontmatter, type Status } from '@planestro/shared/view';
 import { api } from '../api.ts';
 import { act } from '../store.ts';
 import { ActionButton } from './ActionButton.tsx';

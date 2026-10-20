@@ -1,4 +1,4 @@
-import type { JournalEntry } from '@planestro/shared';
+import type { JournalEntry } from '@planestro/shared/view';
 import { notificationPath } from './deepLink.ts';
 
 /**

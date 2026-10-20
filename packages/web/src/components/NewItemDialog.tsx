@@ -1,7 +1,7 @@
 import { NO_RELEASE } from '../boardFilters.ts';
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
-import { planReviewByDefault, placeholdersIn, renderPrompt, fallbackChain, findModel, canPlan, PRIORITIES, type Config, type ModelDef, type Priority, defaultRelease, openReleases } from '@planestro/shared';
+import { planReviewByDefault, placeholdersIn, renderPrompt, fallbackChain, findModel, canPlan, PRIORITIES, type Config, type ModelDef, type Priority, defaultRelease, openReleases } from '@planestro/shared/view';
 import { api, type PromptView, type State } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { newItemModeNote } from '../engineMode.ts';

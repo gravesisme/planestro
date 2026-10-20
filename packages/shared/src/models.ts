@@ -5,7 +5,8 @@
  * `planestro.local.yml` (`model_unavailable`) until the provider's reset, so later turns skip the
  * failed attempt. Pure: no I/O, no clock of its own. Project-neutral: nothing names a model.
  */
-import { canPlan, type Config, type ModelDef, type ModelUnavailable } from './schema.ts';
+import type { Config, ModelDef, ModelUnavailable } from './schema.ts';
+import { canPlan } from './schemaView.ts';
 
 /** How long a model is skipped when the provider does not say when its usage resets. */
 export const DEFAULT_UNAVAILABLE_MINUTES = 60;

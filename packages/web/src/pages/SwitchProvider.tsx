@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams, Link } from 'react-router';
-import { canPlan, unavailableEntry } from '@planestro/shared';
+import { canPlan, unavailableEntry } from '@planestro/shared/view';
 import { api } from '../api.ts';
 import { useStore } from '../store.ts';
 import { ProviderSwitchBoard } from '../components/ProviderSwitchBoard.tsx';

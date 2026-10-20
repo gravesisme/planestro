@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { Attachment, ReviewFlag } from '@planestro/shared';
+import type { Attachment, ReviewFlag } from '@planestro/shared/view';
 import type { ItemView } from '../api.ts';
 import { useStore } from '../store.ts';
 

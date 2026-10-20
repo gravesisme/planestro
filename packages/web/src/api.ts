@@ -1,6 +1,6 @@
 import type { EngineModes } from './engineMode.ts';
-import type { ConcurrencyAdvice, ConcurrencyChange, ConcurrencyGuard, ConcurrencyLimits, HostLoad, ItemFrontmatter, PromptFrontmatter, ReleaseFrontmatter, ReleaseStatus, Config, LocalConfig, ModelDef, Status, JournalEntry, UsageGuardState, QuestionFrontmatter, ThreadEntry, ScheduleFrontmatter, UsageReport, ItemEfficiency, EfficiencyRanking, CiAggregates } from '@planestro/shared';
-import type { BreakdownChild, Priority, SourcedRule } from '@planestro/shared';
+import type { ConcurrencyAdvice, ConcurrencyChange, ConcurrencyGuard, ConcurrencyLimits, HostLoad, ItemFrontmatter, PromptFrontmatter, ReleaseFrontmatter, ReleaseStatus, Config, LocalConfig, ModelDef, Status, JournalEntry, UsageGuardState, QuestionFrontmatter, ThreadEntry, ScheduleFrontmatter, UsageReport, ItemEfficiency, EfficiencyRanking, CiAggregates } from '@planestro/shared/view';
+import type { BreakdownChild, Priority, SourcedRule } from '@planestro/shared/view';
 
 export interface OrchestratorSpend {
   wakes: { at: string; events: string[]; items: string[]; cost: number; runner?: string; tokens?: number; token_cap?: number; context_tokens?: number; model?: string; session?: string; wake?: number; fresh: boolean; summary: string; failed: boolean }[];

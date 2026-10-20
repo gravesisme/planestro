@@ -1,4 +1,4 @@
-import { categoryColor, contrastText } from '@planestro/shared';
+import { categoryColor, contrastText } from '@planestro/shared/view';
 import { useStore } from '../store.ts';
 
 /** A category as a tag in its own color, with text picked to contrast with that color. */

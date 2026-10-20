@@ -1,4 +1,4 @@
-import { resumeEstimate, resumeRates, modelCapabilities, type ResumeEstimate } from '@planestro/shared';
+import { resumeEstimate, resumeRates, modelCapabilities, type ResumeEstimate } from '@planestro/shared/view';
 import type { ItemView } from './api.ts';
 import { useStore } from './store.ts';
 
