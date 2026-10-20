@@ -29,6 +29,8 @@ export type FileNoteOutcome =
 /** A change to one MCP server (#237): `env` / `headers` set a value, `null` removes it, '' keeps it. */
 export interface McpServerBody { command?: string | null; args?: string[]; url?: string | null; env?: Record<string, string | null>; headers?: Record<string, string | null>; enabled?: boolean }
 /** A server an import could bring in: names only, never a key's value. */
+/** A minted pairing code (#403): the links a device on the network opens with it filled in, none on a loopback bind; a QR of the first as one SVG path. */
+export interface PairingCode { code: string; expires_at: string; host: string | null; loopback: boolean; links: string[]; qr?: { size: number; path: string } }
 export interface McpImportCandidate { source: string; name: string; kind: 'stdio' | 'http'; command?: string; url?: string; env: string[]; headers: string[]; status: 'new' | 'present' | 'duplicate' | 'removed' | 'unsupported'; note?: string }
 /** The project's open GitHub issues, for Import issues (#231): each with the item already imported from it. */
 export interface ImportableIssues { repo: string; label?: string; issues: { number: number; title: string; url: string; labels: string[]; item?: string }[] }
@@ -193,7 +195,7 @@ export const api = {
   testMcpServer: (name: string) => req<{ ok: true; tools: string[] } | { ok: false; error: string }>('POST', `/api/config/mcp-servers/${encodeURIComponent(name)}/test`),
   mcpImportCandidates: () => req<{ candidates: McpImportCandidate[] }>('GET', '/api/config/mcp-servers/import'),
   importMcpServers: (pick?: string[]) => req<{ local: LocalConfig; added: string[] }>('POST', '/api/config/mcp-servers/import', { pick }),
-  pairingCode: () => req<{ code: string; expires_at: string }>('POST', '/api/pairing/code'),
+  pairingCode: () => req<PairingCode>('POST', '/api/pairing/code'),
   revokeDevice: (id: string) => req<{ devices: { id: string; name: string; created_at: string }[] }>('DELETE', `/api/pairing/devices/${encodeURIComponent(id)}`),
   markModelUnavailable: (id: string, until: string, reason?: string) => req<{ local: LocalConfig }>('PUT', `/api/models/${encodeURIComponent(id)}/unavailable`, { until, reason }),
   clearModelUnavailable: (id: string) => req<{ local: LocalConfig }>('DELETE', `/api/models/${encodeURIComponent(id)}/unavailable`),
