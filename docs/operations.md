@@ -132,7 +132,7 @@ git -C ../myproject-planning push --force-with-lease=…        # the exact comm
 planestro shrink-history ../myproject-planning --gc           # after the push: reclaim the space, size before → after
 ```
 
-- **What it refuses:** a running planestro, a dirty tree, a git operation in progress, stash entries, a journal
+- **What it refuses:** a running planestro, a dirty tree, a git operation in progress, stash entries made on the branch (the code repository's own are left alone), a journal
   still tracked (start planestro once: it commits `planestro: stop tracking journal`), and an upstream with commits
   the branch lacks. It fetches the upstream first, so it knows that tip.
 - **Only the data dir's branch is rewritten.** A planning branch checked out as a worktree of the code repository
