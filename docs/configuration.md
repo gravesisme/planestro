@@ -10,7 +10,7 @@ Settings page's registry.
 
 Settings is organised by what you are deciding, not by file: **Project**, **Models**,
 **Budgets & limits**, **Orchestrator**, **Workers & permissions**, **CI & merging**,
-**Notifications**, **This machine** and **Data & releases** (a rail on the left; a dropdown on
+**Notifications**, **Access**, **This machine** and **Data & releases** (a rail on the left; a dropdown on
 a phone; the last tab you opened is remembered by the browser). Each tab opens with what it is
 for and which file it writes. Every row shows a one-line summary, its default, a *changed* chip
 when yours differs, the key it writes, and *Learn more* with the long explanation from this
@@ -392,7 +392,7 @@ Default: **Release notes** and **Notes**.
 | `mcp_servers` | MCP servers a model row may name in `mcp`, with their keys, e.g. `elevenlabs: { command: uvx, args: [elevenlabs-mcp], env: { ELEVENLABS_API_KEY: … } }` or `meshy: { command: npx, args: [-y, "@meshy-ai/meshy-mcp-server"], env: { MESHY_API_KEY: … } }`. Machine-local and gitignored, like the API key; managed in Settings → Access → MCP servers. `enabled: false` keeps a server but turns it off: a model that lists it stops as `mcp_missing`. `source` is where Settings imported it from (`~/.claude.json`, `~/.codex/config.toml`). A url that is a running planestro's own operator endpoint (`/mcp` on a port `planestro start` recorded) is refused: workers never get it. |
 | `mcp_import_skip` | Imported MCP servers you removed, as `<source>:<name>`, so **Import** does not bring them back. Delete an entry to import that server again. |
 | `lan_access` | `true`: the server listens on every interface (`0.0.0.0`) unless `--host` says otherwise, at every start (`serve`, `serve --watch` restarts, `start`), so a phone on the same Wi-Fi can open planestro. It answers only the local network: loopback, `10/8`, `172.16/12`, `192.168/16`, `169.254/16`, `fe80::/10` and `fc00::/7` (IPv4-mapped IPv6 included); any other remote address gets a 403, logged. A device other than this machine must also be paired (`paired_devices`). See [Notify when something needs you](#notify-when-something-needs-you). |
-| `paired_devices` | Devices that may use planestro from another machine (#403), each `paired_devices.id`, `paired_devices.name`, `paired_devices.token_sha256` (the token's sha256, never the token) and `paired_devices.created_at`: written by pairing, never by hand. A request from anywhere but this machine (a loopback peer) must carry a paired device's token: the `planestro_token` cookie the pairing page sets (HttpOnly, SameSite=Strict, 400 days), or `Authorization: Bearer <token>` for an MCP client. Without one the API, `/ws`, `/mcp` and attachments answer 401 and a page load redirects to `/pair`. `planestro pair` (or **Pair a device** in Settings, on this machine only) mints a one-time code good for 10 minutes; ten wrong codes void every pending one. Only the token's sha256 is stored; **Revoke** removes a device and its next request gets a 401. This machine never needs a token. |
+| `paired_devices` | Devices that may use planestro from another machine (#403), each `paired_devices.id`, `paired_devices.name`, `paired_devices.token_sha256` (the token's sha256, never the token) and `paired_devices.created_at`: written by pairing, never by hand. A request from anywhere but this machine (a loopback peer) must carry a paired device's token: the `planestro_token` cookie the pairing page sets (HttpOnly, SameSite=Strict, 400 days), or `Authorization: Bearer <token>` for an MCP client. Without one the API, `/ws`, `/mcp` and attachments answer 401 and a page load redirects to `/pair`. `planestro pair` (or **Pair a device** in Settings → Access, on this machine only) mints a one-time code good for 10 minutes, with `/pair?code=<code>` links (and a QR code of the first) for the addresses the server is reachable at, none on a loopback bind (the link carries the code, never a token; the page fills it in and waits for Pair); ten wrong codes void every pending one. Only the token's sha256 is stored; **Revoke** removes a device and its next request gets a 401. This machine never needs a token. |
 | `allowed_hosts` | Extra names this machine is reached by — a Tailscale or DNS name for the phone. The server answers only requests addressed to `localhost`, `127.0.0.1`, the `--host` it is bound to (with `0.0.0.0`: this machine's hostname and interface addresses) and these; anything else, and any request from another website, gets a 403. |
 | `codex_bin` | Path to `codex`, if not on `PATH`. Only used by models with `runner: codex`. |
 | `accounts` | Other logins for the same runner ([second accounts](#a-second-account-for-the-same-provider)), by name: `{ runner, label?, home }`. Hand-edited here; the default login is `default`. |
@@ -432,15 +432,18 @@ notifications:
 ```
 
 The link opens planestro only where the server is reachable. For a phone on the same Wi-Fi, turn on
-**Settings → This machine → Local network access** (`lan_access: true` in `planestro.local.yml`) and restart. The
+**Settings → Access → Local network access** (`lan_access: true` in `planestro.local.yml`) and restart. The
 server then listens on every interface at every start, answers only the local network (anything else gets a
 403), and links are `http://<hostname>.local:<port>/items/<id>#<kind>`, a name iOS and current Android resolve on
 the LAN, so `base_url` can stay unset. Set `base_url` only to link by something else, a fixed IP or a router DNS
 name; the guard already accepts this machine's hostname, `<hostname>.local` and its interface addresses, and
 `allowed_hosts` takes any other name. `planestro check` reports the setting, the link address, and whether
 `base_url` names a host the guard would refuse. The **Test** button beside `on_needs_you` sends a link to the
-board: tap it on the phone to check the whole chain. Pair the phone first: run `planestro pair` on this machine,
-open `http://<hostname>.local:<port>/pair` on the phone and enter the code; its browser then stays signed in.
+board: tap it on the phone to check the whole chain. Pair the phone first: **Settings → Access → Paired devices →
+Pair a device** on this machine shows a one-time code with a link and a QR code for each address the phone can reach
+(`http://<address>:<port>/pair?code=<code>`); scan it, or open `/pair` and type the code, and tap Pair; its browser then
+stays signed in. `planestro pair` prints the same code and links. A server listening on `127.0.0.1` only has no
+link to offer: turn on Local network access or start it with `--host 0.0.0.0`.
 An unpaired device on the network gets a 401 from everything but the pairing page.
 
 An MCP client on another machine sends the token the pairing page shows (once) as a header, e.g.

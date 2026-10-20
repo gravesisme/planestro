@@ -294,10 +294,12 @@ try {
       const server = liveInstance(dir)?.url ?? (values.port ? `http://127.0.0.1:${values.port}` : undefined);
       if (!server) throw new Error(`no running server for ${dir}: start it first (one run with serve is named by --port)`);
       const res = await fetch(`${server}/api/pairing/code`, { method: 'POST', headers: { 'content-type': 'application/json' } });
-      const json = await res.json() as { code?: string; expires_at?: string; error?: string };
+      const json = await res.json() as { code?: string; expires_at?: string; links?: string[]; host?: string | null; loopback?: boolean; error?: string };
       if (!res.ok || !json.code) throw new Error(json.error ?? `the server answered ${res.status}`);
       log(`pairing code: ${json.code} (once, until ${new Date(json.expires_at!).toLocaleTimeString()})`);
-      log(`on the device, open http://<this machine>:${new URL(server).port || 80}/pair and enter it; revoke a device in Settings → Access → Paired devices`);
+      if (json.links?.length) for (const l of json.links) log(`on the device, open ${l}`);
+      else log(`on the device, open http://<this machine>:${new URL(server).port || 80}/pair and enter it${json.loopback ? ` (this server listens on ${json.host} only, so another device cannot reach it: turn on lan_access or start it with --host 0.0.0.0)` : ''}`);
+      log('revoke a device in Settings → Access → Paired devices');
       break;
     }
     case 'notify': {
