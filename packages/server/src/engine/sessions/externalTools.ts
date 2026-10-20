@@ -3,7 +3,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { operatorMcpUrl } from '../../routes/mcp.ts';
 import { listInstances } from '../../instances.ts';
-import type { McpServerSpec, TurnOptions, CustomToolDef } from '../ports.ts';
+import type { TurnOptions, CustomToolDef } from '../ports.ts';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

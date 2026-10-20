@@ -1,6 +1,6 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, openSync, closeSync, readFileSync, readdirSync, unlinkSync, writeFileSync, appendFileSync, statSync, renameSync } from 'node:fs';
+import { existsSync, mkdirSync, openSync, closeSync, readFileSync, readdirSync, unlinkSync, appendFileSync, statSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';

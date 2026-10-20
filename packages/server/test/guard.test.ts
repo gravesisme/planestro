@@ -11,7 +11,7 @@ function app(bind = '127.0.0.1', extra: string[] = []) {
   a.get('/api/state', (c) => c.json({ ok: true }));
   return a;
 }
-const at = (host: string, headers: Record<string, string> = {}, method = 'GET', path = '/api/state') => ({ method, headers: { host, ...headers } });
+const at = (host: string, headers: Record<string, string> = {}, method = 'GET', _path = '/api/state') => ({ method, headers: { host, ...headers } });
 
 describe('request guard: loopback is not private from the browser', () => {
   it('lets the UI in, directly and through the Vite dev proxy', async () => {
