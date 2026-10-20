@@ -4,9 +4,9 @@
  * orchestration assumption. planestro compares these against the installed
  * CLI at startup and shows a non-blocking warning when they drift.
  */
-export const VALIDATED_CLAUDE_VERSION = '2.1.284';
-export const VALIDATED_SDK_VERSION = '0.3.251';
-export const VALIDATED_ON = '2026-09-28';
+export const VALIDATED_CLAUDE_VERSION = '2.1.305';
+export const VALIDATED_SDK_VERSION = '0.3.305';
+export const VALIDATED_ON = '2026-10-20';
 
 /** The Codex CLI the Codex runner was validated against (spikes/codex-spike.ts, docs/notes/codex-spike.md). */
 export const VALIDATED_CODEX_VERSION = '0.154.0';
