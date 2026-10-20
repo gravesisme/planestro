@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
-import { createAdaptorServer } from '@hono/node-server';
+import { createAdaptorServer, upgradeWebSocket } from '@hono/node-server';
 import { compress } from 'hono/compress';
 import { serveStatic } from '@hono/node-server/serve-static';
-import { createNodeWebSocket } from '@hono/node-ws';
+import { WebSocketServer } from 'ws';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -89,7 +89,6 @@ export async function startServer(o: ServeOptions) {
   const pairing = new Pairing(store);
   app.use('*', pairingGuard(pairing, (l, m) => log(l, m)));
   pairingRoutes(app, pairing);
-  const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
   // The API's JSON only (the state payload runs to megabytes, too slow for a phone on slow Wi-Fi); never /ws or /mcp's streams.
   app.use('/api/*', compress({ contentTypeFilter: /^application\/json/ }));
   app.route('/api', apiRoutes(store, engine, consoles));
@@ -112,9 +111,9 @@ export async function startServer(o: ServeOptions) {
     app.get('/', (c) => c.text(`planestro ${TOOL_VERSION} API is up; the web UI is not built (run \`npm run build\`, or \`npm run dev:web\` for Vite on :5173).`));
   }
 
-  const server = createAdaptorServer({ fetch: app.fetch });
+  // WebSockets are the adapter's own since v2 (it was @hono/node-ws): upgrades still go through app.fetch, guards first.
+  const server = createAdaptorServer({ fetch: app.fetch, websocket: { server: new WebSocketServer({ noServer: true }) } });
   server.listen(o.listen ? o.listen.handle as never : { port, host }, () => log('info', `planestro ${TOOL_VERSION} on http://${host}:${port} — data ${store.dataDir} (${store.schema}, ${store.items.size} items) — engine ${engine.mode}${engine.paused ? ' PAUSED' : ''}`));
-  injectWebSocket(server);
   // Own the port before the engine starts anything: a taken port used to surface as an uncaught
   // 'error' after the engine was already up. Release the data-dir lock and say which it was, so
   // `serve --watch` can stop instead of waiting for a source change (#85, LM 2026-09-28).
