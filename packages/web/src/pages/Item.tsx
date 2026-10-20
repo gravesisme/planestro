@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
-import { PRIORITIES, canPlan, findModel, modelCapabilities, connectionDropOf, decisionOf, DISCARD, planToolsMissing, mcpBudgetOf, DOLLAR_HINT, epicFlagOf, heldReasonOf, holdShapeOf, kindConversionRefusal, previewOf, loopLine, loopGreen, type Status } from '@planestro/shared';
+import { PRIORITIES, managedLimit, canPlan, findModel, modelCapabilities, connectionDropOf, decisionOf, DISCARD, planToolsMissing, mcpBudgetOf, DOLLAR_HINT, epicFlagOf, heldReasonOf, holdShapeOf, kindConversionRefusal, previewOf, loopLine, loopGreen, type Status } from '@planestro/shared';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { reloadText, useResumeEstimate } from '../resumeCost.ts';
@@ -22,7 +22,7 @@ import { PartsStrip } from '../components/PartsStrip.tsx';
 import { DecisionCard } from '../components/DecisionCard.tsx';
 import { ChildrenTable } from '../components/EpicChildren.tsx';
 import { ActivityList } from '../components/ActivityList.tsx';
-import { prepareUpload } from '../uploadImage.ts';
+import { isImage, jpegName, prepareUpload } from '../uploadImage.ts';
 import { setTitle as setTabTitle } from '../tabBadge.ts';
 import { useLandOnWait } from '../deepLink.ts';
 import { useFullItem } from '../fullItem.ts';
@@ -96,9 +96,10 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
   const orch = state.config.orchestrator;
   const canClose = transitions.some((t) => t.to === 'FINISHED');
   const closeAsDone = () => promptCloseAsDone(item.id);
-  const maxBytes = state.config.attachments.managed_max_bytes;
+  // A picture may be bigger than another attachment (#355: attachments.image_max_bytes); a HEIC is sent as a JPEG.
+  const maxBytes = (f: File) => managedLimit(state.config.attachments, isImage(f) ? jpegName(f.name) : f.name);
   // Phones can't paste from the photo library, so the picker is the mobile path; both go through prepareUpload (HEIC → JPEG, shrink to the size limit).
-  const upload = (files: File[]) => { for (const f of files) void act(async () => api.uploadAttachment(item.id, await prepareUpload(f, maxBytes))); };
+  const upload = (files: File[]) => { for (const f of files) void act(async () => api.uploadAttachment(item.id, await prepareUpload(f, maxBytes(f)))); };
   const onPaste = (e: React.ClipboardEvent) => { const f = [...e.clipboardData.files][0]; if (f) { e.preventDefault(); upload([f]); } };
   const picker = useRef<HTMLInputElement>(null);
   /** The page's main column: the section nav lists what it renders (#374). */
@@ -280,7 +281,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
           <div className="row">
             <button className="small" onClick={() => picker.current?.click()}>Attach photo or file…</button>
             <input ref={picker} type="file" accept="image/*,.heic,.heif,.pdf,.txt,.md,.json" multiple hidden onChange={(e) => { const fs = [...(e.target.files ?? [])]; e.target.value = ''; upload(fs); }} />
-            <span className="small muted">or paste an image anywhere on this page (≤ {Math.round(maxBytes / 1e6)} MB, committed; photos are converted to JPEG and shrunk to fit).</span>
+            <span className="small muted">or paste an image anywhere on this page (≤ {Math.round(Math.max(state.config.attachments.managed_max_bytes, state.config.attachments.image_max_bytes) / 1e6)} MB, committed; photos are converted to JPEG and shrunk to fit).</span>
           </div>
           <form className="row" onSubmit={(e) => e.preventDefault()}><input className="grow" placeholder="Reference a path (absolute, or relative to the code repo) — never copied" value={refPath} onChange={(e) => setRefPath(e.target.value)} /><ActionButton type="submit" disabled={!refPath.trim()} working="Adding…" onAct={() => act(() => api.referenceAttachment(item.id, refPath.trim())).then((r) => { if (r) setRefPath(''); })}>Add reference</ActionButton></form>
         </div>

@@ -4,7 +4,7 @@ import { join, relative, isAbsolute, extname, basename, matchesGlob } from 'node
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { DEBUG_MARKER, mcpServersNamed, debugMarkerRefusal, Audition, AuditionPicks, auditionProblem, takePathProblem, auditionPicksProblem, auditionPickLines, auditionNote, auditionComplete, auditionTakes, runnerTurnSettings, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem, usageTurnData, USAGE_TURN, type UsageStage, testRunShape, TEST_RUN, stepDownDue, timeoutKilledIn, limitsLabel, type HostLoad, type UsageRole, type ModelDef, resolveAccount, accountList, guardKey, unavailableKey, unavailableView, sameSessionStore, DEFAULT_ACCOUNT, type Account, fenceExternal } from '@planestro/shared';
+import { DEBUG_MARKER, managedLimit, ReviewFlag, mcpServersNamed, debugMarkerRefusal, Audition, AuditionPicks, auditionProblem, takePathProblem, auditionPicksProblem, auditionPickLines, auditionNote, auditionComplete, auditionTakes, runnerTurnSettings, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, usageGuardTrips, usageWindowLabel, usagePercent, localClock, type RateLimitSnapshot, type UsageGuardState, demoteH1, loopGreen, loopLine, loopTallyProblem, usageTurnData, USAGE_TURN, type UsageStage, testRunShape, TEST_RUN, stepDownDue, timeoutKilledIn, limitsLabel, type HostLoad, type UsageRole, type ModelDef, resolveAccount, accountList, guardKey, unavailableKey, unavailableView, sameSessionStore, DEFAULT_ACCOUNT, type Account, fenceExternal } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import { matchesPathPattern, type Checkpoint, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote, type CiQueue, type RunnerReport, type UndeliveredReport, type ConnectionDrop, type AccountCredentials } from './ports.ts';
@@ -131,6 +131,13 @@ const CANCELLED_RERUN_POLLS = 6;
 const PREVIEW_TRIES = 10;
 /** What a worker may put on its item for the user to see (#137): pictures and videos. */
 const ATTACHABLE = /\.(png|jpe?g|gif|webp|svg|mp4|webm|mov)$/i;
+/** Files one attach call copies onto an item (#355: a review set is dozens of captures, not a sample). */
+const ATTACH_PER_CALL = 48;
+const REVIEW_PICTURE = /\.(png|jpe?g|gif|webp)$/i;
+const MAX_REVIEW_FLAGS = 100;
+/** A hold whose words ask a person to look at pictures (#355). */
+const LOOK_AT_PICTURES = /captur|screenshot|render|image|picture|before\/after|contact sheet|art review|frames?\b|sprites?\b/i;
+const flagLine = (flags: ReviewFlag[]) => flags.slice(0, 5).map((f) => `${f.path}${f.cell ? ` (${f.cell})` : ''}: ${f.reason}`).join('; ').slice(0, 400) + (flags.length > 5 ? ` (+${flags.length - 5} more)` : '');
 /** Looks (5 s apart) at a just-pushed PR's head before it is marked ready anyway. */
 const READY_AFTER_PUSH_POLLS = 6;
 /** A guard-made pause resumes this long after its window's reset, so the first turn lands in the fresh window. */
@@ -2015,7 +2022,7 @@ export class LiveEngine implements Engine {
     try {
       const answer = box.tool === 'submit_plan' ? await tools.submit_plan(text)
         : box.tool === 'submit_breakdown' ? await tools.submit_breakdown(text, a.children)
-        : box.tool === 'report_done' ? await tools.report_done(text, a.parts, str(a.hold), list(a.attach), str(a.review))
+        : box.tool === 'report_done' ? await tools.report_done(text, a.parts, str(a.hold), list(a.attach), str(a.review), a.flags)
         : await tools.report_blocked(text, a.parts);
       if (answer.startsWith('Rejected')) { reject(answer); return; }
       if (box.tool === 'submit_plan' || box.tool === 'submit_breakdown') result.planSubmitted = text;
@@ -3937,11 +3944,17 @@ export class LiveEngine implements Engine {
         const shape = epicShapeOf(plan);
         return handIn(plan, shape ? { reason: shape, source: 'plan' } : undefined);
       },
-      add_note: async (markdown, attach) => { const cur = getSection(s.requireItem(id).file, 'Notes'); s.mutateItem(id, [{ section: 'Notes', body: cur ? `${cur}\n\n${markdown}` : markdown }], 'engine', { commit: `${id}: worker note` }); const att = this.attachFromWorktree(id, attach); return `Note recorded.${att ? ` ${att}` : ''}`; },
+      add_note: async (markdown, attach, flags) => {
+        const cur = getSection(s.requireItem(id).file, 'Notes');
+        s.mutateItem(id, [{ section: 'Notes', body: cur ? `${cur}\n\n${markdown}` : markdown }], 'engine', { commit: `${id}: worker note` });
+        const att = this.attachFromWorktree(id, attach);
+        const flagged = flags === undefined ? '' : this.addReviewFlags(id, flags);
+        return `Note recorded.${att ? ` ${att}` : ''}${flagged ? ` ${flagged}` : ''}`;
+      },
       append_activity: async (text) => { s.mutateItem(id, [{ activity: { actor: 'worker', text } }], 'engine'); return 'Recorded.'; },
       report_progress: async (parts) => this.recordParts(id, parts) ?? 'Recorded.',
       report_iteration: async (passing, total, note) => this.recordIteration(id, passing, total, note),
-      report_done: async (summary, parts, hold, attach, review) => {
+      report_done: async (summary, parts, hold, attach, review, flags) => {
         // A loop item is done when it is green, and hands off with its review (#171); before anything is recorded.
         const loopRefusal = this.loopDoneRefusal(id, review);
         if (loopRefusal) return loopRefusal;
@@ -3957,6 +3970,9 @@ export class LiveEngine implements Engine {
         const cur = s.requireItem(id).file.frontmatter;
         if (repeat) return `Already recorded by planestro${bad ? `, but ${bad}` : '.'}${att ? ` ${att}` : ''} End your turn now.`;
         const ops: ItemOp[] = [{ set: { op_data: { ...(cur.op_data ?? {}), done_summary: summary } } }, { activity: { actor: 'worker', text: `done: ${summary.slice(0, 300)}` } }];
+        // The hand-off's pictures and flags (#372): what the page shows first, flagged pictures before the rest.
+        const handoff = this.reviewHandoff(id, flags);
+        ops.push(...handoff.ops);
         // The worker that knows its pull request must wait says so (#97). Recorded here, with the done: the pull
         // request is opened from the item as persisted, and no drive path sees the item before this turn ends.
         const asked = typeof hold === 'string' && cur.kind !== 'epic' && (cur.status === 'IN_PROGRESS' || cur.status === 'IN_REVIEW') && !cur.skip_merge ? hold.trim() : '';
@@ -3968,7 +3984,10 @@ export class LiveEngine implements Engine {
         else if (asked) ops.push({ activity: { actor: 'app', text: `the worker asked for a hold (${asked.slice(0, 200)}); not held: you released this item's hold, or approved its plan without one` } });
         s.mutateItem(id, ops, 'engine', held ? { commit: `${id}: skip merge` } : {});
         if (held) this.note('info', asked ? `${id}: its worker asked for the pull request to be held: ${asked.slice(0, 200)}` : `${id}: its loop is green; the pull request is held for your review`);
-        return `Recorded${filed ? ', with your review filed on the item' : ''}${held ? ': planestro keeps the pull request out of the merge queue until the user releases the hold' : ''}${bad ? `, but ${bad}` : '.'}${att ? ` ${att}` : ''} End your turn now.`;
+        // A hold that asks a person to look at pictures with none attached (#355): said to the worker, never refused.
+        const unseen = held && asked && LOOK_AT_PICTURES.test(asked) && !handoff.attached ? ` The hold asks for a look at pictures, but this hand-off attached none: attach the whole set the hold names (\`attach\` on add_note, up to ${ATTACH_PER_CALL} a call), not a sample, before you end your turn.` : '';
+        if (unseen) s.mutateItem(id, [{ activity: { actor: 'app', text: 'the hold asks for a look at pictures, but the hand-off attached none; the worker was told' } }], 'engine');
+        return `Recorded${filed ? ', with your review filed on the item' : ''}${held ? ': planestro keeps the pull request out of the merge queue until the user releases the hold' : ''}${bad ? `, but ${bad}` : '.'}${att ? ` ${att}` : ''}${handoff.said ? ` ${handoff.said}` : ''}${unseen}${unseen ? '' : ' End your turn now.'}`;
       },
       report_blocked: async (reason, parts) => {
         // A park is a wait, not a block (#168): refused in words while the session waits on a ruling.
@@ -4162,6 +4181,41 @@ export class LiveEngine implements Engine {
   }
 
   /**
+   * A worker's hand-off for review (#372): the managed pictures attached since its previous hand-off (or since the item
+   * started), and its advisory flags. Flags that fail the schema are left out and said; nothing is refused for them.
+   */
+  private reviewHandoff(id: string, flags: unknown): { ops: ItemOp[]; attached: number; said: string } {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    const since = fm.review_handoff?.at ?? fm.started_at ?? '';
+    // isoLocal, as the attachments' added_at is: the store stamps them by the wall clock.
+    const at = isoLocal();
+    // Stamps are to the second: one the previous hand-off already showed is not its again.
+    const before = new Set(fm.review_handoff?.attached ?? []);
+    const attached = fm.attachments.filter((a) => a.kind === 'managed' && REVIEW_PICTURE.test(a.path) && a.added_at >= since && !before.has(a.path)).map((a) => a.path);
+    const parsed = flags === undefined ? undefined : z.array(ReviewFlag).max(MAX_REVIEW_FLAGS).safeParse(flags);
+    const list = parsed?.success ? parsed.data : [];
+    const ops: ItemOp[] = [{ set: { review_handoff: { at, attached, ...(list.length ? { flags: list } : {}) } } }];
+    if (list.length) ops.push({ activity: { actor: 'worker', text: `flagged for a look: ${flagLine(list)}` } });
+    const said = parsed && !parsed.success ? `Flags not recorded: ${parsed.error.issues.map((i) => `${i.path.join('.') || 'flags'}: ${i.message}`).join('; ').slice(0, 300)}.` : list.length ? `Flagged ${list.length} for a look.` : '';
+    return { ops, attached: attached.length, said };
+  }
+
+  /** Flags a worker adds with a note (#372): joined to its hand-off's (one per path and cell, the newest reason kept). */
+  private addReviewFlags(id: string, flags: unknown): string {
+    const parsed = z.array(ReviewFlag).max(MAX_REVIEW_FLAGS).safeParse(flags);
+    if (!parsed.success) return `Flags not recorded: ${parsed.error.issues.map((i) => `${i.path.join('.') || 'flags'}: ${i.message}`).join('; ').slice(0, 300)}.`;
+    if (!parsed.data.length) return '';
+    const fm = this.store.requireItem(id).file.frontmatter;
+    const prev = fm.review_handoff;
+    const key = (f: ReviewFlag) => `${f.path}\u0000${f.cell ?? ''}`;
+    const merged = new Map((prev?.flags ?? []).map((f) => [key(f), f]));
+    for (const f of parsed.data) merged.set(key(f), f);
+    const all = [...merged.values()].slice(-MAX_REVIEW_FLAGS);
+    this.store.mutateItem(id, [{ set: { review_handoff: { ...(prev ?? { at: isoLocal(), attached: [] }), flags: all } } }, { activity: { actor: 'worker', text: `flagged for a look: ${flagLine(parsed.data)}` } }], 'engine', { commit: `${id}: review flags` });
+    return `Flagged ${parsed.data.length} for a look.`;
+  }
+
+  /**
    * What a worker shows the user (#137, LM-38): images and videos from its worktree, its ignored cache included,
    * copied onto the item as managed attachments (the item page shows them). Only files inside the worktree, of a
    * picture or video type, within attachments.managed_max_bytes. Returns what it did and skipped, for the worker.
@@ -4172,9 +4226,8 @@ export class LiveEngine implements Engine {
     if (!fm.worktree) return 'Nothing attached: this item has no worktree.';
     let root: string;
     try { root = realpathSync(this.absWorktree(fm.worktree)); } catch { return 'Nothing attached: the worktree is not there.'; }
-    const max = this.store.config.attachments.managed_max_bytes;
     const done: string[] = []; const skipped: string[] = [];
-    for (const p of paths.slice(0, 12)) {
+    for (const p of paths.slice(0, ATTACH_PER_CALL)) {
       const rel = relative(root, join(root, p));
       if (!rel || rel.startsWith('..') || isAbsolute(rel)) { skipped.push(`${p} (outside your worktree)`); continue; }
       if (!ATTACHABLE.test(p)) { skipped.push(`${p} (not an image or video)`); continue; }
@@ -4184,13 +4237,14 @@ export class LiveEngine implements Engine {
         if (!abs.startsWith(root + '/')) { skipped.push(`${p} (links outside your worktree)`); continue; }
         const st = statSync(abs);
         if (!st.isFile()) { skipped.push(`${p} (not a file)`); continue; }
-        if (st.size > max) { skipped.push(`${p} (${st.size} bytes, over attachments.managed_max_bytes ${max})`); continue; }
+        const max = managedLimit(this.store.config.attachments, p);
+        if (st.size > max) { skipped.push(`${p} (${st.size} bytes, over attachments.${max === this.store.config.attachments.managed_max_bytes ? 'managed_max_bytes' : 'image_max_bytes'} ${max})`); continue; }
         const data = readFileSync(abs);
         this.store.addManagedAttachment(id, rel.replace(/[\/\\]/g, '-'), data, 'engine');
         done.push(p);
       } catch (e) { skipped.push(`${p} (${(e as Error).message.replace(/\s+/g, ' ').slice(0, 120)})`); }
     }
-    if (paths.length > 12) skipped.push(`${paths.length - 12} more (at most 12 a call)`);
+    if (paths.length > ATTACH_PER_CALL) skipped.push(`${paths.length - ATTACH_PER_CALL} more (at most ${ATTACH_PER_CALL} a call: call add_note with the rest)`);
     return [done.length ? `Attached for the user: ${done.join(', ')}.` : '', skipped.length ? `Not attached: ${skipped.join('; ')}.` : ''].filter(Boolean).join(' ');
   }
 

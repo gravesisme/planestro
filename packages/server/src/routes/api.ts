@@ -62,13 +62,15 @@ const mb = (n: number) => `${Math.round(n / 1e5) / 10} MB`;
 /**
  * An upload is bounded before it is read (#336): a body over `maxFiles` files of the store's per-file limit is refused with
  * 413 from its Content-Length, or as soon as a streamed one passes it, so nothing larger is ever held in memory. The limit
- * is read per request, so a changed `attachments.managed_max_bytes` applies at once.
+ * is read per request, so a changed `attachments.managed_max_bytes` / `image_max_bytes` applies at once.
  */
 function uploadLimit(store: DataStore, maxFiles: number): MiddlewareHandler {
   return (c, next) => {
-    const perFile = store.config.attachments.managed_max_bytes;
+    // A picture may be up to image_max_bytes (#355); the store checks each file against its own type's limit.
+    const { managed_max_bytes, image_max_bytes } = store.config.attachments;
+    const perFile = Math.max(managed_max_bytes, image_max_bytes);
     const maxSize = perFile * maxFiles + FORM_OVERHEAD_BYTES;
-    return bodyLimit({ maxSize, onError: (c) => c.json({ error: `the upload is over the ${mb(maxSize)} limit: at most ${maxFiles} file${maxFiles === 1 ? '' : 's'} of ${mb(perFile)} each (attachments.managed_max_bytes)` }, 413) })(c, next);
+    return bodyLimit({ maxSize, onError: (c) => c.json({ error: `the upload is over the ${mb(maxSize)} limit: at most ${maxFiles} file${maxFiles === 1 ? '' : 's'} of ${mb(perFile)} each (attachments.${perFile === managed_max_bytes ? 'managed_max_bytes' : 'image_max_bytes'})` }, 413) })(c, next);
   };
 }
 /** More files than a route takes: refused whole, with 413 like an oversized body. */

@@ -15,6 +15,7 @@ import { planReviewByDefault,
   type ItemFile, type ItemFrontmatter, type PromptFile, type ReleaseFile, type ReleaseStatus, type QuestionFile, type QuestionStatus, type ScheduleFile, type ThreadActor, type Status, type Actor, type Flavor, type Lane, type Priority,
   type Config, type LocalConfig, type ServerEvent, type ActivityActor,
   joinLines,
+  managedLimit,
 } from '@planestro/shared';
 import { atomicWrite, cleanStaleTemps } from './atomicWrite.ts';
 import { managedAttachmentPath, managedAttachmentParts } from './managedAttachments.ts';
@@ -489,7 +490,8 @@ export class DataStore {
   addManagedAttachment(id: string, originalName: string, data: Buffer, actor: Actor = 'user'): { path: string; kind: 'managed' | 'reference' } {
     this.assertWritable();
     this.requireItem(id);
-    if (data.length > this.config.attachments.managed_max_bytes) throw new Error(`attachment exceeds managed_max_bytes (${this.config.attachments.managed_max_bytes}); add it as a reference instead`);
+    const max = managedLimit(this.config.attachments, originalName);
+    if (data.length > max) throw new Error(`attachment exceeds ${max === this.config.attachments.managed_max_bytes ? 'managed_max_bytes' : 'image_max_bytes'} (${max}); add it as a reference instead`);
     const stamp = isoLocal().slice(0, 19).replace(/[-:T]/g, '').replace(/^(\d{8})(\d{6})$/, '$1-$2');
     const safe = basename(originalName).replace(/[^A-Za-z0-9._-]+/g, '-');
     // Two in the same second with one name (every pasted picture is image.png) took one file between two entries.

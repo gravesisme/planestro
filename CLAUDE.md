@@ -139,6 +139,10 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   it never goes to triage, and only the user's picks resume the worker. A role needs `pick` takes (#318): the user keeps
   up to that many and regenerates the rest (note optional); the worker re-auditions with them in `kept` (locked, still
   served) until every role is filled. The #207 shape (`{take}` / `{regenerate}`, `allow_regenerate`) still reads.
+- A worker's hand-off for review (#355, #372) is `review_handoff` (operational): at `report_done`, the managed
+  pictures attached since the previous one (`attached`) and its advisory `flags` (`{path, cell?, reason, severity?}`,
+  also added by `add_note`). The item page shows them first (flagged first, compare pairs grouped by name); flags never
+  touch approval, holds or the merge. A picture may be `attachments.image_max_bytes` (`managedLimit`).
 - An item that returns to QUEUED after an icebox/backlog round-trip reuses the
   worktree it already has; setup hooks are not re-run.
 - A hold (`skip_merge`) carries its reason in `hold_reason`, which lasts exactly as long as the

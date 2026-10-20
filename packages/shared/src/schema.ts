@@ -43,6 +43,21 @@ export const Attachment = z.object({
 });
 export type Attachment = z.infer<typeof Attachment>;
 
+export const REVIEW_FLAG_SEVERITIES = ['info', 'warn', 'problem'] as const;
+/**
+ * A worker's (or a check's) pointer at something a person should look at (#372): an image path, a frame in it, why.
+ * Advisory only: a flag never blocks approval, a merge or a hold's release.
+ */
+export const ReviewFlag = z.object({
+  /** A worktree-relative path: a file the branch changed, or one it attached. */
+  path: z.string().min(1),
+  /** A named frame or cell inside it (a contact sheet's `row 3, col 2`). */
+  cell: z.string().optional(),
+  reason: z.string().min(1),
+  severity: z.enum(REVIEW_FLAG_SEVERITIES).optional(),
+});
+export type ReviewFlag = z.infer<typeof ReviewFlag>;
+
 /**
  * Field classification (enforced by tests):
  *  - authoritative: user-owned, never derived by the engine
@@ -59,7 +74,7 @@ export const OPERATIONAL_KEYS = [
   'pr_created_at', 'merged_at', 'finished_at', 'iceboxed_at',
   'branch', 'worktree', 'pr', 'session_id', 'agent_sessions', 'session_context', 'awaiting', 'awaiting_data', 'triage', 'resume_after', 'taken_over',
   'op', 'op_started_at', 'op_data', 'plan_revisions', 'ci_head_sha', 'ci_result', 'ci_failed_count',
-  'merge_order', 'skip_merge', 'hold_reason', 'hold_waits_on', 'review_hold', 'loop_state', 'delivered', 'validated_by', 'parts', 'blocked', 'blocked_reason', 'cost_usd', 'turns', 'agent_turns', 'tokens',
+  'merge_order', 'skip_merge', 'hold_reason', 'hold_waits_on', 'review_hold', 'review_handoff', 'loop_state', 'delivered', 'validated_by', 'parts', 'blocked', 'blocked_reason', 'cost_usd', 'turns', 'agent_turns', 'tokens',
   'imported_from', 'dates_estimated', 'scheduled_from', 'created_by',
 ] as const;
 export const DERIVED_KEYS = ['base_branch', 'lane', 'external', 'children', 'deps_satisfied', 'needs_you'] as const;
@@ -181,6 +196,11 @@ export const ItemFrontmatter = z.object({
   hold_waits_on: z.enum(['person', 'agent']).optional(),
   /** The PR goes through sync and CI as usual, then parks (`awaiting: review`) instead of merging, until a person releases it. */
   review_hold: z.boolean().optional(),
+  /**
+   * The worker's last hand-off (#372): when it reported done, the pictures attached since the one before (the page shows
+   * them first as "Latest hand-off") and its advisory flags, flagged pictures first. Replaced by the next report.
+   */
+  review_handoff: z.object({ at: ts, attached: z.array(z.string()).default([]), flags: z.array(ReviewFlag).optional() }).passthrough().optional(),
   /** The loop's last reported iteration (#171): its tally of checks passing and its one-line note. */
   loop_state: z.object({ iteration: z.number().int().nonnegative(), passing: z.number().int().nonnegative(), total: z.number().int().nonnegative(), line: z.string().optional(), at: ts }).passthrough().optional(),
   /** What this item's branch changed, recorded from git as it merged — so items that waited on it can be told, long after the branch is gone. */
@@ -678,7 +698,11 @@ export const Config = z.object({
     /** Branches a pull request into opens held (skip_merge) for the user, item or epic: a branch that deploys (LM's main is production). The hold, not a model's timing, keeps it out of the merge queue. */
     hold_into: z.array(z.string().min(1)).default([]),
   }).default({ image_scale: 1, max_file_bytes: 10_000_000, max_file_bytes_by_ext: {}, nudge_after_min: 240, hold_into: [] }),
-  attachments: z.object({ managed_max_bytes: z.number().int().positive().default(2_000_000) }).default({ managed_max_bytes: 2_000_000 }),
+  attachments: z.object({
+    managed_max_bytes: z.number().int().positive().default(2_000_000),
+    /** Pictures (png, jpg, gif, webp) may be up to this instead (#355): an art review's full-quality captures outgrow a screenshot's limit. */
+    image_max_bytes: z.number().int().positive().default(8_000_000),
+  }).default({ managed_max_bytes: 2_000_000, image_max_bytes: 8_000_000 }),
   releases: z.object({ sections: z.array(ReleaseSectionDef).min(1).default(DEFAULT_RELEASE_SECTIONS) }).default({ sections: DEFAULT_RELEASE_SECTIONS }),
 });
 export type Config = z.infer<typeof Config>;

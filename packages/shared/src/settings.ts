@@ -277,6 +277,7 @@ export const SETTINGS: readonly SettingDef[] = [
   C({ key: 'git.auto_push', tab: 'data', group: 'Storage', label: 'Push at checkpoints', summary: 'If the data folder has a remote.', control: 'toggle' }),
   C({ key: 'git.checkpoint_interval_min', tab: 'data', group: 'Storage', label: 'Checkpoint every', summary: 'Costs and timestamps are saved this often instead of per change.', control: 'number', unit: 'min', min: 0.01, restart: true }),
   C({ key: 'attachments.managed_max_bytes', tab: 'data', group: 'Storage', label: 'Largest copied attachment', summary: 'Bigger attachments are referenced where they are instead of copied into the data folder.', control: 'number', unit: 'MB', per: 1_000_000, min: 0.001 }),
+  C({ key: 'attachments.image_max_bytes', tab: 'data', group: 'Storage', label: 'Largest copied picture', summary: 'Pictures (an art review\'s captures) may be this big; the larger of this and the attachment limit applies.', control: 'number', unit: 'MB', per: 1_000_000, min: 0.001 }),
   C({ key: 'releases.sections', tab: 'data', group: 'Releases', label: 'Release sections', summary: 'The headings a release has, in order.', control: 'sections',
     detail: ['A section can have a character limit to count toward (a store field\'s), start each new release with the previous release\'s text (store copy that rarely changes), and a one-line hint under its heading.'] }),
 ];
