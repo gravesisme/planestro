@@ -2,7 +2,7 @@ import { closesLine } from './issueImport.ts';
 import { itemModelSwitchOps } from '../providerSwitch.ts';
 import { join, relative, isAbsolute, extname, basename, matchesGlob } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { DEBUG_MARKER, mcpServersNamed, debugMarkerRefusal, Audition, AuditionPicks, auditionPicksProblem, auditionPickLines, auditionNote, auditionComplete, runnerTurnSettings, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, validateBreakdown, dependencyOrder, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, type RateLimitSnapshot, demoteH1, loopGreen, loopLine, loopTallyProblem, usageTurnData, USAGE_TURN, type UsageStage, testRunShape, TEST_RUN, stepDownDue, timeoutKilledIn, limitsLabel, type HostLoad, type UsageRole, type ModelDef, resolveAccount, accountList, guardKey, unavailableView, sameSessionStore, DEFAULT_ACCOUNT, type Account, fenceExternal } from '@planestro/shared';
+import { DEBUG_MARKER, mcpServersNamed, debugMarkerRefusal, Audition, AuditionPicks, auditionPicksProblem, auditionPickLines, auditionNote, auditionComplete, runnerTurnSettings, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type DecisionOption, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, validateBreakdown, validateDecision, decisionOf, isDone, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type DecisionAction, type Decision, type ServerEvent, type Status, type RateLimitSnapshot, demoteH1, loopGreen, loopLine, loopTallyProblem, usageTurnData, USAGE_TURN, type UsageStage, testRunShape, TEST_RUN, stepDownDue, timeoutKilledIn, limitsLabel, type HostLoad, type UsageRole, type ModelDef, resolveAccount, accountList, guardKey, unavailableView, sameSessionStore, DEFAULT_ACCOUNT, type Account, fenceExternal } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type RebaseResult, type ResumeQuote, type CiQueue, type RunnerReport, type UndeliveredReport, type ConnectionDrop, type AccountCredentials } from './ports.ts';
@@ -28,6 +28,8 @@ import { WorkerTools, ATTACH_PER_CALL } from './workerTools.ts';
 import { Guards, USAGE_RESUME_GRACE_MS } from './guards.ts';
 import { CleanupReconcile } from './cleanupReconcile.ts';
 import { RESUMABLE_TURN_OPS } from './resumableOps.ts';
+import { Epics } from './epics.ts';
+import { HELD_POLL_MS } from './heldPoll.ts';
 
 /** `schedule` runs `fn` after `ms` and returns a cancel (tests capture it instead of waiting). */
 /** `listenUrl`: where the server answers (`http://127.0.0.1:4300`), the start of notification links unless notifications.base_url says otherwise. */
@@ -110,8 +112,6 @@ const ORCHESTRATOR_FIELDS = ['parent', 'depends_on', 'base_branch_override', 'sk
  */
 /** How long a just-pushed head may still read as the old sha from `gh pr view` before it counts as a real move. */
 const HEAD_PROPAGATION_GRACE_MS = 90_000;
-/** How often a held (skip_merge) pull request's branch and CI are looked at: one `ls-remote` and one run listing per item. */
-const HELD_POLL_MS = 60_000;
 /**
  * Polls in a row (10 s apart) that find only skipped runs for a ready PR's head before planestro
  * sends ready_for_review again. GitHub starts the event's run within seconds; a minute of nothing
@@ -193,6 +193,8 @@ export class LiveEngine implements Engine {
   private readonly guards: Guards;
   /** Cleanup after a merge, the reconciler and every move-aside: invariant 7's destructive operations (#404, seam 4). */
   private readonly cleanupReconcile: CleanupReconcile;
+  /** Epic planning, breakdown approval, the integration branch and the epic PR (#404, seam 5). */
+  private readonly epics: Epics;
 
   constructor(private readonly store: DataStore, private readonly ports: Ports, private readonly emit: (e: ServerEvent) => void, private readonly opts: EngineOptions = {}) {
     this.mode = ports.mode;
@@ -263,12 +265,32 @@ export class LiveEngine implements Engine {
       isByproduct: (path) => this.isByproduct(path),
       worktreeDirt: (cwd) => this.worktreeDirt(cwd),
     });
+    this.epics = new Epics({
+      store,
+      ports,
+      get repo() { return repo(); },
+      get github() { return github(); },
+      turns: this.turns,
+      jobs: this.jobs,
+      now: () => this.now(),
+      absWorktree: (rel) => this.absWorktree(rel),
+      note: (level, message) => this.note(level, message),
+      runJob: (id, fn) => this.runJob(id, fn),
+      tick: () => this.tick(),
+      busyWith: (id) => this.busyWith(id),
+      runTurnFor: (id, phase, prompt, extraAllowed, oneShotCommands, opts) => this.runTurnFor(id, phase, prompt, extraAllowed, oneShotCommands, opts),
+      implementersList: () => this.implementersList(),
+      holdIntoReason: (base, alreadyHeld) => this.holdIntoReason(base, alreadyHeld),
+      holdOps: (reason, by) => this.holdOps(reason, by),
+      wakeOrchestrator: (type, item, data) => this.wakeOrchestrator(type, item, data),
+      syncWithBase: (id, opts) => this.syncWithBase(id, opts),
+    });
     this.orchestrator = new Orchestrator(store, ports, {
       message: (id, text) => this.message(id, text, 'orchestrator'),
       approvePlan: (id, notes, hold, syncFirst) => this.approvePlan(id, notes, 'orchestrator', { hold, syncFirst }),
       holdMerge: (id, reason) => this.orchestratorHolds(id, reason),
       convertKind: (id, to, why) => this.convertKind(id, to, 'orchestrator', why).catch((e) => (e as Error).message),
-      planEpic: (id, why) => this.planEpic(id, why),
+      planEpic: (id, why) => this.epics.planEpic(id, why),
       actionRefusal: (action) => this.actionRefusal(action),
       submitForUser: (id, why) => this.submitAsUser(id, why),
       requestPlanChanges: (id, m) => this.orchestratorRequestsPlanChanges(id, m),
@@ -476,13 +498,13 @@ export class LiveEngine implements Engine {
       this.drivePendingTurns();
       this.driveTimedRetries();
       for (const item of this.store.listItems()) this.continueAfterProviderSwitch(item.id);
-      this.reopenEpics();
+      this.epics.reopenEpics();
       this.admit();
       this.nudgeStaleReviews();
       this.driveStaleBlocks();
       this.drivePlanReviews();
       this.drivePermissionReviews();
-      await this.driveEpics();
+      await this.epics.driveEpics();
       // Its GitHub reads retry for about a minute each: off the pass, one at a time, so the rest of the tick never waits on them.
       if (!this.externalPoll) this.externalPoll = this.driveExternal().catch((e) => this.note('error', `external PRs: ${(e as Error).message}`)).finally(() => { this.externalPoll = undefined; });
       this.driveInReview();
@@ -543,7 +565,7 @@ export class LiveEngine implements Engine {
       if (fm.parent) {
         const parent = this.store.getItem(fm.parent);
         if (!parent) continue;
-        if (parent.file.frontmatter.status === 'NOT_YET_SUBMITTED') { this.runJob(fm.parent, () => this.openEpic(fm.parent!)); continue; }
+        if (parent.file.frontmatter.status === 'NOT_YET_SUBMITTED') { this.runJob(fm.parent, () => this.epics.openEpic(fm.parent!)); continue; }
         if (parent.file.frontmatter.status !== 'IN_PROGRESS') continue;
         d = this.store.derived(item);
       }
@@ -1120,7 +1142,7 @@ export class LiveEngine implements Engine {
     const impl = findModel(this.store.config, item.file.frontmatter.implementer);
     if (impl?.user_approves_plans && by !== 'user') throw new Error(`${id} is implemented by ${impl.label}, whose plans and their MCP budget are the user's to approve`);
     if (mcpBudget !== undefined && by !== 'user') throw new Error('an MCP budget is set by the user');
-    if (item.file.frontmatter.kind === 'epic') { if (by !== 'user') throw new Error(`${id} is an epic: its breakdown is the user's to approve`); await this.approveBreakdown(id); return; }
+    if (item.file.frontmatter.kind === 'epic') { if (by !== 'user') throw new Error(`${id} is an epic: its breakdown is the user's to approve`); await this.epics.approveBreakdown(id); return; }
     if (item.file.frontmatter.status !== 'PLAN_READY') throw new Error(`${id} is ${item.file.frontmatter.status}, not PLAN_READY`);
     // An epic approved as an item goes to one implementer, who has to stop and ask (#69, HH-198).
     const epicShaped = epicFlagOf(item.file.frontmatter);
@@ -3157,238 +3179,19 @@ export class LiveEngine implements Engine {
     }
   }
 
-  // ---- epics ----
-  /** Push the integration branch from the epic's base and open the epic (auto when a child queues, or via API). */
-  // ---- epics planned by the planner: it proposes the children, the user approves, the engine creates them
-  private epicPlanDir(id: string): string { return join(this.store.worktreesRoot(), `${this.store.config.project.id_prefix.toLowerCase()}-${idNumber(id)}-plan`); }
-
-  async planEpic(id: string, why?: string): Promise<void> { this.startEpicPlan(id, why); }
-
-  /**
-   * planEpic in one synchronous step. An epic with a step running is refused before its status moves:
-   * runJob drops a second job, which would leave the epic planning with no planner (#73).
-   */
-  private startEpicPlan(id: string, why?: string): void {
-    const busy = this.busyWith(id);
-    if (busy) throw new Error(busy);
-    this.runJob(id, this.beginEpicPlan(id, why));
-  }
-
-  /** planEpic's persisted half; returns its planning turn, for whoever holds the item's job slot (a conversion already does: #69). */
-  private beginEpicPlan(id: string, why?: string): () => Promise<void> {
-    const item = this.store.requireItem(id);
-    const fm = item.file.frontmatter;
-    if (fm.kind !== 'epic') throw new Error(`${id} is not an epic`);
-    if (fm.status !== 'NOT_YET_SUBMITTED') throw new Error(`${id} is ${fm.status}; only an epic that has not started can be planned`);
-    const base = this.store.derived(item).base_branch;
-    if (!base) throw new Error(this.store.derived(item).base_branch_error ?? `${id} has no base branch`);
-    const dir = this.epicPlanDir(id);
-    const worktreeRel = isAbsolute(dir) ? relative(this.repo, dir) : dir;
-    this.store.mutateItem(id, [
-      { transition: { to: 'PLAN_IN_PROGRESS', actor: 'user' } },
-      // The integration branch gets its name now (the planner's rules speak of it); it is created on approval.
-      { set: { worktree: worktreeRel, branch: fm.branch ?? `feature/${slugify(fm.title)}`, op: 'creating_worktree', op_started_at: this.now() } },
-      { activity: { actor: 'app', text: `${why ? `${why}: ` : ''}planning the breakdown in a read-only checkout of origin/${base} (${worktreeRel})` } },
-    ], 'user', { commit: `${id}: plan the breakdown` });
-    return async () => {
-      await this.ports.git.fetch(this.repo);
-      if (!(await this.ports.git.worktreeList(this.repo)).some((w) => w.path === dir && !w.prunable)) await this.ports.git.worktreeAddDetached(this.repo, dir, `origin/${base}`);
-      this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }], 'engine');
-      await this.runTurnFor(id, 'plan', this.store.renderPrompt('plan-epic', this.store.requireItem(id), { implementers: this.implementersList(), categories: this.store.config.categories.join(', ') }), [], [], { opener: true });
-    };
-  }
-
-  /** Create the approved children (as edited by the user), drop the planning checkout, open the epic, and queue what can start. */
-  async approveBreakdown(id: string, edited?: BreakdownChild[], opts: { queue?: boolean } = {}): Promise<string[]> {
-    const item = this.store.requireItem(id);
-    const fm = item.file.frontmatter;
-    if (fm.kind !== 'epic' || fm.status !== 'PLAN_READY') throw new Error(`${id} has no breakdown waiting for approval`);
-    const children = edited ?? (fm.awaiting_data?.children as BreakdownChild[] | undefined) ?? [];
-    const created = this.createChildren(id, children);
-    const dir = fm.worktree ? this.absWorktree(fm.worktree) : undefined;
-    this.store.mutateItem(id, [
-      { transition: { to: 'IN_PROGRESS', actor: 'user' } },
-      { unset: ['worktree'] },
-      { activity: { actor: 'user', text: `breakdown approved: created ${created.join(', ')}` } },
-    ], 'user', { commit: `${id}: approve breakdown (${created.length} children)` });
-    this.runJob(id, async () => {
-      // The planning checkout is detached and was only ever read: a clean tree is the whole proof it holds nothing.
-      if (dir) {
-        const st = await this.ports.git.status(dir).catch(() => undefined);
-        if (st?.clean) { await this.ports.git.worktreeRemove(this.repo, dir, false); await this.ports.git.worktreePrune(this.repo); }
-        else if (st) this.store.mutateItem(id, [{ activity: { actor: 'app', text: `left the planning checkout ${dir} in place: it has uncommitted changes` } }], 'engine');
-      }
-      await this.ensureEpicBranch(id);
-      if (opts.queue !== false) this.queueApprovedChildren(id, created);
-      void this.tick();
-    });
-    return created;
-  }
-
-  /**
-   * The approval's queue step (#438): each child still NOT_YET_SUBMITTED is queued as the user. One the user queued by hand
-   * while the job ran (QUEUED, or already planning) is skipped and said in Activity, and one child's refusal never stops the rest.
-   */
-  private queueApprovedChildren(id: string, children: string[]): void {
-    const notes: string[] = [];
-    for (const cid of children) {
-      const status = this.store.getItem(cid)?.file.frontmatter.status;
-      if (!status) { notes.push(`${cid} is gone`); continue; }
-      if (status !== 'NOT_YET_SUBMITTED') { notes.push(`${cid} is already ${status}`); continue; }
-      try { this.store.transition(cid, 'QUEUED', 'user'); }
-      catch (e) { notes.push(`${cid} could not be queued (${(e as Error).message})`); }
-    }
-    if (notes.length) this.store.mutateItem(id, [{ activity: { actor: 'app', text: `queuing the approved children: skipped ${notes.join('; ')}` } }], 'engine');
-  }
-
-  /** The user's children for an epic, validated as a breakdown is; returns their ids in the order given. */
-  private createChildren(id: string, children: BreakdownChild[]): string[] {
-    const fm = this.store.requireItem(id).file.frontmatter;
-    const problem = validateBreakdown(children, this.store.config.models, this.store.config.categories);
-    if (problem) throw new Error(problem);
-    // dependencies first, so every depends_on can name an item that already exists
-    const ids = new Map<number, string>();
-    for (const i of dependencyOrder(children)) {
-      const c = children[i];
-      // A child is planned by the model the breakdown names, else by the epic's own planner (not the project default: an outage of that one should not reach every child).
-      const child = this.store.createItem({ title: c.title.trim(), description: c.description.trim(), category: c.category ?? fm.category, ...(fm.priority ? { priority: fm.priority } : {}), implementer: c.implementer, planner: c.planner ?? fm.planner, allow_model_fallback: fm.allow_model_fallback === true, parent: id, depends_on: (c.depends_on ?? []).map((d) => ids.get(d)!), ...(c.hold_for_review ? { extra: { review_hold: true } } : {}) }, 'user');
-      ids.set(i, child.id);
-    }
-    return children.map((_c, i) => ids.get(i)!);
-  }
-
-  /**
-   * Children the user rendered from a list and reviewed (#239), added to an epic that is not being planned: one not yet
-   * started (queuing a child opens it), in progress, or in review (reopenEpics takes it back for them). Queued only on
-   * the user's word (#73). A breakdown waiting for approval takes them into its proposal instead.
-   */
-  async addChildren(id: string, children: BreakdownChild[], opts: { queue?: boolean } = {}): Promise<string[]> {
-    const fm = this.store.requireItem(id).file.frontmatter;
-    if (fm.kind !== 'epic') throw new Error(`${id} is not an epic`);
-    if (fm.status === 'PLAN_READY') throw new Error(`${id} has a breakdown waiting for approval: add them to it there`);
-    if (!['NOT_YET_SUBMITTED', 'IN_PROGRESS', 'IN_REVIEW'].includes(fm.status)) throw new Error(`${id} is ${fm.status}: children are added to an epic not yet started, in progress or in review`);
-    const created = this.createChildren(id, children);
-    this.store.mutateItem(id, [{ activity: { actor: 'user', text: `added ${created.length} ${created.length === 1 ? 'child' : 'children'} from a list: ${created.join(', ')}` } }], 'user', { commit: `${id}: add ${created.length} children` });
-    if (opts.queue) { for (const cid of created) this.store.transition(cid, 'QUEUED', 'user'); void this.tick(); }
-    return created;
-  }
-
-  async openEpic(id: string): Promise<void> {
-    const item = this.store.requireItem(id);
-    const fm = item.file.frontmatter;
-    if (fm.kind !== 'epic' || fm.status !== 'NOT_YET_SUBMITTED') return;
-    const base = this.store.derived(item).base_branch!;
-    const branch = fm.branch ?? `feature/${slugify(fm.title)}`;
-    const opId = this.store.journal.begin('open_epic', id, { branch, base });
-    await this.ports.git.fetch(this.repo);
-    if (!(await this.ports.git.remoteBranchSha(this.repo, branch))) await this.ports.git.pushRef(this.repo, `origin/${base}`, branch);
-    this.store.mutateItem(id, [
-      { transition: { to: 'IN_PROGRESS', actor: 'engine' } },
-      { set: { branch } },
-      { activity: { actor: 'app', text: `opened integration branch ${branch} from origin/${base}` } },
-    ], 'engine', { commit: `${id}: open epic` });
-    this.store.journal.end(opId, id, 'ok');
-    this.note('info', `${id}: epic open on ${branch}`);
-  }
-
-  /** The integration branch of an epic that is already IN_PROGRESS (a planned epic gets there by approval, not by openEpic). */
-  private async ensureEpicBranch(id: string): Promise<void> {
-    const item = this.store.requireItem(id);
-    const fm = item.file.frontmatter;
-    const base = this.store.derived(item).base_branch!;
-    const branch = fm.branch ?? `feature/${slugify(fm.title)}`;
-    await this.ports.git.fetch(this.repo);
-    const exists = !!(await this.ports.git.remoteBranchSha(this.repo, branch));
-    // A retry (#439) finds it already there: only a branch this step opened is said.
-    if (exists && fm.branch === branch) return;
-    if (!exists) await this.ports.git.pushRef(this.repo, `origin/${base}`, branch);
-    this.store.mutateItem(id, [{ set: { branch } }, { activity: { actor: 'app', text: exists ? `integration branch ${branch} is on the remote` : `opened integration branch ${branch} from origin/${base}` } }], 'engine', { commit: `${id}: open epic` });
-    this.note('info', `${id}: epic open on ${branch}`);
-  }
-
-  /**
-   * A child added to an epic whose PR is open (#208, HH-342): admission starts children of an epic in progress only,
-   * so the epic goes back to IN_PROGRESS for it, keeping its PR and any hold. Once every child has merged, submitEpic
-   * finds the same PR open and submits it again. Only on GitHub's word that the PR is still open, and never under a step.
-   */
-  private reopenCheckedAt = new Map<string, number>();
-  private reopenEpics(): void {
-    const now = Date.now();
-    for (const item of this.store.listItems()) {
-      const fm = item.file.frontmatter;
-      if (fm.kind !== 'epic' || fm.status !== 'IN_REVIEW' || !fm.pr || fm.taken_over || this.jobs.has(item.id) || this.turns.has(item.id) || (fm.op && fm.op !== 'awaiting_ci')) continue;
-      const fresh = this.store.derived(item).children.map((c) => this.store.requireItem(c).file.frontmatter).filter((c) => !['MERGED', 'FINISHED', 'ICEBOX'].includes(c.status));
-      // A PR GitHub says is not open is asked about again at most once a minute, not every tick.
-      if (!fresh.length || now - (this.reopenCheckedAt.get(item.id) ?? 0) < HELD_POLL_MS) continue;
-      this.reopenCheckedAt.set(item.id, now);
-      this.runJob(item.id, () => this.reopenEpic(item.id, fresh.map((c) => c.id)));
-    }
-  }
-
-  private async reopenEpic(id: string, children: string[]): Promise<void> {
-    const pr = await this.ports.gh.prView(this.github, this.store.requireItem(id).file.frontmatter.pr!);
-    const fm = this.store.requireItem(id).file.frontmatter;
-    if (pr.state !== 'OPEN' || fm.status !== 'IN_REVIEW' || (fm.op && fm.op !== 'awaiting_ci')) return;
-    this.store.mutateItem(id, [
-      { transition: { to: 'IN_PROGRESS', actor: 'engine' } },
-      { unset: ['op', 'op_started_at', 'ci_result'] },
-      { activity: { actor: 'app', text: `new child ${children.join(', ')}: epic back in progress; PR #${pr.number} stays open and is reused` } },
-    ], 'engine', { commit: `${id}: reopen for ${children.join(', ')}` });
-    this.note('info', `${id}: reopened for new child ${children.join(', ')}; PR #${pr.number} is reused`);
-    void this.tick();
-  }
-
-  /** Epic completion: every child merged → open the epic PR into its base. */
-  private async driveEpics(): Promise<void> {
-    for (const item of this.store.listItems()) {
-      const fm = item.file.frontmatter;
-      if (fm.kind !== 'epic' || fm.status !== 'IN_PROGRESS' || fm.blocked || this.jobs.has(item.id)) continue;
-      const d = this.store.derived(item);
-      if (!d.children.length) continue;
-      const children = d.children.map((c) => this.store.requireItem(c).file.frontmatter);
-      if (!children.every((c) => c.status === 'MERGED' || c.status === 'FINISHED')) {
-        // Iceboxed is "not now", not "not in this epic": it still waits on them, and says so once (#135).
-        const iced = children.filter((c) => c.status === 'ICEBOX').map((c) => c.id);
-        const note = iced.join(',');
-        if (iced.length && children.every((c) => c.status === 'MERGED' || c.status === 'FINISHED' || c.status === 'ICEBOX') && fm.op_data?.epic_iceboxed_noted !== note) this.store.mutateItem(item.id, [{ set: { op_data: { ...(fm.op_data ?? {}), epic_iceboxed_noted: note } } }, { activity: { actor: 'app', text: `every other child has merged; still waiting on ${iced.join(', ')} (iceboxed). Discard ${iced.length === 1 ? 'it' : 'them'} to let the epic finish without ${iced.length === 1 ? 'it' : 'them'}, or bring ${iced.length === 1 ? 'it' : 'them'} back` } }], 'engine');
-        continue;
-      }
-      if (!this.store.config.epics.auto_submit) { if (!fm.op_data?.epic_ready_noted) this.store.mutateItem(item.id, [{ set: { op_data: { ...(fm.op_data ?? {}), epic_ready_noted: true } } }, { activity: { actor: 'app', text: 'all children merged — submit the epic PR when ready (epics.auto_submit is off)' } }], 'engine'); continue; }
-      this.runJob(item.id, () => this.submitEpic(item.id));
-    }
-  }
-
-  async submitEpic(id: string): Promise<void> {
-    const item = this.store.requireItem(id);
-    const fm = item.file.frontmatter;
-    if (fm.kind !== 'epic' || fm.status !== 'IN_PROGRESS') return;
-    const base = this.store.derived(item).base_branch!;
-    const children = this.store.derived(item).children.map((c) => this.store.requireItem(c).file.frontmatter);
-    const opId = this.store.journal.begin('creating_pr', id, { branch: fm.branch, base });
-    this.store.mutateItem(id, [{ set: { op: 'creating_pr', op_started_at: this.now() } }], 'engine');
-    const existing = (await this.ports.gh.prList(this.github, { head: fm.branch!, state: 'open' }))[0];
-    const pr = existing ? { number: existing.number, url: existing.url } : await this.ports.gh.createPr(this.github, {
-      base, head: fm.branch!, title: `${fm.title} (${id})`,
-      body: `Integration branch for epic **${id}**. Child pull requests:\n\n${children.map((c) => `- ${c.id}: ${c.title}${c.pr ? ` (#${c.pr})` : ''}`).join('\n')}${closesLine(fm)}\n\n🤖 Opened by planestro`,
-    });
-    this.store.mutateItem(id, [
-      { transition: { to: 'IN_REVIEW', actor: 'engine' } },
-      { set: { pr: pr.number, ci_result: 'pending' } },
-      { unset: ['op', 'op_started_at'] },
-      { activity: { actor: 'app', text: `opened epic PR #${pr.number} → ${base} (${pr.url})` } },
-      ...(() => { const why = this.holdIntoReason(base, fm.skip_merge); return why ? this.holdOps(why, 'app') : []; })(),
-    ], 'engine', { commit: `${id}: open PR #${pr.number}` });
-    this.store.journal.end(opId, id, 'ok', { pr: pr.number });
-    // As for an item's PR: the orchestrator hears of it before it can merge (LM-2's went to main unseen).
-    this.wakeOrchestrator('pr_opened', id);
-    void this.tick();
-  }
-
-  /** The epic page's "Sync with base": the general sync (syncWithBase), which merges origin/<base> into an integration branch. */
-  async syncBase(id: string): Promise<void> {
-    const r = await this.syncWithBase(id, { by: 'user' });
-    if (/^(not now|not possible|refused)/.test(r)) throw new Error(r);
-  }
+  // ---- epics (#404, seam 5): planning, breakdown approval, the integration branch and epic PRs live in epics.ts ----
+  /** Have an epic's planner propose its children (Epics.planEpic). */
+  planEpic(id: string, why?: string): Promise<void> { return this.epics.planEpic(id, why); }
+  /** Create the approved children, open the epic and queue what can start (Epics.approveBreakdown). */
+  approveBreakdown(id: string, edited?: BreakdownChild[], opts: { queue?: boolean } = {}): Promise<string[]> { return this.epics.approveBreakdown(id, edited, opts); }
+  /** Children the user rendered from a list, added to an epic (Epics.addChildren). */
+  addChildren(id: string, children: BreakdownChild[], opts: { queue?: boolean } = {}): Promise<string[]> { return this.epics.addChildren(id, children, opts); }
+  /** Push the integration branch and open the epic (Epics.openEpic). */
+  openEpic(id: string): Promise<void> { return this.epics.openEpic(id); }
+  /** Open the epic PR into its base (Epics.submitEpic). */
+  submitEpic(id: string): Promise<void> { return this.epics.submitEpic(id); }
+  /** The epic page's "Sync with base" (Epics.syncBase). */
+  syncBase(id: string): Promise<void> { return this.epics.syncBase(id); }
 
   // ---- externally driven items (watched) ----
   private lastExternalPoll = 0;
@@ -4263,7 +4066,7 @@ export class LiveEngine implements Engine {
     // An epic in progress has no session and no worktree (#439): what it can retry is its integration branch; its children drive the rest.
     if (fm.kind === 'epic' && fm.status === 'IN_PROGRESS') {
       clear(`retrying after ${reason}: checking the integration branch; the children drive the rest`);
-      this.runJob(id, () => this.ensureEpicBranch(id));
+      this.runJob(id, () => this.epics.ensureEpicBranch(id));
       return 'retrying: the epic\'s integration branch is checked (opened from its base if missing); its children carry on';
     }
     if (this.store.derived(item).flavor !== 'worker' || !fm.worktree) return `not possible: nothing in ${fm.status} to retry for ${id}; use unblock_item`;
@@ -4495,7 +4298,7 @@ export class LiveEngine implements Engine {
   private submitAsUser(id: string, why: string): 'queued' | 'planning' {
     const refusal = this.actionRefusal({ tool: 'submit_item', args: { id } });
     if (refusal) throw new Error(refusal);
-    if (this.store.requireItem(id).file.frontmatter.kind === 'epic') { this.startEpicPlan(id, why); return 'planning'; }
+    if (this.store.requireItem(id).file.frontmatter.kind === 'epic') { this.epics.startEpicPlan(id, why); return 'planning'; }
     this.store.mutateItem(id, [{ transition: { to: 'QUEUED', actor: 'user' } }, { activity: { actor: 'app', text: `queued for planning: ${why}` } }], 'user', { commit: `${id}: queued` });
     this.poke();
     return 'queued';
@@ -5660,7 +5463,7 @@ export class LiveEngine implements Engine {
     const refused = kindConversionRefusal(item.file.frontmatter, to, this.store.derived(item).children.length);
     if (refused) throw new Error(`not converted: ${refused}`);
     const out = await this.convertNow(id, to, by, why);
-    const plan = out.next === 'plan' ? this.beginEpicPlan(id, 'converted to an epic, so its planner breaks it down') : undefined;
+    const plan = out.next === 'plan' ? this.epics.beginEpicPlan(id, 'converted to an epic, so its planner breaks it down') : undefined;
     if (out.next === 'queue') this.store.transition(id, 'QUEUED', by);
     const said = `${out.said}${plan ? '; its breakdown is being planned' : out.next === 'queue' ? '; queued to be planned as one item' : ''}`;
     this.note('info', said);
