@@ -78,7 +78,7 @@ export async function startServer(o: ServeOptions) {
   const defaultFactory = (s: DataStore, em: (e: ServerEvent) => void): Engine => {
     if (o.mock) return new MockEngine(s, em);
     const mode = s.local.engine.mode ?? s.config.engine.mode;
-    return new LiveEngine(s, makePorts(mode, (m) => { log('info', m); em({ type: 'engine.log', level: 'info', message: m }); }, s), em, { listenUrl: listenUrl(host, port) });
+    return new LiveEngine(s, makePorts(mode, (m) => { log('info', m); em({ type: 'engine.log', level: 'info', message: m }); }, s), em, { listenUrl: listenUrl(host, port), log });
   };
   const engine = (o.engineFactory ?? defaultFactory)(store, emit);
   observer = engine;
