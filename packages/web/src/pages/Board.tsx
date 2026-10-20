@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from 'react';
 import { NavLink, useSearchParams } from 'react-router';
 import { DndContext, MouseSensor, TouchSensor, useSensor, useSensors, useDroppable, closestCenter, pointerWithin, type CollisionDetection, type DragEndEvent, type DragOverEvent } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
-import { findTransition, PRIORITIES, type Priority, type Status } from '@planestro/shared';
+import { findTransition, PRIORITIES, type Priority, type Status, openReleases } from '@planestro/shared';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { ItemCard, statusLabel } from '../components/ItemCard.tsx';
@@ -10,7 +10,7 @@ import { NewItemDialog } from '../components/NewItemDialog.tsx';
 import { ImportIssuesDialog } from '../components/ImportIssuesDialog.tsx';
 import { PreviewDrawer } from '../components/PreviewDrawer.tsx';
 import { usePhone } from '../usePhone.ts';
-import { activeFilters, emptyText, type ActiveFilter, type FilterKey } from '../boardFilters.ts';
+import { activeFilters, emptyText, type ActiveFilter, type FilterKey, NO_RELEASE } from '../boardFilters.ts';
 import { boardColumns } from '../boardColumns.ts';
 import { agentStateOf } from '../agentState.ts';
 
@@ -60,6 +60,7 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
   const [q, setQ] = useState('');
   const [category, setCategory] = useState<string>('');
   const [priority, setPriority] = useState<Priority | ''>('');
+  const [release, setRelease] = useState<string>('');
   const [creating, setCreating] = useState(false);
   const [importing, setImporting] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
@@ -75,10 +76,11 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
     return (state?.items ?? []).filter((i) => i.derived.lane === lane)
       .filter((i) => !category || i.frontmatter.category === category)
       .filter((i) => !priority || i.frontmatter.priority === priority)
+      .filter((i) => !release || (release === NO_RELEASE ? !i.frontmatter.release : i.frontmatter.release === release))
       .filter((i) => !needsOnly || i.derived.needs_you)
       .filter((i) => !runningOnly || agentStateOf(i, state)?.kind === 'running')
       .filter((i) => terms.every((t) => `${i.id} ${i.frontmatter.title} ${i.sections.Description} ${i.sections.Notes}`.toLowerCase().includes(t)));
-  }, [state, lane, q, category, priority, needsOnly, runningOnly]);
+  }, [state, lane, q, category, priority, release, needsOnly, runningOnly]);
 
   const statusAt = (overId: string | number): string | undefined => String(overId).startsWith(COL) ? colStatus(overId) : items.find((i) => i.id === overId)?.frontmatter.status;
   // Over a cell of the phone's strip the page must hold still: scrolled to the top, the strip is no longer stuck and moves away.
@@ -113,18 +115,20 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
     void act(() => api.move(a.id, before ? 'before' : 'after', o.id));
   };
 
-  const filters = activeFilters({ q, category, priority, needsOnly, runningOnly });
+  const filters = activeFilters({ q, category, priority, release, needsOnly, runningOnly });
   const setRunning = (on: boolean) => setParams((p) => { if (on) p.set('running', '1'); else p.delete('running'); return p; });
   const clear = (key: FilterKey) => {
     if (key === 'needs') setParams((p) => { p.delete('needs'); return p; });
     else if (key === 'running') setRunning(false);
-    else if (key === 'category') setCategory(''); else if (key === 'priority') setPriority(''); else setQ('');
+    else if (key === 'category') setCategory(''); else if (key === 'priority') setPriority(''); else if (key === 'release') setRelease(''); else setQ('');
   };
   const clearAll = () => filters.forEach((f) => clear(f.key));
 
   const dropAt = (status: string): 'ok' | 'no' | undefined => dragTarget?.status === status ? (dragTarget.ok ? 'ok' : 'no') : undefined;
 
   if (!state) return <p className="muted">Loading…</p>;
+  // The releases items are planned for, open ones first (#375); a version only an item still names is listed too.
+  const releaseChoices = [...new Set([...openReleases(state.releases ?? []).map((r) => r.version), ...state.items.map((i) => i.frontmatter.release).filter((v): v is string => !!v)])];
   const columns = lane === 'board' ? boardColumns(state.items.filter((i) => i.derived.lane === 'board').map((i) => i.frontmatter.status)) : [lane === 'icebox' ? 'ICEBOX' : 'FINISHED'];
   const done = lane === 'done' ? [...items].sort((a, b) => (b.frontmatter.finished_at ?? '').localeCompare(a.frontmatter.finished_at ?? '')) : items;
   return (
@@ -138,6 +142,9 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
           <span className="chip-sep" aria-hidden />
           {PRIORITIES.map((p) => <button key={p} className={`chip prio-${p} ${priority === p ? 'on' : ''}`} title={`Only ${p}-priority items`} onClick={() => setPriority(priority === p ? '' : p)}>{p}</button>)}
           <span className="chip-sep" aria-hidden />
+          {releaseChoices.length > 0 && <><select className={`chip ${release ? 'on' : ''}`} aria-label="Release" value={release} onChange={(e) => setRelease(e.target.value)} title="Only items planned for a release">
+            <option value="">any release</option>{releaseChoices.map((v) => <option key={v} value={v}>for {v}</option>)}<option value={NO_RELEASE}>no release</option></select>
+          <span className="chip-sep" aria-hidden /></>}
           <button className={`chip running ${runningOnly ? 'on' : ''}`} aria-pressed={runningOnly} title="Only items with an agent working on them now" onClick={() => setRunning(!runningOnly)}>running</button>
           {needsOnly && <button className="chip on" onClick={() => clear('needs')}>needs you ×</button>}
         </div>

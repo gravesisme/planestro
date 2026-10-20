@@ -1,6 +1,7 @@
+import { NO_RELEASE } from '../boardFilters.ts';
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
-import { planReviewByDefault, placeholdersIn, renderPrompt, fallbackChain, findModel, canPlan, PRIORITIES, type Config, type ModelDef, type Priority } from '@planestro/shared';
+import { planReviewByDefault, placeholdersIn, renderPrompt, fallbackChain, findModel, canPlan, PRIORITIES, type Config, type ModelDef, type Priority, defaultRelease, openReleases } from '@planestro/shared';
 import { api, type PromptView, type State } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { newItemModeNote } from '../engineMode.ts';
@@ -62,6 +63,10 @@ export function NewItemDialog({ onClose, icebox, from }: { onClose: () => void; 
   const modelOf = (p?: PromptView) => state?.config.models.find((m) => m.id === p?.frontmatter.model && !m.external)?.id;
   const [implementer, setImplementer] = useState(modelOf(start) ?? state?.config.defaults.implementer ?? '');
   const [parent, setParent] = useState('');
+  // '' takes the project's default (an epic's children, the epic's): the server decides, as for any other client (#375).
+  const [release, setRelease] = useState<string>('');
+  const releases = state?.releases ?? [];
+  const fallback = parent ? state?.items.find((i) => i.id === parent)?.frontmatter.release : defaultRelease(state?.config.releases.default, releases);
   // Ticked from defaults.auto_approve_plan for the chosen implementer, until you tick or untick it yourself.
   const [delegateChoice, setDelegate] = useState<boolean | undefined>(undefined);
   const delegate = delegateChoice ?? (state ? planReviewByDefault(state.config, implementer, kind) : false);
@@ -89,7 +94,7 @@ export function NewItemDialog({ onClose, icebox, from }: { onClose: () => void; 
   const create = async () => {
     let text: string;
     try { text = render(); } catch (err) { useStore.setState({ error: (err as Error).message }); return; }
-    const r = await act(() => api.createItem({ title, category, ...(priority ? { priority } : {}), description: text, kind, planner: kind === 'epic' && planner ? planner : undefined, parent: parent || undefined, implementer: kind === 'item' ? implementer || undefined : undefined, auto_approve_plan: kind === 'item' && orch?.may_approve_plans ? delegate : undefined, allow_model_fallback: allowFallback, status: icebox ? 'ICEBOX' : undefined }));
+    const r = await act(() => api.createItem({ title, category, ...(priority ? { priority } : {}), ...(release ? { release: release === NO_RELEASE ? null : release } : {}), description: text, kind, planner: kind === 'epic' && planner ? planner : undefined, parent: parent || undefined, implementer: kind === 'item' ? implementer || undefined : undefined, auto_approve_plan: kind === 'item' && orch?.may_approve_plans ? delegate : undefined, allow_model_fallback: allowFallback, status: icebox ? 'ICEBOX' : undefined }));
     if (r) { onClose(); nav(`/items/${r.id}`); }
   };
 
@@ -104,6 +109,10 @@ export function NewItemDialog({ onClose, icebox, from }: { onClose: () => void; 
         <div className="row">
           <select value={category} onChange={(e) => setCategory(e.target.value)} title="Category">{state?.config.categories.map((c) => <option key={c}>{c}</option>)}</select>
           <select value={priority} onChange={(e) => setPriority(e.target.value as Priority | '')} title="Priority: each column, and the queue, takes high first"><option value="">no priority</option>{PRIORITIES.map((p) => <option key={p} value={p}>{p} priority</option>)}</select>
+          {openReleases(releases).length > 0 && <select value={release} onChange={(e) => setRelease(e.target.value)} title="The release it is planned for: planning only, nothing in the engine reads it">
+            <option value="">{fallback ? `for ${fallback} (default)` : 'no release (default)'}</option>
+            {openReleases(releases).map((r) => <option key={r.version} value={r.version}>for {r.version}</option>)}
+            {fallback && <option value={NO_RELEASE}>no release</option>}</select>}
           {kind === 'epic' && <select value={planner} onChange={(e) => setPlanner(e.target.value)} title="Who breaks it down (and, unless the breakdown says otherwise, plans its children)">{state?.config.models.filter(canPlan).map((m) => <option key={m.id} value={m.id}>planned by {m.label}</option>)}</select>}
           {kind === 'item' && <select value={implementer} onChange={(e) => setImplementer(e.target.value)} title="Who implements it (the planner stays the project default)">{state?.config.models.filter((m) => !m.external).map((m) => <option key={m.id} value={m.id}>{m.label}{(m.runner ?? 'claude') !== 'claude' ? ` (${m.runner})` : ''}</option>)}</select>}
           {kind === 'item' && epics.length > 0 && <select value={parent} onChange={(e) => setParent(e.target.value)}><option value="">no parent epic</option>{epics.map((e) => <option key={e.id} value={e.id}>{e.id} {e.frontmatter.title}</option>)}</select>}

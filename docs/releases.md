@@ -88,10 +88,33 @@ A heading added to one file by hand is kept and shown after the configured ones.
 Every section has a **copy** button, and **Copy all** puts the whole release on the clipboard as
 one markdown document.
 
+## Planning items for a release
+
+An item can say which release it is planned for, ahead of time: `release: 2.0.0` in its
+frontmatter, set from the **release** picker on the item's page or the card's preview (the
+releases that are `planned` or `submitted`, and none). The card shows it as **for 2.0.0**, and the
+board's release filter shows one release's items, or those planned for none. This is what lets a
+project plan two lines at once (a 1.x patch while 2.0 is in progress) or number releases that are
+not tied to dates.
+
+- **A default for new items.** `releases.default` in `planestro.yml` (Settings → Data → Releases):
+  a version, or `next` for the earliest `planned` release. It applies only when an item is created,
+  and only while that release is open: a shipped or cancelled one is never a default. An epic's
+  children take the epic's release instead. Unset (the default), new items target none.
+- **The release page lists what is planned for it**, with each item's status, under **Planned for
+  this release**. Marking the release `released` offers the planned items that have landed
+  (`MERGED` or `FINISHED`) for its `items` list; **add the N landed** does the same at any time.
+- **Renaming, cancelling or deleting a release asks** whether to move its planned items to the new
+  version, or clear them. Answer no and they keep naming the old version (the picker shows it as
+  such). Nothing is changed silently; a move is one commit, and each item's Activity says so.
+
+`release` is planning data only. The engine never reads it: no branches, no tags, no admission
+order.
+
 ## Placing backlog items
 
 A release's page offers the finished work that belongs to it: items that are `MERGED` or
-`FINISHED`, landed between the release below it and this one (open-ended while it is planned),
+`FINISHED`, planned for no release, landed between the release below it and this one (open-ended while it is planned),
 and are not in any release yet. Items whose dates were estimated at import (`dates_estimated`) are never offered: their day is a guess. **add** places one, **add all** the lot. Both window ends are
 inclusive, so an item merged on a release day is offered to both releases until it is placed in
 one. A `cancelled` release places nothing. The item's own page links back to its release.

@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { getSection, parseActivity, serializePromptFile, releaseCandidates, getQuestionSection, parseThread, TOOLCHAINS, nextRun, scheduleDescription, type Status, type LocalConfig } from '@planestro/shared';
+import { getSection, parseActivity, serializePromptFile, releaseCandidates, plannedFor, getQuestionSection, parseThread, TOOLCHAINS, nextRun, scheduleDescription, type Status, type LocalConfig } from '@planestro/shared';
 import { readUpdateStatus } from '../autoUpdate.ts';
 import { parkHint, permissionGrantRefusal } from '../engine/parks.ts';
 import type { DataStore, StoredItem, StoredPrompt, StoredRelease, StoredQuestion, StoredSchedule } from '../store/DataStore.ts';
@@ -76,6 +76,8 @@ export function releaseView(store: DataStore, r: StoredRelease) {
     version: r.version, path: r.path, frontmatter: r.file.frontmatter,
     sections: r.file.sections.filter((s) => s.title).map((s) => ({ title: s.title, body: s.body })),
     candidates: releaseCandidates(r.version, releases, items).map((i) => i.id),
+    // What is planned for it (#375), and of that what has landed but is not in its items yet (offered when it ships).
+    ...((p) => ({ planned: p.planned.map((i) => i.id), landed: p.landed.map((i) => i.id) }))(plannedFor(r.version, items, r.file.frontmatter.items)),
   };
 }
 export type ReleaseView = ReturnType<typeof releaseView>;

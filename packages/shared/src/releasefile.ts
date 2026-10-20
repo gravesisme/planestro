@@ -87,7 +87,7 @@ export function landedOn(fm: Pick<ItemFrontmatter, 'status' | 'merged_at' | 'fin
  * the day of the release below it and closes on this one's day once it has shipped; both ends are
  * inclusive, so work merged on a release day is offered to both until it is placed in one.
  */
-export function releaseCandidates<I extends { id: string; fm: Pick<ItemFrontmatter, 'status' | 'merged_at' | 'finished_at' | 'dates_estimated'> }>(
+export function releaseCandidates<I extends { id: string; fm: Pick<ItemFrontmatter, 'status' | 'merged_at' | 'finished_at' | 'dates_estimated'> & { release?: string } }>(
   version: string,
   releases: readonly { frontmatter: Pick<ReleaseFrontmatter, 'version' | 'status' | 'date' | 'items'> }[],
   items: readonly I[],
@@ -100,8 +100,35 @@ export function releaseCandidates<I extends { id: string; fm: Pick<ItemFrontmatt
   const through = self.status === 'released' ? self.date : undefined;
   return items.filter((i) => {
     const day = landedOn(i.fm);
-    return day !== undefined && !placed.has(i.id) && (!below || day >= below) && (!through || day <= through);
+    // An item planned for a release (#375) is that release's, not a date hint for this one.
+    return day !== undefined && !i.fm.release && !placed.has(i.id) && (!below || day >= below) && (!through || day <= through);
   });
+}
+
+/** Releases an item can be planned for (#375): planned or submitted, oldest version first. */
+export function openReleases<R extends { frontmatter: Pick<ReleaseFrontmatter, 'version' | 'status'> }>(releases: readonly R[]): R[] {
+  return sortReleases(releases.filter((r) => r.frontmatter.status === 'planned' || r.frontmatter.status === 'submitted')).reverse();
+}
+
+/**
+ * The release a new item starts planned for (#375): `releases.default` as a version that is still open, or `next`, the
+ * earliest planned one. Anything else (unset, shipped, cancelled, missing) is none: an item never targets a closed release by default.
+ */
+export function defaultRelease(setting: string | undefined, releases: readonly { frontmatter: Pick<ReleaseFrontmatter, 'version' | 'status'> }[]): string | undefined {
+  if (!setting) return undefined;
+  if (setting === 'next') return openReleases(releases).find((r) => r.frontmatter.status === 'planned')?.frontmatter.version;
+  return openReleases(releases).find((r) => r.frontmatter.version === setting)?.frontmatter.version;
+}
+
+/**
+ * What a release page lists from the items (#375): what is planned for it, and, of that, what has landed and is not in
+ * its `items` yet, to offer when it is marked released (offered, never applied).
+ */
+export function plannedFor<I extends { id: string; fm: Pick<ItemFrontmatter, 'status'> & { release?: string } }>(
+  version: string, items: readonly I[], shipped: readonly string[],
+): { planned: I[]; landed: I[] } {
+  const planned = items.filter((i) => i.fm.release === version);
+  return { planned, landed: planned.filter((i) => (i.fm.status === 'MERGED' || i.fm.status === 'FINISHED') && !shipped.includes(i.id)) };
 }
 
 /** The whole release as one markdown document, for pasting somewhere else. */

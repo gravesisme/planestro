@@ -282,6 +282,8 @@ export const SETTINGS: readonly SettingDef[] = [
   C({ key: 'attachments.image_max_bytes', tab: 'data', group: 'Storage', label: 'Largest copied picture', summary: 'Pictures (an art review\'s captures) may be this big; the larger of this and the attachment limit applies.', control: 'number', unit: 'MB', per: 1_000_000, min: 0.001 }),
   C({ key: 'releases.sections', tab: 'data', group: 'Releases', label: 'Release sections', summary: 'The headings a release has, in order.', control: 'sections',
     detail: ['A section can have a character limit to count toward (a store field\'s), start each new release with the previous release\'s text (store copy that rarely changes), and a one-line hint under its heading.'] }),
+  C({ key: 'releases.default', tab: 'data', group: 'Releases', label: 'New items target', summary: 'A release version, or next: the earliest planned release. New items (and an epic\'s children, from the epic) start planned for it.', control: 'text', mono: true, placeholder: 'none',
+    detail: ['Only when an item is created: changing it never moves existing items. A version that is not a planned or in-progress release is skipped, so the item starts with none.'] }),
 ];
 
 /** Schema keys the page deliberately leaves out: stamps, runtime state and records written by other controls. */

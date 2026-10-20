@@ -1,3 +1,4 @@
+import { ReleasePicker } from '../components/ReleasePicker.tsx';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { PRIORITIES, managedLimit, canPlan, findModel, modelCapabilities, connectionDropOf, decisionOf, DISCARD, planToolsMissing, mcpBudgetOf, DOLLAR_HINT, epicFlagOf, heldReasonOf, holdShapeOf, kindConversionRefusal, previewOf, loopLine, loopGreen, type Status } from '@planestro/shared';
@@ -161,6 +162,7 @@ function ItemBody({ item, transitions, onDeleted }: { item: ItemView; transition
         <div className="controls">
           <label>category <select value={fm.category} onChange={(e) => field({ category: e.target.value })}>{state.config.categories.map((c) => <option key={c}>{c}</option>)}</select></label>
           <label title="Each column, and the queue, takes high before medium before low before none; rank orders items within a priority">priority <select value={fm.priority ?? ''} onChange={(e) => field({ priority: e.target.value || null })}><option value="">none</option>{PRIORITIES.map((p) => <option key={p}>{p}</option>)}</select></label>
+          {(state.releases?.length ?? 0) > 0 && <label>release <ReleasePicker value={fm.release} onChange={(release) => field({ release })} /></label>}
           {fm.kind !== 'epic' && <label>planner <select value={fm.planner ?? ''} onChange={(e) => field({ planner: e.target.value })}>{state.config.models.filter(canPlan).map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}</select></label>}
           {fm.kind !== 'epic' && <label>implementer <select value={fm.implementer ?? ''} onChange={(e) => field({ implementer: e.target.value })}>{state.config.models.map((m) => <option key={m.id} value={m.id}>{m.label}{m.external ? ' (external)' : (m.runner ?? 'claude') !== 'claude' ? ` (${m.runner})` : ''}</option>)}</select></label>}
           {fm.kind !== 'epic' && implementerDef && (implementerDef.runner ?? 'claude') !== 'claude' && <span className="small muted" title="Claude workers get a per-command permission policy with parked requests. This runner has no such callback: its turns run inside its own sandbox (writes confined to the worktree, no network for its commands) and planestro verifies the result afterwards.">runs on {implementerDef.runner}: sandboxed, not per-command permissions ⓘ</span>}

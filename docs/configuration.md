@@ -377,6 +377,7 @@ Default: **Release notes** and **Notes**.
 | `releases.sections.max_chars` | none | A limit to count toward (a store field's); the page shows the count, red past it. |
 | `releases.sections.carry` | `false` | A new release starts with the previous release's text for this section. |
 | `releases.sections.hint` | none | One line shown under the heading. |
+| `releases.default` | none | The release a new item is planned for: a version, or `next` (the earliest `planned` release). Only while that release is open; an epic's children take the epic's ([Planning items for a release](releases.md#planning-items-for-a-release)). |
 
 ## planestro.local.yml
 

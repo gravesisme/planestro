@@ -54,7 +54,9 @@ export interface ReviewDiff { path: string; change: ReviewImage['change']; patch
 /** What Undo last turn would discard (#234), or why it cannot be undone (`refusal`). */
 export interface UndoTurnPreview { refusal: string | null; turn?: number; at?: string; head?: string; files?: { path: string; change: ReviewImage['change'] }[]; patch?: string; truncated?: boolean; commits?: string; expect?: string }
 export interface PromptView { name: string; path: string; frontmatter: PromptFrontmatter; body: string; text?: string }
-export interface ReleaseView { version: string; path: string; frontmatter: ReleaseFrontmatter; sections: { title: string; body: string }[]; candidates: string[] }
+export interface ReleaseView { version: string; path: string; frontmatter: ReleaseFrontmatter; sections: { title: string; body: string }[]; candidates: string[];
+  /** Items planned for it (#375), and those of them that landed but are not in its items yet. */
+  planned: string[]; landed: string[] }
 /** An orchestrator question (#75). The list leaves out `details` and `thread`; the question page has them. */
 export interface QuestionView {
   id: string; path: string; frontmatter: QuestionFrontmatter; pending: boolean; item_title?: string; item_status?: Status;
@@ -128,7 +130,7 @@ export const api = {
   retryProvider: (runner: string) => req('POST', `/api/providers/${runner}/retry`),
   state: async () => { const s = await req<unknown>('GET', '/api/state'); if (!isState(s)) throw new Error('the server sent an unreadable state'); return s; },
   projects: () => req<{ projects: ProjectRow[] }>('GET', '/api/projects'),
-  createItem: (body: { title: string; category?: string; priority?: Priority; description?: string; kind?: 'item' | 'epic'; planner?: string; parent?: string; implementer?: string; status?: 'NOT_YET_SUBMITTED' | 'ICEBOX'; auto_approve_plan?: boolean; allow_model_fallback?: boolean }) => req<ItemView>('POST', '/api/items', body),
+  createItem: (body: { title: string; category?: string; priority?: Priority; release?: string | null; description?: string; kind?: 'item' | 'epic'; planner?: string; parent?: string; implementer?: string; status?: 'NOT_YET_SUBMITTED' | 'ICEBOX'; auto_approve_plan?: boolean; allow_model_fallback?: boolean }) => req<ItemView>('POST', '/api/items', body),
   patchItem: (id: string, body: { fields?: Record<string, unknown>; sections?: Record<string, string> }) => req<ItemView>('PATCH', `/api/items/${id}`, body),
   deleteItem: (id: string) => req<{ ok: true }>('DELETE', `/api/items/${id}`),
   move: (id: string, op: 'top' | 'bottom' | 'before' | 'after' | 'icebox' | 'backlog', ref?: string) => req<ItemView>('POST', `/api/items/${id}/move`, { op, ref }),
@@ -173,6 +175,8 @@ export const api = {
   createRelease: (body: { version: string; title?: string; date?: string }) => req<ReleaseView>('POST', '/api/releases', body),
   patchRelease: (version: string, body: { fields?: ReleaseFields; sections?: Record<string, string> }) => req<ReleaseView>('PATCH', `/api/releases/${encodeURIComponent(version)}`, body),
   deleteRelease: (version: string) => req<{ ok: true }>('DELETE', `/api/releases/${encodeURIComponent(version)}`),
+  /** Move the items planned for a release to another, or clear them (`to: null`): the page's answer on a rename, cancel or delete (#375). */
+  retargetRelease: (version: string, to: string | null) => req<{ items: string[] }>('POST', `/api/releases/${encodeURIComponent(version)}/retarget`, { to }),
   createSchedule: (body: ScheduleFields & { name: string; title: string; cron: string; tz: string }) => req<ScheduleView>('POST', '/api/schedules', body),
   patchSchedule: (name: string, fields: ScheduleFields) => req<ScheduleView>('PATCH', `/api/schedules/${encodeURIComponent(name)}`, fields),
   deleteSchedule: (name: string) => req<{ ok: true }>('DELETE', `/api/schedules/${encodeURIComponent(name)}`),
