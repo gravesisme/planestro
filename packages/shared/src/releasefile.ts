@@ -1,4 +1,4 @@
-import { ReleaseFrontmatter, RELEASE_KEY_ORDER, type ReleaseSectionDef, type ItemFrontmatter } from './schema.ts';
+import { ReleaseFrontmatter, RELEASE_KEY_ORDER, type ReleaseSectionDef } from './schema.ts';
 import { splitFrontmatter, serializeFrontmatter } from './frontmatter.ts';
 import { canonicalTimestamp } from './timestamps.ts';
 import { splitSections, demoteH1, type Section } from './itemfile.ts';

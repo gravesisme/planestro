@@ -299,8 +299,8 @@ export const NOT_USER_FACING: Record<SettingFile, readonly string[]> = {
 export function settingDef(file: SettingFile, key: string): SettingDef | undefined { return SETTINGS.find((s) => s.file === file && s.key === key); }
 
 export function getPath(obj: unknown, key: string): unknown {
-  let cur: any = obj;
-  for (const p of key.split('.')) { if (cur === null || typeof cur !== 'object') return undefined; cur = cur[p]; }
+  let cur: unknown = obj;
+  for (const p of key.split('.')) { if (cur === null || typeof cur !== 'object') return undefined; cur = (cur as Record<string, unknown>)[p]; }
   return cur;
 }
 
