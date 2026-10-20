@@ -743,8 +743,19 @@ export const LocalConfig = z.object({
   codex_bin: z.string().optional(),
   /** Extra names this machine is reached by (a Tailscale name, a DNS alias); the server refuses any other Host. */
   allowed_hosts: z.array(z.string().min(1)).optional(),
-  /** Listen on every interface unless `--host` says otherwise, and answer only the local network (#255). There is no login: anyone on this network can use planestro. */
+  /** Listen on every interface unless `--host` says otherwise, and answer only the local network (#255); a device other than this machine must be paired (`paired_devices`, #403). */
   lan_access: z.boolean().optional(),
+  /**
+   * Devices paired to reach this server from another machine (#403): a request from anywhere but this machine carries
+   * one's token (a cookie the pairing page sets, or `Authorization: Bearer` for an MCP client). Only the token's
+   * sha256 is kept; `planestro pair` mints the one-time code, Settings → Access revokes a device.
+   */
+  paired_devices: z.array(z.object({
+    id: z.string().regex(/^[a-z0-9]{8,32}$/),
+    name: z.string().min(1).max(80),
+    token_sha256: z.string().regex(/^[0-9a-f]{64}$/),
+    created_at: z.string(),
+  })).optional(),
   /** MCP servers a model row may name in `mcp`, with their keys: this file is machine-local and gitignored. A stdio server (`command`, `args`, `env`) or an HTTP one (`url`, `headers`). */
   mcp_servers: z.record(z.string(), z.object({
     command: z.string().optional(), args: z.array(z.string()).default([]), env: z.record(z.string(), z.string()).default({}),

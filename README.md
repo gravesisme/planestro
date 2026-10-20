@@ -326,10 +326,11 @@ was down when the session tried it), the tools stay gone for that session until
 you run `/mcp reconnect plugin:planestro:planestro`. `serve --watch` keeps the
 port open across its own restarts, so those no longer cause it.
 
-> **The web UI has no authentication.** It binds to `127.0.0.1` by default and
+> **The web UI has no login on this machine.** It binds to `127.0.0.1` by default and
 > can start agents that edit and push code. Requests from other websites and
-> DNS-rebinding tricks are refused, but `--host 0.0.0.0` exposes the UI to your
-> whole network; only do that on a network you trust. See [SECURITY.md](SECURITY.md).
+> DNS-rebinding tricks are refused. With `--host 0.0.0.0` (or `lan_access`) another
+> device must be paired first (`planestro pair`, then `/pair` on the device), and
+> pairing is plain HTTP: only do that on a network you trust. See [SECURITY.md](SECURITY.md).
 
 ### Authentication and billing
 

@@ -124,10 +124,10 @@ export function guardView(store: DataStore, paused: boolean) {
   return { provider_guards: e.provider_guards, ...(paused ? { paused_by: e.paused_by, ...(e.paused_by === 'disk' && e.disk_guard ? { disk_guard: e.disk_guard } : {}) } : {}) };
 }
 
-/** planestro.local.yml as the web sees it: MCP servers' keys are secrets, so the page learns only that they are set. */
+/** planestro.local.yml as the web sees it: MCP servers' keys and paired devices' token hashes (#403) are secrets, so the page learns only that they are set. */
 export function publicLocal(local: LocalConfig): LocalConfig {
   const hide = (m: Record<string, string>) => Object.fromEntries(Object.keys(m).map((k) => [k, '(set)']));
-  return { ...local, mcp_servers: Object.fromEntries(Object.entries(local.mcp_servers ?? {}).map(([name, s]) => [name, { ...s, env: hide(s.env ?? {}), headers: hide(s.headers ?? {}) }])) };
+  return { ...local, ...(local.paired_devices ? { paired_devices: local.paired_devices.map((d) => ({ ...d, token_sha256: '(set)' })) } : {}), mcp_servers: Object.fromEntries(Object.entries(local.mcp_servers ?? {}).map(([name, s]) => [name, { ...s, env: hide(s.env ?? {}), headers: hide(s.headers ?? {}) }])) };
 }
 
 /** One banner per runner label that looks stalled or offline (#216), with the items waiting on it. */

@@ -230,6 +230,7 @@ function Control({ def, value, state }: { def: SettingDef; value: unknown; state
     case 'record': return <RecordCtl def={def} value={(value as Record<string, number> | undefined) ?? {}} />;
     case 'commands': return <CommandsCtl def={def} value={(value as Record<string, string> | undefined) ?? {}} />;
     case 'mcp': return <McpServersCtl state={state} />;
+    case 'devices': return <DevicesCtl state={state} />;
     case 'categories': return <CategoriesCtl cfg={state.config} />;
     case 'sections': return <SectionsCtl def={def} value={(value as ReleaseSectionDef[] | undefined) ?? []} />;
     case 'models': return <ModelsCtl state={state} />;
@@ -572,6 +573,26 @@ function McpServersCtl({ state }: { state: State }) {
       <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}><button className="primary" onClick={() => setEditing('')}>Add a server</button><button onClick={() => setImporting(true)}>Import from Claude Code or Codex…</button></div>
       {editing !== undefined && <McpDialog name={editing || undefined} server={editing ? servers[editing] : undefined} taken={Object.keys(servers)} onClose={() => setEditing(undefined)} />}
       {importing && <McpImportDialog onClose={() => setImporting(false)} />}
+    </div>
+  );
+}
+
+/** Paired devices (#403): a one-time code to pair another (minted only on this machine), and revoke. */
+function DevicesCtl({ state }: { state: State }) {
+  const devices = state.local.paired_devices ?? [];
+  const [code, setCode] = useState<{ code: string; expires_at: string }>();
+  const mint = async () => { const r = await act(() => api.pairingCode()); if (r) setCode(r); };
+  return (
+    <div className="models">
+      {devices.map((d) => (
+        <div className="model" key={d.id}>
+          <div><h4>{d.name}</h4><div className="facts"><span>paired {d.created_at.slice(0, 16).replace('T', ' ')}</span><span className="mono">{d.id}</span></div></div>
+          <div className="acts"><ActionButton className="small danger" working="Revoking…" onAct={() => { if (confirm(`Revoke ${d.name}? Its next request gets a 401 until it is paired again.`)) return act(() => api.revokeDevice(d.id)); }}>Revoke</ActionButton></div>
+        </div>
+      ))}
+      {!devices.length && <p className="small muted" style={{ margin: 0 }}>None: only this machine can use planestro.</p>}
+      <div className="row" style={{ flexWrap: 'wrap', gap: 6 }}><ActionButton className="primary" working="Minting…" onAct={mint}>Pair a device</ActionButton></div>
+      {code && <p role="status" className="small">On the device, open <span className="mono">/pair</span> on this server and enter <b className="mono">{code.code}</b> (good until {new Date(code.expires_at).toLocaleTimeString()}, once).</p>}
     </div>
   );
 }
