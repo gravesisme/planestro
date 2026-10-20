@@ -35,6 +35,9 @@ describe('planestro sample', () => {
       const next = store.getRelease('0.4.0')!;
       expect(next.file.sections.find((x) => x.title === 'Tagline')!.body).toBe('Tide times for the beach you are standing on.'); // carried from 0.3.0
       expect(releaseCandidates('0.4.0', store.listReleases().map((r) => r.file), store.listItems().map((i) => ({ id: i.id, fm: i.file.frontmatter }))).length).toBe(2);
+      // #375: three items are planned for 0.4.0, the two that shipped in it and the time-zone fix still in the backlog.
+      const planned = store.listItems().filter((i) => i.file.frontmatter.release === '0.4.0');
+      expect(planned.map((i) => i.file.frontmatter.status).sort()).toEqual(['FINISHED', 'FINISHED', 'NOT_YET_SUBMITTED']);
       const epic = store.listItems().find((i) => i.file.frontmatter.kind === 'epic' && i.file.frontmatter.title === 'Offline mode')!;
       expect(store.derived(epic).children.length).toBe(2);
       const waiting = store.listItems().find((i) => i.file.frontmatter.depends_on.length)!;

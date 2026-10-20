@@ -168,7 +168,7 @@ export function importPrompts(store: DataStore, filePath: string, opts: { commit
     if (opts.commit) {
       const models = store.config.models.map((m) => m.id);
       const item = store.createItem({
-        title, category, description: body,
+        title, category, description: body, release: null,
         planner: parsed.planner && models.includes(parsed.planner) ? parsed.planner : undefined,
         implementer: parsed.implementer && models.includes(parsed.implementer) ? parsed.implementer : undefined,
         status: status === 'ICEBOX' ? 'ICEBOX' : 'NOT_YET_SUBMITTED',

@@ -69,7 +69,27 @@ function ReleaseBody({ release }: { release: ReleaseView }) {
   const bodyOf = (title: string) => release.sections.find((s) => s.title === title)?.body ?? '';
   const [version, setVersion] = useState(release.version);
   useEffect(() => { setTabTitle(`${release.version}${fm.title ? ` · ${fm.title}` : ''} · releases`); }, [release.version, fm.title]);
-  const rename = async () => { const v = version.trim(); if (!v || v === release.version) return setVersion(release.version); const r = await act(() => api.patchRelease(release.version, { fields: { version: v } })); if (r) nav(`/releases/${encodeURIComponent(r.version)}`, { replace: true }); else setVersion(release.version); };
+  // The items planned for it (#375) are offered a move or a clear when it is renamed, cancelled or deleted: never changed silently.
+  const planned = release.planned.length;
+  const plannedLine = `${planned} item${planned === 1 ? ' is' : 's are'} planned for ${release.version}`;
+  const rename = async () => {
+    const v = version.trim(); if (!v || v === release.version) return setVersion(release.version);
+    const r = await act(() => api.patchRelease(release.version, { fields: { version: v } }));
+    if (!r) return setVersion(release.version);
+    if (planned && confirm(`${plannedLine}. Move them to ${r.version}? (Cancel leaves them naming ${release.version}.)`)) await act(() => api.retargetRelease(release.version, r.version));
+    nav(`/releases/${encodeURIComponent(r.version)}`, { replace: true });
+  };
+  const setStatus = async (status: ReleaseStatus) => {
+    const r = await patch({ status });
+    if (!r) return;
+    if (status === 'cancelled' && planned && confirm(`${plannedLine}. Clear their release? (Cancel leaves them as they are.)`)) await act(() => api.retargetRelease(release.version, null));
+    if (status === 'released' && r.landed.length && confirm(`${r.landed.length} item${r.landed.length === 1 ? '' : 's'} planned for ${release.version} landed: ${r.landed.join(', ')}. Add ${r.landed.length === 1 ? 'it' : 'them'} to what this release shipped?`)) await patch({ items: [...r.frontmatter.items, ...r.landed] });
+  };
+  const remove = async () => {
+    if (!confirm(`Delete release ${release.version}? The file is removed; git history keeps it.`)) return;
+    if (planned && confirm(`${plannedLine}. Clear their release too? (Cancel leaves them naming ${release.version}.)`)) await act(() => api.retargetRelease(release.version, null));
+    return act(() => api.deleteRelease(release.version)).then(() => nav('/releases'));
+  };
   return (
     <div>
       <Link className="back phone-only" to="/releases">‹ Releases</Link>
@@ -79,17 +99,25 @@ function ReleaseBody({ release }: { release: ReleaseView }) {
           <input aria-label="Title" key={`t${fm.title}`} defaultValue={fm.title ?? ''} placeholder="title" onBlur={(e) => e.target.value.trim() !== (fm.title ?? '') && patch({ title: e.target.value.trim() || null })} style={{ textTransform: 'none' }} />
         </span><span className="muted small" style={{ textTransform: 'none', letterSpacing: 0 }} title={release.path}>releases/{release.version}.md</span></h2>
         <div className="controls">
-          <label>status <select value={fm.status} onChange={(e) => patch({ status: e.target.value as ReleaseStatus })}>{RELEASE_STATUSES.map((s) => <option key={s} value={s} title={STATUS_HINT[s]}>{s}</option>)}</select></label>
+          <label>status <select value={fm.status} onChange={(e) => void setStatus(e.target.value as ReleaseStatus)}>{RELEASE_STATUSES.map((s) => <option key={s} value={s} title={STATUS_HINT[s]}>{s}</option>)}</select></label>
           <label>{fm.status === 'released' ? 'released on' : 'aiming for'} <input type="date" key={`d${fm.date}`} defaultValue={fm.date ?? ''} onBlur={(e) => e.target.value !== (fm.date ?? '') && patch({ date: e.target.value || null })} /></label>
           <label>tag <input key={`g${fm.tag}`} defaultValue={fm.tag ?? ''} placeholder={`v${release.version}`} onBlur={(e) => e.target.value.trim() !== (fm.tag ?? '') && patch({ tag: e.target.value.trim() || null })} style={{ width: 110 }} /></label>
           <span className="grow" />
           <button type="button" onClick={() => copy(releaseMarkdown({ frontmatter: fm, sections: release.sections }))} title="Every section with text, as one markdown document">Copy all</button>
-          <ActionButton type="button" className="danger" working="Deleting…" onAct={() => { if (confirm(`Delete release ${release.version}? The file is removed; git history keeps it.`)) return act(() => api.deleteRelease(release.version)).then(() => nav('/releases')); }}>Delete</ActionButton>
+          <ActionButton type="button" className="danger" working="Deleting…" onAct={remove}>Delete</ActionButton>
         </div>
         <SectionsLine sections={state.config.releases.sections} />
       </div>
 
       {defs.map((d) => <SectionEditor key={`${release.version}:${d.title}`} release={release.version} def={d} body={bodyOf(d.title)} />)}
+
+      <div className="section"><h2 style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}><span>Planned for this release · {planned}</span>
+          {release.landed.length > 0 && <ActionButton className="small" working="Adding…" title="Add the planned items that have merged to what this release shipped" onAct={() => patch({ items: [...fm.items, ...release.landed] })}>add the {release.landed.length} landed</ActionButton>}</h2>
+        {planned > 0 ? <table><tbody>{release.planned.map((id) => { const it = itemOf(id); const shipped = fm.items.includes(id); return (
+          <tr key={id}><td><Link to={`/items/${id}`}>{id}</Link></td><td>{it?.frontmatter.title}</td><td className="muted small">{it ? statusLabel(it.frontmatter.status) : ''}</td>
+            <td className="small">{shipped ? <span className="muted">shipped</span> : release.landed.includes(id) ? <ActionButton className="small" working="Adding…" onAct={() => patch({ items: [...fm.items, id] })}>add</ActionButton> : null}</td></tr>); })}</tbody></table>
+          : <p className="muted small" style={{ margin: 0 }}>Nothing is planned for it. Pick it as an item's release on the item, or make it the default for new items (<Link to="/settings?tab=data#setting-releases.default">releases.default</Link>).</p>}
+      </div>
 
       <div className="section"><h2>Backlog items in this release · {fm.items.length}</h2>
         {fm.items.length > 0 ? <table><tbody>{fm.items.map((id) => { const it = itemOf(id); return (
@@ -97,7 +125,7 @@ function ReleaseBody({ release }: { release: ReleaseView }) {
             <td><ActionButton className="chip-x" title={`Take ${id} out of ${release.version}`} working="" onAct={() => patch({ items: fm.items.filter((x) => x !== id) })}>×</ActionButton></td></tr>); })}</tbody></table>
           : <p className="muted small" style={{ margin: 0 }}>None yet.</p>}
         {release.candidates.length > 0 && <>
-          <h3 className="drawer-h" style={{ marginTop: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>Landed {fm.status === 'released' ? 'in this window' : 'since the last release'}, not in any release · {release.candidates.length}
+          <h3 className="drawer-h" style={{ marginTop: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>Landed {fm.status === 'released' ? 'in this window' : 'since the last release'}, planned for no release and in none · {release.candidates.length}
             <ActionButton className="small" working="Adding…" onAct={() => patch({ items: [...fm.items, ...release.candidates] })}>add all</ActionButton></h3>
           <table><tbody>{release.candidates.map((id) => { const it = itemOf(id)!; return (
             <tr key={id}><td><Link to={`/items/${id}`}>{id}</Link></td><td>{it.frontmatter.title}</td><td className="muted small">{(it.frontmatter.merged_at ?? it.frontmatter.finished_at ?? '').slice(0, 10)}</td>

@@ -25,7 +25,7 @@ import { changeConcurrency, concurrencyView, hostLoad, rollbackConcurrency } fro
 import type { HostLoad } from '@planestro/shared';
 
 const EDITABLE_FIELDS = z.object({
-  title: z.string().min(1).optional(), category: z.string().min(1).optional(), priority: z.enum(PRIORITIES).nullable().optional(), planner: z.string().optional(), implementer: z.string().optional(),
+  title: z.string().min(1).optional(), category: z.string().min(1).optional(), priority: z.enum(PRIORITIES).nullable().optional(), release: z.string().min(1).nullable().optional(), planner: z.string().optional(), implementer: z.string().optional(),
   auto_approve_plan: z.boolean().optional(), allow_model_fallback: z.boolean().nullable().optional(), depends_on: z.array(z.string()).optional(), parent: z.string().nullable().optional(),
   merge_policy: z.enum(['app', 'watch']).nullable().optional(), base_branch_override: z.string().nullable().optional(),
   branch: z.string().nullable().optional(), pr: z.number().int().positive().nullable().optional(),
@@ -113,7 +113,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   api.post('/items', async (c) => {
     try {
       const body = z.object({
-        title: z.string().min(1), category: z.string().optional(), priority: z.enum(PRIORITIES).optional(), description: z.string().optional(), notes: z.string().optional(),
+        title: z.string().min(1), category: z.string().optional(), priority: z.enum(PRIORITIES).optional(), release: z.string().min(1).nullable().optional(), description: z.string().optional(), notes: z.string().optional(),
         kind: z.enum(['item', 'epic']).optional(), parent: z.string().optional(), planner: z.string().optional(), implementer: z.string().optional(),
         status: z.enum(['NOT_YET_SUBMITTED', 'ICEBOX']).optional(), depends_on: z.array(z.string()).optional(), auto_approve_plan: z.boolean().optional(),
         allow_model_fallback: z.boolean().optional(),
@@ -135,6 +135,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
         const set: Record<string, unknown> = {}; const unset: string[] = [];
         for (const [k, v] of Object.entries(body.fields)) { if (v === null) unset.push(k); else if (v !== undefined) set[k] = v; }
         if (set.category && !store.config.categories.includes(set.category as string)) throw new Error(`unknown category ${set.category}`);
+        if (set.release) store.requireRelease(set.release as string);
         if (set.parent) { const p = store.requireItem(set.parent as string); if (p.file.frontmatter.kind !== 'epic') throw new Error(`${set.parent} is not an epic`); }
         // A pull request attached by hand (finished outside planestro) must enter the merge pipeline
         // like one planestro opened: only ci_result 'pending' gets it picked up (dogfood p44).
@@ -404,6 +405,13 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
         sections: z.record(z.string().min(1), z.string()).optional(),
       }).parse(await c.req.json());
       return c.json(releaseView(store, store.editRelease(c.req.param('version'), body)));
+    } catch (e) { return fail(c, e); }
+  });
+  // Renaming, cancelling or deleting a release offers to move or clear the items planned for it (#375); this applies the answer.
+  api.post('/releases/:version/retarget', async (c) => {
+    try {
+      const { to } = z.object({ to: z.string().min(1).nullable() }).parse(await c.req.json());
+      return c.json({ items: store.retargetItems(c.req.param('version'), to) });
     } catch (e) { return fail(c, e); }
   });
   api.delete('/releases/:version', (c) => { try { store.deleteRelease(c.req.param('version')); return c.json({ ok: true }); } catch (e) { return fail(c, e); } });

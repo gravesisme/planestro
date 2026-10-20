@@ -65,7 +65,7 @@ export type ReviewFlag = z.infer<typeof ReviewFlag>;
  *  - derived:       computed in memory, never written to disk
  */
 export const AUTHORITATIVE_KEYS = [
-  'schema', 'id', 'kind', 'parent', 'title', 'category', 'priority', 'status', 'rank',
+  'schema', 'id', 'kind', 'parent', 'title', 'category', 'priority', 'release', 'status', 'rank',
   'planner', 'implementer', 'allow_model_fallback', 'auto_approve_plan', 'budget_usd', 'budget_turns', 'budget_tokens', 'mcp_budget', 'depends_on', 'attachments',
   'merge_policy', 'base_branch_override', 'loop', 'source', 'account',
 ] as const;
@@ -90,6 +90,11 @@ export const ItemFrontmatter = z.object({
   category: z.string().min(1),
   /** high | medium | low (#194). Each column orders by it first, then by rank, and the queue admits in that order. */
   priority: z.enum(PRIORITIES).optional(),
+  /**
+   * The release this is planned for (#375): a version under `releases/`. Planning data only: the engine never reads it
+   * (no branch, tag or admission order). New items take `releases.default`; an epic's children take the epic's.
+   */
+  release: z.string().min(1).optional(),
   status: z.enum(STATUSES),
   rank: z.number().int().optional(),
   planner: z.string().min(1).optional(),
@@ -703,7 +708,11 @@ export const Config = z.object({
     /** Pictures (png, jpg, gif, webp) may be up to this instead (#355): an art review's full-quality captures outgrow a screenshot's limit. */
     image_max_bytes: z.number().int().positive().default(8_000_000),
   }).default({ managed_max_bytes: 2_000_000, image_max_bytes: 8_000_000 }),
-  releases: z.object({ sections: z.array(ReleaseSectionDef).min(1).default(DEFAULT_RELEASE_SECTIONS) }).default({ sections: DEFAULT_RELEASE_SECTIONS }),
+  releases: z.object({
+    sections: z.array(ReleaseSectionDef).min(1).default(DEFAULT_RELEASE_SECTIONS),
+    /** The release a new item targets (#375): a version, or `next` (the earliest planned one). Unset: none. */
+    default: z.string().min(1).optional(),
+  }).default({ sections: DEFAULT_RELEASE_SECTIONS }),
 });
 export type Config = z.infer<typeof Config>;
 

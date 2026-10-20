@@ -43,6 +43,7 @@ export function ItemCard({ item, sortable = true, onSelect, selection }: {
           <div className="meta">
             <CategoryTag name={fm.category} />
             {fm.priority && <span className={`tag prio-${fm.priority}`} title={`${fm.priority} priority`}>{fm.priority}</span>}
+            {fm.release && <span className="tag release" title={`Planned for release ${fm.release}`}>for {fm.release}</span>}
             {fm.kind === 'epic' && <span className="tag epic">EPIC {children.length ? `${merged}/${children.length}` : ''}</span>}
             {fm.parent && <span className="tag">↳ {fm.parent}</span>}
             {d.external ? <span className="tag">{modelLabel(fm.implementer)} (external)</span> : <span className="tag">{modelLabel(fm.planner)} → {modelLabel(fm.implementer)}</span>}

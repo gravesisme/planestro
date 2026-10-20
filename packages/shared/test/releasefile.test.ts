@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseReleaseFile, serializeReleaseFile, setReleaseSection, getReleaseSection, compareVersions, sortReleases, nextVersions, releaseCandidates, releaseMarkdown, charCount } from '../src/releasefile.ts';
+import { parseReleaseFile, serializeReleaseFile, setReleaseSection, getReleaseSection, compareVersions, sortReleases, nextVersions, releaseCandidates, releaseMarkdown, charCount, openReleases, defaultRelease, plannedFor } from '../src/releasefile.ts';
 import { Config, DEFAULT_RELEASE_SECTIONS, type ReleaseSectionDef } from '../src/schema.ts';
 import { canonicalTimestamp } from '../src/timestamps.ts';
 
@@ -76,6 +76,34 @@ describe('release files', () => {
     expect(releaseCandidates('1.3.0', releases, items).map((i) => i.id)).toEqual(['HH-2']);
     const imported = { id: 'HH-7', fm: { status: 'FINISHED' as const, merged_at: '2026-09-02T10:00:00-04:00', dates_estimated: true } };
     expect(releaseCandidates('1.3.0', releases, [...items, imported]).map((i) => i.id)).toEqual(['HH-2']); // an imported item's day is a guess
+  });
+
+  it('items target a release (#375): open releases, the default for new items, planned and landed, and no date hint for a targeted item', () => {
+    const rel = (version: string, status: 'planned' | 'submitted' | 'released' | 'cancelled') => ({ frontmatter: { version, status } });
+    const releases = [rel('2.0.0', 'planned'), rel('1.6.0', 'planned'), rel('1.5.1', 'submitted'), rel('1.5.0', 'released'), rel('1.7.0', 'cancelled')];
+    expect(openReleases(releases).map((r) => r.frontmatter.version)).toEqual(['1.5.1', '1.6.0', '2.0.0']);
+    expect(defaultRelease(undefined, releases)).toBeUndefined();
+    expect(defaultRelease('next', releases)).toBe('1.6.0'); // the earliest planned one, not the submitted patch
+    expect(defaultRelease('2.0.0', releases)).toBe('2.0.0');
+    expect(defaultRelease('1.5.0', releases)).toBeUndefined(); // shipped: never a default
+    expect(defaultRelease('1.7.0', releases)).toBeUndefined();
+    expect(defaultRelease('9.9.9', releases)).toBeUndefined();
+    expect(defaultRelease('next', [rel('1.0.0', 'released')])).toBeUndefined();
+
+    const items = [
+      { id: 'HH-1', fm: { status: 'FINISHED' as const, release: '2.0.0' } },
+      { id: 'HH-2', fm: { status: 'MERGED' as const, release: '2.0.0' } },
+      { id: 'HH-3', fm: { status: 'IN_PROGRESS' as const, release: '2.0.0' } },
+      { id: 'HH-4', fm: { status: 'FINISHED' as const, release: '1.6.0' } },
+      { id: 'HH-5', fm: { status: 'FINISHED' as const } },
+    ];
+    const p = plannedFor('2.0.0', items, ['HH-1']);
+    expect(p.planned.map((i) => i.id)).toEqual(['HH-1', 'HH-2', 'HH-3']);
+    expect(p.landed.map((i) => i.id)).toEqual(['HH-2']); // HH-1 already shipped in it; HH-3 has not landed
+
+    const dated = [{ frontmatter: { version: '2.0.0', status: 'planned' as const, items: [] as string[] } }];
+    const landed = (id: string, release?: string) => ({ id, fm: { status: 'FINISHED' as const, merged_at: '2026-09-02T10:00:00-04:00', ...(release ? { release } : {}) } });
+    expect(releaseCandidates('2.0.0', dated, [landed('HH-8'), landed('HH-9', '2.1.0')]).map((i) => i.id)).toEqual(['HH-8']);
   });
 
   it('counts characters as a store does, and renders the whole release for pasting', () => {

@@ -251,7 +251,12 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   `planned | submitted | released | cancelled`, the item ids they shipped, and
   sections named by the project's `releases.sections` (with `max_chars` / `carry`).
   They never drive the engine; which finished items belong to one is date
-  arithmetic (`releaseCandidates`), offered to the user, never applied.
+  arithmetic (`releaseCandidates`), offered to the user, never applied. An item may
+  be planned for one ahead (#375: `release`, authoritative, planning data the engine
+  never reads); new items take `releases.default` (a version or `next`, open releases
+  only), an epic's children the epic's. A planned item is no date hint; the page
+  offers its landed ones when it ships, and a rename, cancel or delete asks before
+  moving or clearing them (`retargetItems`).
 - Orchestrator questions (`questions/Q-<n>.md`, schema 3) are a third file type: status
   `open | resolved | withdrawn`, an optional `item`, and `# Summary`, `# Details`,
   `# Recommendation`, `# Thread` (`- <ts> [user|orchestrator|app] text`). `ask_user` creates

@@ -1,14 +1,17 @@
-export type FilterKey = 'needs' | 'running' | 'category' | 'priority' | 'q';
+export type FilterKey = 'needs' | 'running' | 'category' | 'priority' | 'release' | 'q';
+/** The board's release filter (#375): a version, or NO_RELEASE for items planned for none. */
+export const NO_RELEASE = '\u0000none';
 export type ActiveFilter = { key: FilterKey; label: string };
 
 /** The board's filters that hide items, in the order they are named: on a phone the chip strip scrolls them out of sight (#286). */
-export function activeFilters(f: { q: string; category: string; priority: string; needsOnly: boolean; runningOnly?: boolean }): ActiveFilter[] {
+export function activeFilters(f: { q: string; category: string; priority: string; release?: string; needsOnly: boolean; runningOnly?: boolean }): ActiveFilter[] {
   const q = f.q.trim();
   return [
     ...(f.needsOnly ? [{ key: 'needs' as const, label: 'needs you' }] : []),
     ...(f.runningOnly ? [{ key: 'running' as const, label: 'running' }] : []),
     ...(f.category ? [{ key: 'category' as const, label: f.category }] : []),
     ...(f.priority ? [{ key: 'priority' as const, label: `${f.priority} priority` }] : []),
+    ...(f.release ? [{ key: 'release' as const, label: f.release === NO_RELEASE ? 'no release' : `release ${f.release}` }] : []),
     ...(q ? [{ key: 'q' as const, label: `“${q}”` }] : []),
   ];
 }

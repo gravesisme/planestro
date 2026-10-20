@@ -171,6 +171,8 @@ export async function seedSample(out: string, opts: { reset?: boolean; log?: (m:
       fields: { items: [ids.get('json')!, ids.get('station-error')!] },
       sections: { 'Release notes': '- `--json` prints the predictions as data, for scripts.\n- An unknown station id says so and exits 2, instead of a stack trace.', Notes: '- [ ] Wait for the time-zone fix? It touches the `--json` path.\n- [ ] `npm publish`, then tag `v0.4.0`' },
     });
+    // Planned ahead (#375): the two that shipped into it, and the time-zone fix still waiting to be queued.
+    for (const key of ['json', 'station-error', 'timezone']) store.mutateItem(ids.get(key)!, [{ set: { release: '0.4.0' } }], 'user');
     // Two orchestrator questions (Console → Its questions for you): one still open, with a discussion under way; one answered.
     const hold = store.askQuestion({
       item: ids.get('timezone'), headline: 'Hold 0.4.0 until the time-zone fix is in?',

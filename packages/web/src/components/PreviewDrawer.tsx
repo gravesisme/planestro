@@ -1,3 +1,4 @@
+import { ReleasePicker } from './ReleasePicker.tsx';
 import { useEffect, useState, type ReactNode } from 'react';
 import { Link } from 'react-router';
 import { useStore, act } from '../store.ts';
@@ -117,7 +118,7 @@ export function PreviewDrawer({ id, onClose }: { id: string; onClose: () => void
         {session && <span className="pill">session {session.busy ? 'running' : 'idle'}</span>}
       </div>
       <p className="small muted" style={{ margin: '4px 0' }}>
-        <CategoryTag name={fm.category} />{fm.priority ? ` · ${fm.priority} priority` : ''} · {fm.planner}{fm.implementer !== fm.planner ? ` → ${fm.implementer}` : ''}
+        <CategoryTag name={fm.category} />{fm.priority ? ` · ${fm.priority} priority` : ''}{(state?.releases?.length ?? 0) > 0 && <> · for <ReleasePicker value={fm.release} onChange={(release) => void act(() => api.patchItem(id, { fields: { release } }))} /></>} · {fm.planner}{fm.implementer !== fm.planner ? ` → ${fm.implementer}` : ''}
         {fm.branch ? <> · <code>{fm.branch}</code></> : null}
         {fm.pr ? <> · <a href={`https://github.com/${state!.config.code_repo.github}/pull/${fm.pr}`} target="_blank" rel="noreferrer">PR #{fm.pr}</a>{fm.ci_result ? ` (CI ${fm.ci_result})` : ''}</> : null}
       </p>

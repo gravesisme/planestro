@@ -6,7 +6,7 @@ import type YAML from 'yaml';
 import { planReviewByDefault,
   parseItemFile, serializeItemFile, setSection, appendActivity, getSection, idNumber, slugify,
   parsePromptFile, serializePromptFile, renderPrompt, fenceExternal, outsideTitle,
-  parseReleaseFile, serializeReleaseFile, setReleaseSection, sortReleases, compareVersions, getReleaseSection, VERSION_RE, DATE_RE,
+  parseReleaseFile, serializeReleaseFile, setReleaseSection, sortReleases, compareVersions, getReleaseSection, VERSION_RE, DATE_RE, defaultRelease,
   parseScheduleFile, serializeScheduleFile, setScheduleDescription, scheduleDescription, scheduleContext, withHistory, parseCron, validTimeZone, RenderError, SCHEDULE_NAME_RE, PRIORITIES, KINDS,
   parseQuestionFile, serializeQuestionFile, setQuestionSection, appendThread, questionNumber, QUESTION_SECTIONS,
   applyTransition, flavorOf, laneOf, needsYou, baseBranchOf, depsSatisfied,
@@ -66,6 +66,8 @@ export interface CreateItemInput {
   planner?: string; implementer?: string; status?: 'NOT_YET_SUBMITTED' | 'ICEBOX'; depends_on?: string[]; extra?: Record<string, unknown>;
   /** Unset by default (#194). */
   priority?: Priority;
+  /** The release it is planned for (#375). Omitted: its epic's, else `releases.default`; null: none. */
+  release?: string | null;
   /** Omitted: the project's `defaults.allow_model_fallback`. */
   allow_model_fallback?: boolean;
   /** The Activity line it starts with; omitted, `created`. */
@@ -354,9 +356,10 @@ export class DataStore {
     const id = this.ids.allocate(this.maxIdNumber());
     const status = input.status ?? 'NOT_YET_SUBMITTED';
     const lane = laneOf(status);
+    const release = this.releaseForNew(input);
     const fm: ItemFrontmatter = {
       schema: SCHEMA_VERSION, id, kind: input.kind ?? 'item', parent: input.parent, title: input.title.trim(),
-      category: input.category ?? this.config.defaults.category, ...(input.priority ? { priority: input.priority } : {}), status,
+      category: input.category ?? this.config.defaults.category, ...(input.priority ? { priority: input.priority } : {}), ...(release ? { release } : {}), status,
       rank: rankForBottom(this.laneItems(lane).map((s) => ({ id: s.id, rank: s.file.frontmatter.rank }))),
       planner: input.planner ?? this.config.defaults.planner, implementer: input.implementer ?? this.config.defaults.implementer,
       ...((input.allow_model_fallback ?? this.config.defaults.allow_model_fallback) ? { allow_model_fallback: true } : {}),
@@ -374,6 +377,34 @@ export class DataStore {
     this.emit({ type: 'item.created', id });
     this.git.commit(`${id}: create item`, fm.title, [this.rel(stored.path), 'counter']);
     return stored;
+  }
+
+  /**
+   * The release a new item is planned for (#375): the one asked for (it must exist), else its epic's, else the project's
+   * `releases.default` while that is an open release. Planning data only: nothing in the engine reads it.
+   */
+  private releaseForNew(input: CreateItemInput): string | undefined {
+    if (input.release === null) return undefined;
+    if (input.release !== undefined) return this.requireRelease(input.release).version;
+    const fromEpic = input.parent ? this.getItem(input.parent)?.file.frontmatter.release : undefined;
+    return fromEpic ?? defaultRelease(this.config.releases.default, this.listReleases().map((r) => r.file));
+  }
+
+  /**
+   * Move every item planned for `from` to `to`, or clear it (#375): what the release page offers when a release is
+   * renamed, cancelled or deleted, never done on its own. One commit for the lot; each item's Activity says so.
+   */
+  retargetItems(from: string, to: string | null, actor: Actor = 'user'): string[] {
+    this.assertWritable();
+    if (to !== null) this.requireRelease(to);
+    const ids = this.listItems().filter((i) => i.file.frontmatter.release === from).map((i) => i.id);
+    const paths: string[] = [];
+    for (const id of ids) {
+      const stored = this.mutateItem(id, [to ? { set: { release: to } } : { unset: ['release'] }, { activity: { actor: actor === 'engine' ? 'app' : actor, text: to ? `release ${from} → ${to}` : `release ${from} cleared` } }], actor);
+      paths.push(this.rel(stored.path));
+    }
+    if (ids.length) this.git.commit(`releases: ${to ? `move ${ids.length} item${ids.length === 1 ? '' : 's'} ${from} → ${to}` : `clear ${from} from ${ids.length} item${ids.length === 1 ? '' : 's'}`}`, ids.join(', '), paths);
+    return ids;
   }
 
   /**
