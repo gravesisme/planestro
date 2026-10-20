@@ -37,7 +37,7 @@ const reviewKind = (path: string): 'image' | 'audio' | 'model' | undefined => IM
 
 /** `schedule` runs `fn` after `ms` and returns a cancel (tests capture it instead of waiting). */
 /** `listenUrl`: where the server answers (`http://127.0.0.1:4300`), the start of notification links unless notifications.base_url says otherwise. */
-export interface EngineOptions { sleep?: (ms: number) => Promise<void>; tickMs?: number; now?: () => string; ciWorkflow?: string; schedule?: (fn: () => void, ms: number) => () => void; listenUrl?: string; /** This machine's load, for the concurrency guard (#330); tests pin it. */ hostLoad?: () => HostLoad | undefined }
+export interface EngineOptions { sleep?: (ms: number) => Promise<void>; tickMs?: number; now?: () => string; ciWorkflow?: string; schedule?: (fn: () => void, ms: number) => () => void; listenUrl?: string; /** This machine's load, for the concurrency guard (#330); tests pin it. */ hostLoad?: () => HostLoad | undefined; /** The server's log (serve.log): a failed step's stack goes here (#439). */ log?: (level: 'info' | 'warn' | 'error', message: string) => void }
 
 const RESUMABLE_TURN_OPS = new Set(['planning_turn', 'implement_turn']);
 /** How many of one item's permission requests the orchestrator may refuse before they go to the user instead. */
@@ -1105,6 +1105,8 @@ export class LiveEngine implements Engine {
     let started: Promise<unknown>;
     try { started = fn(); } catch (e) { started = Promise.reject(e); }
     const p = started.then(() => undefined, (e) => {
+      // The Activity line carries the message; the stack goes to serve.log, so the next one can be traced (#439).
+      try { this.opts.log?.('error', `${id}: engine step failed: ${(e as Error)?.stack ?? String(e)}`); } catch { /* a log must not stop the block */ }
       try {
         // A finished or iceboxed item has nothing left for a person to decide: a failed step is noted, not a block (#214).
         const status = this.store.getItem(id)?.file.frontmatter.status;
@@ -1455,6 +1457,15 @@ export class LiveEngine implements Engine {
     return null;
   }
 
+  /**
+   * The phase a session of this item could be resumed in, or null when it has none. An epic's only session is its
+   * planner's, in the read-only planning checkout: once approved it has no worktree and nothing to resume (#439, HH-574).
+   */
+  private sessionPhaseOf(fm: { kind?: string; status: Status }): TurnPhase | null {
+    if (fm.kind === 'epic' && fm.status !== 'PLAN_IN_PROGRESS' && fm.status !== 'PLAN_READY') return null;
+    return this.phaseFor(fm.status);
+  }
+
   private resumeNote(id: string, reason: string): string {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
@@ -1523,7 +1534,17 @@ export class LiveEngine implements Engine {
     }
     if (this.stopping || this._paused || this.draining) return defer();
     const d = this.store.derived(item);
-    const cwd = this.absWorktree(fm.worktree!);
+    // No worktree, no turn (#439): an epic past planning, or an item whose worktree cleanup removed (HH-357), has no session
+    // to run in. Its saved instruction is dropped and said; an active worker item stops as worktree_missing, never engine_error.
+    if (!fm.worktree) {
+      const data = { ...fm.op_data };
+      if ((data.pending_turn as PendingTurn | undefined)?.key === intent.key) delete data.pending_turn;
+      const active = d.flavor === 'worker' && this.phaseFor(fm.status) !== null;
+      this.store.mutateItem(id, [{ set: { op_data: data } }, { activity: { actor: 'app', text: `not starting its ${phase} turn: ${id} has no worktree for a session to run in` } }], 'engine');
+      if (active) this.block(id, 'worktree_missing', `a ${phase} turn was due with no worktree on the item; nothing recreated`);
+      return undefined;
+    }
+    const cwd = this.absWorktree(fm.worktree);
     const modelId = phase === 'plan' ? fm.planner : fm.implementer;
     const requested = this.store.config.models.find((m) => m.id === modelId);
     if (!requested) throw new Error(`unknown model ${modelId}`);
@@ -3645,10 +3666,26 @@ export class LiveEngine implements Engine {
         else if (st) this.store.mutateItem(id, [{ activity: { actor: 'app', text: `left the planning checkout ${dir} in place: it has uncommitted changes` } }], 'engine');
       }
       await this.ensureEpicBranch(id);
-      if (opts.queue !== false) for (const cid of created) this.store.transition(cid, 'QUEUED', 'user');
+      if (opts.queue !== false) this.queueApprovedChildren(id, created);
       void this.tick();
     });
     return created;
+  }
+
+  /**
+   * The approval's queue step (#438): each child still NOT_YET_SUBMITTED is queued as the user. One the user queued by hand
+   * while the job ran (QUEUED, or already planning) is skipped and said in Activity, and one child's refusal never stops the rest.
+   */
+  private queueApprovedChildren(id: string, children: string[]): void {
+    const notes: string[] = [];
+    for (const cid of children) {
+      const status = this.store.getItem(cid)?.file.frontmatter.status;
+      if (!status) { notes.push(`${cid} is gone`); continue; }
+      if (status !== 'NOT_YET_SUBMITTED') { notes.push(`${cid} is already ${status}`); continue; }
+      try { this.store.transition(cid, 'QUEUED', 'user'); }
+      catch (e) { notes.push(`${cid} could not be queued (${(e as Error).message})`); }
+    }
+    if (notes.length) this.store.mutateItem(id, [{ activity: { actor: 'app', text: `queuing the approved children: skipped ${notes.join('; ')}` } }], 'engine');
   }
 
   /** The user's children for an epic, validated as a breakdown is; returns their ids in the order given. */
@@ -3708,8 +3745,11 @@ export class LiveEngine implements Engine {
     const base = this.store.derived(item).base_branch!;
     const branch = fm.branch ?? `feature/${slugify(fm.title)}`;
     await this.ports.git.fetch(this.repo);
-    if (!(await this.ports.git.remoteBranchSha(this.repo, branch))) await this.ports.git.pushRef(this.repo, `origin/${base}`, branch);
-    this.store.mutateItem(id, [{ set: { branch } }, { activity: { actor: 'app', text: `opened integration branch ${branch} from origin/${base}` } }], 'engine', { commit: `${id}: open epic` });
+    const exists = !!(await this.ports.git.remoteBranchSha(this.repo, branch));
+    // A retry (#439) finds it already there: only a branch this step opened is said.
+    if (exists && fm.branch === branch) return;
+    if (!exists) await this.ports.git.pushRef(this.repo, `origin/${base}`, branch);
+    this.store.mutateItem(id, [{ set: { branch } }, { activity: { actor: 'app', text: exists ? `integration branch ${branch} is on the remote` : `opened integration branch ${branch} from origin/${base}` } }], 'engine', { commit: `${id}: open epic` });
     this.note('info', `${id}: epic open on ${branch}`);
   }
 
@@ -4848,6 +4888,12 @@ export class LiveEngine implements Engine {
     // A conflict once handed to a session that never finished it is the pipeline's again: it re-syncs, and a conflict comes back to a session.
     if (fm.status === 'IN_REVIEW') { clear(`retrying the merge pipeline after ${reason}`, [{ set: { ci_result: 'pending', op_data: { ...(opData ?? {}), needs_session_rebase: false } } }]); this.poke(); return /^ci_red/.test(reason) ? 'retrying: it re-enters the merge pipeline, which reads the same CI run again (it does not run CI again: use rerun_ci to re-run its failed jobs)' : 'retrying: it re-enters the merge pipeline'; }
     if (fm.status === 'MERGED') { clear(`retrying cleanup after ${reason}`); this.runJob(id, () => this.cleanup(id)); return 'retrying the cleanup (it still needs positive evidence before deleting anything)'; }
+    // An epic in progress has no session and no worktree (#439): what it can retry is its integration branch; its children drive the rest.
+    if (fm.kind === 'epic' && fm.status === 'IN_PROGRESS') {
+      clear(`retrying after ${reason}: checking the integration branch; the children drive the rest`);
+      this.runJob(id, () => this.ensureEpicBranch(id));
+      return 'retrying: the epic\'s integration branch is checked (opened from its base if missing); its children carry on';
+    }
     if (this.store.derived(item).flavor !== 'worker' || !fm.worktree) return `not possible: nothing in ${fm.status} to retry for ${id}; use unblock_item`;
     const dir = this.absWorktree(fm.worktree);
     const exists = (await this.ports.git.worktreeList(this.repo).catch(() => [])).some((w) => w.path === dir && !w.prunable);
@@ -5826,7 +5872,7 @@ export class LiveEngine implements Engine {
     const now = this.store.requireItem(id).file.frontmatter;
     const opData = LiveEngine.withoutDirtyCount(now.op_data);
     this.store.mutateItem(id, [{ unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] }, ...(opData !== now.op_data ? [{ set: { op_data: opData } } as ItemOp] : []), { activity: { actor: by === 'engine' ? 'app' : by, text: `unblocked${by === 'engine' ? ' (automatic retry)' : ''}${message && by !== 'engine' ? `: ${message}` : ''}` } }], by, { commit: `${id}: unblock${by === 'user' ? '' : ` (${by === 'engine' ? 'automatic' : by})`}` });
-    const phase = this.phaseFor(fm.status);
+    const phase = this.sessionPhaseOf(fm);
     // The message is an instruction that stands on its own, so the engine may give it to a fresh conversation (#64); `fresh` asks for one.
     if (message && phase) this.queueTurn(id, phase, message, [], [], { fresh: opts.fresh ? true : 'auto', note: by === 'orchestrator' ? 'the orchestrator' : by === 'engine' ? 'planestro, retrying a turn that failed before it did anything' : 'a decision from the user' });
     // p50: a merged item that stopped in cleanup (a worktree removal failed) retries it now, the path reconcile takes
