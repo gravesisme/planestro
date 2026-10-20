@@ -116,42 +116,19 @@ The data dir is a git repository: every semantic change is a commit, `git.auto_p
 it to its remote at each checkpoint, and the journal records every operation's begin and
 end. `git log -- items/MP-12.md` is an item's full history.
 
-The journal itself is machine-local and not versioned: it is appended to all day, and committing it at every
-checkpoint grew one planning repository past 3 GiB. A data dir that tracked it is fixed at the next start with one
-commit, `planestro: stop tracking journal`, which leaves the files on disk and the history as it was. Back
-`journal/` up with the rest of the machine if you want it kept.
+The journal itself is machine-local and not versioned: it is appended to all day, and a data dir that tracked it
+is fixed at the next start with one commit, `planestro: stop tracking journal`, which leaves the files on disk and
+the history as it was. Back `journal/` up with the rest of the machine if you want it kept.
 
-Shrinking a repository that carried it means rewriting its history. `planestro shrink-history` guides it and never
-pushes:
+The history it left behind costs little: each checkpoint mostly appended to the same file, so git stores the
+versions as small deltas. On the largest data dir measured (13,856 commits of hourly checkpoints) the planning
+branch's whole history was 316 MiB on disk and would have been 311 MiB without the journal, so there is no tool to
+rewrite it (#437). A planning branch checked out inside the code repository shares the code's object store, so the
+store's size is mostly the code's; to see the branch's own share:
 
 ```sh
-planestro stop ../myproject-planning                          # the rewrite refuses while a server or supervisor holds it
-planestro shrink-history ../myproject-planning                # dry run: commits that touch journal/, sizes, refusals
-planestro shrink-history ../myproject-planning --apply        # bundle, rewrite, verify; prints the push
-git -C ../myproject-planning push --force-with-lease=…        # the exact command --apply printed: yours to run
-planestro shrink-history ../myproject-planning --gc           # after the push: reclaim the space, size before → after
+git -C ../myproject-planning rev-list --objects --disk-usage=human HEAD
 ```
-
-- **What it refuses:** a running planestro, a dirty tree, a git operation in progress, stash entries made on the branch (the code repository's own are left alone), a journal
-  still tracked (start planestro once: it commits `planestro: stop tracking journal`), and an upstream with commits
-  the branch lacks. It fetches the upstream first, so it knows that tip.
-- **Only the data dir's branch is rewritten.** A planning branch checked out as a worktree of the code repository
-  shares the code's object store; no other branch, tag or worktree is touched.
-- **The backup comes first:** a `git bundle` of the branch in `~/.planestro/backups/` (`--backup-dir` to choose; created if missing), verified to
-  hold the branch tip. Then the rewrite: `git filter-repo` when it is installed, else `git filter-branch`, which is
-  much slower on a long history (thousands of hourly checkpoints can take an hour: `brew install git-filter-repo` or
-  `pip install git-filter-repo` first). Commits that only touched the journal, the hourly checkpoints, go empty and
-  are dropped.
-- **Checked before the old tip is let go:** the checked-out tree is identical, no commit touches `journal/`, the
-  journal files on disk are as they were, and the tree is clean. Otherwise it stops and prints how to restore from
-  the bundle.
-- **The push is yours.** It is leased to the remote tip the rewrite saw, so it refuses if anything moved. Run it before
-  starting planestro again: until the remote has the new history, its checkpoint push is refused. Any other clone of
-  the branch must be re-cloned or reset to the new tip; the remote host keeps the old objects until its own garbage
-  collection.
-- **`--gc`** checks the remote has the new tip, expires the reflogs of that branch, its upstream and this worktree's
-  HEAD, and runs `git gc` keeping anything unreachable from the last hour (other worktrees of the code repository may
-  be working). It names any other ref that still holds the old history, which keeps those objects alive.
 
 ## Spending
 

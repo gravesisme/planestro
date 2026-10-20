@@ -11,7 +11,6 @@ npm run planestro -- <command> …        # or: npx tsx packages/server/src/cli.
 | `sample [dir]` | Build the fictional *tidepool* project and serve it in dry-run on port 4310. `--reset` rebuilds it, `--no-serve` only builds it, `--port N`. |
 | `check [data_dir]` | Validate every file and report; commits hand edits as `manual: …`. |
 | `migrate [data_dir]` | Apply schema migrations. An older data dir is read-only until this is run. |
-| `shrink-history [data_dir] [--apply \| --gc] [--backup-dir D]` | Take `journal/` out of the history of a planning repository that tracked it before #400 (#409). A dry run by default; `--apply` bundles the branch, rewrites only it, verifies and prints the leased force push for you to run; `--gc` after the push reclaims the space. Never pushes. See [Backups and history](operations.md#backups-and-history). |
 | `reconcile [data_dir]` | One reconciliation pass against git and GitHub, printing each correction. |
 | `import-prompts <file> --data <dir> [--commit]` | Legacy, project-specific importer kept as an example (`src/import/legacy/`). Dry-run unless `--commit`. |
 | `version` | |
