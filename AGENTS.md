@@ -6,7 +6,8 @@ a prompt library, a journal), deterministic code runs the git / GitHub / CI
 mechanics, and model sessions are consulted only for judgment. TypeScript,
 Node 24, npm workspaces: `packages/shared` (schema + file codecs + pure logic),
 `packages/server` (store, engine, Hono API, CLI), `packages/web` (React + Vite).
-`npm test` (vitest), `npm run typecheck`, `npm run build`, `npm run dev` /
+`npm test` (vitest), `npm run typecheck`, `npm run build`, `npm run e2e`
+(Playwright, after build: the board and item page in Chromium against the sample), `npm run dev` /
 `npm run dev:web` (Vite on :5173 proxies to the server on :4300). `AGENTS.md`
 is a byte-identical copy of this file for Codex, held together by a test: edit
 one, then copy it over the other.
