@@ -31,6 +31,7 @@ npm run typecheck
 npm run lint       # eslint: floating promises, unused code, new `any`s, rules of hooks
 npm test           # vitest; real git in temp dirs, never the network, GitHub or a model
 npm run build
+npm run e2e        # Playwright: the built app in Chromium against the sample (after build)
 npm run sample     # the no-credentials demo
 ```
 
@@ -77,6 +78,17 @@ it("shows a running agent's last output", () => {
 Query by role and text, as a person finds things, before reaching for class names. Wrap anything that
 changes the store in `act`, and use fake timers (`vi.useFakeTimers()`, `vi.runAllTimersAsync()`)
 where the store throttles. `npx vitest run --project dom` runs only these.
+
+### Browser tests
+
+`e2e/*.e2e.ts` run the built app in Chromium (`npm run build`, then `npm run e2e`; the first time,
+`npx playwright install chromium`). `playwright.config.ts` starts `planestro sample` on port 4391
+(`PLANESTRO_E2E_PORT` moves it) in a temp dir, with a dry-run engine, so a spec can queue an item,
+approve its plan and watch it merge without a login or the network. The specs share that one sample
+and run in order. Every spec fails on a page or console error. Add one when a change is about how
+pages fit together (navigation, live updates, layout at phone width) rather than one component,
+which the DOM tests above cover faster. On a CI failure the trace and screenshots are uploaded as
+the `playwright-report` artifact.
 
 Commit messages say what changed for the user, in a sentence, with the issue number: `A merged
 child's worktree is removed only once its branch is on the base (#123)`.

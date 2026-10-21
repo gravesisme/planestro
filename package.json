@@ -25,6 +25,7 @@
     "spike:codex-live": "tsx spikes/codex-live.ts",
     "planestro": "tsx packages/server/src/cli.ts",
     "test": "vitest run",
+    "e2e": "playwright test",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p packages/web/tsconfig.json",
     "dev": "tsx watch packages/server/src/cli.ts serve",
@@ -34,6 +35,7 @@
     "sample": "tsx packages/server/src/cli.ts sample"
   },
   "devDependencies": {
+    "@playwright/test": "1.64.0",
     "@types/node": "^24.19.2",
     "@types/ws": "^8.18.2",
     "@vitejs/plugin-react": "6.1.2",

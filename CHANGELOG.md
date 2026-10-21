@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- A browser test suite (`npm run e2e`, Playwright, run in CI): the board, the item page and an item
+  driven from queue through plan approval to merged in Chromium against the sample, and both pages at
+  phone width.
+- The "needs you" button reads "1 item needs you" to a screen reader, not "1 items need you".
+
 ## 1.0.1 — 2026-10-21
 
 ### Fixed
