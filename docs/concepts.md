@@ -234,9 +234,11 @@ message workers, reorder the merge queue, hold an item, ask you a question. It n
 state (its session is rotated freely; the files are its memory) and it cannot approve an
 epic's breakdown or release a review hold: those are yours. Its suggestions about planestro itself
 (`note_planestro`) are listed under **planestro feedback** on the Console, with a badge on the
-Console tab while any are unread, so they are never buried in an item's Activity log. With
-`feedback.issue_repo` set, each one can be filed there as an issue, once (a note someone already filed is
-linked instead), or marked handled; the list shows the issues each note became.
+Console tab while any are unread, so they are never buried in an item's Activity log. Each can be
+reported through GitHub's new-issue page on planestro's repo, prefilled for you to review and submit
+(**Report to planestro**), or, with `feedback.issue_repo` set to a repo you own, filed there as an issue
+directly, once (a note someone already filed is linked instead); either way it can be marked handled, and the
+list shows the issues each note became.
 
 ### Talking to it
 

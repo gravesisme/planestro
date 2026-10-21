@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams, Link } from 'react-router';
-import { canPlan, unavailableEntry } from '@planestro/shared/view';
+import { canPlan, unavailableEntry, PLANESTRO_REPO_URL } from '@planestro/shared/view';
 import { api } from '../api.ts';
 import { useStore } from '../store.ts';
 import { ProviderSwitchBoard } from '../components/ProviderSwitchBoard.tsx';
@@ -9,7 +9,7 @@ import { useAction } from '../sending.ts';
 
 type Row = { id: string; title: string; eligible: boolean; summary: string; pr?: { number: number; url: string }; result?: string };
 type Preview = { items: Row[]; orchestrator?: string };
-export const PROVIDER_GUIDE = 'https://github.com/gravesisme/planestro/blob/main/docs/switching-providers.md';
+export const PROVIDER_GUIDE = `${PLANESTRO_REPO_URL}/blob/main/docs/switching-providers.md`;
 export function SwitchProviderPage() {
   const state = useStore((s) => s.state);
   const [query] = useSearchParams();

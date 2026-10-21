@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
-import { heldReasonOf, type JournalEntry } from '@planestro/shared/view';
+import { heldReasonOf, reportIssueUrl, type JournalEntry } from '@planestro/shared/view';
+import { version as PLANESTRO_VERSION } from '../../package.json';
 import { DndContext, MouseSensor, TouchSensor, useSensor, useSensors, closestCenter, type DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -192,7 +193,9 @@ function PlanestroNotes() {
 /**
  * What became of one note (#231): the issues it was filed as, or handled; else **File as issue** (only with
  * `feedback.issue_repo` set), which links an issue already carrying the note's marker and offers a likely match before
- * filing, and **Mark handled**, for a note dealt with by hand (issue numbers, or none).
+ * filing, and **Mark handled**, for a note dealt with by hand (issue numbers, or none). Unset, **Report to planestro**
+ * opens GitHub's new-issue page on planestro's repo, prefilled (`reportIssueUrl`), for the person to review and submit:
+ * opening it records nothing, since nobody can know it was submitted.
  */
 function NoteFiling({ note, repo }: { note: NoteView; repo?: string }) {
   const { busy: going, run: once } = useAction();
@@ -228,7 +231,9 @@ function NoteFiling({ note, repo }: { note: NoteView; repo?: string }) {
         </span>
       : !candidates && <span className="row small" style={{ flexWrap: 'wrap' }}>
           {repo && <button className="small" disabled={busy} title={`Opens an issue in ${repo}, unless one is already filed`} onClick={() => file()}>{busy ? 'Filing…' : 'File as issue'}</button>}
+          {!repo && <a className="button small" href={reportIssueUrl({ text: String(note.data?.text ?? ''), version: PLANESTRO_VERSION })} target="_blank" rel="noopener">Report to planestro</a>}
           <button className="small" disabled={busy} onClick={() => setMarking('')}>Mark handled</button>
+          {!repo && <span className="muted">Opens a prefilled issue on GitHub for you to review and submit: remove anything private first.</span>}
         </span>}
   </span>;
 }

@@ -1,4 +1,4 @@
-import type { JournalEntry } from '@planestro/shared';
+import { noteTitle, type JournalEntry } from '@planestro/shared';
 import type { DataStore } from '../store/DataStore.ts';
 import type { GhPort, IssueInfo } from './ports.ts';
 
@@ -100,12 +100,6 @@ export function likelyMatches(note: { ts: string; item?: string; text: string },
     .map((x) => x.i);
 }
 
-function titleOf(item: string | undefined, text: string): string {
-  const first = text.trim().split(/\n|(?<=[.!?])\s/)[0].trim();
-  const short = first.length > 90 ? `${first.slice(0, 89).trimEnd()}…` : first;
-  return item && !short.includes(item) ? `${item}: ${short}` : short;
-}
-
 const filing = new Set<string>();
 
 /**
@@ -131,7 +125,7 @@ export async function fileNote(store: DataStore, gh: GhPort, ts: string, opts: {
       if (candidates.length) return { outcome: 'candidates', candidates: candidates.map(({ number, title, url, state }) => ({ number, title, url, state })) };
     }
     const body = `${text.trim()}\n\n---\nFiled by planestro from an orchestrator note${note.item ? ` on ${note.item}` : ''} in ${store.config.project.name}, ${ts}.\n\n${noteMarker(ts)}\n`;
-    const made = await gh.issueCreate(repo, { title: titleOf(note.item, text), body });
+    const made = await gh.issueCreate(repo, { title: noteTitle(note.item, text), body });
     return { outcome: 'filed', issue: record(store, ts, [{ number: made.number, url: made.url }], 'filed')[0] };
   } finally { filing.delete(key); }
 }
