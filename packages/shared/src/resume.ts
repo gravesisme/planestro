@@ -108,14 +108,22 @@ export function chooseTurnPath(o: {
   fresh?: true | 'auto';
   /** `budget_usd_fresh_above`; 0 turns the automatic choice by price off. */
   freshAboveUsd: number;
+  /** The conversation's context in tokens, when it is known; priced or not. */
+  contextTokens?: number;
+  /** `fresh_above_context_tokens`; 0 or unset turns the automatic choice by size off (#464). */
+  freshAboveTokens?: number;
 }): TurnPath {
   const $ = (n: number) => `$${n.toFixed(2)}`;
   if (o.left < MIN_TURN_USD) return { path: 'stop', why: `${$(Math.max(0, o.left))} is left, too little for a turn` };
   if (o.fresh === true && o.hasSession) return { path: 'fresh', why: 'asked for' };
+  const mayChoose = o.fresh === 'auto' && o.left >= FRESH_FLOOR_USD;
+  // A warm reload is cheap once, but every call in the resumed turn reads the whole window again (#464: HH-578
+  // ran 88 turns in one conversation up to 875k tokens). Past this size, a prompt that stands on its own starts fresh.
+  const size = o.contextTokens ?? o.estimate?.tokens;
+  if (o.hasSession && mayChoose && o.freshAboveTokens && size !== undefined && size > o.freshAboveTokens) return { path: 'fresh', why: `its conversation holds ${Math.round(size / 1000)}k tokens, above fresh_above_context_tokens (${Math.round(o.freshAboveTokens / 1000)}k), and every call in a resumed turn reads all of it again` };
   if (!o.hasSession || !o.estimate) return { path: 'resume' };
   const e = o.estimate;
   const reload = `reloading its conversation (${Math.round(e.tokens / 1000)}k tokens${e.isWarm ? ', cache still warm' : ''}) costs about ${$(e.usd)} before any work`;
-  const mayChoose = o.fresh === 'auto' && o.left >= FRESH_FLOOR_USD;
   if (o.left < e.usd + MIN_TURN_USD) return { path: mayChoose ? 'fresh' : 'stop', why: `${reload} and ${$(o.left)} is left` };
   if (mayChoose && o.freshAboveUsd > 0 && e.usd > o.freshAboveUsd) return { path: 'fresh', why: `${reload}, above budget_usd_fresh_above ($${o.freshAboveUsd})` };
   return { path: 'resume' };

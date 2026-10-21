@@ -43,7 +43,8 @@ async function stopped(opts: { first?: Later; later?: Later; orchestrate?: (w: {
   const { dataDir, codeRepo } = makeFixture();
   mkdirSync(join(codeRepo, '.git', 'info'), { recursive: true });
   const cfg = join(dataDir, 'planestro.yml');
-  writeFileSync(cfg, (opts.yml ?? ((s) => s))(readFileSync(cfg, 'utf8').replace(/^code_repo:\n/m, 'code_repo:\n  github: acme/repo\n')));
+  // The conversations here hold 800k tokens: the size threshold (#464) is off unless a test turns it on, so the price is what decides.
+  writeFileSync(cfg, (opts.yml ?? ((s) => s))(`${readFileSync(cfg, 'utf8').replace(/^code_repo:\n/m, 'code_repo:\n  github: acme/repo\n')}fresh_above_context_tokens: 0\n`));
   delete process.env.PLANESTRO_DRYRUN_CI;
   store = await DataStore.open(dataDir);
   const world = new FakeWorld((m) => log.push(m), { 'origin/trunk': 'f'.repeat(40) });
@@ -194,6 +195,26 @@ describe('budget_usd_fresh_above (#64)', () => {
     const { store: s, engine: e, id, turns, long } = await stopped({ yml: (y) => `${y}\nbudget_usd_fresh_above: 0\n` });
     expect(s.config.budget_usd_fresh_above).toBe(0);
     long(100);
+    await e.unblock(id, 'Run git clean and report done.');
+    await waitFor(() => fmOf(s, id).status === 'FINISHED', 8000);
+    expect(turns.at(-1)!.resume).toBe('s-old');
+  });
+});
+
+describe('fresh_above_context_tokens (#464)', () => {
+  it('a warm, affordable resume of a window above it goes to a fresh conversation', async () => {
+    const { store: s, engine: e, id, turns, long } = await stopped({ yml: (y) => y.replace('fresh_above_context_tokens: 0', 'fresh_above_context_tokens: 300000') });
+    expect(s.config.fresh_above_context_tokens).toBe(300_000);
+    long(100, { at: ago(5) });
+    await e.unblock(id, 'Run git clean and report done.');
+    await waitFor(() => fmOf(s, id).status === 'FINISHED', 8000);
+    expect(turns.at(-1)!.resume).toBeUndefined();
+    expect(activityOf(s, id)).toContain('800k tokens, above fresh_above_context_tokens (300k)');
+  });
+
+  it('below it the warm conversation is resumed', async () => {
+    const { store: s, engine: e, id, turns, long } = await stopped({ yml: (y) => y.replace('fresh_above_context_tokens: 0', 'fresh_above_context_tokens: 900000') });
+    long(100, { at: ago(5) });
     await e.unblock(id, 'Run git clean and report done.');
     await waitFor(() => fmOf(s, id).status === 'FINISHED', 8000);
     expect(turns.at(-1)!.resume).toBe('s-old');

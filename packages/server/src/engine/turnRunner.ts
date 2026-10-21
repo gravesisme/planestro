@@ -265,7 +265,7 @@ export class TurnRunner {
     const freshPlan = phase === 'plan' && fm.op_data?.fresh_plan === true;
     const mayBeFresh = freshPlan || Boolean(pending) || Boolean(incompatible) || (phase !== 'plan' && !opts.opener);
     const estimate = opts.estimate ?? (metered && resumeId ? this.ctx.resumeEstimateFor(fm, model as string) : undefined);
-    const path = chooseTurnPath({ left: metered ? usdLeft : Infinity, estimate, hasSession: Boolean(resumeId || pending || incompatible || freshPlan), fresh: !mayBeFresh ? undefined : pending || incompatible || freshPlan || opts.fresh === true ? true : opts.fresh, freshAboveUsd: this.ctx.store.config.budget_usd_fresh_above });
+    const path = chooseTurnPath({ left: metered ? usdLeft : Infinity, estimate, hasSession: Boolean(resumeId || pending || incompatible || freshPlan), fresh: !mayBeFresh ? undefined : pending || incompatible || freshPlan || opts.fresh === true ? true : opts.fresh, freshAboveUsd: this.ctx.store.config.budget_usd_fresh_above, contextTokens: estimate?.tokens ?? (resumeId && fm.session_context?.session === resumeId ? fm.session_context.tokens : undefined), freshAboveTokens: this.ctx.store.config.fresh_above_context_tokens });
     if (path.path === 'stop') {
       this.ctx.block(id, 'over_budget', usdLeft < MIN_TURN_USD
         ? `this item has spent $${(fm.cost_usd ?? 0).toFixed(2)} of its $${budget.usd} budget (${budget.usdKey}), too little for a ${phase} turn; raise the budget on the item and unblock, or take the item over by hand`
@@ -392,7 +392,7 @@ export class TurnRunner {
         // what stops a conversation nothing was recorded for (every one that predates the record).
         onResumeQuote: (q) => {
           const quoted = quoteEstimate(q);
-          const again = chooseTurnPath({ left: usdLeft, estimate: quoted, hasSession: true, fresh: !mayBeFresh ? undefined : opts.fresh, freshAboveUsd: this.ctx.store.config.budget_usd_fresh_above });
+          const again = chooseTurnPath({ left: usdLeft, estimate: quoted, hasSession: true, fresh: !mayBeFresh ? undefined : opts.fresh, freshAboveUsd: this.ctx.store.config.budget_usd_fresh_above, freshAboveTokens: this.ctx.store.config.fresh_above_context_tokens });
           if (again.path === 'resume') return 'go';
           declined = quoted;
           return 'stop';
