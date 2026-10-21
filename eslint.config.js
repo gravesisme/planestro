@@ -12,7 +12,7 @@ import reactHooks from "eslint-plugin-react-hooks";
 
 export default defineConfig(
   {
-    ignores: [".claude/**", "**/node_modules/**", "**/dist/**", "site/**", "plugins/**", "**/*.js", "**/*.mjs", "**/*.cjs"],
+    ignores: [".claude/**", "**/node_modules/**", "**/dist/**", "plugins/**", "**/*.js", "**/*.mjs", "**/*.cjs"],
   },
   {
     files: ["**/*.ts", "**/*.tsx"],
