@@ -171,7 +171,8 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   `session_context.total_usd`). `session_context` also holds the conversation's window and the
   price the CLI quoted for reloading it; every turn goes one of three ways on that estimate
   (`chooseTurnPath`): resume, a **fresh session** with a brief rendered from the item file and
-  git (`fresh-brief`; the resume is unaffordable or above `budget_usd_fresh_above`, only for a
+  git (`fresh-brief`; the resume is unaffordable, above `budget_usd_fresh_above` or its window above
+  `fresh_above_context_tokens` (#464), only for a
   prompt that stands on its own; explicit provider handoffs may plan or answer a persisted question when both the original question and answer are carried), or
   `over_budget` before anything is spent. The fresh session replaces `session_id`; its intent is
   persisted first (`op_data.fresh_brief`). `commit_paths` commits named dirty files with no turn.

@@ -66,6 +66,19 @@ describe('chooseTurnPath (#64)', () => {
     expect(chooseTurnPath({ ...base, freshAboveUsd: 0, left: 100, estimate: cold, fresh: 'auto' }).path).toBe('resume');   // turned off
   });
 
+  it('#464: past fresh_above_context_tokens a turn that stands on its own goes fresh, even when the reload is cheap', () => {
+    const warmBig = { ...small, tokens: 875_000, usd: 1, isWarm: true };
+    const big = { ...base, freshAboveTokens: 300_000, left: 100 };
+    const fresh = chooseTurnPath({ ...big, estimate: warmBig, fresh: 'auto' });
+    expect(fresh.path).toBe('fresh');
+    expect((fresh as { why: string }).why).toContain('875k tokens, above fresh_above_context_tokens (300k)');
+    expect(chooseTurnPath({ ...big, contextTokens: 400_000, fresh: 'auto' }).path).toBe('fresh');                // unpriced (a token-metered runner)
+    expect(chooseTurnPath({ ...big, estimate: warmBig }).path).toBe('resume');                                    // an answer to its own question
+    expect(chooseTurnPath({ ...big, estimate: { ...warmBig, tokens: 250_000 }, fresh: 'auto' }).path).toBe('resume');
+    expect(chooseTurnPath({ ...big, freshAboveTokens: 0, estimate: warmBig, fresh: 'auto' }).path).toBe('resume');   // turned off
+    expect(chooseTurnPath({ ...big, hasSession: false, contextTokens: 900_000, fresh: 'auto' }).path).toBe('resume');
+  });
+
   it('a fresh conversation needs its floor; with less, the engine does not choose one', () => {
     expect(chooseTurnPath({ ...base, left: FRESH_FLOOR_USD - 0.5, estimate: cold, fresh: 'auto' }).path).toBe('stop');
     expect(chooseTurnPath({ ...base, left: FRESH_FLOOR_USD - 0.5, estimate: cold, fresh: true }).path).toBe('fresh');   // asked for: a dollar is enough to try

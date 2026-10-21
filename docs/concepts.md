@@ -234,9 +234,11 @@ message workers, reorder the merge queue, hold an item, ask you a question. It n
 state (its session is rotated freely; the files are its memory) and it cannot approve an
 epic's breakdown or release a review hold: those are yours. Its suggestions about planestro itself
 (`note_planestro`) are listed under **planestro feedback** on the Console, with a badge on the
-Console tab while any are unread, so they are never buried in an item's Activity log. With
-`feedback.issue_repo` set, each one can be filed there as an issue, once (a note someone already filed is
-linked instead), or marked handled; the list shows the issues each note became.
+Console tab while any are unread, so they are never buried in an item's Activity log. Each can be
+reported through GitHub's new-issue page on planestro's repo, prefilled for you to review and submit
+(**Report to planestro**), or, with `feedback.issue_repo` set to a repo you own, filed there as an issue
+directly, once (a note someone already filed is linked instead); either way it can be marked handled, and the
+list shows the issues each note became.
 
 ### Talking to it
 
@@ -447,7 +449,8 @@ shows the estimate on the item page, on budget cards and in every wake about the
 each turn on it, without asking anyone:
 
 - a resume the item can pay for, below `budget_usd_fresh_above`, is resumed;
-- above that threshold, or when the item cannot pay for the resume, a turn whose instruction
+- above that threshold, above `fresh_above_context_tokens` of context (every call in a resumed
+  turn reads the whole window again), or when the item cannot pay for the resume, a turn whose instruction
   stands on its own goes to a **fresh session**: a new conversation that gets a brief rendered
   from the item file and git (the request, the plan, commits ahead of the base, uncommitted
   files, where it last stopped) and the task. It becomes the item's conversation; the old one

@@ -1138,7 +1138,7 @@ export class LiveEngine implements Engine {
     const def = this.store.config.models.find((m) => m.id === (phase === 'plan' ? fm.planner : fm.implementer));
     if (!def) return undefined;
     if (modelCapabilities(def).accounting === 'tokens') return (fm.tokens ?? 0) >= this.budgetOf(fm).tokens ? 'token budget exhausted' : (fm.agent_turns ?? 0) >= this.budgetOf(fm).turns ? 'turn budget exhausted' : undefined;
-    const path = chooseTurnPath({ left: this.budgetOf(fm).usd - (fm.cost_usd ?? 0), estimate: fm.session_id ? this.resumeEstimateFor(fm, def.claude_model) : undefined, hasSession: Boolean(fm.session_id), fresh: phase === 'plan' ? undefined : fresh, freshAboveUsd: this.store.config.budget_usd_fresh_above });
+    const path = chooseTurnPath({ left: this.budgetOf(fm).usd - (fm.cost_usd ?? 0), estimate: fm.session_id ? this.resumeEstimateFor(fm, def.claude_model) : undefined, hasSession: Boolean(fm.session_id), fresh: phase === 'plan' ? undefined : fresh, freshAboveUsd: this.store.config.budget_usd_fresh_above, freshAboveTokens: this.store.config.fresh_above_context_tokens });
     return path.path === 'stop' ? path.why : undefined;
   }
 
