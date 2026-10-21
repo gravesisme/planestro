@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, copyFileSync, writeFileSync, appendFileSync } from 'node:fs';
 import { join, resolve, relative, basename } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { SCHEMA_VERSION, categoryColors } from '@planestro/shared';
+import { SCHEMA_VERSION, categoryColors, PLANESTRO_REPO_URL } from '@planestro/shared';
 import { CONFIG_FILE, TOOL_VERSION, registerProject } from './config.ts';
 import { isoLocal } from '@planestro/shared';
 import { assertSafePlanningGit, ensurePlanningIgnores, safePlanningPaths, planningStagePaths } from './store/planningGitSafety.ts';
@@ -215,7 +215,7 @@ function yamlStr(s: string): string { return /^[A-Za-z0-9_./-]+$/.test(s) ? s : 
 function readme(name: string, prefix: string): string {
   return `# ${name} — planning data
 
-This directory is a [planestro](https://github.com/gravesisme/planestro) data dir. Every file
+This directory is a [planestro](${PLANESTRO_REPO_URL}) data dir. Every file
 is plain text and readable without the tool; git history is the audit trail.
 
 - \`planestro.yml\` — project config (versioned). \`planestro.local.yml\` — machine paths (ignored).
