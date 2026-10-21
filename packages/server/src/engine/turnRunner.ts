@@ -29,7 +29,7 @@ export interface RunningTurn { model: string; phase: TurnPhase; startedAt: strin
  * quiet failure retried once (#241, #344: blockOrRetry). An epic's one-shot conflict session (#71) is a whole turn, so it is
  * here, and so is what a turn's prompt is told in code (who implements, an epic's breakdown, what was delivered, a loop, a
  * hold). When a turn runs (saved instructions, queued messages, restart recovery) is TurnQueue's; what its end means for the
- * item (the done check, the pull request) and the slots stay in LiveEngine. LiveEngine owns one and delegates to it; this is
+ * item (the done check, the pull request) stays in LiveEngine, and the slots are Slots'. LiveEngine owns one and delegates to it; this is
  * what it needs from the engine, and nothing more.
  */
 export interface TurnRunnerContext {

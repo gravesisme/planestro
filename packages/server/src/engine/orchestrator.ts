@@ -103,9 +103,9 @@ export interface OrchestratorHooks {
   holdMerge(id: string, reason: string): string;
   /** Make an item an epic or back while nothing has run for implementation (LiveEngine.convertKind). Returns what happened, or why not. */
   convertKind(id: string, to: 'item' | 'epic', why: string): Promise<string>;
-  /** Have an epic's planner propose its children (LiveEngine.planEpic). */
+  /** Have an epic's planner propose its children (Epics.planEpic). */
   planEpic(id: string, why?: string): Promise<void>;
-  /** Why planestro could not do this for the user, or null (LiveEngine.actionRefusal): a card option's action, or the chat's create_item. */
+  /** Why planestro could not do this for the user, or null (Triage.actionRefusal): a card option's action, or the chat's create_item. */
   actionRefusal(action: DecisionAction): string | null;
   /** Submit an item as the user's own action: a worker item is queued, an epic has its breakdown planned. Throws the refusal. */
   submitForUser(id: string, why: string): 'queued' | 'planning';
@@ -125,7 +125,7 @@ export interface OrchestratorHooks {
   decidePermission(id: string, request: string, decision: 'allow' | 'deny' | 'ask_user', reason: string): Promise<string>;
   /** A wake that carried this item's permission request is over, however it ended. */
   permissionReviewEnded(id: string): void;
-  /** Copy files from one item's worktree to another item that waits on it (see LiveEngine.handOff). */
+  /** Copy files from one item's worktree to another item that waits on it (see WorkerTools.handOff). */
   handOff(from: string, to: string, paths: string[], note: string): Promise<string>;
   // ---- triage: resolve a stopped item, or turn it into one plain decision for the user ----
   /** Clear a block (or an `awaiting: user`) and, with a message, resume the session with it. */
@@ -134,9 +134,9 @@ export interface OrchestratorHooks {
   commitPaths(id: string, paths: string[], message: string): Promise<string>;
   /** What an item has left and what resuming it costs before any work, for the packet. */
   budgetLine?(id: string): string | undefined;
-  /** Bring a stopped or idle item's branch up to date with its base between turns (LiveEngine.syncWithBase). */
+  /** Bring a stopped or idle item's branch up to date with its base between turns (BaseSync.syncWithBase). */
   syncWithBase(id: string): Promise<string>;
-  /** Retry an epic's sync conflict with a one-shot conflict session, carrying a hint (LiveEngine.retryEpicConflict, #71). */
+  /** Retry an epic's sync conflict with a one-shot conflict session, carrying a hint (BaseSync.retryEpicConflict, #71). */
   resolveEpicConflict(id: string, hint?: string): Promise<string>;
   /** Answer a worker's parked questions, as the user would. */
   answerQuestion(id: string, answers: Record<string, string>): Promise<string>;
@@ -160,7 +160,7 @@ export interface OrchestratorHooks {
   withdrawDecision(id: string, reason: string): string;
   /** A wake that carried this item's triage is over; if it is still in triage, it goes to the user. */
   triageEnded(id: string): void;
-  /** Park a stopped item until other items merge, then resume it with the message (LiveEngine.resumeAfter). */
+  /** Park a stopped item until other items merge, then resume it with the message (Scheduler.resumeAfter). */
   resumeAfter(id: string, items: string[], message: string, prs?: number[]): Promise<string>;
   poke(): void;
   /** Every wake's rate-limit reading, for the usage guard (a wake spends the same subscription as a worker turn). */
