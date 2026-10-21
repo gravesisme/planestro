@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { planFor, busyTurns, restartIdle, acquireSupervisorLock, releaseSupervisorLock, supervisorLockPath, childExitVerdict, waitUntilUp } from '../src/supervise.ts';
+import { planFor, busyTurns, restartIdle, acquireSupervisorLock, releaseSupervisorLock, supervisorLockPath, childExitVerdict, waitUntilUp, swapWebBuild } from '../src/supervise.ts';
 import { createServer } from 'node:net';
 import { makeFixture } from './helpers.ts';
 import { startServer } from '../src/server.ts';
@@ -13,6 +13,21 @@ describe('serve --watch policy', () => {
   it('web-only changes rebuild and never restart the process that owns the agents', () => {
     expect(planFor(['packages/web/src/pages/Board.tsx', 'packages/web/index.html'])).toEqual({ restart: false, rebuild: true });
     expect(planFor(['packages/web/public/favicon.svg'])).toEqual({ restart: false, rebuild: true });
+  });
+  it('a rebuilt UI replaces dist whole, so index.html is never missing while it builds', () => {
+    const web = mkdtempSync(join(tmpdir(), 'pl-web-'));
+    mkdirSync(join(web, 'dist/assets'), { recursive: true });
+    writeFileSync(join(web, 'dist/index.html'), 'old'); writeFileSync(join(web, 'dist/assets/old.js'), '');
+    mkdirSync(join(web, 'dist.next')); writeFileSync(join(web, 'dist.next/index.html'), 'new');
+    mkdirSync(join(web, 'dist.old')); // a leftover from an interrupted swap
+    swapWebBuild(web);
+    expect(readFileSync(join(web, 'dist/index.html'), 'utf8')).toBe('new');
+    expect(existsSync(join(web, 'dist/assets/old.js'))).toBe(false);
+    expect(existsSync(join(web, 'dist.next')) || existsSync(join(web, 'dist.old'))).toBe(false);
+    mkdirSync(join(web, 'dist.next')); writeFileSync(join(web, 'dist.next/index.html'), 'first');
+    rmSync(join(web, 'dist'), { recursive: true });
+    swapWebBuild(web);
+    expect(readFileSync(join(web, 'dist/index.html'), 'utf8')).toBe('first');
   });
   it('server changes restart; shared code is compiled into both halves', () => {
     expect(planFor(['packages/server/src/engine/LiveEngine.ts'])).toEqual({ restart: true, rebuild: false });
