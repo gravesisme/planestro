@@ -132,4 +132,30 @@ describe('a rebase left stopped for a session, and continued by planestro (HH-53
     expect(git(wt, 'show', 'HEAD:a.ts')).toBe('base\nbranch\n');
     expect(git(wt, 'status', '--porcelain')).toBe('');
   });
+
+  it('continues a step whose commit deletes files: a path gone from the index and the tree is not staged by name (#477)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'planestro-held-rebase-rm-'));
+    const origin = join(root, 'origin.git'), repo = join(root, 'repo');
+    git(root, 'init', '-q', '--bare', '-b', 'trunk', origin);
+    git(root, 'clone', '-q', origin, repo);
+    writeFileSync(join(repo, 'a.ts'), 'one\n'); writeFileSync(join(repo, 'gone.jpg'), 'img\n');
+    git(repo, 'add', '-A'); git(repo, 'commit', '-q', '-m', 'init'); git(repo, 'push', '-q', 'origin', 'HEAD:trunk');
+    const port = new LiveGitPort();
+    const wt = join(root, 'wt');
+    await port.worktreeAdd(repo, wt, 'fix', 'origin/trunk');
+    writeFileSync(join(wt, 'a.ts'), 'branch\n'); git(wt, 'rm', '-q', 'gone.jpg');
+    git(wt, 'add', '-A'); git(wt, 'commit', '-q', '-m', 'branch change and removal');
+    writeFileSync(join(repo, 'a.ts'), 'base\n'); git(repo, 'commit', '-q', '-am', 'base change'); git(repo, 'push', '-q', 'origin', 'HEAD:trunk');
+    await port.fetch(repo);
+    const r = await port.rebase(wt, 'origin/trunk', [], { stop: true });
+    expect(r).toMatchObject({ ok: false, stopped: true, conflicts: ['a.ts'] });
+    expect(r.stepFiles!.sort()).toEqual(['a.ts', 'gone.jpg']);
+    writeFileSync(join(wt, 'a.ts'), 'base\nbranch\n');
+    const done = await port.continueRebase(wt, [], { conflicts: r.conflicts, files: r.stepFiles!, head: r.head });
+    expect(done.state).toBe('done');
+    expect(await port.isAncestor(wt, 'origin/trunk', 'HEAD')).toBe(true);
+    expect(git(wt, 'ls-files')).not.toContain('gone.jpg');
+    expect(git(wt, 'show', 'HEAD:a.ts')).toBe('base\nbranch\n');
+    expect(git(wt, 'status', '--porcelain')).toBe('');
+  });
 });
