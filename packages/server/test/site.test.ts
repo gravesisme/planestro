@@ -129,6 +129,7 @@ describe('the static marketing site', () => {
     expect(mainText(read(join(SITE, 'index.html')))).not.toContain('Claude API access');
     expect(guide).toContain('Codex-only');
     expect(guide).toContain('npm run sample');
+    expect(guide).toContain('git clone --branch main https://github.com/gravesisme/planestro');
     expect(guide).toContain('gh repo create myproject --private');
     expect(guide).toContain('on: [push, pull_request]');
     expect(guide).toContain('engine.mode');

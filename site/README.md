@@ -1,5 +1,11 @@
 # The Planestro marketing site
 
+The replacement homepage and blog are being reviewed in
+[`gravesisme/planestro-site`](https://github.com/gravesisme/planestro-site).
+This copy remains available until the reviewed site is ready for cutover. The
+quick start stays in this code repository, tied to releases; the new marketing
+site links to the release branch’s Getting started guide.
+
 Static HTML, CSS, local JavaScript, and local images. No build step, framework,
 external fonts, analytics, or runtime services. Serve **this directory as the
 web root**; root-relative assets target planestro.com, not a GitHub project

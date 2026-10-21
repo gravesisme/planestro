@@ -16,7 +16,7 @@ git clone --branch main https://github.com/gravesisme/planestro && cd planestro
 npm install && npm run build
 ```
 
-## The one-minute sample
+## Run the sample
 
 ```sh
 npm run sample            # http://127.0.0.1:4310, opens a browser
