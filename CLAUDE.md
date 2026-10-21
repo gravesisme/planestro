@@ -297,7 +297,6 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
 - `planestro sample` (`packages/server/src/sample.ts`) is the no-credentials demo
   the README leads with; it writes through the DataStore and `sample.test.ts`
   drives an item from it to FINISHED, so a schema or lifecycle change that would
-  break the demo fails the suite. `docs/going-public.md` tracks what is left
-  before the repository is made public.
+  break the demo fails the suite.
 - SDK behaviour the engine relies on is recorded in `docs/notes/sdk-notes.md`
   (validated versions in `packages/server/src/compat.ts`).

@@ -18,7 +18,7 @@ function codeRepo(branch = 'trunk'): { root: string; repo: string } {
   return { root, repo };
 }
 
-describe('planestro init on the shortest recipe (going-public O1, O3)', () => {
+describe('planestro init on the shortest recipe', () => {
   it('creates the planning repository a sibling folder lacks and commits the seed into it', () => {
     const { root, repo } = codeRepo();
     const dataDir = join(root, 'planning');

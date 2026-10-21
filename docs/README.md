@@ -18,6 +18,5 @@ Start with **Getting started** and **Concepts**; the rest is reference.
 | [Troubleshooting](troubleshooting.md) | Every `blocked_reason` and what to do about it. |
 | [What planestro sends](what-planestro-sends.md) | Everything that leaves the machine, and who it goes to. There is no telemetry. |
 
-Working documents, not manual pages: the [Codex epic plan](codex-epic-plan.md), the
-[going-public checklist](going-public.md), and the spike records under [`notes/`](notes/).
+Working documents, not manual pages: the spike records under [`notes/`](notes/).
 The rules the codebase is held to are in the repository's [`CLAUDE.md`](../CLAUDE.md).

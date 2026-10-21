@@ -14,6 +14,7 @@ Everything that leaves your machine goes through a tool you installed and logged
 | MCP servers | the tool calls an agent makes to a server you added | that server |
 | Notification commands | `notifications.on_merge`, `on_needs_you`, `on_usage_pause` | whatever the command you wrote does |
 | Other planestro servers | the Projects page reads `/api/state` from the other instances on this machine | `127.0.0.1` |
+| Feedback issues | only with `feedback.issue_repo` set (off by default), when you press **File as issue** on one of the orchestrator's notes about planestro in the Console: `gh` searches that repo's recent issues for the note, then files the note's text as an issue there, with its item id, the project's name and a hidden marker | GitHub, the repo you named, as your `gh` login |
 | Self-update | only with `update.channel: main-green` (off by default): `git fetch` of the planestro checkout and `gh` reads of its CI | GitHub |
 
 Your items, prompts, questions and attachments stay in your planning repository, and the journal
