@@ -4,7 +4,7 @@ import { formatCiDuration } from '@planestro/shared/view';
 import { api } from '../api.ts';
 import { setTitle } from '../tabBadge.ts';
 import { EfficiencyRankingSection } from '../components/EfficiencyPanel.tsx';
-import { usageSeries, dayValues, niceTicks, formatValue, labelOf, type UsageMeasure, type Series } from '../usageChart.ts';
+import { usageSeries, dayValues, niceTicks, formatValue, labelOf, shownMeasure, turnsAndWakes, type UsageMeasure, type Series } from '../usageChart.ts';
 
 // ---- usage over time (#236): what every turn and wake spent, per day, by provider, model or role ----
 // Facts the engine journals as each turn ends (`usage.turn`); nothing before them is rebuilt. CI timing (#182) shares the page.
@@ -75,7 +75,9 @@ function DailyBars({ report, series, group, measure, picked, onPick }: { report:
 export function UsagePage() {
   const [days, setDays] = useState(() => Number(pref('days', '30')) || 30);
   const [group, setGroup] = useState<UsageGroup>(() => pref('group', 'provider') as UsageGroup);
-  const [measure, setMeasure] = useState<UsageMeasure>(() => (pref('measure', 'usd') === 'tokens' ? 'tokens' : 'usd'));
+  const [keptMeasure] = useState<UsageMeasure>(() => (pref('measure', 'usd') === 'tokens' ? 'tokens' : 'usd'));
+  // Unset until the viewer picks one on this visit: a range with no dollars then opens on tokens (#476).
+  const [pickedMeasure, setMeasure] = useState<UsageMeasure | undefined>();
   const [table, setTable] = useState(() => pref('table', '') === '1');
   const [report, setReport] = useState<UsageReport | undefined>();
   const [error, setError] = useState<string | undefined>();
@@ -84,6 +86,7 @@ export function UsagePage() {
   useEffect(() => { setTitle('Usage'); }, []);
   useEffect(() => { void load(); const t = setInterval(() => void load(), REFRESH_MS); return () => clearInterval(t); }, [load]);
   useEffect(() => { setPicked(-1); }, [days]);
+  const measure = shownMeasure(report, pickedMeasure, keptMeasure);
   const series = report ? usageSeries(report, group, measure) : [];
   const day = report ? report.days[picked < 0 ? report.days.length - 1 : picked] : undefined;
   const dayVals = report && day ? dayValues(day, series, group, measure) : [];
@@ -104,7 +107,7 @@ export function UsagePage() {
           <div className="usage-stats">
             <div><strong>${report.totals.usd.toFixed(2)}</strong><span>reported dollars</span></div>
             <div><strong>{formatValue(report.totals.tokens, 'tokens')}</strong><span>reported tokens</span></div>
-            <div><strong>{report.totals.turns}</strong><span>turns and wakes</span></div>
+            <div><strong>{report.totals.turns}</strong><span>{turnsAndWakes(report.totals.turns)}</span></div>
             {report.totals.cache_hit !== undefined && <div><strong>{pct(report.totals.cache_hit)}</strong><span>cache hits</span></div>}
           </div>
           {report.totals.turns === 0 ? <p className="muted">No turns in the last {days} days. Each worker turn and orchestrator wake is recorded here as it ends.</p> : <>
@@ -115,7 +118,7 @@ export function UsagePage() {
             {table ? <UsageTable report={report} series={series} group={group} measure={measure} /> : <>
               <DailyBars report={report} series={series} group={group} measure={measure} picked={picked < 0 ? report.days.length - 1 : picked} onPick={setPicked} />
               {day && <div className="usage-readout" aria-live="polite">
-                <strong>{longDay(day.day)}</strong> · {formatValue(measure === 'usd' ? day.usd : day.tokens, measure)} over {day.turns} turn{day.turns === 1 ? '' : 's'}
+                <strong>{longDay(day.day)}</strong> · {formatValue(measure === 'usd' ? day.usd : day.tokens, measure)} over {day.turns} {turnsAndWakes(day.turns)}
                 {series.map((s, i) => dayVals[i] > 0 && <span key={s.key} className="usage-readout-item"><span className="swatch" style={{ background: s.color }} />{s.label} {formatValue(dayVals[i], measure)}</span>)}
                 {report.events.filter((e) => e.day === day.day).map((e) => <div key={e.at + e.kind} className="small status-notice-inline">{e.text}</div>)}
               </div>}
