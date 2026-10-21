@@ -203,7 +203,9 @@ button.checker { cursor: zoom-in; } .checker img { max-width: 100%; max-height: 
    Same palette and parts, arranged for one hand: a one-row header that keeps the pause lever in
    reach, tabs under the thumb, the board as one scroll under a strip of its seven stages, panels
    that come up as sheets. usePhone.ts switches the board's structure at this same width. */
-.tabbar, .phone-only { display: none; } .chips { display: contents; }
+.tabbar, .phone-only { display: none; }
+/* Desktop: the chips wrap within their own box, so search and + New item keep the first row whatever the categories. */
+.toolbar { flex-wrap: nowrap; align-items: flex-start; } .chips { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; flex: 1 1 0; min-width: 0; } .toolbar > .muted { align-self: center; }
 html { -webkit-text-size-adjust: 100%; }
 @media (max-width: 840px) {
   :root { --topbar-h: 48px; --tabbar-h: 54px; --gutter: 12px; --safe-t: env(safe-area-inset-top, 0px); --safe-b: env(safe-area-inset-bottom, 0px); }
@@ -243,8 +245,8 @@ html { -webkit-text-size-adjust: 100%; }
   .lanes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; padding: 3px; margin-bottom: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 11px; }
   .lanes a { text-align: center; padding: 5px 0; border-radius: 8px; color: var(--muted); font-weight: 600; } .lanes a.active { background: var(--panel2); color: var(--text); box-shadow: 0 0 0 1px var(--line); }
   .lanes .n { margin-left: 6px; font-weight: 400; font-size: 12px; color: var(--muted); }
-  .toolbar { flex-wrap: nowrap; gap: 8px; margin-bottom: 6px; } .toolbar input[type=search] { min-width: 0; min-height: 38px; flex: 0 0 34%; padding: 4px 10px; border-radius: 999px; transition: flex-basis .15s; } .toolbar input[type=search]:focus { flex-basis: 62%; }
-  .chips { display: flex; align-items: center; gap: 6px; flex: 1 1 0; min-width: 0; overflow-x: auto; margin-right: calc(-1 * var(--gutter)); padding-right: var(--gutter); scrollbar-width: none; } .chips::-webkit-scrollbar { display: none; } .chip { flex: none; padding: 4px 13px; }
+  .toolbar { flex-wrap: nowrap; align-items: center; gap: 8px; margin-bottom: 6px; } .toolbar input[type=search] { min-width: 0; min-height: 38px; flex: 0 0 34%; padding: 4px 10px; border-radius: 999px; transition: flex-basis .15s; } .toolbar input[type=search]:focus { flex-basis: 62%; }
+  .chips { display: flex; flex-wrap: nowrap; align-items: center; gap: 6px; flex: 1 1 0; min-width: 0; overflow-x: auto; margin-right: calc(-1 * var(--gutter)); padding-right: var(--gutter); scrollbar-width: none; } .chips::-webkit-scrollbar { display: none; } .chip { flex: none; padding: 4px 13px; }
   .filter-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; font-size: 13px; } .filter-bar .chip { min-height: 32px; padding: 3px 11px; } .filter-bar button.link { min-height: 32px; }
   .fab { position: absolute; z-index: 11; right: max(14px, env(safe-area-inset-right)); bottom: calc(var(--tabbar-h) + var(--safe-b) + 14px); min-height: 50px; padding: 0 20px; border-radius: 999px; box-shadow: 0 6px 22px #000c; }
   .list:has(.stage), .card-list { padding-bottom: 60px; }
@@ -333,7 +335,7 @@ button > .sending .spinner { border-color: color-mix(in srgb, currentColor 30%, 
 .tag.yours, .pill.yours { color: var(--mine); border-color: var(--mine); }
 /* Priority (#194): high stands out (filled, so it never reads as a block), low recedes. */
 .tag.prio-high { background: var(--warn); color: #0b0d10; border-color: var(--warn); font-weight: 600; } .tag.prio-medium { color: var(--accent); border-color: var(--accent); } .tag.prio-low { color: var(--muted); border-style: dashed; }
-.board-empty { margin: 4px 0 10px; }
+.board-empty { margin: 4px 0 10px; } .board-empty button:not(.link) { margin-left: 8px; }
 .chip-sep { flex: none; width: 1px; align-self: stretch; margin: 2px 2px; background: var(--line); }
 .yours-panel { border: 1px solid var(--mine); background: color-mix(in srgb, var(--mine) 10%, var(--panel)); border-radius: var(--radius); padding: 12px; margin-bottom: 12px; }
 .yours-panel h2 { margin: 0 0 8px; font-size: 16px; color: var(--mine); display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; } .yours-panel .row { flex-wrap: wrap; } .drawer .yours-panel { margin: 8px 0; }
