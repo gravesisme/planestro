@@ -452,6 +452,8 @@ export const Config = z.object({
   budget_usd_per_plan_turn: z.number().positive().default(15),
   /** When reloading an item's conversation would cost more than this, a turn whose prompt stands on its own starts a fresh conversation with a brief instead (#64). 0 turns it off. */
   budget_usd_fresh_above: z.number().min(0).default(10),
+  /** …and when the conversation holds more than this many tokens of context, whatever the reload costs (#464). 0 turns it off. */
+  fresh_above_context_tokens: z.number().int().min(0).default(300_000),
   /** The budget for runners that report tokens, not dollars: worker turns per item. */
   budget_turns_per_item: z.number().int().positive().default(20),
   /** …and uncached tokens per item. A live art turn measured 20–35k; the default leaves room for a dozen revisions. */
