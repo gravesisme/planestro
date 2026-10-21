@@ -47,6 +47,19 @@ export function niceTicks(max: number, count = 4): number[] {
   return Array.from({ length: Math.ceil(max / step) + 1 }, (_, i) => Math.round(i * step * 1e6) / 1e6);
 }
 
+/**
+ * The measure the page shows (#476): the viewer's pick on this visit wins; otherwise a range where no turn reported
+ * dollars (Codex reports tokens only) opens on tokens rather than an empty $0.00 chart; otherwise the kept preference.
+ */
+export function shownMeasure(r: UsageReport | undefined, picked: UsageMeasure | undefined, kept: UsageMeasure): UsageMeasure {
+  if (picked) return picked;
+  if (r && r.totals.usd === 0 && r.totals.tokens > 0) return 'tokens';
+  return kept;
+}
+
+/** What a usage count counts (#476): every worker turn and orchestrator wake, worded the same in the header and the day line. */
+export const turnsAndWakes = (n: number) => (n === 1 ? 'turn or wake' : 'turns and wakes');
+
 export function formatValue(n: number, m: UsageMeasure): string {
   if (m === 'usd') return n >= 100 ? `$${Math.round(n)}` : `$${n.toFixed(2)}`;
   if (n >= 1e6) return `${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}M`;

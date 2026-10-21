@@ -328,7 +328,11 @@ export class LiveGitPort implements GitPort {
       if (outside.length) return { state: 'outside', files: outside, head, ...tookBase() };
       const marked = conflicts.filter((f) => { try { return /^(<{7}|>{7})( |$)/m.test(readFileSync(join(cwd, f), 'utf8')); } catch { return false; } });
       if (marked.length) return { state: 'markers', files: marked, head, ...tookBase() };
-      if (changed.length) await git(cwd, ['add', '-A', '--', ...changed]);
+      // A path the step deletes is in neither the index nor the tree: its removal is already staged, and naming it
+      // to `git add` fails the pathspec (#477). Only paths still there are staged by name.
+      const present = changed.length ? new Set((await git(cwd, ['ls-files', '-z', '--cached', '--', ...changed])).stdout.split('\0')) : new Set<string>();
+      const toStage = changed.filter((f) => present.has(f) || existsSync(join(cwd, f)));
+      if (toStage.length) await git(cwd, ['add', '-A', '--', ...toStage]);
       // A step left empty by the resolution is already in the base: skipped, as the sync's own loop does.
       const staged = (await git(cwd, ['diff', '--cached', '--quiet'], true)).code !== 0;
       const r = staged ? await git(cwd, ['-c', 'core.editor=true', 'rebase', '--continue'], true) : await git(cwd, ['rebase', '--skip'], true);

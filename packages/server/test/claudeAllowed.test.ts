@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { customAllowedTools, RanWatch, splitAllowed } from '../src/engine/sessions/LiveClaudePort.ts';
+import { customAllowedTools, customCanUseTool, RanWatch, splitAllowed } from '../src/engine/sessions/LiveClaudePort.ts';
 
 describe('allowedTools the SDK sees (#58)', () => {
   it('keeps only rules with a pattern; bare names are approved by canUseTool instead, so the SDK never warns they shadow it', () => {
@@ -15,6 +15,16 @@ describe('allowedTools the SDK sees (#58)', () => {
     for (const t of ['Read', 'Grep', 'Glob', 'Bash(git log*)', 'mcp__planestro__read_item', 'mcp__planestro__approve_plan', 'mcp__planestro__done_with_wake']) expect(orch, t).toContain(t);
     // a mode that does consult the callback keeps #58's split
     expect(customAllowedTools({ permissionMode: 'default', allowedTools: ['Read', 'Bash(git log*)'], mcpTools })).toEqual(['Bash(git log*)']);
+  });
+
+  it('a dontAsk custom turn passes no canUseTool, so the SDK has nothing to warn is shadowed (#473); other modes keep the callback', async () => {
+    const whole = splitAllowed(['Read', 'Bash(git log*)']).whole;
+    expect(customCanUseTool('dontAsk', whole)).toEqual({});
+    const { canUseTool } = customCanUseTool('default', whole);
+    const ctx = { signal: new AbortController().signal, toolUseID: 't' } as any;
+    expect(await canUseTool!('Read', { file_path: 'a' }, ctx)).toEqual({ behavior: 'allow', updatedInput: { file_path: 'a' } });
+    expect(await canUseTool!('mcp__planestro__read_item', {}, ctx)).toMatchObject({ behavior: 'allow' });
+    expect(await canUseTool!('Write', {}, ctx)).toMatchObject({ behavior: 'deny' });
   });
 });
 
