@@ -465,6 +465,12 @@ input.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 .model { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 16px; }
 .model h4 { margin: 0; font-size: 15px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; } .model h4 .chip { padding: 0 8px; font-size: 11.5px; font-weight: 400; }
 .model .facts { display: flex; flex-wrap: wrap; gap: 4px 16px; color: var(--muted); font-size: 12.5px; margin-top: 4px; } .model .facts b { color: var(--text); font-weight: 500; }
+.pairing { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; display: flex; flex-wrap: wrap; gap: 12px 18px; align-items: flex-start; }
+.pairing-qr { flex: none; width: 168px; height: 168px; border-radius: 6px; }
+.pairing-text { flex: 1 1 260px; min-width: 0; } .pairing-text p { margin: 4px 0; }
+.pairing-code { font-size: 22px; font-weight: 600; letter-spacing: .08em; }
+.pairing-link { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; margin: 4px 0; } .pairing-link a { overflow-wrap: anywhere; min-width: 0; }
+.pairing details ul { margin: 4px 0 0; padding-left: 0; list-style: none; } .pairing-warn { color: var(--warn); }
 .model .desc { grid-column: 1 / -1; color: var(--muted); font-size: 12.5px; max-width: 90ch; } .model .acts { display: flex; gap: 6px; align-items: start; flex-wrap: wrap; justify-content: flex-end; }
 .model-form label:not(.check) { display: grid; gap: 3px; color: var(--muted); font-size: 12px; } .model-form label input, .model-form label select { color: var(--text); font-size: 14px; min-width: 0; }
 .model-form label.check { display: flex; gap: 8px; align-items: center; } .model-form fieldset { border: 1px solid var(--line); border-radius: 6px; display: grid; gap: 6px; }

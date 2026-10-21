@@ -287,7 +287,9 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
 - A request from this machine (`fromThisMachine`: a loopback peer with no proxy's forwarding header) needs no token; any other must carry a paired device's (#403:
   `pairingGuard`, after `requestGuard`): the `planestro_token` cookie or `Authorization: Bearer`, else 401 (a page load
   goes to `/pair`). `planestro pair` asks the running server, from this machine only, for a one-time code (in memory,
-  10 min); `/pair` trades it for a token whose sha256 alone lands in `paired_devices` (planestro.local.yml), read on
+  10 min) with `/pair?code=` links for the addresses a device can reach (`pairLinks`: none on a loopback bind) and a QR of
+  the first (Settings → Access); the link carries the code, never a token, and `/pair` only fills it in. `/pair` trades
+  it for a token whose sha256 alone lands in `paired_devices` (planestro.local.yml), read on
   every request so a revocation applies to the next one. The page never sees a hash (`publicLocal`).
 - Schema changes go through `packages/server/src/migrations` and bump
   `SCHEMA_VERSION`; a newer data dir opens read-only.

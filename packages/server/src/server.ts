@@ -88,7 +88,7 @@ export async function startServer(o: ServeOptions) {
   // Then a paired device's token from anywhere but this machine (#403): this machine needs none, as before.
   const pairing = new Pairing(store);
   app.use('*', pairingGuard(pairing, (l, m) => log(l, m)));
-  pairingRoutes(app, pairing);
+  pairingRoutes(app, pairing, { host, port });
   // The API's JSON only (the state payload runs to megabytes, too slow for a phone on slow Wi-Fi); never /ws or /mcp's streams.
   app.use('/api/*', compress({ contentTypeFilter: /^application\/json/ }));
   app.route('/api', apiRoutes(store, engine, consoles));
