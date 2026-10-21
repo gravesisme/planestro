@@ -1,5 +1,5 @@
 import * as sdk from '@anthropic-ai/claude-agent-sdk';
-import { query, tool, createSdkMcpServer, type HookCallback } from '@anthropic-ai/claude-agent-sdk';
+import { query, tool, createSdkMcpServer, type HookCallback, type CanUseTool } from '@anthropic-ai/claude-agent-sdk';
 import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, rmSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { extname, join } from 'node:path';
@@ -73,15 +73,12 @@ export class LiveClaudePort implements ClaudePort {
         mcpServers: { planestro: server }, strictMcpConfig: true, settingSources: ['project'],
         // dontAsk (the orchestrator) never consults canUseTool: a tool not listed here is refused outright, so its
         // bare names and its own MCP tools are listed whole (#153; #58's split left it unable to call anything).
-        // The SDK's CAN_USE_TOOL_SHADOWED warning is accepted for this role: the callback is unused in this mode.
+        // Nor is the callback passed in that mode, so the SDK has nothing to warn is shadowed (#473).
         allowedTools: customAllowedTools(o),
         maxTurns: o.maxTurns, ...(o.maxBudgetUsd !== undefined ? { maxBudgetUsd: o.maxBudgetUsd } : {}), abortController,
         ...(this.claudeBin ? { pathToClaudeCodeExecutable: this.claudeBin } : {}),
         env: claudeEnv(process.env, o.account),
-        canUseTool: async (toolName, input) => {
-          if (toolName.startsWith('mcp__planestro__') || allow.whole.has(toolName)) return { behavior: 'allow', updatedInput: input };
-          return { behavior: 'deny', message: `${toolName} is not available in this role; use the planestro tools.` };
-        },
+        ...customCanUseTool(o.permissionMode, allow.whole),
       },
     });
     await consume(q, result, o.onOutput, abortController, resumed, input);
@@ -357,6 +354,21 @@ export class DropWatch {
 export function customAllowedTools(o: Pick<CustomTurnOptions, 'permissionMode' | 'allowedTools' | 'mcpTools'>): string[] {
   const allow = splitAllowed(o.allowedTools);
   return o.permissionMode === 'dontAsk' ? [...new Set([...allow.rules, ...allow.whole, ...o.mcpTools.map((t) => `mcp__planestro__${t.name}`)])] : allow.rules;
+}
+
+/**
+ * canUseTool for a custom turn. In dontAsk mode the CLI turns every "ask" into a deny before any host is asked, so
+ * the callback is never called; passing it anyway only makes the SDK print CLAUDE_SDK_CAN_USE_TOOL_SHADOWED for the
+ * bare names `customAllowedTools` lists (#473). What is allowed is the allow list either way.
+ */
+export function customCanUseTool(mode: CustomTurnOptions['permissionMode'], whole: ReadonlySet<string>): { canUseTool?: CanUseTool } {
+  if (mode === 'dontAsk') return {};
+  return {
+    canUseTool: async (toolName, input) => {
+      if (toolName.startsWith('mcp__planestro__') || whole.has(toolName)) return { behavior: 'allow', updatedInput: input };
+      return { behavior: 'deny', message: `${toolName} is not available in this role; use the planestro tools.` };
+    },
+  };
 }
 
 export function splitAllowed(list: readonly string[]): { rules: string[]; whole: Set<string> } {

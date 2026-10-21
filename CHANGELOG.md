@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Claude Code 2.1.306 with `@anthropic-ai/claude-agent-sdk` 0.3.306 is the validated pair (#474); a start
+  with 2.1.306 no longer warns that the CLI drifted.
+- A Claude orchestrator wake no longer prints `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` to the server log (#473).
+
 ## 1.0.0 — 2026-10-21
 
 The first public release. planestro is used daily to build
