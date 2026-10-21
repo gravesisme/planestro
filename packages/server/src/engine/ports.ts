@@ -414,3 +414,5 @@ export type { Runner };
  */
 export interface AgentPorts { claude: AgentPort; codex?: AgentPort }
 export interface Ports { git: GitPort; gh: GhPort; proc: ProcPort; agents: AgentPorts; mode: 'live' | 'dry-run' }
+/** Every session id the dry-run ports make starts with this, so a live engine can tell one it cannot resume. */
+export const DRY_RUN_SESSION_PREFIX = 'dryrun-';

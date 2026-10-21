@@ -9,6 +9,7 @@ import { parkHint, permissionGrantRefusal } from './parks.ts';
 import { precedents, rulingsFromJournal, worktreeFinder, worstOf } from './allowSuggest.ts';
 import { hostNote, keptPathsNote } from './hostNote.ts';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
+import { DRY_RUN_SESSION_PREFIX } from './ports.ts';
 import type { Ports, CustomToolDef, TurnResult } from './ports.ts';
 import { quietTransientFailure } from './transient.ts';
 import { atomicWrite } from '../store/atomicWrite.ts';
@@ -103,9 +104,9 @@ export interface OrchestratorHooks {
   holdMerge(id: string, reason: string): string;
   /** Make an item an epic or back while nothing has run for implementation (LiveEngine.convertKind). Returns what happened, or why not. */
   convertKind(id: string, to: 'item' | 'epic', why: string): Promise<string>;
-  /** Have an epic's planner propose its children (LiveEngine.planEpic). */
+  /** Have an epic's planner propose its children (Epics.planEpic). */
   planEpic(id: string, why?: string): Promise<void>;
-  /** Why planestro could not do this for the user, or null (LiveEngine.actionRefusal): a card option's action, or the chat's create_item. */
+  /** Why planestro could not do this for the user, or null (Triage.actionRefusal): a card option's action, or the chat's create_item. */
   actionRefusal(action: DecisionAction): string | null;
   /** Submit an item as the user's own action: a worker item is queued, an epic has its breakdown planned. Throws the refusal. */
   submitForUser(id: string, why: string): 'queued' | 'planning';
@@ -125,7 +126,7 @@ export interface OrchestratorHooks {
   decidePermission(id: string, request: string, decision: 'allow' | 'deny' | 'ask_user', reason: string): Promise<string>;
   /** A wake that carried this item's permission request is over, however it ended. */
   permissionReviewEnded(id: string): void;
-  /** Copy files from one item's worktree to another item that waits on it (see LiveEngine.handOff). */
+  /** Copy files from one item's worktree to another item that waits on it (see WorkerTools.handOff). */
   handOff(from: string, to: string, paths: string[], note: string): Promise<string>;
   // ---- triage: resolve a stopped item, or turn it into one plain decision for the user ----
   /** Clear a block (or an `awaiting: user`) and, with a message, resume the session with it. */
@@ -134,9 +135,9 @@ export interface OrchestratorHooks {
   commitPaths(id: string, paths: string[], message: string): Promise<string>;
   /** What an item has left and what resuming it costs before any work, for the packet. */
   budgetLine?(id: string): string | undefined;
-  /** Bring a stopped or idle item's branch up to date with its base between turns (LiveEngine.syncWithBase). */
+  /** Bring a stopped or idle item's branch up to date with its base between turns (BaseSync.syncWithBase). */
   syncWithBase(id: string): Promise<string>;
-  /** Retry an epic's sync conflict with a one-shot conflict session, carrying a hint (LiveEngine.retryEpicConflict, #71). */
+  /** Retry an epic's sync conflict with a one-shot conflict session, carrying a hint (BaseSync.retryEpicConflict, #71). */
   resolveEpicConflict(id: string, hint?: string): Promise<string>;
   /** Answer a worker's parked questions, as the user would. */
   answerQuestion(id: string, answers: Record<string, string>): Promise<string>;
@@ -160,7 +161,7 @@ export interface OrchestratorHooks {
   withdrawDecision(id: string, reason: string): string;
   /** A wake that carried this item's triage is over; if it is still in triage, it goes to the user. */
   triageEnded(id: string): void;
-  /** Park a stopped item until other items merge, then resume it with the message (LiveEngine.resumeAfter). */
+  /** Park a stopped item until other items merge, then resume it with the message (Scheduler.resumeAfter). */
   resumeAfter(id: string, items: string[], message: string, prs?: number[]): Promise<string>;
   poke(): void;
   /** Every wake's rate-limit reading, for the usage guard (a wake spends the same subscription as a worker turn). */
@@ -168,6 +169,9 @@ export interface OrchestratorHooks {
 }
 
 /** `total_usd`: the running total the conversation last reported; a resumed wake's cost is what it rose by (#64). */
+/** What the runners say when a resumed conversation is not there (the first two seen live on 2026-10-21; the others name a thread). */
+const MISSING_CONVERSATION = /no conversation found|requires a valid session id|thread not found|no rollout found/i;
+
 interface OrchState { runner?: Runner; account?: string; model?: string; tool_contract?: string; intro_hash?: string; session_id?: string; started_at?: string; wakes_served: number; total_usd?: number }
 
 /**
@@ -354,6 +358,12 @@ export class Orchestrator {
     const caps = modelCapabilities(findModel(this.store.config, pick.model) ?? { runner: pick.runner, external: false });
     const contract = caps.toolContract;
     if ((state.runner ?? 'claude') !== pick.runner || (state.tool_contract && state.tool_contract !== contract) || !sameSessionStore(this.store.local, state.account, pick.account)) state = { wakes_served: 0 };
+    // A dry-run conversation is not there for the live CLI to resume: after a switch from dry-run to live the first wake
+    // resumed `dryrun-orch-…`, failed, and every wake after it failed on the id that failure returned.
+    if (this.ports.mode === 'live' && state.session_id?.startsWith(DRY_RUN_SESSION_PREFIX)) {
+      this.log('info', 'orchestrator: its conversation is from dry-run mode; starting a fresh one');
+      state = { wakes_served: 0 };
+    }
     // Some runners keep the instructions a conversation started with when it is resumed (#246, verified live), so an edit
     // to the standing rules reaches them only in a fresh conversation. A state from before the hash resumes and records it.
     const intro = this.systemIntro();
@@ -394,6 +404,14 @@ export class Orchestrator {
     const items = [...new Set(events.map((e) => e.item).filter((i): i is string => Boolean(i)))];
     const spent = usageTurnData({ provider: pick.runner, model, role: 'orchestrator', op: 'orchestrator_wake', accounting: pick.def ? modelCapabilities(pick.def).accounting : pick.runner === 'claude' ? 'dollars' : 'tokens', stage: 'orchestrator', resumed: Boolean(state.session_id), items, result });
     if (spent) this.store.journal.append({ type: USAGE_TURN, actor: 'orchestrator', data: { ...spent } });
+    // A conversation the CLI cannot find (deleted, another machine's, another store) is dropped, never kept: the id such a
+    // failure returns names no conversation either. The wake is served again once in a fresh conversation.
+    if (state.session_id && !doneSummary && result.isError && MISSING_CONVERSATION.test(result.error ?? '')) {
+      this.log('warn', `orchestrator: its conversation ${state.session_id} could not be resumed (${(result.error ?? '').slice(0, 160)}); starting a fresh one`);
+      this.writeState({ wakes_served: 0 });
+      if (!retried) return this.runWake(events, true);
+      return;
+    }
     this.hooks.usageSeen?.(result.rateLimit, guardKey(pick.runner, pick.account));
     if (result.subtype === 'usage_exhausted') {
       const def = findModel(this.store.config, model);

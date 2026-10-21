@@ -9,6 +9,19 @@ keeping that sustainable.
   for a change nobody agreed to may sit or be closed, however good it is.
 - **Security problems go to private reporting**, never a public issue. See [SECURITY.md](SECURITY.md).
 
+## Branches
+
+- **`develop`** is the default branch: the latest stable code building towards the next release.
+  Pull requests target it. A larger piece of work gets its own `feature/<slug>` branch off `develop`,
+  with its parts merged into it and one pull request back to `develop`; it is merged forward, never
+  rebased or force-pushed.
+- **`main`** is the latest release and moves only by a release pull request from `develop`, tagged
+  `vX.Y.Z` with release notes. Installing from `main` (`git clone --branch main`) gets the latest
+  release, and so does auto-update: it moves a planestro clone to the newest `main` commit whose CI
+  passed.
+- **A hotfix** to a release goes `main` → `hotfix/<slug>` → a pull request into `main` and a patch
+  tag, then `main` is merged into `develop` so the fix is not lost.
+
 ## Working on it
 
 ```sh

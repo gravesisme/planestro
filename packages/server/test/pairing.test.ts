@@ -5,7 +5,7 @@ import { createServer } from 'node:net';
 import { networkInterfaces } from 'node:os';
 import type { LocalConfig } from '@planestro/shared';
 import { allowedHosts, fromThisMachine, isLanAddress, requestGuard } from '../src/guard.ts';
-import { CODE_TTL_MS, MAX_FAILURES, Pairing, TOKEN_COOKIE, normalizeCode, pairingGuard, pairingRoutes, type PairingStore } from '../src/pairing.ts';
+import { CODE_TTL_MS, MAX_FAILURES, PAIR_SCRIPT, Pairing, TOKEN_COOKIE, normalizeCode, pairLinks, pairingGuard, pairingRoutes, qrOf, type MintedCode, type PairNet, type PairingStore } from '../src/pairing.ts';
 import { publicLocal } from '../src/routes/views.ts';
 import { startServer } from '../src/server.ts';
 import { MockEngine } from '../src/engine/MockEngine.ts';
@@ -188,7 +188,9 @@ describe.skipIf(!lanIp)('a real server bound beyond loopback (#403)', () => {
       expect((await fetch(`${lan}/api/state`)).status).toBe(401);
       expect((await fetch(`${lan}/mcp`, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: '{}' })).status).toBe(401);
       expect(await upgrade(lanIp!, port)).toBe(401);
-      const { code } = await (await fetch(`http://127.0.0.1:${port}/api/pairing/code`, { method: 'POST', headers: { 'content-type': 'application/json' } })).json() as { code: string };
+      const { code, links } = await (await fetch(`http://127.0.0.1:${port}/api/pairing/code`, { method: 'POST', headers: { 'content-type': 'application/json' } })).json() as MintedCode;
+      expect(links).toContain(`${lan}/pair?code=${code}`);
+      expect((await fetch(`${lan}/pair?code=${code}`)).status).toBe(200);
       const paired = await fetch(`${lan}/api/pair`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code, name: 'laptop' }) });
       expect(paired.status).toBe(200);
       const { token } = await paired.json() as { token: string };
@@ -200,5 +202,87 @@ describe.skipIf(!lanIp)('a real server bound beyond loopback (#403)', () => {
       expect(init.status).toBe(200);
       expect(srv.store.local.paired_devices?.map((d) => d.name)).toEqual(['laptop']);
     } finally { await srv.engine.stop(); srv.server.close(); srv.store.close(); }
+  });
+});
+
+describe('pairing links and the QR code (#403)', () => {
+  const ifaces = {
+    lo0: [{ address: '127.0.0.1', family: 'IPv4', internal: true }, { address: '::1', family: 'IPv6', internal: true }],
+    utun4: [{ address: '100.101.102.103', family: 'IPv4', internal: false }],
+    en0: [{ address: 'fe80::1', family: 'IPv6', internal: false }, { address: '192.168.1.20', family: 'IPv4', internal: false }],
+    en9: [{ address: '203.0.113.9', family: 'IPv4', internal: false }],
+  } as unknown as PairNet['interfaces'];
+  const net = (hostname: string): PairNet => ({ interfaces: ifaces, hostname });
+
+  it('a loopback bind has no link to offer; every interface offers each LAN address and the .local name, the code in the query', () => {
+    expect(pairLinks({ host: '127.0.0.1', port: 4395 }, 'ABCD-EFGH', net('Studio.local'))).toEqual([]);
+    expect(pairLinks({ host: 'localhost', port: 4395 }, 'ABCD-EFGH', net('Studio.local'))).toEqual([]);
+    expect(pairLinks({ host: '0.0.0.0', port: 4395 }, 'ABCD-EFGH', net('Studio.local'))).toEqual([
+      'http://192.168.1.20:4395/pair?code=ABCD-EFGH', 'http://100.101.102.103:4395/pair?code=ABCD-EFGH', 'http://studio.local:4395/pair?code=ABCD-EFGH']);
+    // A hostname that is not a .local name is not offered; a public address is not either (the guard refuses it).
+    expect(pairLinks({ host: '0.0.0.0', port: 4395 }, 'ABCD-EFGH', net('studio'))).toEqual(['http://192.168.1.20:4395/pair?code=ABCD-EFGH', 'http://100.101.102.103:4395/pair?code=ABCD-EFGH']);
+    expect(pairLinks({ host: '192.168.1.20', port: 4395 }, 'ABCD-EFGH', net('studio'))).toEqual(['http://192.168.1.20:4395/pair?code=ABCD-EFGH']);
+  });
+
+  it('a QR code is one path of dark runs over its grid, quiet zone included', () => {
+    const qr = qrOf('http://192.168.1.20:4395/pair?code=ABCD-EFGH');
+    expect(qr.size).toBeGreaterThanOrEqual(21 + 8);
+    expect(qr.path.startsWith('M4 4h7v1h-7z')).toBe(true);   // the top-left finder's top edge, after a 4-module border
+    expect(qr.path).toMatch(/^(M\d+ \d+h\d+v1h-\d+z)+$/);
+  });
+
+  function mintApp(bind: { host: string; port: number }) {
+    const a = new Hono();
+    a.use('*', requestGuard(allowedHosts('0.0.0.0'), undefined, { lanOnly: true }));
+    const pairing = new Pairing(memoryStore());
+    a.use('*', pairingGuard(pairing));
+    pairingRoutes(a, pairing, bind, net('studio.local'));
+    a.get('/api/state', (c) => c.json({ ok: true }));
+    return a;
+  }
+
+  it('minting on a loopback-bound server says so and offers no link', async () => {
+    const r = await (await mintApp({ host: '127.0.0.1', port: 4395 }).request('/api/pairing/code', req('POST', {}, {}), LOOP)).json() as MintedCode;
+    expect(r).toMatchObject({ host: '127.0.0.1', loopback: true, links: [] });
+    expect(r.qr).toBeUndefined();
+    expect(r.code).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
+  });
+
+  it('minting on a server bound to every interface gives LAN links carrying the code (never a token) and a QR of the first', async () => {
+    const a = mintApp({ host: '0.0.0.0', port: 4395 });
+    const r = await (await a.request('/api/pairing/code', req('POST', {}, {}), LOOP)).json() as MintedCode;
+    expect(r.loopback).toBe(false);
+    expect(r.links[0]).toBe(`http://192.168.1.20:4395/pair?code=${r.code}`);
+    for (const l of r.links) expect([...new URL(l).searchParams]).toEqual([['code', r.code]]);
+    expect(r.qr?.path).toMatch(/^M4 4h7/);
+    // The link's code pairs once from the LAN, and the token it gives is in none of the links.
+    const paired = await a.request('/api/pair', req('POST', {}, { code: new URL(r.links[0]).searchParams.get('code'), name: 'phone' }), LAN);
+    const { token } = await paired.json() as { token: string };
+    expect(token).toBeTruthy();
+    expect(JSON.stringify(r)).not.toContain(token);
+    expect((await a.request('/api/pair', req('POST', {}, { code: r.code, name: 'again' }), LAN)).status).toBe(401);
+  });
+
+  it('the /pair page opens unpaired with ?code=, fills the code in, drops it from the address bar and sends nothing until Pair', async () => {
+    const a = mintApp({ host: '0.0.0.0', port: 4395 });
+    const page = await a.request('/pair?code=ABCD-EFGH', req('GET', { accept: 'text/html' }), LAN);
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain('<input id="code"');
+    type El = { value: string; focused?: boolean; focus(): void; addEventListener(t: string, f: unknown): void };
+    const els: Record<string, El> = {};
+    for (const id of ['code', 'name', 'pair', 'out']) els[id] = { value: '', focus() { this.focused = true; }, addEventListener() {} };
+    const replaced: unknown[][] = [];
+    let fetched = 0;
+    const run = (search: string) => new Function('document', 'location', 'history', 'fetch', PAIR_SCRIPT)(
+      { getElementById: (id: string) => els[id] }, { search, pathname: '/pair' }, { replaceState: (...args: unknown[]) => replaced.push(args) }, () => { fetched++; });
+    run('?code=ABCD-EFGH');
+    expect(els.code.value).toBe('ABCD-EFGH');
+    expect(els.name.focused).toBe(true);
+    expect(replaced).toEqual([[null, '', '/pair']]);
+    expect(fetched).toBe(0);
+    els.code.value = '';
+    run('');
+    expect(els.code.value).toBe('');
+    expect(replaced).toHaveLength(1);
   });
 });

@@ -11,12 +11,12 @@ import { makeFixture, sleep } from './helpers.ts';
 let store: DataStore; let orchestrator: Orchestrator;
 afterEach(async () => { await orchestrator?.stop(); store?.close(); });
 const result: TurnResult = { sessionId: 'conversation', subtype: 'success', costUsd: 0, numTurns: 1, text: '', isError: false };
-async function setup(run: (o: CustomTurnOptions) => Promise<TurnResult>) {
+async function setup(run: (o: CustomTurnOptions) => Promise<TurnResult>, mode: Ports['mode'] = 'dry-run') {
   const f = makeFixture(); store = await DataStore.open(f.dataDir);
   store.updateConfig((d) => d.set('models', [...store.config.models, ModelDef.parse({ id: 'general-codex', label: 'General Codex', runner: 'codex', codex_model: 'test-model', codex_transport: 'app-server' })]), 'config: test model');
   const hooks = { planDelegated: () => false, planReviewEnded: vi.fn(), permissionReviewEnded: vi.fn(), triageEnded: vi.fn() } as unknown as OrchestratorHooks;
   const world = new FakeWorld(() => {});
-  const ports: Ports = { mode: 'dry-run', git: new DryRunGitPort(world), gh: new DryRunGhPort(world), proc: new DryRunProcPort(world), agents: { claude: { runTurn: async () => result, runCustomTurn: run }, codex: { runTurn: async () => result, runCustomTurn: run } } };
+  const ports: Ports = { mode, git: new DryRunGitPort(world), gh: new DryRunGhPort(world), proc: new DryRunProcPort(world), agents: { claude: { runTurn: async () => result, runCustomTurn: run }, codex: { runTurn: async () => result, runCustomTurn: run } } };
   let paused = true;
   orchestrator = new Orchestrator(store, ports, hooks, () => {}, () => {}, () => paused);
   return { ...f, hooks, ports, go: () => { paused = false; orchestrator.kick(); } };
@@ -181,4 +181,30 @@ it('a permission packet for an ungrantable Codex request says allow is not possi
   orchestrator.kick(); await settled();
   expect(calls[1].prompt).toContain('- allow —');
   expect(calls[1].prompt).not.toContain('NOT possible');
+});
+
+it('a live engine does not resume the dry-run conversation it inherited from the getting-started path', async () => {
+  const calls: CustomTurnOptions[] = [];
+  const { dataDir, go } = await setup(async (o) => { calls.push(o); return { ...result, sessionId: o.resume ?? 'live-1' }; }, 'live');
+  mkdirSync(join(dataDir, '.planestro'), { recursive: true });
+  writeFileSync(join(dataDir, '.planestro/orchestrator.yml'), `runner: claude\nsession_id: dryrun-orch-000000\nstarted_at: ${new Date().toISOString()}\nwakes_served: 1\n`);
+  orchestrator.wake({ type: 'user_message', data: { text: 'first live wake' } }); go(); await settled();
+  expect(calls[0].resume).toBeUndefined();
+  orchestrator.wake({ type: 'user_message', data: { text: 'second' } }); await settled();
+  expect(calls[1].resume).toBe('live-1');
+});
+it('a conversation the CLI cannot find is dropped, not kept, and the wake is served once in a fresh one', async () => {
+  const calls: CustomTurnOptions[] = [];
+  const { dataDir, go } = await setup(async (o) => {
+    calls.push(o);
+    if (o.resume) return { ...result, sessionId: 'returned-by-the-failure', subtype: 'error_during_execution', isError: true, error: `No conversation found with session ID: ${o.resume}` };
+    return { ...result, sessionId: 'fresh-1' };
+  }, 'live');
+  mkdirSync(join(dataDir, '.planestro'), { recursive: true });
+  writeFileSync(join(dataDir, '.planestro/orchestrator.yml'), `runner: claude\nsession_id: gone\nstarted_at: ${new Date().toISOString()}\nwakes_served: 1\n`);
+  orchestrator.wake({ type: 'user_message', data: { text: 'hello' } }); go(); await settled();
+  expect(calls.map((c) => c.resume)).toEqual(['gone', undefined]);
+  const state = readFileSync(join(dataDir, '.planestro/orchestrator.yml'), 'utf8');
+  expect(state).toContain('session_id: fresh-1');
+  expect(state).not.toContain('returned-by-the-failure');
 });

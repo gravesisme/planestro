@@ -257,7 +257,7 @@ describe('held pull requests (skip_merge)', () => {
     await engine.start();
     await waitFor(() => activityOf(store, id).includes('held: rebased onto trunk'));
     expect(world.prs.get(200)!.isDraft).toBe(true);
-    expect(activityOf(store, id)).toContain('back to a draft, so CI waits until the hold is released');
+    expect(activityOf(store, id)).toContain('back to a draft, so a CI workflow that skips drafts waits until the hold is released');
     expect(world.remoteBranches.get(branch)).toBe(world.worktrees.get(cwd)!.head);
     await sleep(300);
     stopPolling();
@@ -323,14 +323,14 @@ describe('held pull requests (skip_merge)', () => {
     running = false;
     await waitFor(() => world.prs.get(200)!.isDraft === true);
     stopPolling();
-    expect(activityOf(store, id)).toContain('back to a draft, so CI waits until the hold is released');
+    expect(activityOf(store, id)).toContain('back to a draft, so a CI workflow that skips drafts waits until the hold is released');
   });
 
   it('a session\'s commits under a person\'s hold are logged as a draft\'s, not as pushed for CI (#195)', async () => {
     const { store, engine, id, stopPolling } = await held({ drafts: true });
     stopPolling();
     await (engine as any).afterWorkTurn(id, 'fix', { sessionId: 's', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '' });
-    expect(activityOf(store, id)).toContain('held, so it is pushed for review but not merged; its PR is a draft, so CI runs once the hold is released');
+    expect(activityOf(store, id)).toContain('held, so it is pushed for review but not merged; its PR is a draft, so a CI workflow that skips drafts runs once the hold is released');
     expect(activityOf(store, id)).not.toContain('pushed for CI and review');
   });
 

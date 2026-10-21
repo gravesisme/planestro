@@ -18,6 +18,7 @@ export type * from './settings.ts';
 export * from './schemaView.ts';
 export * from './settingsView.ts';
 export * from './auditionView.ts';
+export * from './feedbackReport.ts';
 export * from './releaseView.ts';
 export * from './timestamps.ts';
 export * from './parts.ts';

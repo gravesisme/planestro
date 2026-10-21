@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, copyFileSync, writeFileSync, appendFileSync } from 'node:fs';
 import { join, resolve, relative, basename } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { SCHEMA_VERSION, categoryColors } from '@planestro/shared';
+import { SCHEMA_VERSION, categoryColors, PLANESTRO_REPO_URL } from '@planestro/shared';
 import { CONFIG_FILE, TOOL_VERSION, registerProject } from './config.ts';
 import { isoLocal } from '@planestro/shared';
 import { assertSafePlanningGit, ensurePlanningIgnores, safePlanningPaths, planningStagePaths } from './store/planningGitSafety.ts';
@@ -31,6 +31,20 @@ export function layoutRefusal(layout: string | undefined): string | null {
   if (layout === undefined || layout === 'dir') return null;
   return `--layout ${layout} was withdrawn: it never made a branch or a worktree. Use a separate folder (the default), or check out the branch yourself as a worktree inside the code repo (git worktree add --orphan -b planning <code_repo>/planning) and run init on that folder: init keeps it out of the code repo's status.`;
 }
+
+// Only the chosen provider's models are written (the other provider's CLI may not even be installed); Settings → Models
+// adds the other one (it offers the Codex preset), and a mixed fleet is set up there.
+const CLAUDE_ROWS = `  # Model ids age: when a newer Claude model ships, change claude_model here or in Settings → Models.
+  # Opus 5.5 plans and implements everything by default. Fable 5.1 is for the hardest plans (an epic's
+  # breakdown, a cross-system mechanic): pick it as the planner on those items.
+  # fallback: while a model is out of usage, items that allow it (and the orchestrator, if allowed) run on this one instead.
+  - { id: opus-5-5, label: Opus 5.5, claude_model: claude-opus-5-5 }
+  - { id: fable-5-1, label: Fable 5.1, claude_model: claude-fable-5-1, fallback: opus-5-5 }
+  # Codex too: Settings → Models → Add Codex GPT-6 Astra preset.
+`;
+const CODEX_ROWS = `  # Codex GPT-6 Astra plans, implements and orchestrates. Claude models can be added in Settings → Models.
+  - { id: codex-gpt-6-astra, label: Codex GPT-6 Astra, runner: codex, codex_model: gpt-6-astra, codex_transport: app-server, engine_commits: true }
+`;
 
 /** `--provider` takes `claude` or `codex` (#333): the one choice the main install path asks for. */
 export function providerRefusal(provider: string | undefined): string | null {
@@ -95,14 +109,7 @@ ${o.releaseBranch ? `  release_branch: ${yamlStr(o.releaseBranch)}\n` : ''}${git
 hooks:
   after_worktree_create: []
 models:
-  # Model ids age: when a newer Claude model ships, change claude_model here or in Settings → Models.
-  # Opus 5.5 plans and implements everything by default. Fable 5.1 is for the hardest plans (an epic's
-  # breakdown, a cross-system mechanic): pick it as the planner on those items.
-  # fallback: while a model is out of usage, items that allow it (and the orchestrator, if allowed) run on this one instead.
-  - { id: opus-5-5, label: Opus 5.5, claude_model: claude-opus-5-5 }
-  - { id: codex-gpt-6-astra, label: Codex GPT-6 Astra, runner: codex, codex_model: gpt-6-astra, codex_transport: app-server, engine_commits: true }
-  - { id: fable-5-1, label: Fable 5.1, claude_model: claude-fable-5-1, fallback: opus-5-5 }
-  # A Codex model on the exec transport (the default without codex_transport) implements but never plans; one on
+${o.provider === 'codex' ? CODEX_ROWS : CLAUDE_ROWS}  # A Codex model on the exec transport (the default without codex_transport) implements but never plans; one on
   # app-server, like the row above, plans and orchestrates too. Its description is what the epic planner routes by;
   # hold_for_review parks its pull requests for your eye before they merge.
   # - { id: codex-art, label: Codex Art, runner: codex, hold_for_review: true, description: "All raster art: icons, sprites, illustrations. The Claude models cannot generate images." }
@@ -215,7 +222,7 @@ function yamlStr(s: string): string { return /^[A-Za-z0-9_./-]+$/.test(s) ? s : 
 function readme(name: string, prefix: string): string {
   return `# ${name} — planning data
 
-This directory is a [planestro](https://github.com/gravesisme/planestro) data dir. Every file
+This directory is a [planestro](${PLANESTRO_REPO_URL}) data dir. Every file
 is plain text and readable without the tool; git history is the audit trail.
 
 - \`planestro.yml\` — project config (versioned). \`planestro.local.yml\` — machine paths (ignored).

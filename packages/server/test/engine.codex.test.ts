@@ -61,7 +61,7 @@ describe('mixed runners (dry-run ports)', () => {
     await engine.releaseHold(item.id, 'looks right at 1x');
     await waitFor(() => fmOf(store, item.id).status === 'FINISHED');
     expect(world.prs.get(fm.pr!)!.isDraft).toBe(false);            // marked ready after the sync: one CI run, on the merged head
-    expect(activityOf(store, item.id)).toContain('as a draft: it is held, so CI waits until the hold is released');
+    expect(activityOf(store, item.id)).toContain('as a draft: it is held, so a CI workflow that skips drafts waits until the hold is released');
     fm = fmOf(store, item.id);
     expect(fm.merged_at).toBeDefined();
     expect(fm.review_hold).toBeUndefined();

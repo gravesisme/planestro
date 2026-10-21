@@ -18,7 +18,7 @@ function codeRepo(branch = 'trunk'): { root: string; repo: string } {
   return { root, repo };
 }
 
-describe('planestro init on the shortest recipe (going-public O1, O3)', () => {
+describe('planestro init on the shortest recipe', () => {
   it('creates the planning repository a sibling folder lacks and commits the seed into it', () => {
     const { root, repo } = codeRepo();
     const dataDir = join(root, 'planning');
@@ -80,8 +80,10 @@ describe('--provider picks who plans, implements and orchestrates (#333)', () =>
     const codex = readConfig(join(root, 'codex-planning'));
     expect([codex.defaults.planner, codex.defaults.implementer, codex.orchestrator.model]).toEqual(['codex-gpt-6-astra', 'codex-gpt-6-astra', 'codex-gpt-6-astra']);
     expect(runnersInUse(codex, [])).toEqual(['codex']);
+    expect(codex.models.map((m) => m.id)).toEqual(['codex-gpt-6-astra']);   // no Claude rows for a machine with no Claude
     initDataDir({ dataDir: join(root, 'claude-planning'), codeRepo: repo, register: false });
     expect(runnersInUse(readConfig(join(root, 'claude-planning')), [])).toEqual(['claude']);
+    expect(readConfig(join(root, 'claude-planning')).models.map((m) => m.id)).toEqual(['opus-5-5', 'fable-5-1']);
   });
 
   it('refuses anything but claude or codex', () => {

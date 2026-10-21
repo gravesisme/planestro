@@ -80,6 +80,10 @@ the item files at startup.
 
 ## Upgrading
 
+Drain and stop the server first. Record the current tool revision (`git rev-parse HEAD`)
+and make a private backup of the planning directory before migrating it. Use the
+release branch (`main`) for an installed copy; keep development checkouts separate.
+
 ```sh
 git pull && npm install && npm run build
 npm run planestro -- migrate <data_dir>     # only if the schema moved; harmless otherwise
@@ -129,6 +133,34 @@ store's size is mostly the code's; to see the branch's own share:
 ```sh
 git -C ../myproject-planning rev-list --objects --disk-usage=human HEAD
 ```
+
+### Restoring a backup
+
+Git history on the same disk is not a backup. Keep an independent, private backup of the
+whole planning directory, including its `.git`, `planestro.local.yml`, attachments and
+ignored `journal/`. A private planning remote preserves tracked history only; it does
+not include machine-local settings, the journal or provider conversations. Protect the
+backup as credentials: local settings can contain MCP secrets and paired-device hashes.
+If planning is a linked worktree, its `.git` is a pointer: also back up the code
+repository’s common Git directory and preserve or repair the worktree links. Copying
+that pointer alone does not preserve the planning history.
+
+To restore:
+
+1. Stop Planestro and preserve the current directory separately before replacing it.
+2. Restore the planning directory from the backup. Keep machine-local files private and
+   owner-readable only. On another machine, review repository paths, named-account
+   directories, MCP commands and permissions before starting.
+3. Use the tool revision recorded with that backup, or a newer compatible release. A
+   newer data schema opens read-only in an older tool; do not lower `schema_version` by
+   hand. To roll back a migration, restore both the pre-migration data and tool revision.
+4. Restore the code repository and any unfinished worktrees separately, preserving local
+   commits and uncommitted files. The planning backup does not contain that work. Provider
+   conversation stores are separate too; do not assume a session ID restores a conversation.
+5. Run `npm run planestro -- check <data_dir> --preflight`, resolve reported paths and
+   logins, then start with automation paused (set `paused: true` under the existing `engine` mapping in
+   `planestro.local.yml` while stopped). Inspect the reconciler's report and pending
+   decisions before resuming. Missing worktrees need recovery, not deletion.
 
 ## Spending
 

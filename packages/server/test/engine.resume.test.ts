@@ -36,14 +36,15 @@ const finishes = (session = 's-new', over: Partial<TurnResult> = {}): Later => a
  * An item in progress whose first work turn stopped (`first`), with a worker whose later turns do
  * `later`. `orchestrate`, when given, is the orchestrator's wake.
  */
-async function stopped(opts: { first?: Later; later?: Later; orchestrate?: (w: { label: string; prompt: string; tools: Tool }) => Promise<void>; yml?: (s: string) => string; until?: (s: DataStore, id: string) => boolean } = {}) {
+async function stopped(opts: { first?: Later; later?: Later; orchestrate?: (w: { label: string; prompt: string; tools: Tool }) => Promise<void>; yml?: (s: string) => string; until?: (s: DataStore, id: string) => boolean; mode?: Ports['mode'] } = {}) {
   const turns: TurnOptions[] = []; const log: string[] = []; const wakes: string[] = [];
   let worked = 0;
   const first: Later = opts.first ?? (async (o) => { await o.tools.report_blocked('which colour?'); return { ...ok, blocked: 'which colour?' }; });
   const { dataDir, codeRepo } = makeFixture();
   mkdirSync(join(codeRepo, '.git', 'info'), { recursive: true });
   const cfg = join(dataDir, 'planestro.yml');
-  writeFileSync(cfg, (opts.yml ?? ((s) => s))(readFileSync(cfg, 'utf8').replace(/^code_repo:\n/m, 'code_repo:\n  github: acme/repo\n')));
+  // The conversations here hold 800k tokens: the size threshold (#464) is off unless a test turns it on, so the price is what decides.
+  writeFileSync(cfg, (opts.yml ?? ((s) => s))(`${readFileSync(cfg, 'utf8').replace(/^code_repo:\n/m, 'code_repo:\n  github: acme/repo\n')}fresh_above_context_tokens: 0\n`));
   delete process.env.PLANESTRO_DRYRUN_CI;
   store = await DataStore.open(dataDir);
   const world = new FakeWorld((m) => log.push(m), { 'origin/trunk': 'f'.repeat(40) });
@@ -60,7 +61,7 @@ async function stopped(opts: { first?: Later; later?: Later; orchestrate?: (w: {
       return { ...ok, sessionId: 'orch' };
     } } : {}),
   };
-  const ports: Ports = { mode: 'dry-run', git: new DryRunGitPort(world), gh: new DryRunGhPort(world), proc: new DryRunProcPort(world), agents: { claude } };
+  const ports: Ports = { mode: opts.mode ?? 'dry-run', git: new DryRunGitPort(world), gh: new DryRunGhPort(world), proc: new DryRunProcPort(world), agents: { claude } };
   engine = new LiveEngine(store, ports, () => {}, { sleep: async () => {}, tickMs: 50 });
   const item = store.createItem({ title: 'Paint the door', description: 'The door should be green.' });
   store.transition(item.id, 'QUEUED', 'user');
@@ -197,6 +198,38 @@ describe('budget_usd_fresh_above (#64)', () => {
     await e.unblock(id, 'Run git clean and report done.');
     await waitFor(() => fmOf(s, id).status === 'FINISHED', 8000);
     expect(turns.at(-1)!.resume).toBe('s-old');
+  });
+});
+
+describe('fresh_above_context_tokens (#464)', () => {
+  it('a warm, affordable resume of a window above it goes to a fresh conversation', async () => {
+    const { store: s, engine: e, id, turns, long } = await stopped({ yml: (y) => y.replace('fresh_above_context_tokens: 0', 'fresh_above_context_tokens: 300000') });
+    expect(s.config.fresh_above_context_tokens).toBe(300_000);
+    long(100, { at: ago(5) });
+    await e.unblock(id, 'Run git clean and report done.');
+    await waitFor(() => fmOf(s, id).status === 'FINISHED', 8000);
+    expect(turns.at(-1)!.resume).toBeUndefined();
+    expect(activityOf(s, id)).toContain('800k tokens, above fresh_above_context_tokens (300k)');
+  });
+
+  it('below it the warm conversation is resumed', async () => {
+    const { store: s, engine: e, id, turns, long } = await stopped({ yml: (y) => y.replace('fresh_above_context_tokens: 0', 'fresh_above_context_tokens: 900000') });
+    long(100, { at: ago(5) });
+    await e.unblock(id, 'Run git clean and report done.');
+    await waitFor(() => fmOf(s, id).status === 'FINISHED', 8000);
+    expect(turns.at(-1)!.resume).toBe('s-old');
+  });
+});
+
+describe('a conversation from dry-run, after the switch to live', () => {
+  it('is not resumed: the live turn starts a fresh conversation with a brief', async () => {
+    const { store: s, engine: e, id, turns } = await stopped({ mode: 'live' });
+    s.mutateItem(id, [{ set: { session_id: 'dryrun-TP-1-abc123' }, unset: ['session_context'] } as never], 'engine');
+    await e.unblock(id, 'Finish it.');
+    await waitFor(() => fmOf(s, id).status === 'FINISHED', 8000);
+    const work = turns.filter((t) => t.phase !== 'plan');
+    expect(work.at(-1)!.resume).toBeUndefined();
+    expect(work.at(-1)!.prompt).toContain('You are picking up TP-1');
   });
 });
 
