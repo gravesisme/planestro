@@ -90,7 +90,7 @@ Make room for a second runner without adding one.
 - `ModelDef` gains optional `runner` (default `claude`), `codex_model`, and
   `description` (one line on what the model is *for* — M4 feeds it to the
   planner). `init`'s template and the Settings table show them.
-- `LiveEngine.runTurnFor` resolves the phase's model → runner → port. A model
+- `TurnRunner.runTurnFor` (formerly `LiveEngine.runTurnFor`) resolves the phase's model → runner → port. A model
   whose runner cannot plan is refused as a planner in the store and filtered
   in the UI (the way `external` models already are).
 - `TurnOptions` splits what is Claude-specific (`permissionMode`,

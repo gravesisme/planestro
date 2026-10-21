@@ -14,8 +14,8 @@ import { recordCiResult } from '../concurrency.ts';
  * `ci.result` (#330); a red run (onCiRed): a known flake or the infrastructure's re-run once per head (#219), the session's
  * no-change report re-run once, then ci_red_parked (onSameRedRun, #201); rerun_ci (#139, #174); runners that look stalled or
  * offline, said once per label (#216); and the item in review that nothing moves (review_stalled, #201). What each verdict
- * does to the merge (watchCi) stays with the merge pipeline; the runner report itself and the CI queue's reading are
- * shared with heavy runs and admission, so they stay in LiveEngine. LiveEngine owns one and delegates to it; this is what
+ * does to the merge (watchCi) stays with the merge pipeline; the runner report itself is shared with heavy runs, so it
+ * stays in LiveEngine, and the CI queue's reading is admission's (Scheduler). LiveEngine owns one and delegates to it; this is what
  * it needs from the engine, and nothing more.
  */
 export interface CiWatchContext {

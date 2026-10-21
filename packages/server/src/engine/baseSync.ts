@@ -7,7 +7,7 @@ import type { Guards } from './guards.ts';
 import { namedInLog } from './ciFilters.ts';
 import { HELD_POLL_MS } from './heldPoll.ts';
 
-/** What a sync with the base did (LiveEngine.syncBranch). */
+/** What a sync with the base did (BaseSync.syncBranch). */
 /** An epic's red run that is likely its base's, waiting for the base to move (#204); `synced` is the base tip merged in once it did. */
 type BaseWait = { sha: string; base: string; base_sha: string; files: string[]; since: string; synced?: string };
 

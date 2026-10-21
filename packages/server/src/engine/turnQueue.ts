@@ -15,8 +15,8 @@ import type { TurnRunner, PendingTurn, TurnOpts } from './turnRunner.ts';
  * (drivePendingTurns). Messages queued while something other than a turn drove the item are sent as its next job
  * (deliverQueued, HH-263). A restart resumes what it interrupted from persisted state (resumeInterrupted: a lost report applied,
  * a saved instruction kept, an interrupted turn carried on), and an item parked with resume_after resumes on a synced branch
- * (resumeWaited). Running the turn is TurnRunner's; the job queue and its follow-ups, the tick and resume_after's wait stay in
- * LiveEngine. LiveEngine owns one and delegates to it; this is what it needs from the engine, and nothing more.
+ * (resumeWaited). Running the turn is TurnRunner's; the job queue and its follow-ups are Slots', and the tick and resume_after's
+ * wait are the Scheduler's. LiveEngine owns one and delegates to it; this is what it needs from the engine, and nothing more.
  */
 export interface TurnQueueContext {
   readonly store: DataStore;
