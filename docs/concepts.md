@@ -449,7 +449,8 @@ shows the estimate on the item page, on budget cards and in every wake about the
 each turn on it, without asking anyone:
 
 - a resume the item can pay for, below `budget_usd_fresh_above`, is resumed;
-- above that threshold, or when the item cannot pay for the resume, a turn whose instruction
+- above that threshold, above `fresh_above_context_tokens` of context (every call in a resumed
+  turn reads the whole window again), or when the item cannot pay for the resume, a turn whose instruction
   stands on its own goes to a **fresh session**: a new conversation that gets a brief rendered
   from the item file and git (the request, the plan, commits ahead of the base, uncommitted
   files, where it last stopped) and the task. It becomes the item's conversation; the old one
