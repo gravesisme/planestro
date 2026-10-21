@@ -48,7 +48,7 @@ function withValue(ctx: Record<string, unknown>, path: string, value: string): R
   return out;
 }
 
-export function NewItemDialog({ onClose, icebox, from }: { onClose: () => void; icebox?: boolean; from?: string }) {
+export function NewItemDialog({ onClose, icebox, from, onImport }: { onClose: () => void; icebox?: boolean; from?: string; onImport?: () => void }) {
   const state = useStore((s) => s.state);
   const nav = useNavigate();
   const library = useMemo(() => itemPrompts(state?.prompts ?? []), [state?.prompts]);
@@ -101,7 +101,7 @@ export function NewItemDialog({ onClose, icebox, from }: { onClose: () => void; 
   return (
     <div className="dialog" onClick={onClose}>
       <form onClick={(e) => e.stopPropagation()} onSubmit={(e) => e.preventDefault()}>
-        <h2 style={{ margin: 0 }}>New {icebox ? 'icebox ' : ''}{kind === 'epic' ? 'epic' : 'item'}</h2>
+        <div className="row"><h2 style={{ margin: 0 }}>New {icebox ? 'icebox ' : ''}{kind === 'epic' ? 'epic' : 'item'}</h2><span className="grow" />{onImport && <button type="button" className="link small" onClick={onImport}>or import GitHub issues</button>}</div>
         {newItemModeNote(state?.engine.modes) && <div className="small warn-text" role="status">{newItemModeNote(state?.engine.modes)}</div>}
         {library.length > 0 && <select value={template} onChange={(e) => pick(e.target.value)} title="Start from a prompt in the library"><option value="">blank — or start from a prompt…</option>{library.map((p) => <option key={p.name} value={p.name}>{p.frontmatter.favorite === true ? '★ ' : ''}{p.frontmatter.title} ({p.name})</option>)}</select>}
         <input autoFocus placeholder="Title" value={title} onChange={(e) => setTitle(e.target.value)} required />

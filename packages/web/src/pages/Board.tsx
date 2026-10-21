@@ -130,6 +130,8 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
   // The releases items are planned for, open ones first (#375); a version only an item still names is listed too.
   const releaseChoices = [...new Set([...openReleases(state.releases ?? []).map((r) => r.version), ...state.items.map((i) => i.frontmatter.release).filter((v): v is string => !!v)])];
   const columns = lane === 'board' ? boardColumns(state.items.filter((i) => i.derived.lane === 'board').map((i) => i.frontmatter.status)) : [lane === 'icebox' ? 'ICEBOX' : 'FINISHED'];
+  // Import issues is a first-run step: offered on an empty board and from + New item, not on the toolbar.
+  const importable = !!state.config.code_repo.github && lane === 'board' && !phone;
   const done = lane === 'done' ? [...items].sort((a, b) => (b.frontmatter.finished_at ?? '').localeCompare(a.frontmatter.finished_at ?? '')) : items;
   return (
     <div className="board-page">
@@ -148,9 +150,7 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
           <button className={`chip running ${runningOnly ? 'on' : ''}`} aria-pressed={runningOnly} title="Only items with an agent working on them now" onClick={() => setRunning(!runningOnly)}>running</button>
           {needsOnly && <button className="chip on" onClick={() => clear('needs')}>needs you ×</button>}
         </div>
-        <span className="grow desk-only" />
         <span className="muted small desk-only">{items.length} item{items.length === 1 ? '' : 's'}</span>
-        {state.config.code_repo.github && lane === 'board' && <button className="desk-only" title={`File open issues of ${state.config.code_repo.github} as items`} onClick={() => setImporting(true)}>Import issues</button>}
         <button className="primary fab" onClick={() => setCreating(true)}>+ New item</button>
       </div>
       {phone && filters.length > 0 && (
@@ -162,7 +162,7 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
         </div>
       )}
       {importing && <ImportIssuesDialog onClose={() => setImporting(false)} />}
-      {creating && <NewItemDialog onClose={() => setCreating(false)} icebox={lane === 'icebox'} />}
+      {creating && <NewItemDialog onClose={() => setCreating(false)} icebox={lane === 'icebox'} onImport={importable ? () => { setCreating(false); setImporting(true); } : undefined} />}
       {preview && <PreviewDrawer id={preview} onClose={() => setPreview(null)} />}
       {lane === 'done' ? (
         <div className="list card-list">{done.map((i) => <ItemCard key={i.id} item={i} sortable={false} onSelect={setPreview} />)}{!done.length && <p className="muted">Nothing finished yet.</p>}</div>
@@ -171,7 +171,7 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
           {phone ? (
             <PhoneBoard columns={columns} items={items} filters={filters} onClear={clearAll} onSelect={setPreview} dropAt={dropAt} />
           ) : (<>
-            {!items.length && filters.length > 0 && <Empty filters={filters} onClear={clearAll} />}
+            {!items.length && (filters.length > 0 || importable) && <Empty filters={filters} onClear={clearAll} onImport={importable ? () => setImporting(true) : undefined} />}
             <div className="board" style={lane === 'icebox' ? { gridAutoColumns: 'minmax(420px, 640px)' } : undefined}>
               {columns.map((status) => { const col = items.filter((i) => i.frontmatter.status === status); return <Column key={status} status={status} items={col} onSelect={setPreview} drop={dropAt(status)} />; })}
             </div>
@@ -183,8 +183,8 @@ export function BoardPage({ lane }: { lane: 'board' | 'icebox' | 'done' }) {
 }
 
 /** An empty board names the filters that emptied it and offers to drop them (#286). */
-function Empty({ filters, onClear }: { filters: ActiveFilter[]; onClear: () => void }) {
-  return <p className="muted board-empty">{emptyText(filters)}{filters.length > 0 && <> <button className="link" onClick={onClear}>Show all items</button></>}</p>;
+function Empty({ filters, onClear, onImport }: { filters: ActiveFilter[]; onClear: () => void; onImport?: () => void }) {
+  return <p className="muted board-empty">{emptyText(filters)}{filters.length > 0 && <> <button className="link" onClick={onClear}>Show all items</button></>}{!filters.length && onImport && <button onClick={onImport}>Import GitHub issues</button>}</p>;
 }
 
 /**
