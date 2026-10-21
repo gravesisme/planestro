@@ -1,6 +1,7 @@
 import { placeholderPng } from './placeholderPng.ts';
-import { matchesPathPattern } from './ports.ts';
+import { matchesPathPattern, DRY_RUN_SESSION_PREFIX } from './ports.ts';
 import type { GitPort, GhPort, ProcPort, ClaudePort, AgentPort, AgentTurnOptions, WorktreeEntry, WorktreeSnapshot, Checkpoint, RebaseResult, ContinueResult, CiStatus, CiAttemptTiming, PrInfo, PrClosure, IssueInfo, RunnerReport, TurnOptions, TurnResult, CustomTurnOptions } from './ports.ts';
+
 
 /**
  * An in-memory world so a dry run advances end to end: worktrees, branches, PRs whose CI
@@ -361,7 +362,7 @@ export class DryRunCodexPort implements AgentPort {
   async runTurn(o: AgentTurnOptions | TurnOptions): Promise<TurnResult> {
     if (o.transport === 'app-server') return { ...await new DryRunClaudePort(this.w).runTurn(o as TurnOptions), tokens: 1500 };
     this.w.log(`Would run codex exec${o.resume ? ` resume ${o.resume.slice(0, 8)}` : ''} for ${o.itemId} (${o.phase}) in ${o.cwd} under the workspace-write sandbox${o.images?.length ? ` with ${o.images.length} image(s)` : ''}`);
-    const sessionId = o.resume ?? `dryrun-codex-${o.itemId}-${this.w.sha().slice(-6)}`;
+    const sessionId = o.resume ?? `${DRY_RUN_SESSION_PREFIX}codex-${o.itemId}-${this.w.sha().slice(-6)}`;
     o.onOutput(`(dry-run codex) prompt: ${o.prompt.slice(0, 120).replace(/\n/g, ' ')}…`);
     await o.tools.append_activity('dry-run codex: pretended to generate the assets and commit them');
     this.w.commits.set(o.cwd, (this.w.commits.get(o.cwd) ?? 0) + 1);
@@ -410,11 +411,11 @@ export class DryRunClaudePort implements ClaudePort {
     if (recommend) { const top = /^## Costliest items\n- (\S+): (.*)$/m.exec(o.prompt); await recommend.handler({ key: top ? `${top[1]}-cost` : 'dry-run', what: top ? `(dry-run) ${top[1]} cost the most` : '(dry-run) nothing stood out', evidence: top?.[2] ?? 'the digest', change: '(dry-run) switch to live mode for a real recommendation', saving: 'unknown' }); }
     const done = o.mcpTools.find((t) => t.name === 'done_with_wake');
     if (done) await done.handler({ summary: approved.length ? `dry-run: approved ${approved.join(', ')}` : 'dry-run: reviewed the wake, no action needed' });
-    return { sessionId: o.resume ?? `dryrun-orch-${this.w.sha().slice(-6)}`, subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: 'wake handled (dry-run)' };
+    return { sessionId: o.resume ?? `${DRY_RUN_SESSION_PREFIX}orch-${this.w.sha().slice(-6)}`, subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: 'wake handled (dry-run)' };
   }
   async runTurn(o: TurnOptions): Promise<TurnResult> {
     this.w.log(`Would run a ${o.phase} turn for ${o.itemId} with ${o.model} (${o.permissionMode}) in ${o.cwd}${o.resume ? `, resuming ${o.resume.slice(0, 8)}` : ''}`);
-    const sessionId = o.resume ?? `dryrun-${o.itemId}-${this.w.sha().slice(-6)}`;
+    const sessionId = o.resume ?? `${DRY_RUN_SESSION_PREFIX}${o.itemId}-${this.w.sha().slice(-6)}`;
     const base: TurnResult = { sessionId, subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '' };
     o.onOutput(`(dry-run) prompt: ${o.prompt.slice(0, 120).replace(/\n/g, ' ')}…`);
     if (o.phase === 'plan' && /## Break this epic down/.test(o.prompt)) {

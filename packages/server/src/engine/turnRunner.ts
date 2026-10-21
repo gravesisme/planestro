@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { mcpServersNamed, runnerTurnSettings, chooseTurnPath, MIN_TURN_USD, WARM_SHARE, type ResumeEstimate, type SessionContext, type Part, serializeItemFile, modelCapabilities, getSection, isoLocal, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, holdShapeOf, usageTurnData, USAGE_TURN, type UsageStage, type UsageRole, type ModelDef, guardKey, unavailableView, sameSessionStore, DEFAULT_ACCOUNT, type Account, type ServerEvent, type Status } from '@planestro/shared';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
+import { DRY_RUN_SESSION_PREFIX } from './ports.ts';
 import type { Ports, TurnPhase, TurnResult, TurnTools, McpServerSpec, ResumeQuote, UndeliveredReport, ConnectionDrop, AccountCredentials } from './ports.ts';
 import { operatorMcpUrl } from '../routes/mcp.ts';
 import { listInstances } from '../instances.ts';
@@ -34,7 +35,7 @@ export interface RunningTurn { model: string; phase: TurnPhase; startedAt: strin
  */
 export interface TurnRunnerContext {
   readonly store: DataStore;
-  readonly ports: Pick<Ports, 'git' | 'agents'>;
+  readonly ports: Pick<Ports, 'git' | 'agents' | 'mode'>;
   /** The code repo's main checkout. */
   readonly repo: string;
   /** Read live: a turn the engine's stop killed keeps its op and its outbox for the restart. */
@@ -254,7 +255,10 @@ export class TurnRunner {
     // prompt (withImplementer) and makes no paid call (#366; an app-server planner was refused them outright).
     const offeredMcp = phase === 'plan' || !modelCapabilities(def).permissions ? [] : [...def.mcp].sort();
     const toolsMoved = Boolean(saved && modelCapabilities(def).resumeKeepsTools && (saved.mcp ?? []).join('\n') !== offeredMcp.join('\n'));
-    const incompatible = saved && (saved.tool_contract !== contract || (modelCapabilities(def).roleBound && (saved.role === 'plan') !== (phase === 'plan')) || !sameSessionStore(this.ctx.store.local, saved.account, account.name) || toolsMoved);
+    // A dry-run conversation is not there for the live CLI to resume: the getting-started path queues an item in dry-run
+    // before switching to live. (The dry-run fakes resume any id, so the other way round needs nothing.)
+    const fromDryRun = this.ctx.ports.mode === 'live' && Boolean((metered ? fm.session_id : saved?.session_id)?.startsWith(DRY_RUN_SESSION_PREFIX));
+    const incompatible = fromDryRun || saved && (saved.tool_contract !== contract || (modelCapabilities(def).roleBound && (saved.role === 'plan') !== (phase === 'plan')) || !sameSessionStore(this.ctx.store.local, saved.account, account.name) || toolsMoved);
     let resumeId = incompatible ? undefined : metered ? fm.session_id : saved?.session_id;
     // What the turn costs before it does anything (#64): a resume sends the whole conversation again.
     // One the item cannot pay for, or whose reload is above budget_usd_fresh_above, becomes a fresh
