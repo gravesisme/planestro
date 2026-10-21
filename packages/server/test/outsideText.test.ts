@@ -106,6 +106,14 @@ describe("git's own hooks and configuration are out of a worker's reach (#340)",
     expect(policy.deny({ tool: 'Write', input: { file_path: 'src/a.ts', content: '' } })).toBeNull();
   });
 
+  it('lets a scratch file go where Bash may put one, and nowhere else outside the worktree (#475)', () => {
+    expect(policy.deny({ tool: 'Write', input: { file_path: join(tmpdir(), 'commit-msg.txt'), content: 'x' } })).toBeNull();
+    expect(policy.deny({ tool: 'Write', input: { file_path: '/tmp/commit-msg.txt', content: 'x' } })).toBeNull();
+    expect(policy.deny({ tool: 'Write', input: { file_path: '/tmp', content: 'x' } })).toMatch(/outside your worktree/);
+    expect(policy.deny({ tool: 'Write', input: { file_path: '/tmpfoo/x.txt', content: 'x' } })).toMatch(/outside your worktree/);
+    expect(policy.deny({ tool: 'Edit', input: { file_path: '/etc/hosts' } })).toMatch(/outside your worktree/);
+  });
+
   it('refuses git config writes that change what git runs, in both syntaxes', () => {
     for (const c of ['git config core.hooksPath /tmp/h', 'git config --local core.fsmonitor "sh x"', 'git config set core.pager evil', 'git config --add alias.x "!sh"', 'git config --edit', 'git -C wt config filter.x.clean "sh x"']) {
       expect(gitDenial(c), c).not.toBeNull();
