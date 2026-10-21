@@ -80,9 +80,20 @@ Then:
 1. **Settings** — check the base branch, models and categories. The engine starts in
    `dry-run`; queue an item and read the Console to see exactly what it would do to *your*
    repository.
-2. Switch `engine.mode` to `live`, then stop the server (Ctrl+C) and start it again: the mode
-   is read at startup. Work is real only once the header says **Live**, not **Dry-run**.
-3. Write an item (or start one from a prompt), queue it, approve its plan.
+2. Tell planestro how a worktree gets ready and how your tests run, in `planestro.yml`:
+   ```yaml
+   hooks:
+     after_worktree_create: [npm ci]        # run in each new worktree before planning
+   permissions:
+     allow: ["Bash(npm test*)@worktree"]    # else a Claude worker's first test run waits for you
+   ```
+   A Claude worker asks before any command the rules don't cover; **Always allow** on that
+   request adds a rule here too ([what Claude workers may do](configuration.md#what-claude-workers-may-do)).
+3. Discard the items you tried in dry-run (item page → **Discard**): their worktrees, branches
+   and pull requests were simulated. Then switch `engine.mode` to `live`, stop the server
+   (Ctrl+C) and start it again: the mode is read at startup. Work is real only once the header
+   says **Live**, not **Dry-run**.
+4. Write an item (or start one from a prompt), queue it, approve its plan.
 
 To add an art model, see [Agents](agents.md#adding-a-codex-model). Project rules —
 conventions, how to run the tests, where assets live — belong in your repository's own

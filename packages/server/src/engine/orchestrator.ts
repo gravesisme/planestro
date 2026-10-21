@@ -9,6 +9,7 @@ import { parkHint, permissionGrantRefusal } from './parks.ts';
 import { precedents, rulingsFromJournal, worktreeFinder, worstOf } from './allowSuggest.ts';
 import { hostNote, keptPathsNote } from './hostNote.ts';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
+import { DRY_RUN_SESSION_PREFIX } from './ports.ts';
 import type { Ports, CustomToolDef, TurnResult } from './ports.ts';
 import { quietTransientFailure } from './transient.ts';
 import { atomicWrite } from '../store/atomicWrite.ts';
@@ -168,6 +169,9 @@ export interface OrchestratorHooks {
 }
 
 /** `total_usd`: the running total the conversation last reported; a resumed wake's cost is what it rose by (#64). */
+/** What the runners say when a resumed conversation is not there (the first two seen live on 2026-10-21; the others name a thread). */
+const MISSING_CONVERSATION = /no conversation found|requires a valid session id|thread not found|no rollout found/i;
+
 interface OrchState { runner?: Runner; account?: string; model?: string; tool_contract?: string; intro_hash?: string; session_id?: string; started_at?: string; wakes_served: number; total_usd?: number }
 
 /**
@@ -354,6 +358,12 @@ export class Orchestrator {
     const caps = modelCapabilities(findModel(this.store.config, pick.model) ?? { runner: pick.runner, external: false });
     const contract = caps.toolContract;
     if ((state.runner ?? 'claude') !== pick.runner || (state.tool_contract && state.tool_contract !== contract) || !sameSessionStore(this.store.local, state.account, pick.account)) state = { wakes_served: 0 };
+    // A dry-run conversation is not there for the live CLI to resume: after a switch from dry-run to live the first wake
+    // resumed `dryrun-orch-…`, failed, and every wake after it failed on the id that failure returned.
+    if (this.ports.mode === 'live' && state.session_id?.startsWith(DRY_RUN_SESSION_PREFIX)) {
+      this.log('info', 'orchestrator: its conversation is from dry-run mode; starting a fresh one');
+      state = { wakes_served: 0 };
+    }
     // Some runners keep the instructions a conversation started with when it is resumed (#246, verified live), so an edit
     // to the standing rules reaches them only in a fresh conversation. A state from before the hash resumes and records it.
     const intro = this.systemIntro();
@@ -394,6 +404,14 @@ export class Orchestrator {
     const items = [...new Set(events.map((e) => e.item).filter((i): i is string => Boolean(i)))];
     const spent = usageTurnData({ provider: pick.runner, model, role: 'orchestrator', op: 'orchestrator_wake', accounting: pick.def ? modelCapabilities(pick.def).accounting : pick.runner === 'claude' ? 'dollars' : 'tokens', stage: 'orchestrator', resumed: Boolean(state.session_id), items, result });
     if (spent) this.store.journal.append({ type: USAGE_TURN, actor: 'orchestrator', data: { ...spent } });
+    // A conversation the CLI cannot find (deleted, another machine's, another store) is dropped, never kept: the id such a
+    // failure returns names no conversation either. The wake is served again once in a fresh conversation.
+    if (state.session_id && !doneSummary && result.isError && MISSING_CONVERSATION.test(result.error ?? '')) {
+      this.log('warn', `orchestrator: its conversation ${state.session_id} could not be resumed (${(result.error ?? '').slice(0, 160)}); starting a fresh one`);
+      this.writeState({ wakes_served: 0 });
+      if (!retried) return this.runWake(events, true);
+      return;
+    }
     this.hooks.usageSeen?.(result.rateLimit, guardKey(pick.runner, pick.account));
     if (result.subtype === 'usage_exhausted') {
       const def = findModel(this.store.config, model);

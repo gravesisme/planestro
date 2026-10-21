@@ -175,7 +175,7 @@ export class MergePipeline {
       // A person's hold put on after the PR opened: back to draft, so pushes during the hold run no CI. A run already
       // going is never cancelled by it (#195): the draft waits for the next poll after it ends.
       await this.ctx.ports.gh.setDraft(this.ctx.github, fm.pr!, true);
-      this.ctx.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), pr_draft: true } } }, { activity: { actor: 'app', text: `held: PR #${fm.pr} is back to a draft, so CI waits until the hold is released` } }], 'engine');
+      this.ctx.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), pr_draft: true } } }, { activity: { actor: 'app', text: `held: PR #${fm.pr} is back to a draft, so a CI workflow that skips drafts waits until the hold is released` } }], 'engine');
       fm = this.ctx.store.requireItem(id).file.frontmatter;
     } else if (!drafts && fm.op_data?.pr_draft) {
       // A hold that waits on the orchestrator or the worker holds the merge only (#195): HH PR #541 was drafted by one, its
@@ -356,7 +356,7 @@ export class MergePipeline {
       headSha = sync.head;
       pushed = true;
       if (hold) {
-        this.ctx.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { ci_head_sha: headSha, ci_result: 'pending' } }, { activity: { actor: 'app', text: `held: rebased onto ${base}@${baseSha.slice(0, 7)} and pushed ${headSha.slice(0, 7)} so the PR ${this.ctx.draftsWhileHeld(id) ? 'shows the session\'s commits (a draft: CI runs once the hold is released)' : 'and CI show the session\'s commits'}; not merging` } }], 'engine');
+        this.ctx.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { ci_head_sha: headSha, ci_result: 'pending' } }, { activity: { actor: 'app', text: `held: rebased onto ${base}@${baseSha.slice(0, 7)} and pushed ${headSha.slice(0, 7)} so the PR ${this.ctx.draftsWhileHeld(id) ? 'shows the session\'s commits (a draft: a CI workflow that skips drafts runs once the hold is released)' : 'and CI show the session\'s commits'}; not merging` } }], 'engine');
         this.ctx.store.journal.end(opId, id, 'ok', { held: true, head: headSha });
         return;
       }

@@ -1230,7 +1230,7 @@ export class LiveEngine implements Engine {
       const head = await this.ports.git.revParse(cwd, 'HEAD');
       const moved = head !== fm.ci_head_sha;
       const held = Boolean(fm.skip_merge);
-      const heldText = this.draftsWhileHeld(id) ? 'held, so it is pushed for review but not merged; its PR is a draft, so CI runs once the hold is released' : 'held, so it is pushed for CI and review but not merged';
+      const heldText = this.draftsWhileHeld(id) ? 'held, so it is pushed for review but not merged; its PR is a draft, so a CI workflow that skips drafts runs once the hold is released' : 'held, so it is pushed for CI and review but not merged';
       // A turn here that reports nothing is read by the orchestrator (#196): HH-373's worker explained itself twice in its
       // last message after the PR opened, and the line "re-checking" was all anyone saw, for eight hours.
       const silent = this.silentTurn(result);
@@ -1325,7 +1325,7 @@ export class LiveEngine implements Engine {
       { transition: { to: 'IN_REVIEW', actor: 'engine' } },
       { set: { pr: pr.number, ci_result: 'pending', ...(held ? { review_hold: true } : {}), ...(draft ? { op_data: { ...(this.store.requireItem(id).file.frontmatter.op_data ?? {}), pr_draft: true } } : {}) } },
       { unset: ['op', 'op_started_at'] },
-      { activity: { actor: 'app', text: `opened PR #${pr.number} → ${base} (${pr.url})${draft ? ' as a draft: it is held, so CI waits until the hold is released' : ''}` } },
+      { activity: { actor: 'app', text: `opened PR #${pr.number} → ${base} (${pr.url})${draft ? ' as a draft: it is held, so a CI workflow that skips drafts waits until the hold is released' : ''}` } },
       ...(held ? [{ activity: { actor: 'app' as const, text: `will wait for your review before merging: ${implementer!.label} is a hold_for_review model` } }] : []),
       ...(holdInto ? this.holdOps(holdInto, 'app') : []),
     ], 'engine', { commit: `${id}: open PR #${pr.number}` });
