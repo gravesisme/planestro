@@ -37,7 +37,7 @@ through a reviewed plan, a pull request and green CI — including
 [features split across two agents](#features-split-across-two-agents), where
 Codex draws the art and Claude writes the code that uses it.
 
-## Try it in a minute — no repo, no GitHub, no Claude login
+## Run the sample — no repo, GitHub or agent login
 
 ```sh
 git clone --branch main https://github.com/gravesisme/planestro && cd planestro
@@ -96,9 +96,9 @@ files were delivered. Then the epic lands as one pull request.
 
 The two agents are trusted differently, and the tool says so: a Claude worker
 asks before anything unusual (a per-command policy, parked permission requests);
-a Codex worker cannot ask, so it runs in a sandbox that cannot write outside its
-worktree or reach the network. A Codex item that has to install a package or
-reach a local database stops and says so, rather than working around it.
+a Codex worker runs in a sandbox that confines writes to its worktree and temp
+and blocks network access. With app-server, a command needing approval parks
+for your decision; an approval grants that exact command once.
 [Agents →](docs/agents.md)
 
 ## Why it is built this way
@@ -148,7 +148,7 @@ integration branch for chained children; items driven by something else
 (another agent, a colleague) are watched rather than run. **Close as done**
 finishes an item whose work landed some other way, without a PR.
 
-An orchestrator session (a separate, freely rotated Claude conversation) wakes
+An orchestrator session (a separate, freely rotated Claude or Codex conversation) wakes
 on the ambiguous events — a plan to review, a second red CI run, a conflict —
 and can instruct workers or escalate to you; it never owns state.
 
