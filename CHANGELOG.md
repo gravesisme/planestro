@@ -1,10 +1,22 @@
 # Changelog
 
-## Unreleased
+## 1.0.1 — 2026-10-21
+
+### Fixed
+
+- Continuing a rebase after a session resolved its conflict no longer fails when the branch
+  deletes files: those paths were named to `git add` and the item blocked `engine_error` (#477).
+- A Claude worker may write scratch files with Write/Edit where Bash already could (`/tmp`,
+  `$TMPDIR`), so drafting a commit message there is no longer denied (#475).
+- A Claude orchestrator wake no longer prints `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` to the server log (#473).
+- Usage page: a range with no dollars opens on Tokens; "turns and wakes" is worded the same in the
+  header and the day line; sub-headings are spaced; heaviest starting context gives each item's
+  session count (#476).
+
+### Changed
 
 - Claude Code 2.1.306 with `@anthropic-ai/claude-agent-sdk` 0.3.306 is the validated pair (#474); a start
   with 2.1.306 no longer warns that the CLI drifted.
-- A Claude orchestrator wake no longer prints `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` to the server log (#473).
 
 ## 1.0.0 — 2026-10-21
 
