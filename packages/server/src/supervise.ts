@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { watch, existsSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs';
+import { watch, existsSync, mkdirSync, readFileSync, renameSync, rmSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EXIT_DATA_DIR_IN_USE, EXIT_PORT_IN_USE } from './exitCodes.ts';
@@ -19,8 +19,22 @@ const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const CLI = fileURLToPath(new URL('./cli.ts', import.meta.url));
 const SERVER_DIRS = ['packages/server/src', 'packages/shared/src'];
 const WEB_PATHS = ['packages/web/src', 'packages/web/public', 'packages/web/index.html', 'packages/shared/src'];
+const WEB_DIR = join(ROOT, 'packages/web');
 const QUIET_MS = 1500;      // a save-all or a branch switch lands as a burst; act once it settles
 const BUSY_POLL_MS = 5000;
+
+/**
+ * Puts a finished build (`<webDir>/dist.next`) in place of `<webDir>/dist` with two renames, so the running server
+ * never finds the UI missing: vite empties its outDir first, and a build straight into `dist` left page loads
+ * failing on a missing index.html for its whole length (and a failed build left no UI at all).
+ */
+export function swapWebBuild(webDir: string): void {
+  const dist = join(webDir, 'dist'), next = join(webDir, 'dist.next'), old = join(webDir, 'dist.old');
+  rmSync(old, { recursive: true, force: true });
+  if (existsSync(dist)) renameSync(dist, old);
+  renameSync(next, dist);
+  rmSync(old, { recursive: true, force: true });
+}
 
 /** What to do about one burst of changes. Pure, so the policy is testable without processes. */
 export function planFor(changed: readonly string[]): { restart: boolean; rebuild: boolean } {
@@ -178,7 +192,13 @@ export async function supervise(o: SuperviseOptions): Promise<void> {
     try {
       while (pending.size && !stopping) {
         const plan = planFor([...pending]); pending.clear();
-        if (plan.rebuild) { log('web source changed: rebuilding the UI'); if (await run('npm', ['run', '--silent', 'build'])) log('web build failed; the previous UI stays in place'); }
+        if (plan.rebuild) {
+          log('web source changed: rebuilding the UI');
+          if (await run('npm', ['--workspace', 'packages/web', 'run', '--silent', 'build', '--', '--outDir', 'dist.next'])) {
+            rmSync(join(WEB_DIR, 'dist.next'), { recursive: true, force: true });
+            log('web build failed; the previous UI stays in place');
+          } else swapWebBuild(WEB_DIR);
+        }
         if (!plan.restart) continue;
         // Drain rather than interrupt: agents run most of the day, so an idle gap has to be made. The
         // drain dies with the old process, so there is nothing to undo afterwards (#90: a PAUSE here

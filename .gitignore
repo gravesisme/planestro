@@ -1,5 +1,7 @@
 node_modules/
 dist/
+dist.next/
+dist.old/
 .planestro/
 *.log
 .DS_Store
