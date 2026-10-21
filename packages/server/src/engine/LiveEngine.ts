@@ -2,7 +2,7 @@ import { closesLine } from './issueImport.ts';
 import { itemModelSwitchOps } from '../providerSwitch.ts';
 import { join, relative, isAbsolute, extname, basename, matchesGlob } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { DEBUG_MARKER, mcpServersNamed, debugMarkerRefusal, Audition, AuditionPicks, auditionPicksProblem, auditionPickLines, auditionNote, auditionComplete, runnerTurnSettings, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, validateBreakdown, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type Decision, type ServerEvent, type Status, type RateLimitSnapshot, demoteH1, loopGreen, loopLine, loopTallyProblem, usageTurnData, USAGE_TURN, type UsageStage, testRunShape, TEST_RUN, stepDownDue, timeoutKilledIn, limitsLabel, type HostLoad, type UsageRole, type ModelDef, resolveAccount, guardKey, unavailableView, sameSessionStore, DEFAULT_ACCOUNT, type Account, fenceExternal } from '@planestro/shared';
+import { DEBUG_MARKER, mcpServersNamed, debugMarkerRefusal, Audition, AuditionPicks, auditionPicksProblem, auditionPickLines, auditionNote, auditionComplete, runnerTurnSettings, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, WARM_SHARE, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, type Part, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, validateBreakdown, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type Decision, type ServerEvent, type Status, type RateLimitSnapshot, demoteH1, loopGreen, loopLine, loopTallyProblem, usageTurnData, USAGE_TURN, type UsageStage, testRunShape, TEST_RUN, stepDownDue, limitsLabel, type HostLoad, type UsageRole, type ModelDef, resolveAccount, guardKey, unavailableView, sameSessionStore, DEFAULT_ACCOUNT, type Account } from '@planestro/shared';
 import type { DataStore, StoredItem, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type McpServerSpec, type ResumeQuote, type CiQueue, type RunnerReport, type UndeliveredReport, type ConnectionDrop, type AccountCredentials } from './ports.ts';
@@ -15,12 +15,11 @@ import { workerCommandEnv } from './sessions/commandEnv.ts';
 import { hostNote, keptPathsNote, cwdNote } from './hostNote.ts';
 import { Orchestrator } from './orchestrator.ts';
 import { NeedsYouWatch, type Wait } from './needsYou.ts';
-import { findWorkflow, infraPatternIn, prSkippedByPaths } from './ciFilters.ts';
-import { quietTransientFailure, patchRejected, PATCH_REJECTED_RETRY, TRANSIENT } from './transient.ts';
+import { quietTransientFailure, patchRejected, PATCH_REJECTED_RETRY } from './transient.ts';
 import { driveSchedules } from './schedules.ts';
 import { auditSlotDue, runEfficiencyAudit } from './efficiencyAudit.ts';
-import { runnerStatusText, stallOf, recovered, type RunnerStall } from './runners.ts';
-import { recordCiResult, recentCi, lastConcurrencyChange, rollbackConcurrency, hostLoad, limitsOf } from '../concurrency.ts';
+import { runnerStatusText, type RunnerStall } from './runners.ts';
+import { recentCi, lastConcurrencyChange, rollbackConcurrency, hostLoad, limitsOf } from '../concurrency.ts';
 import { HeavyLock, ciOnSharedHost, heavyRedirects, heavyAllowRules, took } from './heavyRuns.ts';
 import type { ReviewImage, ReviewDiff, UndoTurnPreview } from './Engine.ts';
 import { ReviewUndo } from './reviewUndo.ts';
@@ -29,9 +28,10 @@ import { Guards, USAGE_RESUME_GRACE_MS } from './guards.ts';
 import { CleanupReconcile } from './cleanupReconcile.ts';
 import { RESUMABLE_TURN_OPS } from './resumableOps.ts';
 import { Epics } from './epics.ts';
-import { HELD_POLL_MS } from './heldPoll.ts';
-import { BaseSync, syncFailed } from './baseSync.ts';
+import { BaseSync } from './baseSync.ts';
 import { Triage } from './triage.ts';
+import { CiWatch } from './ciWatch.ts';
+import { MergePipeline } from './mergePipeline.ts';
 
 /** `schedule` runs `fn` after `ms` and returns a cancel (tests capture it instead of waiting). */
 /** `listenUrl`: where the server answers (`http://127.0.0.1:4300`), the start of notification links unless notifications.base_url says otherwise. */
@@ -40,17 +40,6 @@ export interface EngineOptions { sleep?: (ms: number) => Promise<void>; tickMs?:
 /** How many of one item's permission requests the orchestrator may refuse before they go to the user instead. */
 const MAX_ORCHESTRATOR_DENIALS = 3;
 const JUDGMENT_BLOCKS = ['turn_error', 'connection_lost', 'no_plan', 'no_commits', 'dirty_tree', 'sync_conflict', 'ci_red', 'ci_red_parked', 'ci_infra', 'ci_timeout', 'ci_blocked', 'ci_disagree', 'base_red', 'pr_closed_externally', 'merge_unverified', 'agent_blocked', 'engine_error'] as const;
-/** The newest Activity line that says something moved: planestro, the session or a person, not the orchestrator's own notes (#201). */
-function lastMovingLine(activity: string): { ts: string; at: number; text: string } | undefined {
-  const lines = activity.split('\n').filter((l) => l.startsWith('- '));
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const m = /^- (\S+) \[([^\]]+)\] (.*)$/.exec(lines[i]);
-    if (!m || m[2] === 'orchestrator') continue;
-    const at = Date.parse(m[1]);
-    if (Number.isFinite(at)) return { ts: m[1], at, text: m[3].slice(0, 300) };
-  }
-  return undefined;
-}
 const ACTIVE_FOR_SLOTS: Status[] = ['PLAN_IN_PROGRESS', 'IN_PROGRESS'];
 /** Turn failures with their own block reason, because the fix is the user's (log in, wait, start over) and not a judgment call. */
 const ACTIONABLE_FAILURES = new Set(['auth_required', 'rate_limited', 'session_lost', 'spawn_error', 'cli_too_old']);
@@ -60,8 +49,6 @@ const BUDGET_WARN_AT = 0.8;
 const GIT_REFUSAL = /index\.lock|\.git\/worktrees|EPERM|Operation not permitted|Permission denied/i;
 /** A block that is about committing ("planestro needs to commit this", "complete but uncommitted", "nothing added to commit"). */
 const ASKS_COMMIT = /commit|\bstag(e|ing)\b/i;
-/** How old a runner reading planestro's own stall checks accept (#216): each read costs a GitHub call per open run. */
-const RUNNER_CHECK_MS = 2 * 60_000;
 /**
  * How a turn is started. `opener`: the phase's own first prompt. `note`: why the session was parked,
  * said first when it is resumed and left out when the conversation is new. `fresh`: `true` asks for a
@@ -110,22 +97,8 @@ const ORCHESTRATOR_FIELDS = ['parent', 'depends_on', 'base_branch_override', 'sk
  * QUEUED → worktree → plan → (approval) → implement → PR → rebase → CI → merge → cleanup → FINISHED.
  * Deterministic; every step persists `op` before acting and journals begin/end.
  */
-/** How long a just-pushed head may still read as the old sha from `gh pr view` before it counts as a real move. */
-const HEAD_PROPAGATION_GRACE_MS = 90_000;
-/**
- * Polls in a row (10 s apart) that find only skipped runs for a ready PR's head before planestro
- * sends ready_for_review again. GitHub starts the event's run within seconds; a minute of nothing
- * but skipped runs means the event landed on another head, and no run is coming by itself.
- */
-const SKIPPED_REFIRE_POLLS = 6;
-/** Polls in a row that the head's newest run stays cancelled before planestro re-runs it (about a minute at the start). */
-const CANCELLED_RERUN_POLLS = 6;
-/** Held polls (one a minute) a new head's preview deployment is looked for before planestro stops asking. */
-const PREVIEW_TRIES = 10;
 /** A hold whose words ask a person to look at pictures (#355). */
 const LOOK_AT_PICTURES = /captur|screenshot|render|image|picture|before\/after|contact sheet|art review|frames?\b|sprites?\b/i;
-/** Looks (5 s apart) at a just-pushed PR's head before it is marked ready anyway. */
-const READY_AFTER_PUSH_POLLS = 6;
 /** The op_data keys of retries the tick runs once at a due time. */
 type TimedRetry = 'transient_retry' | 'usage_retry';
 
@@ -139,7 +112,6 @@ export class LiveEngine implements Engine {
   /** Agent turns holding one of `concurrency.max_sessions` slots, and the turns queued for one (withSessionSlot). */
   private sessionTurns = 0;
   private sessionWaiters: Array<() => void> = [];
-  private mergeChain: Promise<void> = Promise.resolve();
   /** The machine's facts for every session's system prompt (hostNote), read once. */
   private readonly hostNote = hostNote();
   private timer?: NodeJS.Timeout;
@@ -168,6 +140,10 @@ export class LiveEngine implements Engine {
   private readonly baseSync: BaseSync;
   /** Needs-you triage, decision cards and what a card's option does as the user (#404, seam 7). */
   private readonly triage: Triage;
+  /** CI waits, red runs, rerun_ci, runner stalls and the review-stall wake (#404, seam 8). */
+  private readonly ciWatch: CiWatch;
+  /** The serial merge chain and held items (#404, seam 8). */
+  private readonly mergePipeline: MergePipeline;
 
   constructor(private readonly store: DataStore, private readonly ports: Ports, private readonly emit: (e: ServerEvent) => void, private readonly opts: EngineOptions = {}) {
     this.mode = ports.mode;
@@ -258,6 +234,65 @@ export class LiveEngine implements Engine {
       wakeOrchestrator: (type, item, data) => this.wakeOrchestrator(type, item, data),
       syncWithBase: (id, opts) => this.syncWithBase(id, opts),
     });
+    const baseSync = () => this.baseSync;
+    const ciQueue = () => this.ciQueue;
+    this.ciWatch = new CiWatch({
+      store,
+      ports,
+      get github() { return github(); },
+      ciWorkflow: this.ciWorkflow,
+      get stopping() { return stopping(); },
+      turns: this.turns,
+      jobs: this.jobs,
+      followUps: this.followUps,
+      get ciQueue() { return ciQueue(); },
+      get baseSync() { return baseSync(); },
+      now: () => this.now(),
+      sleep: (ms) => this.sleep(ms),
+      absWorktree: (rel) => this.absWorktree(rel),
+      note: (level, message) => this.note(level, message),
+      block: (id, reason, detail) => this.block(id, reason, detail),
+      tick: () => this.tick(),
+      poke: () => this.poke(),
+      busyWith: (id) => this.busyWith(id),
+      queueTurn: (id, phase, prompt, extraAllowed, oneShotCommands, opts) => this.queueTurn(id, phase, prompt, extraAllowed, oneShotCommands, opts),
+      wakeOrchestrator: (type, item, data) => this.wakeOrchestrator(type, item, data),
+      retryOp: (id, by, message) => this.retryOp(id, by, message),
+      refreshCiQueue: () => this.refreshCiQueue(),
+      readRunners: (maxAgeMs) => this.readRunners(maxAgeMs),
+    });
+    this.mergePipeline = new MergePipeline({
+      store,
+      ports,
+      get repo() { return repo(); },
+      get github() { return github(); },
+      ciWorkflow: this.ciWorkflow,
+      get stopping() { return stopping(); },
+      turns: this.turns,
+      jobs: this.jobs,
+      guards: this.guards,
+      get baseSync() { return baseSync(); },
+      cleanupReconcile: this.cleanupReconcile,
+      reviewUndo: this.reviewUndo,
+      ciWatch: this.ciWatch,
+      now: () => this.now(),
+      sleep: (ms) => this.sleep(ms),
+      absWorktree: (rel) => this.absWorktree(rel),
+      note: (level, message) => this.note(level, message),
+      block: (id, reason, detail, awaiting, stall) => this.block(id, reason, detail, awaiting, stall),
+      runJob: (id, fn) => this.runJob(id, fn),
+      queueFollowUp: (id, fn) => this.queueFollowUp(id, fn),
+      queueTurn: (id, phase, prompt, extraAllowed, oneShotCommands, opts) => this.queueTurn(id, phase, prompt, extraAllowed, oneShotCommands, opts),
+      tick: () => this.tick(),
+      deliverQueued: (id, when) => this.deliverQueued(id, when),
+      resolveEpicConflict: (id, cwd, base, baseSha, files, hint) => this.resolveEpicConflict(id, cwd, base, baseSha, files, hint),
+      draftsWhileHeld: (id) => this.draftsWhileHeld(id),
+      outsideApprovedScope: (id, sha) => this.outsideApprovedScope(id, sha),
+      holdOps: (reason, by, waitsOn) => this.holdOps(reason, by, waitsOn),
+      wakeOrchestrator: (type, item, data) => this.wakeOrchestrator(type, item, data),
+      announce: (event, title, message, item) => this.announce(event, title, message, item),
+      withLocalJobSlot: (fn) => this.withLocalJobSlot(fn),
+    });
     this.baseSync = new BaseSync({
       store,
       ports,
@@ -307,7 +342,7 @@ export class LiveEngine implements Engine {
       freshRefusal: (fm, message) => this.freshRefusal(fm, message),
       discardRefusal: (id) => this.discardRefusal(id),
       closeAsDoneRefusal: (id) => this.closeAsDoneRefusal(id),
-      rerunRefusal: (id) => this.rerunRefusal(id),
+      rerunRefusal: (id) => this.ciWatch.rerunRefusal(id),
       reopenRefusal: (id) => this.reopenRefusal(id),
       discard: (id, reason, opts) => this.discard(id, reason, opts),
       closeAsDone: (id, reason) => this.closeAsDone(id, reason),
@@ -537,12 +572,12 @@ export class LiveEngine implements Engine {
       await this.epics.driveEpics();
       // Its GitHub reads retry for about a minute each: off the pass, one at a time, so the rest of the tick never waits on them.
       if (!this.externalPoll) this.externalPoll = this.driveExternal().catch((e) => this.note('error', `external PRs: ${(e as Error).message}`)).finally(() => { this.externalPoll = undefined; });
-      this.driveInReview();
-      this.driveHeld();
+      this.mergePipeline.driveInReview();
+      this.mergePipeline.driveHeld();
       this.baseSync.driveBaseWaits();
       await this.driveStalls();
-      void this.driveRunnerStalls().catch((e) => this.note('error', `runner stalls: ${(e as Error).message}`));
-      this.driveReviewStalls();
+      void this.ciWatch.driveRunnerStalls().catch((e) => this.note('error', `runner stalls: ${(e as Error).message}`));
+      this.ciWatch.driveReviewStalls();
       this.driveResumeAfter();
       this.driveStepDown();
     } catch (e) { this.note('error', `tick: ${(e as Error).message}`); }
@@ -636,51 +671,6 @@ export class LiveEngine implements Engine {
       this.runJob(item.id, () => this.carryOnStalled(item.id));
     }
     for (const id of this.idleSince.keys()) if (!seen.has(id)) this.idleSince.delete(id);
-  }
-
-  /** What the last CI poll of each item's wait saw, and when: a run queued or running is something coming (#201). */
-  private ciSeen = new Map<string, { state: string; at: number }>();
-  private reviewIdleSince = new Map<string, number>();
-
-  /**
-   * The backstop for an item in review that nothing moves (#201): no CI queued or running, no session, no stop, and no
-   * Activity from planestro, the session or the user for `ci.stall_wake_min`. HH-383 sat on a red run for 7½ hours that
-   * way. The orchestrator is woken once per stall (keyed by the last line that moved it), never to act by itself.
-   */
-  private driveReviewStalls(): void {
-    const after = this.store.config.ci.stall_wake_min * 60_000;
-    if (!after) return;
-    const now = Date.now();
-    const looked = new Set<string>();
-    for (const item of this.store.listItems()) {
-      const fm = item.file.frontmatter;
-      if (fm.status !== 'IN_REVIEW' || fm.kind === 'epic' || fm.blocked || fm.awaiting || fm.triage || fm.taken_over || fm.skip_merge || fm.resume_after) continue;
-      if (this.store.derived(item).flavor === 'external' || fm.op === 'running_local_checks') continue;
-      // Driven: a session, a step other than a CI wait, or a wait that has not polled yet or last saw its run queued or running.
-      const seen = this.ciSeen.get(item.id);
-      const waiting = this.ciWaits.has(item.id);
-      const driven = this.turns.has(item.id) || this.followUps.has(item.id) || (this.jobs.has(item.id) && !waiting)
-        || (waiting && (!seen || seen.state === 'pending')) || (seen?.state === 'pending' && now - seen.at < 2 * 60_000);
-      looked.add(item.id);
-      if (driven) { this.reviewIdleSince.delete(item.id); continue; }
-      // Undriven across ticks, not between two steps (a restart clears an op a tick before its job starts again).
-      const since = this.reviewIdleSince.get(item.id) ?? now;
-      this.reviewIdleSince.set(item.id, since);
-      if (now - since < Math.min(after, 60_000)) continue;
-      const last = lastMovingLine(getSection(item.file, 'Activity'));
-      if (!last || now - last.at < after) continue;
-      const mark = `${fm.ci_head_sha ?? ''}@${last.ts}`;
-      if (fm.op_data?.review_stalled === mark) continue;
-      const idleMin = Math.round((now - last.at) / 60_000);
-      const run = fm.op_data?.ci as { runId?: number; url?: string } | undefined;
-      this.store.mutateItem(item.id, [{ set: { op_data: { ...(fm.op_data ?? {}), review_stalled: mark } } }], 'engine');
-      this.note('warn', `${item.id}: in review with nothing moving it for ${idleMin} min; waking the orchestrator`);
-      this.wakeOrchestrator('review_stalled', item.id, {
-        idle_min: idleMin, ci_result: fm.ci_result ?? 'none', ...(run?.url ? { run: run.url } : {}), head: fm.ci_head_sha ?? '', last_activity: last.text,
-        note: 'Nothing is driving this item: no CI run is queued or running, no session turn, no stop. Read its Activity and CI, then act (rerun_ci, retry_op, message_session, unblock_item) or ask the user.',
-      });
-    }
-    for (const id of this.reviewIdleSince.keys()) if (!looked.has(id)) this.reviewIdleSince.delete(id);
   }
 
   /** Carry an idle item on from where it stands: committed work goes to its pull request, otherwise the session resumes. `from` says who found it idle, and why. */
@@ -840,149 +830,6 @@ export class LiveEngine implements Engine {
     if (!amendments.trim()) return 'not sent: say what to amend';
     await this.rejectPlan(id, amendments.trim(), 'orchestrator', { amend: true });
     return `sent back to be amended; you will review the revised plan${this.planDelegated(fm) ? '' : ' (its approval stays with the user)'}`;
-  }
-
-  /**
-   * Every IN_REVIEW item the pipeline may move. One whose head is waiting for CI is watched outside
-   * the chain (watchCi); the rest enter the serial chain in merge order, where a head already green
-   * on the base tip merges without waiting again (a released hold's kept green, too).
-   */
-  private driveInReview(): void {
-    const candidates = this.store.listItems().filter((item) => {
-      const fm = item.file.frontmatter;
-      if (fm.status !== 'IN_REVIEW' || fm.blocked || fm.awaiting || fm.skip_merge || fm.taken_over || fm.op_data?.pending_turn || this.jobs.has(item.id) || this.turns.has(item.id)) return false;
-      if (fm.ci_result === 'red' || fm.op_data?.needs_session_rebase) return false;
-      const flavor = this.store.derived(item).flavor;
-      if (flavor === 'external' && (fm.merge_policy ?? 'watch') === 'watch') return false; // watched: driveExternal observes it
-      return true;
-    }).sort((a, b) => {
-      const fa = a.file.frontmatter, fb = b.file.frontmatter;
-      return (fa.merge_order ?? Infinity) - (fb.merge_order ?? Infinity) || (fa.rank ?? Infinity) - (fb.rank ?? Infinity) || (fa.pr_created_at ?? '').localeCompare(fb.pr_created_at ?? '');
-    });
-    // mergeChain keeps the syncs and merges strictly serial, in this order; CI waits run beside it.
-    for (const item of candidates) this.runJob(item.id, () => item.file.frontmatter.op === 'awaiting_ci' ? this.watchCi(item.id) : this.mergeJob(item.id));
-  }
-
-  /**
-   * A held pull request (skip_merge) stays out of the merge queue, not out of sight. Its session's
-   * fix commits are pushed, so the PR and CI show them, and its CI is read, so a red run reaches
-   * the fix path and a green one is for the head it names. None of it waits inside the serial merge
-   * chain: only the push goes through it, and CI is polled once per HELD_POLL_MS from the tick.
-   */
-  private heldPolledAt = new Map<string, number>();
-  private driveHeld(): void {
-    const now = Date.now();
-    for (const item of this.store.listItems()) {
-      const fm = item.file.frontmatter;
-      // A taken-over PR is polled the same way, for its CI only: it is shown, never acted on.
-      const owned = Boolean(fm.taken_over);
-      // An epic's PR is held and polled too (#116): HH-242 was held "to play it", went red, and nothing read its CI.
-      const epic = this.store.derived(item).flavor === 'epic' && !owned;
-      if (fm.status !== 'IN_REVIEW' || !(fm.skip_merge || owned) || fm.blocked || fm.awaiting || !fm.pr || !fm.branch || (!fm.worktree && !owned && !epic)) continue;
-      if (this.jobs.has(item.id) || this.turns.has(item.id) || fm.op || (fm.op_data?.needs_session_rebase && !owned)) continue;
-      if (this.store.derived(item).flavor !== 'worker' && !epic) continue;
-      if (now - (this.heldPolledAt.get(item.id) ?? 0) < HELD_POLL_MS) continue;
-      this.heldPolledAt.set(item.id, now);
-      this.runJob(item.id, () => owned ? this.readOwnedCi(item.id) : this.heldStep(item.id));
-    }
-  }
-
-  /**
-   * CI of a pull request a person has taken over (dogfood p28), for whatever head is on GitHub,
-   * whoever pushed it: recorded so the board shows it, and nothing else. No push, no fix turn, no
-   * merge; the hand-back sends it through the pipeline, which reuses this run for an unchanged head.
-   */
-  private async readOwnedCi(id: string): Promise<void> {
-    const fm = this.store.requireItem(id).file.frontmatter;
-    const remote = await this.ports.git.remoteBranchSha(this.repo, fm.branch!);
-    if (!remote) return;
-    const ci = await this.ports.gh.ciForSha(this.github, fm.branch!, remote, this.ciWorkflow);
-    const result = ci.state === 'success' ? 'green' : ci.state === 'failure' ? 'red' : 'pending';
-    const cur = this.store.requireItem(id).file.frontmatter;
-    if (!cur.taken_over || (cur.ci_result === result && cur.ci_head_sha === remote)) return;
-    this.store.mutateItem(id, [
-      { set: { ci_result: result, ci_head_sha: remote, ...(ci.runId ? { op_data: { ...(cur.op_data ?? {}), ci: { runId: ci.runId, url: ci.url } } } : {}) } },
-      ...(result !== 'pending' ? [{ activity: { actor: 'app' as const, text: `CI is ${result} for ${remote.slice(0, 7)}${ci.url ? ` ${ci.url}` : ''} (you have this item: nothing is fixed or merged until you hand it back)` } }] : []),
-    ], 'engine');
-  }
-
-  /**
-   * The preview a held PR is played on (#137, LM-38): the newest successful deployment for its head, as GitHub
-   * records it (Vercel, Netlify and the like post one). Read with the held poll, for each new head until found or
-   * PREVIEW_TRIES polls have passed, kept in `op_data.preview`, and said once in Activity.
-   */
-  private async readPreview(id: string, head: string): Promise<void> {
-    const fm = this.store.requireItem(id).file.frontmatter;
-    const seen = fm.op_data?.preview as { sha?: string; url?: string; tries?: number } | undefined;
-    if (seen?.sha === head && (seen.url || (seen.tries ?? 0) >= PREVIEW_TRIES)) return;
-    const url = await this.ports.gh.previewUrl(this.github, head).catch(() => null);
-    const tries = (seen?.sha === head ? seen.tries ?? 0 : 0) + 1;
-    const cur = this.store.requireItem(id).file.frontmatter;
-    this.store.mutateItem(id, [
-      { set: { op_data: { ...(cur.op_data ?? {}), preview: { sha: head, tries, ...(url ? { url } : {}) } } } },
-      ...(url ? [{ activity: { actor: 'app' as const, text: `preview for ${head.slice(0, 7)}: ${url}` } }] : []),
-    ], 'engine');
-  }
-
-  /** Whether CI is queued or running for the head the PR branch has on GitHub: a run a draft would cancel (#195). */
-  private async ciRunningOnPr(branch: string): Promise<boolean> {
-    const remote = await this.ports.git.remoteBranchSha(this.repo, branch);
-    return remote ? (await this.ports.gh.ciForSha(this.github, branch, remote, this.ciWorkflow)).state === 'pending' : false;
-  }
-
-  private async heldStep(id: string): Promise<void> {
-    let fm = this.store.requireItem(id).file.frontmatter;
-    const drafts = this.draftsWhileHeld(id);
-    if (drafts && !fm.op_data?.pr_draft && !(await this.ciRunningOnPr(fm.branch!))) {
-      // A person's hold put on after the PR opened: back to draft, so pushes during the hold run no CI. A run already
-      // going is never cancelled by it (#195): the draft waits for the next poll after it ends.
-      await this.ports.gh.setDraft(this.github, fm.pr!, true);
-      this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), pr_draft: true } } }, { activity: { actor: 'app', text: `held: PR #${fm.pr} is back to a draft, so CI waits until the hold is released` } }], 'engine');
-      fm = this.store.requireItem(id).file.frontmatter;
-    } else if (!drafts && fm.op_data?.pr_draft) {
-      // A hold that waits on the orchestrator or the worker holds the merge only (#195): HH PR #541 was drafted by one, its
-      // CI skipped drafts, and the fix the hold waited for never got a run. Ready again, so every push runs CI.
-      await this.ports.gh.setDraft(this.github, fm.pr!, false);
-      this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), pr_draft: false } } }, { activity: { actor: 'app', text: `held for the merge only: PR #${fm.pr} is ready for review again, so CI runs on its pushes` } }], 'engine');
-      fm = this.store.requireItem(id).file.frontmatter;
-    }
-    // An epic has no session of its own: nothing of its is pushed from here, only its CI is read, and a red run goes to triage.
-    const epic = fm.kind === 'epic';
-    const cwd = epic ? '' : this.absWorktree(fm.worktree!);
-    const [local, remote] = await Promise.all([epic ? Promise.resolve('') : this.ports.git.revParse(cwd, 'HEAD'), this.ports.git.remoteBranchSha(this.repo, fm.branch!)]);
-    if (!epic && remote && local !== remote) {
-      // Commits the session made while the item was held. Pushed only when they build on what the
-      // PR has; a remote that moved on its own is someone else's work and is left alone.
-      if (await this.ports.git.isAncestor(cwd, remote, local)) { await this.mergeJob(id, { hold: true }); return; }
-      if (fm.op_data?.held_diverged !== remote) this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), held_diverged: remote } } }, { activity: { actor: 'app', text: `held: the worktree (${local.slice(0, 7)}) and the PR branch (${remote.slice(0, 7)}) have diverged; not pushing either way` } }], 'engine');
-      return;
-    }
-    if (!remote) return;
-    await this.readPreview(id, remote);
-    const ci = await this.ports.gh.ciForSha(this.github, fm.branch!, remote, this.ciWorkflow);
-    this.sawCi(id, ci);
-    const cur = this.store.requireItem(id).file.frontmatter;
-    const seen = cur.op_data?.ci as { runId?: number; attempt?: number } | undefined;
-    if (ci.runId && (seen?.runId !== ci.runId || seen?.attempt !== ci.attempt)) this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), ci: { runId: ci.runId, url: ci.url, ...(ci.attempt ? { attempt: ci.attempt } : {}) } } } }], 'engine');
-    if (ci.state === 'success') {
-      if (cur.ci_result !== 'green' || cur.ci_head_sha !== remote) this.store.mutateItem(id, [{ set: { ci_result: 'green', ci_head_sha: remote } }, { activity: { actor: 'app', text: `held: CI is green for ${remote.slice(0, 7)} (not merging until the hold is released)` } }], 'engine');
-      return;
-    }
-    if (ci.state === 'failure') {
-      if (ci.runId && await this.ports.gh.isBillingBlocked(this.github, ci.runId)) return;
-      const lastRed = cur.op_data?.last_red as { runId?: number; sha?: string; attempt?: number } | undefined;
-      if (cur.ci_result === 'red' || (lastRed?.runId === ci.runId && lastRed?.sha === remote && (ci.attempt ?? 1) <= (lastRed.attempt ?? 1))) return;
-      this.store.mutateItem(id, [{ set: { ci_head_sha: remote } }], 'engine');
-      const opId = this.store.journal.begin('held_ci', id, { pr: fm.pr, sha: remote });
-      // The infrastructure's red (#219) is re-run once here too, and its attempt read by the next poll.
-      const infra = await this.rerunIfInfra(id, opId, remote);
-      if (infra === 'blocked') return;
-      if (infra) { this.store.mutateItem(id, [{ set: { ci_result: 'pending' } }], 'engine'); this.store.journal.end(opId, id, 'aborted', { reason: 'infra_rerun' }); return; }
-      await this.onCiRed(id, opId, remote, undefined, 'github', !epic);
-      return;
-    }
-    // Still running, or not started: a green (or red) from another head is not this head's verdict.
-    if (cur.ci_head_sha !== remote || cur.ci_result === 'green' || cur.ci_result === 'red') this.store.mutateItem(id, [{ set: { ci_result: 'pending', ci_head_sha: remote } }], 'engine');
   }
 
   /**
@@ -2256,452 +2103,35 @@ export class LiveEngine implements Engine {
     void this.tick();
   }
 
-  // ---- merge pipeline: the serial chain syncs and merges; CI is waited for outside it ----
-  private mergeJob(id: string, opts: { hold?: boolean } = {}): Promise<void> {
-    const run = this.mergeChain.then(() => this.mergeStep(id, opts));
-    this.mergeChain = run.catch(() => undefined);
-    return run;
-  }
-
-  /**
-   * One pass through the serial merge chain: sync with the base, then merge if CI is already green
-   * for the head that is there. Nothing in here waits on CI (dogfood p15: HH-117 sat in the chain
-   * for twenty minutes of CI, only to stop at its review hold, while three approved PRs whose CI
-   * was green queued behind it). A head that is not green yet leaves the chain as `op: awaiting_ci`;
-   * watchCi polls it outside and brings it back once it is green. With `hold`, for a held item whose
-   * session committed: sync and push only, then leave, so the PR shows the work and CI runs;
-   * driveHeld reads the verdict.
-   */
-  private async mergeStep(id: string, { hold = false }: { hold?: boolean } = {}): Promise<void> {
-    if (this.guards.paused || this.guards.draining || this.stopping) return;
-    let item = this.store.requireItem(id);
-    let fm = item.file.frontmatter;
-    if (fm.status !== 'IN_REVIEW' || fm.blocked || fm.awaiting || fm.taken_over || fm.op_data?.pending_turn) return;
-    if (hold && !fm.skip_merge) return;
-    const d = this.store.derived(item);
-    const base = d.base_branch!;
-    const integration = fm.kind === 'epic';
-    const canFix = d.flavor === 'worker';
-    // Never merge over a message still queued for the session (HH-263): the designer's ruling "ship the Crawler" sat in
-    // the queue through a 14-minute CI wait, then the PR merged without it. It goes to the session now; the PR comes back after.
-    if (canFix && this.deliverQueued(id, 'before its pull request merges')) return;
-    if (!fm.worktree) {
-      // epics and app-policy external items have no session worktree: make a temporary one from the remote branch
-      const dir = join(this.store.worktreesRoot(), `merge-${id.toLowerCase()}`);
-      await this.ports.git.fetch(this.repo);
-      await this.ports.git.worktreeAdd(this.repo, dir, fm.branch!, `origin/${fm.branch}`);
-      this.store.mutateItem(id, [{ set: { worktree: dir } }, { activity: { actor: 'app', text: `temporary worktree ${dir} for the merge pipeline` } }], 'engine');
-      item = this.store.requireItem(id); fm = item.file.frontmatter;
-    }
-    const cwd = this.absWorktree(fm.worktree!);
-    const cfg = this.store.config.ci;
-    const opId = this.store.journal.begin(hold ? 'held_sync' : 'merge', id, { pr: fm.pr, base });
-
-    if (cfg.require_green_base && !hold) {
-      const health = await this.ports.gh.branchCi(this.github, base, this.ciWorkflow);
-      // A verdict only counts if it is about the CURRENT base tip. Since push-triggered
-      // runs on the default branch were removed (PRs gate it), the latest push run can be
-      // arbitrarily stale — a red from last week must not block today's merges.
-      const baseTip = await this.ports.git.revParse(this.repo, `origin/${base}`).catch(() => null);
-      const current = !health.sha || !baseTip || health.sha === baseTip;
-      if (health.state === 'failure' && current) { this.store.journal.end(opId, id, 'aborted', { reason: 'base_red' }); this.block(id, 'base_red', `the base branch ${base} is red at its tip (${health.url ?? 'no run url'}); fix the base or disable ci.require_green_base`); return; }
-      if (health.state === 'failure' && !current) this.store.mutateItem(id, [{ activity: { actor: 'app', text: `ignoring a stale red on ${base} (run is for ${health.sha?.slice(0, 7)}, tip is ${baseTip?.slice(0, 7)})` } }], 'engine');
-    }
-
-    // 1. sync with the base — worker branches rebase, integration branches merge (never rewritten)
-    this.store.mutateItem(id, [{ set: { op: integration ? 'syncing_base' : 'rebasing', op_started_at: this.now(), op_data: { ...(fm.op_data ?? {}), base_sha: null } } }], 'engine');
-    await this.ports.git.fetch(this.repo);
-    const inTheWay = integration ? await this.cleanupReconcile.clearMergeWorktree(id, cwd, fm.branch!) : [];
-    if (!inTheWay.length) inTheWay.push(...await this.cleanupReconcile.clearForSync(id, cwd, base));
-    if (inTheWay.length) { this.store.journal.end(opId, id, 'aborted', { reason: 'dirty' }); this.block(id, 'dirty_tree', `the worktree has uncommitted changes, so it cannot be synced: ${inTheWay.slice(0, 5).join(', ')}${inTheWay.length > 5 ? ` and ${inTheWay.length - 5} more` : ''}`); return; }
-    const baseSha = await this.ports.git.revParse(this.repo, `origin/${base}`);
-    const expected = await this.ports.git.remoteBranchSha(this.repo, fm.branch!);
-    // An integration branch moves on GitHub whenever a child merges into it: take that in before merging
-    // the base, or the push is refused as non-fast-forward, and a retry refuses the same way (dogfood p53, HH-172).
-    if (integration && expected && !(await this.ports.git.isAncestor(cwd, expected, 'HEAD'))) {
-      const own = await this.cleanupReconcile.syncAside(id, cwd, () => this.ports.git.merge(cwd, `origin/${fm.branch}`));
-      if (!own.ok) {
-        this.store.journal.end(opId, id, 'aborted', own.refused ? { reason: 'dirty', files: own.refused.paths } : { reason: 'conflict', files: own.conflicts });
-        this.block(id, own.refused ? 'dirty_tree' : 'sync_conflict', `merging origin/${fm.branch} into its local copy in ${fm.worktree} ${syncFailed(own)}; resolve by hand`);
-        return;
-      }
-      this.store.mutateItem(id, [{ activity: { actor: 'app', text: `took in origin/${fm.branch} (${expected.slice(0, 7)}) before syncing: it had moved on GitHub` } }], 'engine');
-    }
-    const localHead = await this.ports.git.revParse(cwd, 'HEAD');
-    const { behind } = await this.ports.git.aheadBehind(cwd, `origin/${base}`, 'HEAD');
-    let headSha: string;
-    let synced: string;
-    let pushed = false;
-    if (hold && expected === localHead) {
-      this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }], 'engine');
-      this.store.journal.end(opId, id, 'aborted', { reason: 'nothing_to_push' });
-      return;
-    }
-    if (behind === 0 && expected === localHead) {
-      // Already on the base tip and the remote matches: there is nothing to sync, and the CI
-      // run for this head is still the truth. Re-pushing the same commit bought nothing, and
-      // rebasing here whenever an item merely entered the pipeline is what made every open
-      // PR re-run CI after every merge.
-      headSha = localHead;
-      synced = `already on ${base}@${baseSha.slice(0, 7)}; no sync needed, reusing CI for ${headSha.slice(0, 7)}`;
-    } else {
-      // A worker's conflict is left stopped for its session (HH-532), unless that session already could not resolve it at this
-      // same base tip and nobody has said since how it should go: then it is a person's, and asking again would only loop.
-      const declined = canFix && !integration && (fm.op_data?.rebase_declined as { base_sha?: string } | undefined)?.base_sha === baseSha && !String(fm.op_data?.rebase_hint ?? '').trim();
-      const sync = await this.baseSync.syncOnto(id, cwd, base, integration, canFix && !integration && !declined);
-      if (!sync.ok && sync.refused) {
-        // Nothing conflicted: git would not overwrite files in the worktree (#212). Not a session's conflict to resolve.
-        this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }], 'engine');
-        this.store.journal.end(opId, id, 'aborted', { reason: 'dirty', files: sync.refused.paths });
-        this.block(id, 'dirty_tree', `${integration ? 'the merge of' : 'the rebase onto'} origin/${base} (${baseSha.slice(0, 7)}) ${syncFailed(sync)}; look in ${fm.worktree}, then unblock`);
-        return;
-      }
-      if (!sync.ok) {
-        const held = canFix && Boolean(sync.stopped);
-        this.store.mutateItem(id, [
-          { unset: ['op', 'op_started_at'] },
-          { set: { ci_result: 'unknown', op_data: { ...(fm.op_data ?? {}), needs_session_rebase: held } } },
-          { activity: { actor: 'app', text: `${integration ? 'merge of' : 'rebase onto'} origin/${base} (${baseSha.slice(0, 7)}) ${syncFailed(sync)}${sync.note ? ` (${sync.note})` : ''}${held ? '; handing to the session' : ''}` } },
-        ], 'engine', { commit: `${id}: ${integration ? 'merge' : 'rebase'} conflict` });
-        this.store.journal.end(opId, id, 'aborted', { reason: 'conflict', files: sync.conflicts, ...(held ? { stopped: true } : {}) });
-        if (held) {
-          const prompt = this.baseSync.holdRebase(id, { base, base_sha: baseSha, before: localHead, expected, stop_head: sync.head, conflicts: sync.conflicts, files: sync.stepFiles ?? sync.conflicts, took: sync.tookBase ?? [] }, `the rebase of the pull request onto origin/${base} (${baseSha.slice(0, 7)}) conflicted`);
-          this.queueTurn(id, 'fix', prompt, [], [], { fresh: 'auto' });
-        }
-        else if (canFix && declined) this.block(id, 'sync_conflict', `rebasing onto origin/${base} (${baseSha.slice(0, 7)}) conflicts in ${sync.conflicts.join(', ')}, and the session already could not resolve this conflict at this base tip; resolve it by hand in ${fm.worktree}, or retry with a message that says how it should go (retry_op / unblock_item with a message) to hand it to the session again with that guidance`);
-        else if (integration && this.store.config.epics.conflict_budget_usd > 0) {
-          // An epic has no session of its own: a one-shot one resolves the merge (#71), as the item's next job, outside the
-          // serial merge chain (a session inside it would hold every other merge). Resolved, it is pushed and the chain picks the epic up again.
-          const conflicts = sync.conflicts;
-          this.queueFollowUp(id, async () => {
-            const r = await this.resolveEpicConflict(id, cwd, base, baseSha, conflicts);
-            if (r !== 'resolved') this.block(id, 'sync_conflict', `merging ${base} into ${fm.branch} conflicted in ${conflicts.join(', ')}: ${r}; resolve it by hand in ${cwd}, or have the orchestrator retry with resolve_epic_conflict and a hint`);
-          });
-        }
-        else this.block(id, 'sync_conflict', `conflicts with ${base} in ${sync.conflicts.join(', ')} and no session to hand them to; resolve by hand`);
-        return;
-      }
-
-      // 2. push (integration branches push plainly; worker branches force-with-lease their rebase)
-      this.store.mutateItem(id, [{ set: { op: 'pushing', op_started_at: this.now() } }, ...(sync.note ? [{ activity: { actor: 'app', text: sync.note } } as ItemOp] : [])], 'engine');
-      if (integration) await this.ports.git.pushSetUpstream(cwd, fm.branch!);
-      else await this.ports.git.pushForceWithLease(cwd, fm.branch!, expected);
-      headSha = sync.head;
-      pushed = true;
-      if (hold) {
-        this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { ci_head_sha: headSha, ci_result: 'pending' } }, { activity: { actor: 'app', text: `held: rebased onto ${base}@${baseSha.slice(0, 7)} and pushed ${headSha.slice(0, 7)} so the PR ${this.draftsWhileHeld(id) ? 'shows the session\'s commits (a draft: CI runs once the hold is released)' : 'and CI show the session\'s commits'}; not merging` } }], 'engine');
-        this.store.journal.end(opId, id, 'ok', { held: true, head: headSha });
-        return;
-      }
-      synced = `rebased onto ${base}@${baseSha.slice(0, 7)} and pushed ${headSha.slice(0, 7)}`;
-    }
-
-    // 2b. a draft PR: while it is held for review, the review comes first and CI waits; once
-    // released, it is marked ready here, after the sync, so CI runs once, on the head that merges.
-    const drafted = this.store.requireItem(id).file.frontmatter;
-    let readied = false;
-    if (this.store.config.ci.draft_while_held && drafted.op_data?.pr_draft) {
-      if (drafted.review_hold && !drafted.skip_merge) {
-        this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { awaiting: 'review', ci_head_sha: headSha, ci_result: 'pending' } }, { activity: { actor: 'app', text: `synced ${headSha.slice(0, 7)}; the PR is a draft, so CI runs once you approve it; waiting for your review before merging` } }], 'engine', { commit: `${id}: awaiting review` });
-        this.store.journal.end(opId, id, 'aborted', { reason: 'awaiting_review' });
-        return;
-      }
-      // ready_for_review runs CI on the head GitHub shows at that moment: right after a push that can
-      // still be the replaced one, whose run is then cancelled while the pushed head's was skipped as
-      // a draft's (HH-180). A few seconds' look first; refireReady covers a head that never shows.
-      if (pushed) for (let i = 0; i < READY_AFTER_PUSH_POLLS && (await this.ports.gh.prView(this.github, fm.pr!)).headRefOid !== headSha; i++) await this.sleep(5_000);
-      await this.ports.gh.setDraft(this.github, fm.pr!, false);
-      this.store.mutateItem(id, [{ set: { op_data: { ...(drafted.op_data ?? {}), pr_draft: false } } }, { activity: { actor: 'app', text: `marked PR #${fm.pr} ready for review: CI runs on ${headSha.slice(0, 7)}` } }], 'engine');
-      readied = true;
-    }
-
-    // 3. CI. Green for this exact head merges now. Anything else (a fresh push, a run still going,
-    // a red, a head GitHub has not caught up with) leaves the chain for watchCi, so the next item
-    // is not held up by this one's CI. `expected` is the head the push replaced: GitHub keeps
-    // reporting it for a few seconds, and the watcher must read that as lag, not a moved head.
-    if (pushed || readied || !(await this.greenFor(id, fm.branch!, headSha, fm.pr!))) {
-      const cur = this.store.requireItem(id).file.frontmatter;
-      // watchCi saw this very head green and this look says otherwise (greenFor trusts that record,
-      // so only a PR head that moved gets here). Once goes back to the watcher, which reads the move;
-      // a second time for the same head is not bounced between the two again: it is a stop to judge.
-      const seen = cur.op_data?.ci_disagree as { sha?: string; count?: number } | undefined;
-      const disagree = !pushed && !readied && cur.op_data?.ci_green === headSha ? (seen?.sha === headSha ? seen.count ?? 0 : 0) + 1 : 0;
-      if (disagree >= 2) { this.store.journal.end(opId, id, 'aborted', { reason: 'ci_disagree', head: headSha }); this.block(id, 'ci_disagree', `watchCi saw CI green for ${headSha.slice(0, 7)} but the merge step did not, ${disagree} times; check the PR's head and its run, then unblock`); return; }
-      this.store.mutateItem(id, [{ set: { op: 'awaiting_ci', op_started_at: this.now(), ci_head_sha: headSha, ci_result: 'pending', op_data: { ...(cur.op_data ?? {}), ci_replaced: pushed ? expected : null, ...(disagree ? { ci_disagree: { sha: headSha, count: disagree } } : {}) } } }, { activity: { actor: 'app', text: `${synced}; waiting for CI outside the merge queue` } }], 'engine');
-      this.store.journal.end(opId, id, 'ok', { awaiting_ci: headSha });
-      this.queueFollowUp(id, () => this.watchCi(id));
-      return;
-    }
-    this.store.mutateItem(id, [{ set: { ci_head_sha: headSha, ci_result: 'green' } }, { activity: { actor: 'app', text: `${synced}; CI is green for it` } }], 'engine');
-    if (this.parkIfHeld(id, opId)) return;
-    await this.merge(id, opId, base, headSha, baseSha);
-  }
-
-  /**
-   * One look, no waiting: is CI green for exactly this head, with the PR on that head? What watchCi
-   * or the local gate already found green for this sha is the answer, not a second poll: a status API
-   * that briefly says otherwise would bounce the item between the chain and the watcher.
-   */
-  private async greenFor(id: string, branch: string, sha: string, pr: number): Promise<boolean> {
-    // GitHub not answering is "not known green": the item waits beside the chain, where ciRead waits the outage out.
-    const unsure = (e: unknown) => { if (TRANSIENT.test(String((e as Error).message))) return undefined; throw e; };
-    const view = await this.ports.gh.prView(this.github, pr).catch(unsure);
-    if (!view) return false;
-    if (view.state === 'MERGED') return true;
-    if (view.headRefOid !== sha) return false;
-    const od = this.store.requireItem(id).file.frontmatter.op_data;
-    if (od?.ci_green === sha || od?.local_green === sha) return true;
-    const ci = await this.ports.gh.ciForSha(this.github, branch, sha, this.ciWorkflow).catch(unsure);
-    if (!ci) return false;
-    if (ci.state !== 'success') return false;
-    // The run that proved this head green, for the merge's evidence pointer (#180).
-    if (ci.runId) this.store.mutateItem(id, [{ set: { op_data: { ...(this.store.requireItem(id).file.frontmatter.op_data ?? {}), ci: { runId: ci.runId, url: ci.url, sha, ...(ci.attempt ? { attempt: ci.attempt } : {}) } } } }], 'engine');
-    return true;
-  }
-
-  /**
-   * CI for a head the chain left waiting (`op: awaiting_ci`), polled outside the serial merge chain
-   * the way driveHeld polls a held item's, so one item's CI never holds up another's merge. Red,
-   * a timeout and a blocked Actions take the same paths as ever; green goes back into the chain,
-   * which merges it if the head is still on the base tip, and re-syncs it if another merge moved
-   * the base in the meantime.
-   */
-  private async watchCi(id: string): Promise<void> {
-    const item = this.store.requireItem(id);
-    const fm = item.file.frontmatter;
-    if (fm.status !== 'IN_REVIEW' || fm.op !== 'awaiting_ci' || fm.blocked || fm.awaiting || !fm.ci_head_sha || !fm.pr || !fm.branch) return;
-    const headSha = fm.ci_head_sha;
-    const canFix = this.store.derived(item).flavor === 'worker';
-    const opId = this.store.journal.begin('ci_wait', id, { pr: fm.pr, sha: headSha });
-    // Each wait's end leaves the run's timing on the item and on this op's end, whichever path ends it (#179).
-    const wait = async (previousSha: string | null, minAttempt?: number) => {
-      const v = await this.waitForCi(id, fm.branch!, headSha, fm.pr!, previousSha, minAttempt);
-      if (v !== 'stopping') await this.noteCiTiming(id, opId, headSha);
-      return v;
-    };
-    let verdict = await wait((fm.op_data?.ci_replaced as string | null | undefined) ?? null);
-    // A red on the infrastructure (#219) or on a known flake is re-run once, for this same head, before anything else happens to it.
-    if (verdict === 'red') {
-      const infra = await this.rerunIfInfra(id, opId, headSha);
-      if (infra === 'blocked') return;
-      if (infra) {
-        verdict = await wait(null, infra);
-        if (verdict === 'red' && await this.rerunIfInfra(id, opId, headSha) === 'blocked') return;
-      } else if (canFix) {
-        const attempt = await this.rerunIfFlaky(id, headSha);
-        if (attempt) verdict = await wait(null, attempt);
-      }
-    }
-    // Read after the wait, not before it: a setting changed in the meantime is the one that applies (#173).
-    const cfg = this.store.config.ci;
-    if (verdict === 'moved') { this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { ci_result: 'pending' } }], 'engine'); this.store.journal.end(opId, id, 'aborted', { reason: 'head_moved' }); void this.tick(); return; }
-    // The engine is stopping, which says nothing about CI: leave `op: awaiting_ci` on the item, and the next start re-enters the pipeline.
-    if (verdict === 'stopping') { this.store.journal.end(opId, id, 'aborted', { reason: 'engine_stopping' }); return; }
-    if (verdict === 'taken_over') { this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { activity: { actor: 'app', text: 'stopped waiting for CI to merge: you took this item over (its CI is still read)' } }], 'engine'); this.store.journal.end(opId, id, 'aborted', { reason: 'taken_over' }); return; }
-    if (verdict === 'skipped') { this.store.journal.end(opId, id, 'aborted', { reason: 'ci_skipped', head: headSha }); this.block(id, 'ci_skipped', (await this.ports.gh.prView(this.github, fm.pr)).isDraft ? `every CI run for ${headSha.slice(0, 7)} skipped its jobs because PR #${fm.pr} is a draft; mark it ready for review, then unblock` : `every CI run for ${headSha.slice(0, 7)} skipped its jobs, again after planestro sent ready for review once more; check the workflow's job conditions, start a run by hand, then unblock`); return; }
-    if (verdict === 'cancelled') {
-      // Still cancelled after its one re-run: nothing else is coming for this head, so it stops now rather than at ci.timeout_min (#174).
-      const cur = this.store.requireItem(id).file.frontmatter;
-      const run = cur.op_data?.ci as { runId?: number; url?: string } | undefined;
-      this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), last_cancelled: { runId: run?.runId, sha: headSha, ...(run?.url ? { url: run.url } : {}) } } } }], 'engine');
-      this.store.journal.end(opId, id, 'aborted', { reason: 'ci_cancelled', run: run?.runId });
-      this.block(id, 'ci_cancelled', `CI run ${run?.runId ?? '?'} for ${headSha.slice(0, 7)} was cancelled again after planestro re-ran it once${run?.url ? ` (${run.url})` : ''}; no other run is coming for this head. Re-run CI once what cancelled it is fixed (a job time limit, a concurrency group), or push a new head`);
-      return;
-    }
-    // A timeout on a runner that looks stalled or offline is the runner's, said once for every item on it (#216), not triaged item by item.
-    const stall = verdict === 'timeout' || verdict === 'queue_timeout' ? await this.runnerStallFor(id) : undefined;
-    const onRunner = stall ? `; runner ${stall.label} looks stalled or offline` : '';
-    if (verdict === 'timeout') { this.store.journal.end(opId, id, 'aborted', { reason: 'ci_timeout' }); this.block(id, 'ci_timeout', `CI for ${headSha.slice(0, 7)} ran longer than ${cfg.timeout_min} min after a runner started it${this.ciQueueNote()}${onRunner}`, 'user', stall); return; }
-    if (verdict === 'queue_timeout') { this.store.journal.end(opId, id, 'aborted', { reason: 'ci_queue_timeout' }); this.block(id, 'ci_timeout', `CI for ${headSha.slice(0, 7)} waited ${cfg.queue_timeout_min} min for a runner and never started${this.ciQueueNote()}${onRunner}. A queue, not a failure: check the runners' capacity, not the change`, 'user', stall); return; }
-    if (verdict === 'blocked') {
-      if (cfg.mode === 'github-or-local' && cfg.local_check_command) {
-        this.store.mutateItem(id, [{ set: { op: 'running_local_checks', op_started_at: this.now() } }, { activity: { actor: 'app', text: `GitHub Actions is blocked; running local gate: ${cfg.local_check_command}` } }], 'engine');
-        const r = await this.withLocalJobSlot(() => this.ports.proc.run(cfg.local_check_command!, { cwd: this.absWorktree(fm.worktree!), timeoutMs: cfg.timeout_min * 60_000 }));
-        if (r.code !== 0) { await this.onCiRed(id, opId, headSha, `local checks exited ${r.code}\n${(r.stdout + r.stderr).split('\n').filter((l) => /FAIL|Error/i.test(l)).slice(-40).join('\n')}`, 'local'); return; }
-        // Remembered for this head, so the chain's own look at it counts the local gate as its green.
-        const cur = this.store.requireItem(id).file.frontmatter;
-        this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), local_green: headSha } } }, { activity: { actor: 'app', text: 'local checks passed (used as the CI gate)' } }], 'engine');
-      } else { this.store.journal.end(opId, id, 'aborted', { reason: 'ci_blocked' }); this.block(id, 'ci_blocked', 'GitHub Actions did not run (billing blocked or workflow missing); set ci.mode to github-or-local with a local_check_command, or re-run by hand'); return; }
-    }
-    if (verdict === 'red') { await this.onCiRed(id, opId, headSha, undefined, 'github', canFix); return; }
-    // Green for this exact head, recorded as such: the chain's look at it reads this, never a fresh poll that could disagree.
-    const cur = this.store.requireItem(id).file.frontmatter;
-    this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { ci_result: 'green', op_data: { ...(cur.op_data ?? {}), ci_green: headSha } } }], 'engine');
-    if (this.parkIfHeld(id, opId)) return;
-    this.store.mutateItem(id, [{ activity: { actor: 'app', text: `CI is green for ${headSha.slice(0, 7)}; back in the merge queue` } }], 'engine');
-    this.store.journal.end(opId, id, 'ok', { green: headSha });
-    await this.mergeJob(id);
-  }
-
-  /**
-   * The timing of the run a CI wait ended on (#179): each attempt's creation, queue, first job start and end, its jobs as
-   * GitHub names them, and the re-runs planestro or a person asked for on this head, with why. Kept in `op_data.ci_timing`
-   * and on the wait's `op.end` (`timing`); `ci.result` stays the per-attempt verdict, joined to it by run id and attempt.
-   * Read once the wait is over, never while it polls; a port or run it cannot read records what it has.
-   */
-  private async noteCiTiming(id: string, opId: string, headSha: string): Promise<void> {
-    const fm = this.store.getItem(id)?.file.frontmatter;
-    const run = fm?.op_data?.ci as { runId?: number; url?: string; attempt?: number; sha?: string } | undefined;
-    if (!fm || !run?.runId || (run.sha && run.sha !== headSha)) return;
-    const od = fm.op_data ?? {};
-    const reruns: Record<string, unknown>[] = [];
-    if (od.ci_cancel_rerun === headSha) reruns.push({ reason: 'cancelled', by: 'app' });
-    const flake = od.flake_rerun as { sha?: string; attempt?: number; check?: string } | undefined;
-    if (flake?.sha === headSha) reruns.push({ reason: flake.check?.startsWith('infrastructure') ? 'infrastructure' : flake.check === 'no change from the session' ? 'same_red' : 'flaky', by: 'app', ...(flake.attempt ? { attempt: flake.attempt } : {}), ...(flake.check ? { check: flake.check } : {}) });
-    const asked = od.ci_rerun as { sha?: string; attempt?: number; by?: string } | undefined;
-    if (asked?.sha === headSha && !(asked.by === 'app' && flake?.sha === headSha && flake.attempt === asked.attempt)) reruns.push({ reason: 'rerun_ci', by: asked.by ?? 'user', ...(asked.attempt ? { attempt: asked.attempt } : {}) });
-    const last = run.attempt ?? 1;
-    const attempts: unknown[] = [];
-    if (this.ports.gh.runTiming) for (let n = Math.max(1, last - 4); n <= last; n++) {
-      const t = await this.ports.gh.runTiming(this.github, run.runId, n).catch(() => undefined);
-      if (t) attempts.push(t);
-    }
-    const timing = { run_id: run.runId, attempt: last, head: headSha, ...(run.url ? { url: run.url } : {}), attempts, reruns };
-    this.store.mutateItem(id, [{ set: { op_data: { ...(this.store.requireItem(id).file.frontmatter.op_data ?? {}), ci_timing: timing } } }], 'engine');
-    this.store.journal.note(opId, { timing });
-  }
-
-  /** Green, but a hold, block or question landed while CI ran: the verdict is kept and nothing merges. Returns whether it parked. */
-  private parkIfHeld(id: string, opId: string): boolean {
-    const latest = this.store.requireItem(id).file.frontmatter;
-    if (latest.review_hold && !latest.skip_merge && !latest.blocked && !latest.awaiting) {
-      // Synced and green: everything a machine can check has passed. What is left is a person's eye.
-      this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { ci_result: 'green', awaiting: 'review' } }, { activity: { actor: 'app', text: 'CI is green; waiting for your review before merging' } }], 'engine', { commit: `${id}: awaiting review` });
-      this.store.journal.end(opId, id, 'aborted', { reason: 'awaiting_review' });
-      return true;
-    }
-    if (latest.skip_merge || latest.blocked || latest.awaiting || latest.taken_over) {
-      this.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { ci_result: 'green' } }, { activity: { actor: 'app', text: `CI is green but the item is held (${latest.taken_over ? 'taken over' : latest.skip_merge ? 'skip_merge' : latest.blocked ? 'blocked' : 'awaiting ' + latest.awaiting}); not merging` } }], 'engine');
-      this.store.journal.end(opId, id, 'aborted', { reason: 'held_after_ci' });
-      return true;
-    }
-    return false;
-  }
-
-  /** 4. merge, inside the chain, on a head the chain has just seen green on the base tip. */
-  /**
-   * What proved a merge green (#180): the run for this exact head (`op_data.ci`, which a later head's run replaces), or the
-   * local gate, or a change the project's CI does not run for; with the head, the base tip it was synced onto and the merge commit.
-   */
-  private validationPointer(id: string, headSha: string, baseSha?: string, merged?: string): NonNullable<ItemFrontmatter['validated_by']> {
-    const od = this.store.requireItem(id).file.frontmatter.op_data ?? {};
-    const run = od.ci as { runId?: number; url?: string; attempt?: number; sha?: string } | undefined;
-    const gate = run?.runId && run.sha === headSha ? { run_id: run.runId, ...(run.attempt ? { attempt: run.attempt } : {}), ...(run.url ? { url: run.url } : {}) }
-      : od.local_green === headSha ? { gate: 'local' as const } : od.ci_not_run === headSha ? { gate: 'not_run' as const } : { gate: 'unknown' as const };
-    return { ...gate, head: headSha, ...(baseSha ? { base: baseSha } : {}), ...(merged ? { merge: merged } : {}) };
-  }
-
-  private async merge(id: string, opId: string, base: string, headSha: string, baseSha?: string): Promise<void> {
-    const fm = this.store.requireItem(id).file.frontmatter;
-    // Commits made after the review touch something the reviewer never saw: held for the orchestrator to accept or send back (#74).
-    const extra = fm.ci_head_sha ? await this.outsideApprovedScope(id, fm.ci_head_sha) : [];
-    if (extra.length) {
-      const list = extra.slice(0, 8).join(', ') + (extra.length > 8 ? `, and ${extra.length - 8} more` : '');
-      const why = `commits after your approval touched ${extra.length} path${extra.length === 1 ? '' : 's'} the approved change did not: ${list}`;
-      // A release approves the paths it lets through; the same paths held again on the same head mean it did not (#209).
-      const prior = this.store.requireItem(id).file.frontmatter.op_data?.scope_held as { sha?: string; paths?: string[] } | undefined;
-      const held = extra.slice(0, 50);
-      const again = prior?.sha === fm.ci_head_sha && prior?.paths?.join('\n') === held.join('\n');
-      this.store.mutateItem(id, [
-        { unset: ['op', 'op_started_at'] }, ...this.holdOps(why, 'app', 'agent'),
-        { set: { op_data: { ...(this.store.requireItem(id).file.frontmatter.op_data ?? {}), scope_held: { sha: fm.ci_head_sha, paths: held } } } },
-        ...(again ? [{ activity: { actor: 'app' as const, text: `the same path${extra.length === 1 ? '' : 's'} on the same head ${fm.ci_head_sha!.slice(0, 7)} ${extra.length === 1 ? 'was' : 'were'} held before and released, but the release did not approve ${extra.length === 1 ? 'it' : 'them'}: a planestro bug (#209), not something the session did` } }] : []),
-      ], 'engine', { commit: `${id}: held (changed after approval)` });
-      this.store.journal.end(opId, id, 'aborted', { reason: 'outside_approved_scope', paths: extra.slice(0, 50) });
-      this.wakeOrchestrator('scope_changed', id, { paths: extra.slice(0, 50).join('\n'), policy: 'Release the hold (unskip_merge) if these belong to the change: that approves them. Otherwise message_session to revert them, and the PR is checked again before it merges.' });
-      return;
-    }
-    // Record what this branch changed while it still exists: dependents are told from this, not from a summary.
-    const delivered = await this.reviewUndo.deliveredBy(id).catch(() => undefined);
-    this.store.mutateItem(id, [{ set: { op: 'merging', op_started_at: this.now(), ci_result: 'green', ...(delivered ? { delivered } : {}) } }], 'engine');
-    if (await this.ports.gh.mergePr(this.github, fm.pr!, { headSha }) === 'head_moved') {
-      this.store.mutateItem(id, [{ set: { ci_result: 'pending' } }], 'engine');
-      this.store.journal.end(opId, id, 'aborted', { reason: 'head_moved', head: headSha });
-      this.block(id, 'merge_head_moved', `PR #${fm.pr} moved after ${headSha.slice(0, 7)} passed checks; nothing merged. Inspect and sync the branch, then retry validation.`);
-      return;
-    }
-    const view = await this.ports.gh.prView(this.github, fm.pr!);
-    if (view.state !== 'MERGED') { this.store.journal.end(opId, id, 'failed', { state: view.state }); this.block(id, 'merge_unverified', `gh reported the merge but PR #${fm.pr} is ${view.state}`); return; }
-    const validated = this.validationPointer(id, headSha, baseSha, view.mergeCommit);
-    const evidence = validated.run_id ? `CI run ${validated.run_id}${validated.url ? ` (${validated.url})` : ''}` : validated.gate === 'local' ? 'the local gate' : validated.gate === 'not_run' ? 'no CI run (CI does not run for this change)' : 'a CI verdict with no run on record';
-    this.store.mutateItem(id, [
-      { transition: { to: 'MERGED', actor: 'engine' } },
-      { set: { merged_at: view.mergedAt ? isoLocal(new Date(view.mergedAt)) : this.now(), validated_by: validated, op_data: { ...(this.store.requireItem(id).file.frontmatter.op_data ?? {}), merge_commit: view.mergeCommit } } },
-      { unset: ['op', 'op_started_at'] },
-      { activity: { actor: 'app', text: `merged PR #${fm.pr} into ${base}${view.mergeCommit ? ` (${view.mergeCommit.slice(0, 7)})` : ''}; validated by ${evidence} on ${headSha.slice(0, 7)}${baseSha ? ` over ${base}@${baseSha.slice(0, 7)}` : ''}` } },
-    ], 'engine', { commit: `${id}: merge` });
-    this.store.journal.end(opId, id, 'ok', { merged: true, validated_by: validated });
-    this.note('info', `${id}: PR #${fm.pr} merged into ${base}`);
-    this.wakeOrchestrator('pr_merged', id);
-    this.announce('on_merge', `${id} merged`, `PR #${fm.pr} merged into ${base}: ${fm.title}`, id);
-    await this.cleanupReconcile.cleanup(id);
-  }
-
-  /**
-   * A known flake gets one re-run of its failed jobs for this head before a session is paid to "fix"
-   * it (HH-122's atlas_layout_check: an 80 ms wall-clock bound on a 2-vCPU runner). Returns the
-   * attempt to wait for, or undefined when this red is to be handled as a red.
-   */
-  private async rerunIfFlaky(id: string, headSha: string): Promise<number | undefined> {
-    const patterns = this.store.config.ci.flaky_checks;
-    const fm = this.store.requireItem(id).file.frontmatter;
-    const ci = fm.op_data?.ci as { runId?: number; attempt?: number } | undefined;
-    if (!patterns.length || !ci?.runId || (fm.op_data?.flake_rerun as { sha?: string } | undefined)?.sha === headSha) return undefined;
-    const log = await this.ports.gh.runFailedLog(this.github, ci.runId, 120);
-    this.sawCi(id, { state: 'failure', ...ci, sha: headSha }, log);
-    const known = patterns.find((c) => log.includes(c));
-    if (!known) return undefined;
-    try { await this.ports.gh.rerunFailed(this.github, ci.runId); }
-    catch (e) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `could not re-run the failed jobs of run ${ci.runId}: ${(e as Error).message.slice(0, 200)}` } }], 'engine'); return undefined; }
-    const attempt = (ci.attempt ?? 1) + 1;
-    this.store.mutateItem(id, [
-      { set: { op_data: { ...(fm.op_data ?? {}), flake_rerun: { sha: headSha, runId: ci.runId, attempt, check: known } } } },
-      { activity: { actor: 'app', text: `CI red for ${headSha.slice(0, 7)} on a known flaky check (${known}, ci.flaky_checks); re-running the failed jobs once before handing it to the session` } },
-    ], 'engine', { commit: `${id}: re-run flaky CI` });
-    return attempt;
-  }
-
-  /**
-   * A red run whose failed log matches an infrastructure pattern (`ci.infra_patterns` and the built-ins, #219) is the
-   * runner's, not the change's (HH-327: the check runner's results dir vanished from a shared $TMPDIR mid-suite, 401/401
-   * FAIL, and a fix turn was spent on it). Its failed jobs are re-run once for this head, under the same one-per-head
-   * `flake_rerun` marker as a known flake (#201), with no fix turn and no counted red. Matched again once that re-run is
-   * spent, it blocks ci_infra naming the pattern, for the orchestrator. Returns the attempt to wait for, 'blocked', or
-   * undefined when this red is not the infrastructure's.
-   */
-  private async rerunIfInfra(id: string, opId: string, headSha: string): Promise<number | 'blocked' | undefined> {
-    const fm = this.store.requireItem(id).file.frontmatter;
-    const ci = fm.op_data?.ci as { runId?: number; url?: string; attempt?: number } | undefined;
-    if (!ci?.runId) return undefined;
-    const log = await this.ports.gh.runFailedLog(this.github, ci.runId, 120);
-    this.sawCi(id, { state: 'failure', ...ci, sha: headSha }, log);
-    const hit = infraPatternIn(log, this.store.config.ci.infra_patterns);
-    if (!hit) return undefined;
-    const named = `${hit.pattern}, ${hit.source}`;
-    let why = 'planestro already re-ran its failed jobs once for this head';
-    if ((fm.op_data?.flake_rerun as { sha?: string } | undefined)?.sha !== headSha) {
-      try {
-        await this.ports.gh.rerunFailed(this.github, ci.runId);
-        const attempt = (ci.attempt ?? 1) + 1;
-        this.store.mutateItem(id, [
-          { set: { op_data: { ...(this.store.requireItem(id).file.frontmatter.op_data ?? {}), flake_rerun: { sha: headSha, runId: ci.runId, attempt, check: `infrastructure: ${hit.pattern}` } } } },
-          { activity: { actor: 'app', text: `CI red for ${headSha.slice(0, 7)} matches an infrastructure pattern (${named}); re-running the failed jobs once, with no fix turn and not counted as a code failure` } },
-        ], 'engine', { commit: `${id}: re-run CI after an infrastructure failure` });
-        return attempt;
-      } catch (e) { why = `its failed jobs could not be re-run (${(e as Error).message.replace(/\s+/g, ' ').slice(0, 200)})`; }
-    }
-    // Recorded as the head's red run, so rerun_ci can send it again once the runner is fixed; ci_failed_count is untouched.
-    const re = new RegExp(hit.pattern, 'm');
-    const line = log.split('\n').find((l) => re.test(l))?.trim() ?? '';
-    const cur = this.store.requireItem(id).file.frontmatter;
-    this.store.mutateItem(id, [
-      { unset: ['op', 'op_started_at'] },
-      { set: { ci_result: 'red', op_data: { ...(cur.op_data ?? {}), last_red: { runId: ci.runId, sha: headSha, ...(ci.attempt ? { attempt: ci.attempt } : {}) } } } },
-    ], 'engine');
-    this.store.journal.end(opId, id, 'failed', { reason: 'ci_infra', pattern: hit.pattern });
-    this.block(id, 'ci_infra', `CI run ${ci.runId} for ${headSha.slice(0, 7)}${ci.url ? ` (${ci.url})` : ''} matched the infrastructure pattern ${hit.pattern} again (${hit.source}), and ${why}${line ? `: "${line.slice(0, 300)}"` : ''}. The runner's failure, not the change's: fix the runner (disk, temp dir, service), then rerun_ci. If the pattern caught a real failure, unblock_item with what to fix`);
-    return 'blocked';
-  }
+  // ---- merge and CI (#404, seam 8): the merge chain and held items live in mergePipeline.ts; CI waits, red runs, rerun_ci,
+  // runner stalls and the review-stall wake in ciWatch.ts ----
+  /** The serial merge chain's tail (MergePipeline.mergeChain). */
+  private get mergeChain(): Promise<void> { return this.mergePipeline.mergeChain; }
+  /** One pass through the serial merge chain (MergePipeline.mergeStep). */
+  private mergeStep(id: string, opts: { hold?: boolean } = {}): Promise<void> { return this.mergePipeline.mergeStep(id, opts); }
+  /** The merge itself, on a head the chain has just seen green on the base tip (MergePipeline.merge). */
+  private merge(id: string, opId: string, base: string, headSha: string, baseSha?: string): Promise<void> { return this.mergePipeline.merge(id, opId, base, headSha, baseSha); }
+  /** The merge step's one look at CI for a head (MergePipeline.greenFor): replaced here, it is replaced there. */
+  private get greenFor(): MergePipeline['greenFor'] { return this.mergePipeline.greenFor; }
+  private set greenFor(fn: MergePipeline['greenFor']) { this.mergePipeline.greenFor = fn; }
+  /** driveHeld's last look at each held item (MergePipeline.heldPolledAt). */
+  private get heldPolledAt(): Map<string, number> { return this.mergePipeline.heldPolledAt; }
+  /** Items whose CI wait is polling (CiWatch.ciWaits). */
+  private get ciWaits(): Set<string> { return this.ciWatch.ciWaits; }
+  /** The CI wait's clock (CiWatch.ciNow): replaced here, it is replaced there. */
+  get ciNow(): () => number { return this.ciWatch.ciNow; }
+  set ciNow(fn: () => number) { this.ciWatch.ciNow = fn; }
+  /** The runner stalls' gathering window (CiWatch.runnerStallGatherMs). */
+  get runnerStallGatherMs(): number { return this.ciWatch.runnerStallGatherMs; }
+  set runnerStallGatherMs(ms: number) { this.ciWatch.runnerStallGatherMs = ms; }
+  /** Items whose CI waits on a runner label that looks stalled or offline (CiWatch.runnerStalls, #216). */
+  runnerStalls(): { label: string; items: string[]; since: string; woken: boolean; stalls: RunnerStall[] }[] { return this.ciWatch.runnerStalls(); }
+  /** A red CI run for a head (CiWatch.onCiRed). */
+  private onCiRed(id: string, opId: string, headSha: string, logText: string | undefined, source: 'github' | 'local', canFix = true): Promise<void> { return this.ciWatch.onCiRed(id, opId, headSha, logText, source, canFix); }
+  /** A known flake's one re-run per head (CiWatch.rerunIfFlaky). */
+  private rerunIfFlaky(id: string, headSha: string): Promise<number | undefined> { return this.ciWatch.rerunIfFlaky(id, headSha); }
+  /** rerun_ci (CiWatch.rerunCi, #139). */
+  rerunCi(id: string, by: 'user' | 'orchestrator' = 'user'): Promise<string> { return this.ciWatch.rerunCi(id, by); }
 
   /** An untracked file `worktrees.byproducts` names: something the project's tools regenerate in any worktree (Godot's `.import` sidecars), never a session's work. */
   private isByproduct(path: string): boolean {
@@ -2717,110 +2147,9 @@ export class LiveEngine implements Engine {
     return { clean: dirty.length === 0, dirty, byproducts };
   }
 
-  private async onCiRed(id: string, opId: string, headSha: string, logText: string | undefined, source: 'github' | 'local', canFix = true): Promise<void> {
-    const item = this.store.requireItem(id);
-    const fm = item.file.frontmatter;
-    const ci = fm.op_data?.ci as { runId?: number; url?: string; attempt?: number } | undefined;
-    // The same completed run re-observed (e.g. a manual re-run was just requested and the
-    // run hasn't flipped to in_progress yet) is the SAME verdict, not a second failure.
-    // A newer attempt of that run (its failed jobs re-run on GitHub by hand) is a new verdict.
-    const lastRed = fm.op_data?.last_red as { runId?: number; sha?: string; attempt?: number } | undefined;
-    if (source === 'github' && lastRed && lastRed.runId === ci?.runId && lastRed.sha === headSha && (ci?.attempt ?? 1) <= (lastRed.attempt ?? 1)) {
-      // Nothing is coming for it once the session is done with it (#201): HH-383's worker reported "no code change, re-run
-      // it" and this branch re-read the same red run every 30 s for 7½ hours, with no re-run and no one told.
-      if (!this.turns.has(id) && !this.followUps.has(id) && !fm.skip_merge) { await this.onSameRedRun(id, opId, headSha); return; }
-      this.store.mutateItem(id, [
-        { unset: ['op', 'op_started_at'] },
-        { set: { ci_result: 'pending' } },
-        { activity: { actor: 'app', text: `same red run ${ci?.runId} re-observed for ${headSha.slice(0, 7)}; not counted again (waiting for a re-run or a new push)` } },
-      ], 'engine');
-      this.store.journal.end(opId, id, 'aborted', { reason: 'same_red_run' });
-      await this.sleep(30_000);
-      void this.tick();
-      return;
-    }
-    const count = (fm.ci_failed_count ?? 0) + 1;
-    const log = logText ?? (ci?.runId ? await this.ports.gh.runFailedLog(this.github, ci.runId, 120) : '(no run id)');
-    if (source === 'github' && ci?.runId) this.sawCi(id, { state: 'failure', ...ci, sha: headSha }, log);
-    this.store.mutateItem(id, [
-      { unset: ['op', 'op_started_at'] },
-      { set: { ci_result: 'red', ci_failed_count: count, op_data: { ...(fm.op_data ?? {}), last_red: { runId: ci?.runId, sha: headSha, ...(ci?.attempt ? { attempt: ci.attempt } : {}) } } } },
-      { activity: { actor: 'app', text: `CI red (${source}, attempt ${count}) for ${headSha.slice(0, 7)}${ci?.url ? ` ${ci.url}` : ''}` } },
-    ], 'engine', { commit: `${id}: CI red (${count})` });
-    this.store.journal.end(opId, id, 'failed', { reason: 'ci_red', count });
-    if (this.store.requireItem(id).file.frontmatter.taken_over) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: 'no fix turn: you have this item (taken over)' } }], 'engine'); return; }
-    if (!canFix) {
-      // An epic's red that is likely the base's waits for the base (#204), once; red again after that comes here as ever.
-      const waited = fm.kind === 'epic' && source === 'github' ? await this.baseSync.waitForBaseFix(id, headSha, log) : undefined;
-      if (waited === true) return;
-      this.block(id, 'ci_red', `CI is red and there is no session to hand the failure to; investigate by hand${waited ?? ''}`);
-      return;
-    }
-    if (count >= 2) { this.block(id, 'ci_red_twice', `CI failed ${count} times`); this.wakeOrchestrator('ci_red_again', id, { failed_log: fenceExternal(log.slice(0, 3000), `ci-log ${ci?.runId ? `run ${ci.runId}` : 'local run'}`) }); return; }
-    // A CI log carries output of tests others merged (#340): fenced.
-    this.queueTurn(id, 'fix', this.store.renderPrompt('ci-failed', this.store.requireItem(id), { ci: { attempt: String(count), run_url: ci?.url ?? '(local run)', failed_log: fenceExternal(log, `ci-log ${ci?.runId ? `run ${ci.runId}` : 'local run'}`) } }), [], [], { fresh: 'auto' });
-  }
-
   // ---- sync with base (#404, seam 6): an epic waiting on its base (#204) lives in baseSync.ts ----
   /** Epics waiting on their base, looked at once a minute (BaseSync.baseWaitPolledAt). */
   private get baseWaitPolledAt(): Map<string, number> { return this.baseSync.baseWaitPolledAt; }
-
-  /**
-   * The head's red run, already counted, read again with no session on the item and no re-run coming: the session looked
-   * and changed nothing (a fix turn's "no code change: not caused by this change"). Its failed jobs are re-run once per
-   * head, under the same `flake_rerun` marker as a known flake, and only that attempt counts: green merges, red is a
-   * second failure (ci_red_twice). Past that one re-run, or when it cannot be sent, it stops as ci_red_parked, which the
-   * orchestrator triages with the session's report in hand. It never waits here (#201).
-   */
-  private async onSameRedRun(id: string, opId: string, headSha: string): Promise<void> {
-    const fm = this.store.requireItem(id).file.frontmatter;
-    const ci = fm.op_data?.ci as { runId?: number; url?: string; attempt?: number } | undefined;
-    const done = String(fm.op_data?.done_summary ?? '').replace(/\s+/g, ' ').trim();
-    const said = done ? `; the session reported: "${done.length > 600 ? `${done.slice(0, 599)}…` : done}"` : '';
-    const run = `CI run ${ci?.runId ?? '?'} for ${headSha.slice(0, 7)}${ci?.url ? ` (${ci.url})` : ''}`;
-    this.store.journal.end(opId, id, 'aborted', { reason: 'same_red_run' });
-    let why = `planestro already re-ran its failed jobs once for this head`;
-    if ((fm.op_data?.flake_rerun as { sha?: string } | undefined)?.sha !== headSha && ci?.runId) {
-      try {
-        await this.ports.gh.rerunFailed(this.github, ci.runId);
-        const attempt = (ci.attempt ?? 1) + 1;
-        const { last_red: _red, ...od } = this.store.requireItem(id).file.frontmatter.op_data ?? {};
-        this.store.mutateItem(id, [
-          { set: { ci_result: 'pending', op: 'awaiting_ci', op_started_at: this.now(), op_data: { ...od, flake_rerun: { sha: headSha, runId: ci.runId, attempt, check: 'no change from the session' }, ci_rerun: { sha: headSha, runId: ci.runId, attempt, by: 'app' } } } },
-          { activity: { actor: 'app', text: `${run} is still red and the session changed nothing${said ? ' (see its report)' : ''}; re-running its failed jobs once (attempt ${attempt}), and that attempt's verdict is the one that counts` } },
-        ], 'engine', { commit: `${id}: re-run CI after a no-change report` });
-        this.poke();
-        return;
-      } catch (e) { why = `its failed jobs could not be re-run (${(e as Error).message.replace(/\s+/g, ' ').slice(0, 200)})`; }
-    }
-    this.store.mutateItem(id, [{ set: { ci_result: 'red' } }], 'engine');
-    this.block(id, 'ci_red_parked', `${run} is red and nothing is coming for it: the session made no change and ${why}${said}. A flake: rerun_ci. A real failure: unblock_item with what to fix`);
-  }
-
-  /** The CI wait's clock: a seam a test can drive. */
-  ciNow = (): number => Date.now();
-  private ciSkipCache = new Map<string, string | null>();
-  /** Why the project's CI workflow runs nothing for this head's pull request (prSkippedByPaths), or null; read once per head, from the head itself. */
-  private async ciSkipsHead(id: string, sha: string): Promise<string | null> {
-    const key = `${id}@${sha}`;
-    if (this.ciSkipCache.has(key)) return this.ciSkipCache.get(key)!;
-    let why: string | null = null;
-    try {
-      const item = this.store.requireItem(id); const fm = item.file.frontmatter; const base = this.store.derived(item).base_branch;
-      if (fm.worktree && base) {
-        const cwd = this.absWorktree(fm.worktree);
-        const paths = (await this.ports.git.trackedAt(cwd, sha, ['.github/workflows'])).filter((p) => /\.ya?ml$/.test(p));
-        const texts = await Promise.all(paths.map(async (path) => ({ path, text: (await this.ports.git.readBlob(cwd, sha, path))?.toString('utf8') ?? '' })));
-        const wf = findWorkflow(texts, this.ciWorkflow);
-        if (wf) {
-          const r = prSkippedByPaths(wf.doc, (await this.ports.git.changedFiles(cwd, `origin/${base}`, sha)).map((f) => f.path));
-          why = r ? `${wf.path} ${r}` : null;
-        }
-      }
-    } catch { why = null; }   // cannot tell: wait for a run as before
-    this.ciSkipCache.set(key, why);
-    return why;
-  }
 
   /** The workflow's queue repository-wide, read at most once a minute (#170); undefined when the port cannot tell. */
   ciQueue: CiQueue | undefined;
@@ -2860,222 +2189,6 @@ export class LiveEngine implements Engine {
       const r = await this.readRunners();
       return r ? runnerStatusText(r.report, this.github, r.at) : 'not available: this planestro cannot read runners';
     } catch (e) { return `not available: ${(e as Error).message.replace(/\s+/g, ' ').slice(0, 300)}`; }
-  }
-  /** Mark (or unmark) a waiting item's run as queued on a stalled runner; a marker that still holds is kept, with its time and wake. */
-  private async markRunnerStall(id: string): Promise<void> {
-    const stall = await this.runnerStallFor(id);
-    const fm = this.store.requireItem(id).file.frontmatter;
-    const had = fm.op_data?.runner_stall as RunnerStall | undefined;
-    if (stall ? had?.label === stall.label && had.run_id === stall.run_id : !had) return;
-    const { runner_stall: _was, ...rest } = fm.op_data ?? {};
-    this.store.mutateItem(id, [{ set: { op_data: stall ? { ...rest, runner_stall: this.stallMark(stall) } : rest } }], 'engine');
-  }
-  /** A gathering window: items that stall on one label within it are said in one wake. */
-  runnerStallGatherMs = 2 * 60_000;
-  /** Is this item's CI run waiting on a runner that is not coming? Read from the cached runner report; never throws. */
-  private async runnerStallFor(id: string): Promise<RunnerStall | undefined> {
-    const run = (this.store.getItem(id)?.file.frontmatter.op_data?.ci as { runId?: number } | undefined)?.runId;
-    if (!run) return undefined;
-    const r = await this.readRunners(RUNNER_CHECK_MS).catch(() => undefined);
-    return r ? stallOf(r.report, run) : undefined;
-  }
-  /** The marker an item carries while it waits on a stalled label; one already woken for that label joins it without a wake of its own. */
-  private stallMark(stall: RunnerStall): RunnerStall & { at: string; woken?: boolean } {
-    const woken = this.runnerStalls().some((g) => g.label === stall.label && g.woken);
-    return { ...stall, at: this.now(), ...(woken ? { woken: true } : {}) };
-  }
-  /**
-   * Items whose CI waits on a runner label that looks stalled or offline (#216): blocked ci_timeout on it, or still
-   * polling with their run queued on it. One banner and one wake per label, never a triage per item.
-   */
-  runnerStalls(): { label: string; items: string[]; since: string; woken: boolean; stalls: RunnerStall[] }[] {
-    const groups = new Map<string, { label: string; items: string[]; since: string; woken: boolean; stalls: RunnerStall[] }>();
-    for (const i of this.store.listItems()) {
-      const fm = i.file.frontmatter;
-      const m = fm.op_data?.runner_stall as (RunnerStall & { at: string; woken?: boolean }) | undefined;
-      if (!m || fm.taken_over || !((fm.blocked && fm.blocked_reason === 'ci_timeout') || (!fm.blocked && this.ciWaits.has(i.id)))) continue;
-      const g = groups.get(m.label) ?? { label: m.label, items: [], since: m.at, woken: false, stalls: [] };
-      g.items.push(i.id); g.stalls.push(m); g.woken ||= Boolean(m.woken); if (m.at < g.since) g.since = m.at;
-      groups.set(m.label, g);
-    }
-    return [...groups.values()];
-  }
-  private drivingRunnerStalls = false;
-  /**
-   * Once a label's gathering window has passed, one wake says every item waiting on it; once a runner takes a job
-   * again, the stall is over: the items it blocked wait for CI again by themselves, and the banner goes (#216).
-   */
-  private async driveRunnerStalls(): Promise<void> {
-    if (this.drivingRunnerStalls) return;
-    const groups = this.runnerStalls();
-    if (!groups.length) return;
-    this.drivingRunnerStalls = true;
-    try {
-      const r = await this.readRunners(RUNNER_CHECK_MS).catch(() => undefined);
-      for (const g of groups) {
-        if (r && recovered(r.report, g.stalls)) {
-          this.note('info', `runner ${g.label} is taking jobs again: ${g.items.join(', ')} wait for CI again`);
-          for (const id of g.items) {
-            const fm = this.store.requireItem(id).file.frontmatter;
-            const { runner_stall: _over, ...rest } = fm.op_data ?? {};
-            this.store.mutateItem(id, [{ set: { op_data: rest } }], 'engine');
-            if (fm.blocked) await this.retryOp(id, 'engine', `a runner for ${g.label} is taking jobs again`);
-          }
-          continue;
-        }
-        const blocked = g.items.filter((id) => this.store.requireItem(id).file.frontmatter.blocked).length;
-        if (g.woken || (g.items.length < 2 && !blocked) || Date.now() - Date.parse(g.since) < this.runnerStallGatherMs) continue;
-        for (const id of g.items) { const fm = this.store.requireItem(id).file.frontmatter; this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), runner_stall: { ...(fm.op_data?.runner_stall as object), woken: true } } } }], 'engine'); }
-        this.note('warn', `runner ${g.label} looks stalled or offline: ${g.items.join(', ')} are waiting on it`);
-        this.wakeOrchestrator('runner_stalled', undefined, {
-          runner: `${g.label} looks stalled or offline: ${g.items.join(', ')} ${g.items.length === 1 ? 'is' : 'are'} waiting on it (${blocked} blocked ci_timeout, ${g.items.length - blocked} still waiting for a runner)`,
-          runners: r ? runnerStatusText(r.report, this.github, r.at) : '(could not read the runners)',
-          policy: 'One signal for every item waiting on this runner label, instead of a triage each. Do not re-run or retry them one by one: once a runner for it takes a job again, planestro sends the blocked ones back to waiting for CI by itself. Judge what the runner needs (a machine asleep or offline, a billing block, a full queue) from runner_status; if it needs a person, ask the user once (ask_user) for all of them.',
-        });
-      }
-    } finally { this.drivingRunnerStalls = false; }
-  }
-  private ciQueueNote(): string { return this.ciQueue ? ` (CI queue: ${this.ciQueue.queued} queued, ${this.ciQueue.running} running)` : ''; }
-
-  /**
-   * Poll the named workflow for `sha`. 10 s cadence for the first 2 min, then 30 s.
-   *
-   * `previousSha` is the head the pipeline's own push replaced. GitHub's API lags a push by a
-   * few seconds, so the first `gh pr view` after a force-push still reports that sha; reading
-   * it as "someone moved the head" aborted the merge in ~4 s, released the merge chain, and
-   * the next item rebased and pushed too — one merge fired a fresh CI run for every open PR.
-   * Within HEAD_PROPAGATION_GRACE_MS the old sha is lag and we keep polling; anything else is
-   * a real move. 'stopping' is the engine shutting down, which says nothing about CI.
-   */
-  private async waitForCi(id: string, branch: string, sha: string, pr: number, previousSha: string | null = null, minAttempt = 0): Promise<'green' | 'red' | 'blocked' | 'moved' | 'timeout' | 'queue_timeout' | 'stopping' | 'taken_over' | 'skipped' | 'cancelled'> {
-    this.ciWaits.add(id);
-    try { return await this.pollCi(id, branch, sha, pr, previousSha, minAttempt); } finally { this.ciWaits.delete(id); }
-  }
-  /** Items whose CI wait is polling: a wait is not a step running, so the user may re-run a cancelled run under it (#174). */
-  private ciWaits = new Set<string>();
-
-  private ciOutage = new Map<string, number>();
-  /**
-   * One GitHub read of a CI wait. A blip GitHub's own retries (about a minute) did not ride out is waited through here,
-   * said once in the Activity log, until the wait's own `ci.timeout_min`: blocking `engine_error` sent every item
-   * waiting on CI to triage at once. Undefined means "poll again"; anything not transient fails the wait as before.
-   */
-  private async ciRead<T>(id: string, sha: string, started: number, read: () => Promise<T>): Promise<T | undefined> {
-    try { const v = await read(); this.ciOutage.delete(id); return v; }
-    catch (e) {
-      const msg = (e as Error).message;
-      if (!TRANSIENT.test(msg) || this.stopping || (this.ciNow() - started) / 60_000 > this.store.config.ci.timeout_min) { this.ciOutage.delete(id); throw e; }
-      const n = (this.ciOutage.get(id) ?? 0) + 1; this.ciOutage.set(id, n);
-      if (n === 1) this.store.mutateItem(id, [{ activity: { actor: 'app', text: `GitHub did not answer about CI for ${sha.slice(0, 7)} (${msg.replace(/\s+/g, ' ').slice(0, 160)}); still waiting` } }], 'engine');
-      await this.sleep(Math.min(5 * 60_000, 30_000 * n));
-      return undefined;
-    }
-  }
-
-  private async pollCi(id: string, branch: string, sha: string, pr: number, previousSha: string | null, minAttempt: number): Promise<'green' | 'red' | 'blocked' | 'moved' | 'timeout' | 'queue_timeout' | 'stopping' | 'taken_over' | 'skipped' | 'cancelled'> {
-    // The project's CI runs nothing for this change (its own path filters): there is nothing to wait for, and nothing to stand in for (HH-324).
-    const notRun = await this.ciSkipsHead(id, sha);
-    if (notRun) {
-      const cur = this.store.requireItem(id).file.frontmatter;
-      if (cur.op_data?.ci_not_run !== sha) this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), ci_not_run: sha } } }, { activity: { actor: 'app', text: `CI does not run for ${sha.slice(0, 7)}: ${notRun}; nothing to check, so it counts as green` } }], 'engine');
-      return 'green';
-    }
-    // The wait's clock; a run planestro re-queues starts it again (HH-323, HH-326, HH-328 timed out minutes after their re-run).
-    let started = this.ciNow();
-    // When a runner first had the run (#170): ci.timeout_min counts from here. A run queued for a runner is
-    // waiting, not failing: on Oct 1 (HH) four healthy items blocked ci_timeout behind a 3-5 h self-hosted queue.
-    let runningSince: number | null = null;
-    let queueNoted = 0;
-    let sawRun = false;
-    let skippedPolls = 0;
-    let cancelledPolls = 0;
-    let need = minAttempt;
-    while (true) {
-      if (this.stopping) return 'stopping';
-      // Read on every poll, so a timeout changed in Settings reaches a wait already running (#173).
-      const cfg = this.store.config.ci;
-      // A re-run asked for by rerun_ci (#139) keeps its run id: only its new attempt is the verdict, whoever waits.
-      // Read on every poll too: the user may re-run a cancelled run while this wait polls it (#174), and the wait's clock starts again.
-      const asked = this.store.getItem(id)?.file.frontmatter.op_data?.ci_rerun as { sha?: string; attempt?: number } | undefined;
-      if (asked?.sha === sha && (asked.attempt ?? 0) > need) { need = asked.attempt!; started = this.ciNow(); runningSince = null; cancelledPolls = 0; }
-      // A person took the item over while its CI ran: the merge chain is not held for them.
-      if (this.store.getItem(id)?.file.frontmatter.taken_over) return 'taken_over';
-      const view = await this.ciRead(id, sha, started, () => this.ports.gh.prView(this.github, pr));
-      if (!view) continue;
-      if (view.state === 'MERGED') return 'green';
-      if (view.headRefOid !== sha) {
-        const lagging = previousSha !== null && view.headRefOid === previousSha && this.ciNow() - started < HEAD_PROPAGATION_GRACE_MS;
-        if (!lagging) return 'moved';
-        await this.sleep(10_000);
-        continue;
-      }
-      const ci = await this.ciRead(id, sha, started, () => this.ports.gh.ciForSha(this.github, branch, sha, this.ciWorkflow));
-      if (!ci) continue;
-      this.ciSeen.set(id, { state: ci.state, at: Date.now() });
-      this.sawCi(id, ci);
-      const elapsedMin = (this.ciNow() - started) / 60_000;
-      if (ci.runId && ci.state !== 'skipped') { sawRun = true; const cur = this.store.requireItem(id).file.frontmatter; const seen = cur.op_data?.ci as { runId?: number; attempt?: number; sha?: string } | undefined; if (seen?.runId !== ci.runId || seen?.attempt !== ci.attempt || seen?.sha !== sha) this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), ci: { runId: ci.runId, url: ci.url, sha, ...(ci.attempt ? { attempt: ci.attempt } : {}) } } } }], 'engine'); }
-      if (ci.state === 'success') return 'green';
-      // A re-run keeps its run id: until its attempt shows up, the completed run is the old verdict.
-      const stale = need > 0 && (ci.attempt ?? 0) < need;
-      if (ci.state === 'failure' && !stale) return (ci.runId && await this.ports.gh.isBillingBlocked(this.github, ci.runId)) ? 'blocked' : 'red';
-      // Cancelled is usually superseded: a newer run for this head takes its place, and ciForSha reads the newest.
-      // When the newest stays cancelled nothing is coming (HH-321: a concurrency group cancelled it, and two
-      // 45-minute waits followed). Its jobs are re-run once per head, and that attempt is what is waited for.
-      cancelledPolls = ci.state === 'cancelled' && !stale ? cancelledPolls + 1 : 0;
-      if (cancelledPolls >= CANCELLED_RERUN_POLLS && ci.runId) {
-        cancelledPolls = 0;
-        const cur = this.store.requireItem(id).file.frontmatter;
-        // Its one re-run was cancelled too (or never started): nothing is coming, and the timeout is hours away (#174).
-        if (cur.op_data?.ci_cancel_rerun === sha) return 'cancelled';
-        let note: string;
-        try { await this.ports.gh.rerunAll(this.github, ci.runId); need = (ci.attempt ?? 1) + 1; started = this.ciNow(); runningSince = null; note = `CI run ${ci.runId} for ${sha.slice(0, 7)} was cancelled and no other run replaced it; re-running it`; }
-        catch (e) { note = `CI run ${ci.runId} for ${sha.slice(0, 7)} was cancelled and could not be re-run (${(e as Error).message.replace(/\s+/g, ' ').slice(0, 160)}); waiting for a new run`; }
-        this.store.mutateItem(id, [{ set: { op_data: { ...(this.store.requireItem(id).file.frontmatter.op_data ?? {}), ci_cancel_rerun: sha } } }, { activity: { actor: 'app', text: note } }], 'engine');
-      }
-      // Only skipped runs (a draft guard skipped every job) checked nothing: not red, and on a ready PR
-      // not coming by itself either, when ready_for_review landed on the head the push replaced.
-      skippedPolls = ci.state === 'skipped' ? skippedPolls + 1 : 0;
-      if (skippedPolls >= SKIPPED_REFIRE_POLLS && !view.isDraft) { await this.refireReady(id, pr, sha); skippedPolls = 0; }
-      // p48: still only skipped once ready_for_review was sent again (or the PR is a draft, so it is never sent) is its own
-      // stop, not ci_blocked: Actions did run, and the local gate is no answer to a job condition that skips everything.
-      if (ci.state === 'skipped' && !sawRun && elapsedMin > cfg.start_timeout_min && (view.isDraft || this.store.requireItem(id).file.frontmatter.op_data?.ci_refired === sha)) return 'skipped';
-      if (ci.state === 'none' && !sawRun && elapsedMin > cfg.start_timeout_min) return 'blocked';
-      // A runner took it (or it ended): it no longer waits on a stalled runner (#216).
-      if (!(ci.state === 'pending' && ci.queued) && this.store.requireItem(id).file.frontmatter.op_data?.runner_stall) { const { runner_stall: _over, ...rest } = this.store.requireItem(id).file.frontmatter.op_data ?? {}; this.store.mutateItem(id, [{ set: { op_data: rest } }], 'engine'); }
-      // A run (or a re-run's new attempt) waiting for a runner has not started its clock; once a job runs, it has.
-      if (ci.state === 'pending' && ci.queued) runningSince = null;
-      else if (ci.state === 'pending' && runningSince === null) runningSince = this.ciNow();
-      if (runningSince !== null) { if ((this.ciNow() - runningSince) / 60_000 > cfg.timeout_min) return 'timeout'; }
-      else if (ci.state === 'pending' && ci.queued) {
-        if (elapsedMin > cfg.queue_timeout_min) return 'queue_timeout';
-        // Queued past ci.start_timeout_min on a runner that looks stalled or offline: one signal per label, with the others on it (#216).
-        if (elapsedMin > cfg.start_timeout_min) await this.markRunnerStall(id);
-        // Say so once an hour, with the queue it is in, so a long wait reads as a queue and not a stall.
-        if (elapsedMin >= 30 && elapsedMin - queueNoted >= 60) {
-          queueNoted = elapsedMin;
-          const q = await this.refreshCiQueue();
-          this.store.mutateItem(id, [{ activity: { actor: 'app', text: `CI run for ${sha.slice(0, 7)} has waited ${Math.round(elapsedMin)} min for a runner${q ? ` (${q.queued} queued, ${q.running} running)` : ''}; it is queued, not failing` } }], 'engine');
-        }
-      }
-      else if (elapsedMin > cfg.timeout_min) return 'timeout';
-      await this.sleep(elapsedMin < 2 ? 10_000 : 30_000);
-    }
-  }
-
-  /**
-   * Every run for this ready PR's head skipped its jobs: the ready_for_review event landed on another
-   * head (HH-180: marked ready while GitHub still showed the head the push replaced), so no run is
-   * coming. Draft and ready again sends the event for this head, once per head: a head that is still
-   * only skipped after that waits out ci.start_timeout_min, then blocks as ci_skipped (p48).
-   */
-  private async refireReady(id: string, pr: number, sha: string): Promise<void> {
-    const fm = this.store.requireItem(id).file.frontmatter;
-    if (fm.op_data?.ci_refired === sha) return;
-    await this.ports.gh.setDraft(this.github, pr, true);
-    await this.ports.gh.setDraft(this.github, pr, false);
-    const cur = this.store.requireItem(id).file.frontmatter;
-    this.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), ci_refired: sha } } }, { activity: { actor: 'app', text: `every CI run for ${sha.slice(0, 7)} skipped its jobs (the PR was a draft when they started) and no other run came; sent ready for review again so CI runs on it` } }], 'engine');
   }
 
   // ---- cleanup and reconcile (#404, seam 4): cleanup, the reconciler and every move-aside live in cleanupReconcile.ts ----
@@ -3592,7 +2705,7 @@ export class LiveEngine implements Engine {
       // running under a take-over blocked HH-136, by then in review with its PR, as agent_blocked).
       if (cur.taken_over) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `not blocked (${reason}), since you have this item: ${detail.replace(/\s+/g, ' ').slice(0, 300)}` } }], 'engine'); return; }
       // A stop for a person goes to the orchestrator first (triage); it resolves it or asks one plain question.
-      const triage = card ? { on: false, ops: [] as ItemOp[] } : stall ? { on: false, ops: [{ set: { op_data: { ...(cur.op_data ?? {}), runner_stall: this.stallMark(stall) } } }, { activity: { actor: 'app', text: `not triaged: runner ${stall.label} looks stalled or offline, and every item waiting on it is said in one signal; it waits for CI again by itself once a runner takes a job` } }] as ItemOp[] } : this.triage.triageOps(cur, reason);
+      const triage = card ? { on: false, ops: [] as ItemOp[] } : stall ? { on: false, ops: [{ set: { op_data: { ...(cur.op_data ?? {}), runner_stall: this.ciWatch.stallMark(stall) } } }, { activity: { actor: 'app', text: `not triaged: runner ${stall.label} looks stalled or offline, and every item waiting on it is said in one signal; it waits for CI again by itself once a runner takes a job` } }] as ItemOp[] } : this.triage.triageOps(cur, reason);
       // A card that was waiting for an answer is about a stop that no longer exists: this block replaces it (HH-162, dogfood p42).
       const { decision: staleCard, ...restData } = cur.awaiting_data ?? {};
       this.store.mutateItem(id, [
@@ -3816,77 +2929,6 @@ export class LiveEngine implements Engine {
   }
 
   /** Re-run what a transient failure stopped, by the same doors the pipeline itself uses. */
-  /**
-   * Re-run the failed jobs of the head's red CI run (#139, HH-307, HH-284): a suspected flake, with nothing to fix in
-   * the branch. Only that run for an unchanged head; the orchestrator gets one per head (a real failure is not retried
-   * in a loop), the user as many as they like. The block or triage clears, and the CI wait counts only the new attempt
-   * (`op_data.ci_rerun`); a red attempt counts as a failure again. Returns what happened, or why not, in words.
-   */
-  /** What rerunCi would refuse that the store can tell without GitHub: checked when a card offering it is filed (#162). */
-  private rerunRefusal(id: string): string | null {
-    const fm = this.store.getItem(id)?.file.frontmatter;
-    if (!fm) return `there is no item ${id}`;
-    if (fm.status !== 'IN_REVIEW' || !fm.pr) return `${id} has no pull request in review`;
-    if (!(fm.op_data?.last_red as { runId?: number } | undefined)?.runId && !(fm.op_data?.last_cancelled as { runId?: number } | undefined)?.runId) return `${id} has no red or cancelled CI run on record`;
-    return null;
-  }
-
-  async rerunCi(id: string, by: 'user' | 'orchestrator' = 'user'): Promise<string> {
-    const item = this.store.requireItem(id);
-    const fm = item.file.frontmatter;
-    if (by === 'orchestrator' && fm.taken_over) return `not now: the user has taken ${id} over`;
-    if (fm.status !== 'IN_REVIEW' || !fm.pr || !fm.branch) return `not possible: ${id} has no pull request in review`;
-    // A CI wait that is polling is not a step running (#174): its run may be cancelled with nothing coming, and that run is re-run under it.
-    const waiting = this.ciWaits.has(id) && !this.turns.has(id);
-    const busy = this.busyWith(id); if (busy && !waiting) return `not now: ${busy} (a CI wait that is still running is not red)`;
-    if (waiting) return this.rerunUnderWait(id, by);
-    const red = (fm.op_data?.last_red ?? fm.op_data?.last_cancelled) as { runId?: number; sha?: string } | undefined;
-    const cancelled = !fm.op_data?.last_red;
-    if (!red?.runId || !red.sha) return `not possible: ${id} has no red or cancelled CI run on record`;
-    const view = await this.ports.gh.prView(this.github, fm.pr);
-    if (view.headRefOid !== red.sha) return `not possible: the head moved to ${view.headRefOid.slice(0, 7)} after run ${red.runId} (${red.sha.slice(0, 7)}); the new head's own run is what counts`;
-    const ci = await this.ports.gh.ciForSha(this.github, fm.branch, red.sha, this.ciWorkflow);
-    const want = cancelled ? 'cancelled' : 'failure';
-    if (ci.runId !== red.runId || ci.state !== want) return `not possible: run ${red.runId} is not the head's ${cancelled ? 'cancelled' : 'red'} run any more (it is ${ci.state}${ci.runId && ci.runId !== red.runId ? `, run ${ci.runId}` : ''})`;
-    // planestro's own re-run after a no-change report (#201) is not the orchestrator's one.
-    const prev = fm.op_data?.ci_rerun as { sha?: string; by?: string } | undefined;
-    if (by === 'orchestrator' && prev?.sha === red.sha && prev.by !== 'app') return `not possible: you already re-ran CI once for ${red.sha.slice(0, 7)}; a second red on the same head is the user's to judge (or the session's to fix). If something has changed since (a runner's full disk freed, a fix landed), leave ask_user_decision with an option carrying action { tool: "rerun_ci", args: { id: "${id}" } }: their tap re-runs it`;
-    // A cancelled run's jobs are all re-run, as the wait's own re-run does; a red one's failed jobs only.
-    if (cancelled) await this.ports.gh.rerunAll(this.github, red.runId); else await this.ports.gh.rerunFailed(this.github, red.runId);
-    const attempt = (ci.attempt ?? 1) + 1;
-    const { last_red: _red, last_cancelled: _cancelled, ...od } = fm.op_data ?? {};
-    this.store.mutateItem(id, [
-      { unset: ['blocked', 'blocked_reason', 'triage', ...(fm.awaiting === 'user' ? ['awaiting', 'awaiting_data'] : [])] },
-      { set: { ci_result: 'pending', ci_head_sha: red.sha, op: 'awaiting_ci', op_started_at: this.now(), op_data: { ...od, ci_rerun: { sha: red.sha, runId: red.runId, attempt, by } } } },
-      { activity: { actor: by, text: `${cancelled ? 're-ran cancelled CI run' : 're-ran the failed jobs of CI run'} ${red.runId} for ${red.sha.slice(0, 7)} (attempt ${attempt}); waiting for that attempt` } },
-    ], by, { commit: `${id}: re-run CI` });
-    this.poke();
-    return `${cancelled ? 're-running cancelled run' : 're-running the failed jobs of run'} ${red.runId} (attempt ${attempt}); its verdict is the one that counts`;
-  }
-
-  /**
-   * rerunCi while the item's CI wait polls (#174): only a run that is cancelled, which the wait would otherwise sit on
-   * until ci.timeout_min. Recorded before the re-run is sent, so the wait counts only the new attempt and does not
-   * re-run it a second time; nothing else changes on the item, and the same wait goes on (no second wait starts).
-   */
-  private async rerunUnderWait(id: string, by: 'user' | 'orchestrator'): Promise<string> {
-    const fm = this.store.requireItem(id).file.frontmatter;
-    const sha = fm.ci_head_sha;
-    if (!sha || !fm.branch) return `not possible: ${id} has no head waiting for CI`;
-    const ci = await this.ports.gh.ciForSha(this.github, fm.branch, sha, this.ciWorkflow);
-    if (ci.state === 'failure') return `not now: run ${ci.runId} for ${sha.slice(0, 7)} just failed and the CI wait reports it red within a poll; re-run it after that`;
-    if (ci.state !== 'cancelled' || !ci.runId) return `not now: CI for ${sha.slice(0, 7)} is ${ci.state === 'pending' ? 'still running' : ci.state}; a CI wait that is still running is not red`;
-    const prev = fm.op_data?.ci_rerun as { sha?: string; attempt?: number } | undefined;
-    const attempt = (ci.attempt ?? 1) + 1;
-    if (prev?.sha === sha && (prev.attempt ?? 0) >= attempt) return `not now: run ${ci.runId} was already re-run (attempt ${prev.attempt}); its attempt has not shown up yet`;
-    if (by === 'orchestrator' && prev?.sha === sha) return `not possible: you already re-ran CI once for ${sha.slice(0, 7)}; leave ask_user_decision with an option carrying action { tool: "rerun_ci", args: { id: "${id}" } }: their tap re-runs it`;
-    const setRerun = (rerun: unknown) => this.store.mutateItem(id, [{ set: { op_data: { ...(this.store.requireItem(id).file.frontmatter.op_data ?? {}), ci_rerun: rerun } } }], 'engine');
-    setRerun({ sha, runId: ci.runId, attempt, by });
-    try { await this.ports.gh.rerunAll(this.github, ci.runId); }
-    catch (e) { setRerun(prev ?? null); return `not possible: run ${ci.runId} could not be re-run (${(e as Error).message.replace(/\s+/g, ' ').slice(0, 160)})`; }
-    this.store.mutateItem(id, [{ activity: { actor: by, text: `re-ran cancelled CI run ${ci.runId} for ${sha.slice(0, 7)} (attempt ${attempt}) while planestro waited on it; waiting for that attempt` } }], by, { commit: `${id}: re-run CI` });
-    return `re-running cancelled run ${ci.runId} (attempt ${attempt}); the CI wait already running counts only that attempt`;
-  }
 
   /** With `message` (an unblock of an engine-owned stop, #211), it goes to Activity and with any session the retry resumes. */
   async retryOp(id: string, by: 'user' | 'orchestrator' | 'engine' = 'orchestrator', message?: string): Promise<string> {
@@ -4906,13 +3948,6 @@ export class LiveEngine implements Engine {
   private wakeSlotWaiters(): void {
     for (const w of this.sessionWaiters.splice(0)) w();
     for (const q of this.runnerWaiters.values()) for (const w of q.splice(0)) w();
-  }
-
-  /** A CI verdict, remembered once per run attempt for the concurrency guard (#330); a red's log says whether a check was killed at its timeout. */
-  private sawCi(id: string, ci: { state: string; runId?: number; attempt?: number; sha?: string; timedOut?: boolean }, log?: string): void {
-    if (ci.state === 'success') recordCiResult(this.store, id, { run_id: ci.runId, attempt: ci.attempt, sha: ci.sha, outcome: 'success', timeout_killed: false });
-    else if (ci.state === 'cancelled' && ci.timedOut) recordCiResult(this.store, id, { run_id: ci.runId, attempt: ci.attempt, sha: ci.sha, outcome: 'cancelled', timeout_killed: true });
-    else if (ci.state === 'failure' && log !== undefined) recordCiResult(this.store, id, { run_id: ci.runId, attempt: ci.attempt, sha: ci.sha, outcome: 'failure', timeout_killed: timeoutKilledIn(log) });
   }
 
   /**
