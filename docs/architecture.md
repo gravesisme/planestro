@@ -7,7 +7,7 @@ graph TB
   end
   subgraph server [packages/server]
     API[Hono API + WebSocket]
-    ENG[LiveEngine: admission · turns · merge pipeline · epics · reconciler]
+    ENG[LiveEngine: composition root · item lifecycle · its parts]
     ORCH[Orchestrator: wakes on judgment calls]
     STORE[DataStore: atomic writes · journal · semantic commits]
   end
@@ -25,6 +25,32 @@ graph TB
   server -.-> shared
   web -.-> shared
 ```
+
+## The engine's parts
+
+`LiveEngine` (`engine/LiveEngine.ts`) wires the engine together and keeps the item lifecycle that belongs to no one part
+(approve, block and unblock, a turn's end and the pull request, holds, discard, close as done, take over, convert kind).
+The rest lives in parts it owns, each given a narrow typed context with exactly what it uses (#404):
+
+| Part | File | What it does |
+| --- | --- | --- |
+| `Scheduler` | `scheduler.ts` | the tick and its drivers, admission, stalls, the quiet watchdog, timed retries, `resume_after` |
+| `Slots` | `slots.ts` | one job per item and its follow-ups, held wakes, session / runner / local-job slots |
+| `TurnRunner` | `turnRunner.ts` | one turn: how it starts, its prompt, the lost-report outbox, what it cost |
+| `TurnQueue` | `turnQueue.ts` | saved instructions, queued messages, restart recovery |
+| `MergePipeline` | `mergePipeline.ts` | the serial merge chain, green heads back to the chain, held items |
+| `CiWatch` | `ciWatch.ts` | reading CI, red runs, flake / infra re-runs, runner stalls, stalled reviews |
+| `BaseSync` | `baseSync.ts` | sync with base, held rebases, base waits |
+| `CleanupReconcile` | `cleanupReconcile.ts` | cleanup after a merge, the reconciler, every invariant-7 move-aside |
+| `Epics` | `epics.ts` | epic planning, breakdown approval, the integration branch |
+| `Triage` | `triage.ts` | stops handed to the orchestrator first, decision cards and their actions |
+| `Guards` | `guards.ts` | pause, the usage and disk guards, model outages, drain |
+| `ReviewUndo` | `reviewUndo.ts` | the review panel and Undo last turn's checkpoints |
+| `WorkerTools` | `workerTools.ts` | attachments, the review hand-off, auditions, hand-offs |
+
+No part imports `LiveEngine`. It reaches the engine and the other parts through its context (another part's file is
+imported only for its type, to `Pick` what is used), and helpers two parts share live in small modules of their own.
+LiveEngine keeps one-line delegates for the `Engine` interface.
 
 ## Ports
 
