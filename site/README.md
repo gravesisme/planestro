@@ -91,4 +91,3 @@ configured. This change does **not** enable it, set a custom domain, change DNS,
 change repository visibility, or deploy anything. Before public launch, resolve
 repository access/release readiness, configure Pages and planestro.com (including
 HTTPS), and recheck all canonical/share URLs and external setup documentation.
-See `docs/going-public.md` for the broader release checklist.

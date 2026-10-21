@@ -45,6 +45,8 @@ npm install && npm run build
 npm run sample          # http://127.0.0.1:4310
 ```
 
+On a fresh clone the install and build take a few minutes.
+
 `sample` builds a fictional project (*tidepool*, a tide-times CLI) with a full
 backlog — finished work with its history, a reviewed piece of art, a bug with
 repro notes, two epics, an icebox, prompt templates for both agents — and
@@ -183,9 +185,11 @@ set `engine.mode` to `live` in Settings, then stop the server (Ctrl+C) and start
 again: the mode is read at startup. Work is real only once the header says **Live**,
 not **Dry-run**.
 
-planestro is MIT-licensed. It depends on the Claude Agent SDK, which is distributed
-under Anthropic's own terms (see the SDK's README), and runs the agents on your
-own Claude Code or Codex login.
+planestro is MIT-licensed. `npm install` — even for the no-login sample — also installs
+Anthropic's `@anthropic-ai/claude-agent-sdk`, which is not MIT: it is © Anthropic PBC under
+Anthropic's own terms (see its README and
+https://code.claude.com/docs/en/legal-and-compliance), and planestro does not redistribute it.
+planestro runs the agents on your own Claude Code or Codex login.
 Project rules come from your repo's own `CLAUDE.md` / `AGENTS.md`; planestro
 adds nothing project-specific.
 
@@ -369,8 +373,8 @@ The engine talks to the world only through four ports (git, GitHub, processes,
 agents — Claude and Codex behind one contract). Live ports shell out; dry-run ports are an in-memory world. That seam
 is why `npm test` can drive the real lifecycle — CI red then fixed, a rebase
 conflict handed to the session, parked questions and permissions, a restart in
-the middle of a turn, crash markers left on disk — in about twenty seconds with
-no network.
+the middle of a turn, crash markers left on disk — with no network. The full suite
+takes about 4–6 minutes locally and about 7 on CI's hosted runner.
 
 ```sh
 npm test            # vitest
