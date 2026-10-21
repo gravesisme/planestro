@@ -137,6 +137,7 @@ describe('worker isolation: no worker or orchestrator session can list or call a
     expect(o.strictMcpConfig).toBe(true);
     expect(o.settingSources).not.toContain('user');
     expect(Object.keys(o.mcpServers).sort()).toEqual(['planestro', 'sounds']);
+    expect(typeof o.canUseTool).toBe('function');   // a worker's permissions go through the callback
     // planestro's worker server has its own tools, none of the operator's backlog-wide ones
     expect(seen.tools[0]).toContain('report_done');
     // (get_item is also a worker tool of its own: the item it is working on, not the backlog.)
@@ -149,5 +150,7 @@ describe('worker isolation: no worker or orchestrator session can list or call a
     expect(o.strictMcpConfig).toBe(true);
     expect(o.settingSources).not.toContain('user');
     expect(Object.keys(o.mcpServers)).toEqual(['planestro']);
+    // dontAsk never consults canUseTool, so none is passed and the SDK prints no CAN_USE_TOOL_SHADOWED (#473)
+    expect('canUseTool' in o).toBe(false);
   });
 });

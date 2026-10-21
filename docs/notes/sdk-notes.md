@@ -7,6 +7,22 @@ sessions in a throwaway worktree of a real project repo. Runner:
 are in `spikes/out/*.stdout` (gitignored). `packages/server/src/compat.ts`
 pins these versions so planestro can warn when the installed CLI drifts.
 
+## Taken 2026-10-21: Claude Code 2.1.306 and SDK 0.3.306 (#474)
+
+SDK 0.3.305 → 0.3.306 is a parity release: its changelog has only "Updated to parity with
+Claude Code v2.1.306", and its typings (`sdk.d.ts`, `agentSdkTypes.d.ts`, `sdk-tools.d.ts`,
+`core.d.ts`) are byte-identical to 0.3.305's. Claude Code 2.1.306 fixes `claude -p` in cloud
+sessions reporting "Not logged in" and an API error replaced by "prompt is too long" (with an
+unneeded compaction) in sessions with many MCP tools. Neither touches `canUseTool`, hooks,
+`cost-state`/`total_cost_usd`, the stdin stream, sessions or budgets, so the 2026-10-20 spike
+below stands; the suite passes on the new version.
+
+The bundled CLI was read for #473 at this version: in `dontAsk` an "ask" becomes a deny
+(`{type:"mode",mode:"dontAsk"}`) before any host is asked, and the host is not a decider in
+that mode, so `canUseTool` is never called there. Custom turns in `dontAsk` (the orchestrator,
+the efficiency audit) now pass no callback, which also drops `--permission-prompt-tool=stdio`;
+what they may use is still exactly their allow list.
+
 ## Re-validated 2026-10-20 against Claude Code 2.1.305 and SDK 0.3.305
 
 SDK 0.3.300 → 0.3.305, whose bundled CLI (2.1.305) is the installed one, so the spike ran
@@ -43,16 +59,13 @@ Changelog 0.3.301–0.3.305 against what `LiveClaudePort` relies on:
   stream, `listSessions`/`getSessionInfo` or `maxBudgetUsd`. The rest is `startup()` /
   `prewarm()` timeouts, the browser SDK and `getContextUsage()`, none of which planestro calls.
 
-**`CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` at server start is expected.** It names bare allow
+**`CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` is no longer printed (#473).** It named bare allow
 entries (`Read, Grep, Glob, mcp__planestro__…`), which only `customAllowedTools` sends,
 and only in `dontAsk` mode: the orchestrator's wakes and the efficiency audit (gotcha 4,
-#153). That mode never consults `canUseTool`, so the warning describes exactly the
-intended behaviour; worker turns (`splitAllowed`) send no bare names and print nothing.
-The SDK emits it from `query()` whenever a `canUseTool` is passed with a bare entry
-(`process.emitWarning`), so the only clean way to silence it is not to pass the
-callback in `dontAsk` mode; that was left as is (the callback is a harmless backstop),
-and the warning is documented here instead. Note the warning is not accurate for plan
-mode (see `plan` above): there the callback is still consulted.
+#153). The SDK emits it from `query()` whenever a `canUseTool` is passed with a bare entry
+(`process.emitWarning`), so `customCanUseTool` passes no callback in `dontAsk`, which never
+consults it; worker turns (`splitAllowed`) send no bare names and print nothing. Note the
+warning is not accurate for plan mode (see `plan` above): there the callback is still consulted.
 
 One observation: in the `budget` step the model said it had no `Glob` tool and listed
 files with `find` through Bash (read-only, auto-approved). planestro only allow-lists
