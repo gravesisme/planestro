@@ -74,7 +74,7 @@ export function EfficiencyRankingSection({ days }: { days: number }) {
         </>}
         {r.startup.length > 0 && <>
           <h3>Heaviest starting context</h3>
-          <ul className="usage-events">{r.startup.slice(0, 5).map((x) => <li key={x.item}>{item(x.item)} {toks(x.max)}{x.sessions > 1 ? <span className="muted"> · mean {toks(x.mean)} over {x.sessions} sessions</span> : ''}</li>)}</ul>
+          <ul className="usage-events">{r.startup.slice(0, 5).map((x) => <li key={x.item}>{item(x.item)} {toks(x.max)}<span className="muted"> · {x.sessions > 1 ? `mean ${toks(x.mean)} over ${x.sessions} sessions` : '1 session'}</span></li>)}</ul>
         </>}
       </>}
     </section>

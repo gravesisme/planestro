@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { usageReport, USAGE_TURN, type JournalEntry } from '@planestro/shared';
-import { usageSeries, dayValues, niceTicks, formatValue, SERIES_COLORS, OTHER } from '../src/usageChart.ts';
+import { usageSeries, dayValues, niceTicks, formatValue, shownMeasure, turnsAndWakes, SERIES_COLORS, OTHER } from '../src/usageChart.ts';
 
 const turn = (ts: string, model: string, usd: number, role = 'worker', provider = 'claude'): JournalEntry => ({ ts, type: USAGE_TURN, actor: 'engine', data: { provider, model, role, op: 'x', usd, subtype: 'success' } });
 
@@ -31,5 +31,21 @@ describe('usage chart series (#236)', () => {
     expect(formatValue(1.5, 'usd')).toBe('$1.50');
     expect(formatValue(12_345, 'tokens')).toBe('12k');
     expect(formatValue(2_500_000, 'tokens')).toBe('2.5M');
+  });
+  it('a range with no dollars opens on tokens, unless the viewer picked dollars on this visit (#476)', () => {
+    const codex: JournalEntry = { ts: '2026-10-08T09:00:00-07:00', type: USAGE_TURN, actor: 'engine', data: { provider: 'codex', model: 'gpt', role: 'worker', op: 'x', tokens: 1200, subtype: 'success' } };
+    const tokensOnly = usageReport([codex], { days: 1, today: '2026-10-08' });
+    expect(shownMeasure(tokensOnly, undefined, 'usd')).toBe('tokens');
+    expect(shownMeasure(tokensOnly, 'usd', 'usd')).toBe('usd');
+    const dollars = usageReport([codex, turn('2026-10-08T10:00:00-07:00', 'a', 2)], { days: 1, today: '2026-10-08' });
+    expect(shownMeasure(dollars, undefined, 'usd')).toBe('usd');
+    expect(shownMeasure(dollars, undefined, 'tokens')).toBe('tokens');
+    expect(shownMeasure(usageReport([], { days: 1, today: '2026-10-08' }), undefined, 'usd')).toBe('usd');
+    expect(shownMeasure(undefined, undefined, 'usd')).toBe('usd');
+  });
+  it('counts read as turns and wakes in the header and the day line alike (#476)', () => {
+    expect(turnsAndWakes(26)).toBe('turns and wakes');
+    expect(turnsAndWakes(0)).toBe('turns and wakes');
+    expect(turnsAndWakes(1)).toBe('turn or wake');
   });
 });
