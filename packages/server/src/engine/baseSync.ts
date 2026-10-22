@@ -402,8 +402,10 @@ export class BaseSync {
     const base = held.base;
     const { clean, dirty } = await this.ctx.worktreeDirt(cwd);
     if (!clean) { await this.failHeldRebase(id, `it left uncommitted changes (${dirty.slice(0, 5).join(', ')})`); return true; }
-    if (!(await this.ctx.ports.git.isAncestor(cwd, `origin/${base}`, 'HEAD'))) { await this.failHeldRebase(id, `the result does not contain origin/${base}`); return true; }
-    if ((await this.ctx.ports.git.aheadBehind(cwd, `origin/${base}`, 'HEAD')).ahead === 0) { await this.failHeldRebase(id, `the result has none of the branch's own commits left on origin/${base}`); return true; }
+    // Checked against the tip it rebased onto, not origin/<base> now (#485): HH-611 merged while HH-608's session resolved
+    // its conflicts, and the finished rebase was thrown away. A base that moved since is the merge pipeline's next sync.
+    if (!(await this.ctx.ports.git.isAncestor(cwd, held.base_sha, 'HEAD'))) { await this.failHeldRebase(id, `the result does not contain origin/${base} (${held.base_sha.slice(0, 7)})`); return true; }
+    if ((await this.ctx.ports.git.aheadBehind(cwd, held.base_sha, 'HEAD')).ahead === 0) { await this.failHeldRebase(id, `the result has none of the branch's own commits left on origin/${base} (${held.base_sha.slice(0, 7)})`); return true; }
     let head = r.head;
     let note = '';
     if (took.length) {
