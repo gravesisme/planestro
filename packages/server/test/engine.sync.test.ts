@@ -263,12 +263,20 @@ describe('sync with base (p29)', () => {
     });
 
     it('a merge that does not contain the base, or a session that never reports done, is not pushed', async () => {
+      const ctx = await epicConflict(async () => { ctx.world.unreachable.add('f'.repeat(40)); return { done: 'merged' }; });
+      await ctx.engine.syncWithBase(ctx.id);
+      await settled(ctx, ctx.id);
+      expect(activityOf(ctx.store, ctx.id)).toContain('the conflict session did not resolve it: the result does not contain origin/trunk (fffffff)');
+      expect(ctx.store.getItem(ctx.id)!.file.frontmatter.blocked_reason).toBe('sync_conflict');
+      expect(ctx.log.some((l) => l.startsWith('Would git push -u origin feature/animate-jungle'))).toBe(false);
+    });
+
+    it('a base that moves while the session merges does not throw the merge away: it holds the tip it merged and is pushed (#485)', async () => {
       const ctx = await epicConflict(async () => { ctx.world.unreachable.add('origin/trunk'); return { done: 'merged' }; });
       await ctx.engine.syncWithBase(ctx.id);
       await settled(ctx, ctx.id);
-      expect(activityOf(ctx.store, ctx.id)).toContain('the conflict session did not resolve it: the result does not contain origin/trunk');
-      expect(ctx.store.getItem(ctx.id)!.file.frontmatter.blocked_reason).toBe('sync_conflict');
-      expect(ctx.log.some((l) => l.startsWith('Would git push -u origin feature/animate-jungle'))).toBe(false);
+      expect(activityOf(ctx.store, ctx.id)).not.toContain('does not contain');
+      expect(ctx.log.some((l) => l.startsWith('Would git push -u origin feature/animate-jungle'))).toBe(true);
     });
 
     it("in the merge chain, an epic PR's conflict is resolved as the epic's next job, outside the chain, then merges", async () => {
@@ -662,6 +670,20 @@ describe('a pull request whose rebase conflicts: planestro holds the rebase and 
     await waitFor(() => ctx.seen.length === 2);
     expect(ctx.seen[1].prompt).toContain('Guidance for this conflict');
     expect(ctx.seen[1].prompt).toContain('Keep the 10 s cooldown from the base');
+  });
+
+  it('a base that moves while the session resolves is not a failed rebase: it is checked against the tip it rebased onto (#485)', async () => {
+    const ctx = await inReview(async (_o, world) => { world.unreachable.add('origin/trunk'); return undefined; });
+    await waitFor(() => activityOf(ctx.store, ctx.id).includes('the session resolved the conflict') || ctx.fm().blocked === true, 8000);
+    expect(ctx.fm().blocked_reason).toBeUndefined();
+    expect(activityOf(ctx.store, ctx.id)).not.toContain('does not contain');
+    expect(activityOf(ctx.store, ctx.id)).toMatch(/the session resolved the conflict[^;]*; planestro continued the rebase onto origin\/trunk \(f{7}\) and checked it/);
+  });
+
+  it('a held rebase whose result lacks the tip it rebased onto blocks sync_conflict (#485)', async () => {
+    const ctx = await inReview(async (_o, world) => { world.unreachable.add('f'.repeat(40)); return undefined; });
+    await waitFor(() => ctx.fm().blocked_reason === 'sync_conflict');
+    expect(activityOf(ctx.store, ctx.id)).toContain('the result does not contain origin/trunk (fffffff)');
   });
 
   it('conflict markers left in a file are not continued: the branch goes back and it blocks sync_conflict', async () => {

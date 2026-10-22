@@ -855,7 +855,8 @@ export class TurnRunner {
     if (await this.ctx.ports.git.inProgressOp(cwd)) return fail('it reported done with the merge unfinished');
     const { clean, dirty } = await this.ctx.worktreeDirt(cwd);
     if (!clean) return fail(`it left uncommitted changes (${dirty.slice(0, 5).join(', ')})`);
-    if (!(await this.ctx.ports.git.isAncestor(cwd, `origin/${base}`, 'HEAD'))) return fail(`the result does not contain origin/${base}`);
+    // The tip it merged, not origin/<base> now (#485): a base that moved while the session worked is the next sync's.
+    if (!(await this.ctx.ports.git.isAncestor(cwd, baseSha, 'HEAD'))) return fail(`the result does not contain origin/${base} (${baseSha.slice(0, 7)})`);
     if (remote && !(await this.ctx.ports.git.isAncestor(cwd, remote, 'HEAD'))) return fail(`the result does not contain origin/${branch} (${remote.slice(0, 7)}): the branch was rewritten`);
     try { await this.ctx.ports.git.pushSetUpstream(cwd, branch); } catch (e) { return fail(`the push was refused (${(e as Error).message.replace(/\s+/g, ' ').slice(0, 200)})`); }
     const head = await this.ctx.ports.git.revParse(cwd, 'HEAD');
