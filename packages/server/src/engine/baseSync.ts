@@ -199,6 +199,13 @@ export class BaseSync {
     // held-rebase continuation from there, instead of a refusal that pointed the orchestrator back at the same loop.
     if (!epic && d.flavor === 'worker' && fm.status === 'IN_REVIEW') {
       if (!fm.blocked) return `not needed: ${id} is in review, and the merge pipeline rebases its pull request onto its base before it merges; a conflict there goes to its session as planestro's held rebase`;
+      // A message on any other stop is the session's next instruction (#486): re-entering the pipeline only put it in
+      // Activity, and HH-610's fix for a red run was lost while CI ran the failing code again. The pipeline syncs after it.
+      const message = opts.unblock?.message?.trim();
+      if (message && fm.blocked_reason !== 'sync_conflict') {
+        await this.ctx.unblock(id, message, by, { fresh });
+        return `in review, so the session resumes with your message${fresh ? ' (a fresh session)' : ''}; the merge pipeline rebases its pull request onto its base once it has committed, before it merges`;
+      }
       return `in review, so the merge pipeline syncs it: ${await this.ctx.retryOp(id, by, opts.unblock?.message?.trim() || undefined)}`;
     }
     if (epic ? fm.status !== 'IN_PROGRESS' || !fm.branch : d.flavor !== 'worker' || !['PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS'].includes(fm.status)) return `not possible: ${id} is ${epic ? 'an epic that is not open' : `${fm.status}${d.flavor !== 'worker' ? ` (${d.flavor})` : ''}`}; only a worker item planning or in progress, or an open epic, is synced this way${fm.status === 'IN_REVIEW' ? ' (the merge pipeline syncs a pull request; retry_op re-enters it)' : ''}`;

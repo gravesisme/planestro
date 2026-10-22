@@ -681,6 +681,19 @@ describe('a pull request whose rebase conflicts: planestro holds the rebase and 
     await waitFor(() => ctx.seen.length === 2);
     expect(ctx.seen[1].prompt).toContain('Take both rows.');
   });
+
+  it('unblock_item with sync_first and a message on a pull request stopped red resumes the session with it (#486)', async () => {
+    const ctx = await setup({ turn: async () => ({}) });
+    const { id, branch } = worker(ctx, { pushed: true, status: 'IN_REVIEW' });
+    ctx.world.prs.set(430, { number: 430, url: 'u', state: 'OPEN', headRefOid: ctx.world.remoteBranches.get(branch)!, headRefName: branch, baseRefName: 'trunk', polls: 0, failOnce: false });
+    ctx.store.mutateItem(id, [{ set: { pr: 430, ci_result: 'red', blocked: true, blocked_reason: 'ci_red_twice' } }], 'engine');
+    await ctx.engine.start();
+    const r = await ctx.engine.syncWithBase(id, { by: 'orchestrator', unblock: { message: 'Guard the null boss in BossBar.gd.' } });
+    expect(r).toMatch(/^in review, so the session resumes with your message/);
+    await waitFor(() => ctx.prompts.some((p) => p.phase === 'fix'));
+    expect(ctx.prompts.find((p) => p.phase === 'fix')!.prompt).toContain('Guard the null boss in BossBar.gd.');
+    expect(activityOf(ctx.store, id)).not.toContain('retrying the merge pipeline');
+  });
 });
 
 describe('the conflict prompt and the worker rules agree (HH-532)', () => {
