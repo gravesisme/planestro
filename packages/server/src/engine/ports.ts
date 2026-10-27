@@ -180,6 +180,8 @@ export interface GhPort {
   issueView?(repo: string, number: number): Promise<IssueInfo | null>;
   /** Open an issue (#231: an orchestrator note filed as one). Optional: a port without it cannot file. */
   issueCreate?(repo: string, args: { title: string; body: string }): Promise<{ number: number; url: string }>;
+  /** Whether this login may push to the repo: planestro's maintainer is offered its own tracker for notes. Optional. */
+  canPush?(repo: string): Promise<boolean>;
   /** The self-hosted runners and the workflow's open jobs (#216). Optional: a port without it cannot tell a runner's state. */
   runners?(repo: string, workflow: string): Promise<RunnerReport>;
   /** Latest run of the workflow on a branch (base health). */

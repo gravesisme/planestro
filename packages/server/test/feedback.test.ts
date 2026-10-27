@@ -3,8 +3,9 @@ import { DataStore } from '../src/store/DataStore.ts';
 import { LiveEngine } from '../src/engine/LiveEngine.ts';
 import { apiRoutes } from '../src/routes/api.ts';
 import { FakeWorld, DryRunGitPort, DryRunGhPort, DryRunProcPort, DryRunClaudePort } from '../src/engine/dryrun-ports.ts';
-import { likelyMatches, noteMarker, notesSeen, NOTE_LINK_TYPE, NOTES_SEEN_TYPE } from '../src/engine/feedback.ts';
-import type { Ports } from '../src/engine/ports.ts';
+import { likelyMatches, noteMarker, notesSeen, NOTE_LINK_TYPE, NOTES_SEEN_TYPE, maintainsPlanestro } from '../src/engine/feedback.ts';
+import type { Ports, GhPort } from '../src/engine/ports.ts';
+import { PLANESTRO_REPO } from '@planestro/shared';
 import { makeFixture } from './helpers.ts';
 
 /**
@@ -106,6 +107,19 @@ describe('filing orchestrator notes as issues (#231)', () => {
     expect((await call('GET', '/orchestrator/notes')).body.find((x: any) => x.ts === a.ts).links.issues).toHaveLength(2);
     // Filing a note that is already marked handled is refused.
     expect((await call('POST', '/orchestrator/notes/file', { note: b.ts })).status).toBe(409);
+  });
+});
+
+describe('planestro\'s own tracker is offered only to its maintainer', () => {
+  it('asks once whether this login can push to planestro\'s repo; no port, a no or a failure is no', async () => {
+    const asked: string[] = [];
+    const yes = { canPush: async (repo: string) => { asked.push(repo); return true; } } as unknown as GhPort;
+    expect(await maintainsPlanestro(yes)).toBe(true);
+    expect(await maintainsPlanestro(yes)).toBe(true);
+    expect(asked).toEqual([PLANESTRO_REPO]);
+    expect(await maintainsPlanestro({ canPush: async () => false } as unknown as GhPort)).toBe(false);
+    expect(await maintainsPlanestro({ canPush: async () => { throw new Error('gh: not logged in'); } } as unknown as GhPort)).toBe(false);
+    expect(await maintainsPlanestro({} as GhPort)).toBe(false);
   });
 });
 

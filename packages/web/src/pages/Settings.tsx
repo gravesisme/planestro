@@ -195,11 +195,20 @@ function SettingRow({ def, value, changed, state }: { def: SettingDef; value: un
           {def.detail && <button className="link" aria-expanded={more} onClick={() => setMore(!more)}>{more ? 'Less' : 'Learn more'}</button>}
         </div>
         {more && def.detail && <div className="more">{def.detail.map((p) => <p key={p}>{p}</p>)}</div>}
+        {def.key === 'feedback.issue_repo' && !value && <MaintainerOffer def={def} />}
         {def.key === 'engine.mode' && modeNote(state.engine.modes) && <div className="sum rules-error" role="status">{modeNote(state.engine.modes)}</div>}
       </div>
       <Control def={def} value={value} state={state} />
     </div>
   );
+}
+
+/** planestro's own tracker in one click, offered only to a login that can push to it: anyone else's notes stay reviewed. */
+function MaintainerOffer({ def }: { def: SettingDef }) {
+  const [repo, setRepo] = useState<string>();
+  useEffect(() => { api.feedbackMaintainer().then((r) => r.maintainer && setRepo(r.repo), () => {}); }, []);
+  if (!repo) return null;
+  return <div className="sum"><ActionButton working="Saving…" onAct={() => save(def, repo)}>Use {repo}</ActionButton> <span className="small muted">Your GitHub login maintains planestro, so its notes can go straight to its tracker.</span></div>;
 }
 
 /** A warning a row earns from the rest of the config, e.g. a fallback switch whose model has no fallback. */

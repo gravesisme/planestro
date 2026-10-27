@@ -235,6 +235,7 @@ export const api = {
   reviewAllQuestions: () => req<{ reviewing: string[] }>('POST', '/api/questions/review-all'),
   resolveQuestion: (id: string, status: 'resolved' | 'withdrawn' = 'resolved', resolution?: string) => req<QuestionView>('POST', `/api/questions/${encodeURIComponent(id)}/resolve`, { status, resolution }),
   reopenQuestion: (id: string) => req<QuestionView>('POST', `/api/questions/${encodeURIComponent(id)}/reopen`),
+  feedbackMaintainer: () => req<{ repo: string; maintainer: boolean }>('GET', '/api/orchestrator/notes/maintainer'),
   orchestratorNotes: () => req<NoteView[]>('GET', '/api/orchestrator/notes'),
   efficiencyAudits: () => req<AuditRun[]>('GET', '/api/efficiency/audits'),
   notesSeen: () => req<{ seen: string }>('GET', '/api/orchestrator/notes/seen'),
