@@ -52,8 +52,13 @@ export function serveWeb(app: Hono, webDist: string): void {
     c.res.headers.set('content-security-policy', appCsp(c.req.header('host')));
   });
   app.use('/*', serveStatic({ root }));
-  app.get('*', (c) => c.html(readFileSync(join(webDist, 'index.html'), 'utf8')));
+  // Read on every request: a server that started while the UI was missing serves it once a build lands, no restart.
+  app.get('*', (c) => {
+    const index = join(webDist, 'index.html');
+    return existsSync(index) ? c.html(readFileSync(index, 'utf8')) : c.text(UI_NOT_BUILT, 503);
+  });
 }
+const UI_NOT_BUILT = `planestro ${TOOL_VERSION} API is up; the web UI is not built (run \`npm run build\`, or \`npm run dev:web\` for Vite on :5173).`;
 
 let strayErrorsLog: ((msg: string) => void) | undefined;
 /** Installed once per process; the latest server's log hears them. */
@@ -106,10 +111,7 @@ export async function startServer(o: ServeOptions) {
   app.get('/healthz', (c) => c.json({ ok: true, version: TOOL_VERSION }));
 
   const webDist = new URL('../../web/dist/', import.meta.url).pathname;
-  if (existsSync(join(webDist, 'index.html'))) serveWeb(app, webDist);
-  else {
-    app.get('/', (c) => c.text(`planestro ${TOOL_VERSION} API is up; the web UI is not built (run \`npm run build\`, or \`npm run dev:web\` for Vite on :5173).`));
-  }
+  serveWeb(app, webDist);
 
   // WebSockets are the adapter's own since v2 (it was @hono/node-ws): upgrades still go through app.fetch, guards first.
   const server = createAdaptorServer({ fetch: app.fetch, websocket: { server: new WebSocketServer({ noServer: true }) } });

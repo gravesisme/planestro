@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { planFor, busyTurns, restartIdle, acquireSupervisorLock, releaseSupervisorLock, supervisorLockPath, childExitVerdict, waitUntilUp, swapWebBuild } from '../src/supervise.ts';
+import { planFor, busyTurns, restartIdle, acquireSupervisorLock, releaseSupervisorLock, supervisorLockPath, childExitVerdict, waitUntilUp, swapWebBuild, webBuildDir } from '../src/supervise.ts';
 import { createServer } from 'node:net';
 import { makeFixture } from './helpers.ts';
 import { startServer } from '../src/server.ts';
@@ -28,6 +28,19 @@ describe('serve --watch policy', () => {
     rmSync(join(web, 'dist'), { recursive: true });
     swapWebBuild(web);
     expect(readFileSync(join(web, 'dist/index.html'), 'utf8')).toBe('first');
+  });
+  it('two supervisors on one checkout build apart, and a swap whose build is gone keeps the UI (2026-10-27)', () => {
+    expect(webBuildDir(101)).not.toBe(webBuildDir(102));
+    const web = mkdtempSync(join(tmpdir(), 'pl-web-'));
+    mkdirSync(join(web, 'dist')); writeFileSync(join(web, 'dist/index.html'), 'theirs');
+    // The other supervisor already swapped in its build and took the shared folder with it: nothing to put in.
+    swapWebBuild(web, webBuildDir(101));
+    expect(readFileSync(join(web, 'dist/index.html'), 'utf8')).toBe('theirs');
+    expect(readdirSync(web)).toEqual(['dist']);
+    mkdirSync(join(web, webBuildDir(102))); writeFileSync(join(web, webBuildDir(102), 'index.html'), 'mine');
+    swapWebBuild(web, webBuildDir(102));
+    expect(readFileSync(join(web, 'dist/index.html'), 'utf8')).toBe('mine');
+    expect(readdirSync(web)).toEqual(['dist']);
   });
   it('server changes restart; shared code is compiled into both halves', () => {
     expect(planFor(['packages/server/src/engine/LiveEngine.ts'])).toEqual({ restart: true, rebuild: false });

@@ -23,17 +23,29 @@ const WEB_DIR = join(ROOT, 'packages/web');
 const QUIET_MS = 1500;      // a save-all or a branch switch lands as a burst; act once it settles
 const BUSY_POLL_MS = 5000;
 
+/** Where this supervisor builds the UI: its own folder, so two `serve --watch` on one checkout never share one. */
+export const webBuildDir = (pid = process.pid): string => `dist.next-${pid}`;
+
 /**
- * Puts a finished build (`<webDir>/dist.next`) in place of `<webDir>/dist` with two renames, so the running server
+ * Puts a finished build (`<webDir>/<next>`) in place of `<webDir>/dist` with two renames, so the running server
  * never finds the UI missing: vite empties its outDir first, and a build straight into `dist` left page loads
- * failing on a missing index.html for its whole length (and a failed build left no UI at all).
+ * failing on a missing index.html for its whole length (and a failed build left no UI at all). Two supervisors on one
+ * checkout (HH and LM) rebuild on the same pull: each builds and sets aside in folders of its own, and one that loses
+ * the race keeps the other's build, putting its own `dist` back if it had moved it aside (2026-10-27: a shared
+ * `dist.next` left no `dist` at all).
  */
-export function swapWebBuild(webDir: string): void {
-  const dist = join(webDir, 'dist'), next = join(webDir, 'dist.next'), old = join(webDir, 'dist.old');
-  rmSync(old, { recursive: true, force: true });
-  if (existsSync(dist)) renameSync(dist, old);
-  renameSync(next, dist);
-  rmSync(old, { recursive: true, force: true });
+export function swapWebBuild(webDir: string, nextName = 'dist.next'): void {
+  const dist = join(webDir, 'dist'), next = join(webDir, nextName), old = join(webDir, `dist.old-${process.pid}`);
+  for (const stale of [old, join(webDir, 'dist.old')]) rmSync(stale, { recursive: true, force: true });
+  try { renameSync(dist, old); } catch { /* none yet, or another swap has it in hand */ }
+  try {
+    renameSync(next, dist);
+  } catch {
+    if (!existsSync(join(dist, 'index.html')) && existsSync(old)) { rmSync(dist, { recursive: true, force: true }); renameSync(old, dist); }
+    rmSync(next, { recursive: true, force: true });
+  } finally {
+    rmSync(old, { recursive: true, force: true });
+  }
 }
 
 /** What to do about one burst of changes. Pure, so the policy is testable without processes. */
@@ -194,10 +206,11 @@ export async function supervise(o: SuperviseOptions): Promise<void> {
         const plan = planFor([...pending]); pending.clear();
         if (plan.rebuild) {
           log('web source changed: rebuilding the UI');
-          if (await run('npm', ['--workspace', 'packages/web', 'run', '--silent', 'build', '--', '--outDir', 'dist.next'])) {
-            rmSync(join(WEB_DIR, 'dist.next'), { recursive: true, force: true });
+          const outDir = webBuildDir();
+          if (await run('npm', ['--workspace', 'packages/web', 'run', '--silent', 'build', '--', '--outDir', outDir])) {
+            rmSync(join(WEB_DIR, outDir), { recursive: true, force: true });
             log('web build failed; the previous UI stays in place');
-          } else swapWebBuild(WEB_DIR);
+          } else swapWebBuild(WEB_DIR, outDir);
         }
         if (!plan.restart) continue;
         // Drain rather than interrupt: agents run most of the day, so an idle gap has to be made. The
