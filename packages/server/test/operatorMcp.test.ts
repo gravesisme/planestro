@@ -8,7 +8,7 @@ import { makeFixture } from './helpers.ts';
 import { startServer } from '../src/server.ts';
 import { MockEngine } from '../src/engine/MockEngine.ts';
 import { DataStore } from '../src/store/DataStore.ts';
-import { OPERATOR_TOOLS, OPERATOR_READ_TOOLS, OPERATOR_WRITE_TOOLS, operatorMcpUrl } from '../src/routes/mcp.ts';
+import { OPERATOR_TOOLS, OPERATOR_READ_TOOLS, OPERATOR_WRITE_TOOLS, OPERATOR_DECISION_TOOLS, operatorMcpUrl } from '../src/routes/mcp.ts';
 import { instancePath } from '../src/instances.ts';
 
 // What the Agent SDK is handed for a worker or orchestrator turn: the MCP servers, and the tools of
@@ -106,6 +106,50 @@ describe('the operator MCP endpoint (#175, step 2)', () => {
       expect((await client.listTools()).tools.map((t) => t.name)).not.toContain('create_item');
       await expect(client.callTool({ name: 'create_item', arguments: { title: 'Late' } })).resolves.toMatchObject({ isError: true });
       expect(srv.store.listItems().map((i) => i.file.frontmatter.title)).not.toContain('Late');
+    } finally { await client.close(); await srv.engine.stop(); srv.server.close(); srv.store.close(); }
+  });
+
+  it('edits, note links and decisions: each behind its own opt-in, as the board does them, recorded as [operator]', async () => {
+    const { dataDir } = makeFixture();
+    const port = await freePort();
+    const srv = await startServer({ dataDir, port, log: () => {}, engineFactory: (s, em) => new MockEngine(s, em) });
+    const client = new Client({ name: 'test', version: '1' });
+    try {
+      await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`)));
+      const names = async () => (await client.listTools()).tools.map((t) => t.name).sort();
+      expect(await names()).toEqual([...OPERATOR_READ_TOOLS].sort());
+      srv.store.updateConfig((d) => { d.setIn(['operator_mcp', 'allow_writes'], true); d.setIn(['operator_mcp', 'allow_actions'], true); });
+      // Acting on items never grants the decisions: those need operator_mcp.allow_decisions.
+      for (const t of OPERATOR_DECISION_TOOLS) expect(await names()).not.toContain(t);
+      srv.store.updateConfig((d) => { d.setIn(['operator_mcp', 'allow_decisions'], true); });
+      expect(await names()).toEqual([...OPERATOR_TOOLS].sort());
+
+      const item = srv.store.createItem({ title: 'Cave map', description: 'old' });
+      const edited = text(await client.callTool({ name: 'edit_item', arguments: { id: item.id, priority: 'high', notes: 'Keep the torches.', description: 'new' } }));
+      expect(edited).toMatchObject({ id: item.id, priority: 'high' });
+      const file = srv.store.requireItem(item.id).file;
+      expect(file.sections.find((s) => s.title === 'Notes')!.body).toBe('Keep the torches.');
+      expect(file.sections.find((s) => s.title === 'Description')!.body).toBe('new');
+      expect((await client.callTool({ name: 'edit_item', arguments: { id: item.id, category: 'Nope' } })).isError).toBe(true);
+      // Nothing that starts, holds or merges work is editable here.
+      expect(Object.keys(((await client.listTools()).tools.find((t) => t.name === 'edit_item')!.inputSchema as any).properties).sort()).toEqual(['category', 'depends_on', 'description', 'id', 'notes', 'parent', 'priority', 'release', 'title']);
+
+      const note = srv.store.journal.append({ type: 'orchestrator.planestro_note', actor: 'orchestrator', data: { text: 'A tool was missing.' } });
+      expect(text(await client.callTool({ name: 'list_notes', arguments: { open: true } }))).toEqual([expect.objectContaining({ ts: note.ts, text: 'A tool was missing.', issues: [], handled: false })]);
+      expect(text(await client.callTool({ name: 'mark_note', arguments: { note: note.ts, issues: [42] } }))).toMatchObject({ issues: [{ number: 42 }] });
+      expect(text(await client.callTool({ name: 'list_notes', arguments: { open: true } }))).toEqual([]);
+
+      srv.store.mutateItem(item.id, [{ set: { status: 'PLAN_READY' } }], 'engine');
+      expect(text(await client.callTool({ name: 'reject_plan', arguments: { id: item.id, message: 'Split the torches out.' } })).item.status).toBe('PLAN_IN_PROGRESS');
+      srv.store.mutateItem(item.id, [{ set: { status: 'PLAN_READY' } }], 'engine');
+      expect(text(await client.callTool({ name: 'approve_plan', arguments: { id: item.id, notes: 'Go.' } })).item.status).toBe('IN_PROGRESS');
+      expect(text(await client.callTool({ name: 'close_as_done', arguments: { id: item.id, reason: 'landed in #9' } })).item.status).toBe('FINISHED');
+      const activity = srv.store.requireItem(item.id).file.sections.find((s) => s.title === 'Activity')!.body;
+      expect(activity).toMatch(/\[operator\] approval notes: Go\./);
+      expect(activity).toMatch(/\[operator\] closed as done without a pull request: landed in #9/);
+      expect(srv.store.journal.read({ type: 'operator_mcp.action' }).map((e) => e.data?.tool)).toEqual(['edit_item', 'reject_plan', 'approve_plan', 'close_as_done']);
+      // A discard keeps the remote branch: its deletion is the user's tick on the board.
+      expect(Object.keys(((await client.listTools()).tools.find((t) => t.name === 'discard_item')!.inputSchema as any).properties).sort()).toEqual(['id', 'reason']);
     } finally { await client.close(); await srv.engine.stop(); srv.server.close(); srv.store.close(); }
   });
 
