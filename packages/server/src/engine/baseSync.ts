@@ -199,6 +199,13 @@ export class BaseSync {
     // held-rebase continuation from there, instead of a refusal that pointed the orchestrator back at the same loop.
     if (!epic && d.flavor === 'worker' && fm.status === 'IN_REVIEW') {
       if (!fm.blocked) return `not needed: ${id} is in review, and the merge pipeline rebases its pull request onto its base before it merges; a conflict there goes to its session as planestro's held rebase`;
+      // A message on any other stop is the session's next instruction (#486): re-entering the pipeline only put it in
+      // Activity, and HH-610's fix for a red run was lost while CI ran the failing code again. The pipeline syncs after it.
+      const message = opts.unblock?.message?.trim();
+      if (message && fm.blocked_reason !== 'sync_conflict') {
+        await this.ctx.unblock(id, message, by, { fresh });
+        return `in review, so the session resumes with your message${fresh ? ' (a fresh session)' : ''}; the merge pipeline rebases its pull request onto its base once it has committed, before it merges`;
+      }
       return `in review, so the merge pipeline syncs it: ${await this.ctx.retryOp(id, by, opts.unblock?.message?.trim() || undefined)}`;
     }
     if (epic ? fm.status !== 'IN_PROGRESS' || !fm.branch : d.flavor !== 'worker' || !['PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS'].includes(fm.status)) return `not possible: ${id} is ${epic ? 'an epic that is not open' : `${fm.status}${d.flavor !== 'worker' ? ` (${d.flavor})` : ''}`}; only a worker item planning or in progress, or an open epic, is synced this way${fm.status === 'IN_REVIEW' ? ' (the merge pipeline syncs a pull request; retry_op re-enters it)' : ''}`;
@@ -395,8 +402,10 @@ export class BaseSync {
     const base = held.base;
     const { clean, dirty } = await this.ctx.worktreeDirt(cwd);
     if (!clean) { await this.failHeldRebase(id, `it left uncommitted changes (${dirty.slice(0, 5).join(', ')})`); return true; }
-    if (!(await this.ctx.ports.git.isAncestor(cwd, `origin/${base}`, 'HEAD'))) { await this.failHeldRebase(id, `the result does not contain origin/${base}`); return true; }
-    if ((await this.ctx.ports.git.aheadBehind(cwd, `origin/${base}`, 'HEAD')).ahead === 0) { await this.failHeldRebase(id, `the result has none of the branch's own commits left on origin/${base}`); return true; }
+    // Checked against the tip it rebased onto, not origin/<base> now (#485): HH-611 merged while HH-608's session resolved
+    // its conflicts, and the finished rebase was thrown away. A base that moved since is the merge pipeline's next sync.
+    if (!(await this.ctx.ports.git.isAncestor(cwd, held.base_sha, 'HEAD'))) { await this.failHeldRebase(id, `the result does not contain origin/${base} (${held.base_sha.slice(0, 7)})`); return true; }
+    if ((await this.ctx.ports.git.aheadBehind(cwd, held.base_sha, 'HEAD')).ahead === 0) { await this.failHeldRebase(id, `the result has none of the branch's own commits left on origin/${base} (${held.base_sha.slice(0, 7)})`); return true; }
     let head = r.head;
     let note = '';
     if (took.length) {

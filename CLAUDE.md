@@ -6,7 +6,8 @@ a prompt library, a journal), deterministic code runs the git / GitHub / CI
 mechanics, and model sessions are consulted only for judgment. TypeScript,
 Node 24, npm workspaces: `packages/shared` (schema + file codecs + pure logic),
 `packages/server` (store, engine, Hono API, CLI), `packages/web` (React + Vite).
-`npm test` (vitest), `npm run typecheck`, `npm run build`, `npm run dev` /
+`npm test` (vitest), `npm run typecheck`, `npm run build`, `npm run e2e`
+(Playwright, after build: the board and item page in Chromium against the sample), `npm run dev` /
 `npm run dev:web` (Vite on :5173 proxies to the server on :4300). `AGENTS.md`
 is a byte-identical copy of this file for Codex, held together by a test: edit
 one, then copy it over the other.
@@ -139,6 +140,7 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   it never goes to triage, and only the user's picks resume the worker. A role needs `pick` takes (#318): the user keeps
   up to that many and regenerates the rest (note optional); the worker re-auditions with them in `kept` (locked, still
   served) until every role is filled. The #207 shape (`{take}` / `{regenerate}`, `allow_regenerate`) still reads.
+  A Codex exec worker (no planestro tools) carries `attach` and `audition` in its final message, applied through the same tools (#491).
 - A worker's hand-off for review (#355, #372) is `review_handoff` (operational): at `report_done`, the managed
   pictures attached since the previous one (`attached`) and its advisory `flags` (`{path, cell?, reason, severity?}`,
   also added by `add_note`). The item page shows them first (flagged first, compare pairs grouped by name); flags never
@@ -187,8 +189,9 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   `test_runs.patterns` (Bash on Claude, or a run_heavy batch) journals one `test.run` with the worktree's tree as it ended (#347);
   whole-suite runs and repeats on a tree unchanged since that command's green run are the report's wasted runs, never refused.
   The daily efficiency audit (#348, `efficiency_audit`, off by default) builds its digest of these in code (`auditDigest`) and
-  spends one capped wake on the orchestrator's model whose only tool files one planestro feedback note (or a line on the last
-  one, while it stands unacted); `efficiency.audit` and the slot's `op.begin` are its memory, so a slot never runs twice.
+  spends one capped wake on the orchestrator's model whose only tool files one planestro feedback note (or a line on that key's
+  note while it stands unacted; a key already filed as an issue or handled is `nothing_new`, no note); `efficiency.audit` and
+  the slot's `op.begin` are its memory, so a slot never runs twice. Settings → Orchestrator lists every run (`GET /efficiency/audits`).
 - A report (`submit_plan`, `submit_breakdown`, `report_done`, `report_blocked`) whose call never reached planestro is applied
   from the turn's record (#167): the port keeps the session's last lost report with its arguments, the engine
   persists it in `op_data.outbox` and applies it through the same tool when the turn ends (or at the next start),
@@ -197,7 +200,7 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   (a `report_done` refused for debug markers resumes the session with the refusal instead). `report_done` is refused
   in words while the branch adds a `planestro:debug-begin`/`-end` line (the `debug` template, #240; `addedLinesWith`). The prompt goes to the SDK as a stream held open while background work runs, so
   stdin is not closed under it (sdk-notes gotcha 11). A drop is shown on the item within the turn (`DropWatch` →
-  `op_data.mcp_drop`, the card's **lost connection**, cleared by the next turn that runs with its connection); a work turn
+  `op_data.mcp_drop`, the card's **lost connection**, cleared once the next turn's first planestro call answers); a work turn
   that ends after one with no report landed or applied blocks `connection_lost`, with the session's last message for the
   orchestrator to recover the report from.
 - An instruction waiting for a slot, pause, drain or provider guard is persisted in `op_data.pending_turn`;
@@ -208,6 +211,7 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   “waiting: saved instruction” and explains admission waits, including an incompatible phase or missing model.
   Restart recovery replays the saved instruction in the compatible session, preserving its answer/ruling
   rather than substituting a generic carry-on prompt.
+  `report_blocked` is refused in words while user messages wait for the session (#491): they go as its next turn, never under a block.
 - A session slot is held only while something drives the item (a turn, an engine step,
   an op), never by an epic. An active item that nothing drives for
   `concurrency.stall_after_min` is carried on once (`driveStalls`), then blocked `stalled`.

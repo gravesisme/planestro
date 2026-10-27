@@ -8,15 +8,20 @@ import { usageReport, dayBefore, USAGE_TURN, USAGE_STAGES, type UsageCell } from
  * single biggest waste. The wake judges; everything it reads is counted here.
  */
 export const EFFICIENCY_AUDIT = 'efficiency.audit';
-/** One audit slot, as it ended: a note filed, yesterday's still standing, skipped, or failed. The slot is its memory. */
+/**
+ * One audit slot, as it ended: a note filed, an unacted note still standing, nothing new (its biggest waste was already
+ * filed as an issue or handled), skipped, or failed. The slot is its memory.
+ */
 export interface AuditRecord {
   slot: string;
-  outcome: 'noted' | 'repeat' | 'skipped' | 'failed';
+  outcome: 'noted' | 'repeat' | 'nothing_new' | 'skipped' | 'failed';
   /** The recommendation's short key (what it is about), to tell a repeat from a new one. */
   key?: string;
   what?: string;
-  /** The note it filed (its journal timestamp), or the one it repeats. */
+  /** The note it filed (its journal timestamp), or the one it repeats or found already acted on. */
   note?: string;
+  /** For `nothing_new`: the issues that note was filed as (none when it was marked handled). */
+  issues?: number[];
   reason?: string;
   usd?: number;
   tokens?: number;

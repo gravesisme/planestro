@@ -604,7 +604,7 @@ export const Config = z.object({
    * opt-in so filing follow-ups never grants acting on items. `allow_permissions` lets those actions allow a parked permission
    * request once; off, they may only deny one.
    */
-  operator_mcp: z.object({ allow_writes: z.boolean().default(false), allow_actions: z.boolean().default(false), allow_permissions: z.boolean().default(false) }).default({ allow_writes: false, allow_actions: false, allow_permissions: false }),
+  operator_mcp: z.object({ allow_writes: z.boolean().default(false), allow_actions: z.boolean().default(false), allow_permissions: z.boolean().default(false), allow_decisions: z.boolean().default(false) }).default({ allow_writes: false, allow_actions: false, allow_permissions: false, allow_decisions: false }),
   feedback: z.object({ issue_repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, 'owner/repo').optional() }).default({}),
   /** Importing the project's GitHub issues as items (#231): with none selected, every open issue with this label is imported. */
   issues: z.object({ import_label: z.string().min(1).optional() }).default({}),

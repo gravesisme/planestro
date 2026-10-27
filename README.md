@@ -260,19 +260,30 @@ in:
 - `list_items`: one summary line per item, filtered by `status`, `epic` (its
   children), `queued` or text `q`.
 - `get_item`: one item in full.
-- `create_item`: with `operator_mcp.allow_writes: true` in `planestro.yml`
-  (off by default), files a new item (title, description, kind, category,
-  priority) to Not yet submitted, marked `created_by: operator_mcp`. It cannot
-  submit, edit or approve anything: starting the work is still yours.
+- `list_notes`: the orchestrator's notes about planestro (the Console's
+  Planestro feedback) and what became of each; `open` for the ones nothing
+  was done with.
+- `create_item`, `edit_item` and `mark_note`: with `operator_mcp.allow_writes:
+  true` in `planestro.yml` (off by default). `create_item` files a new item
+  (title, description, kind, category, priority) to Not yet submitted, marked
+  `created_by: operator_mcp`; `edit_item` changes an item's title, category,
+  priority, release, epic, dependencies, Description or Notes; `mark_note`
+  records the issues a note became, or handled with none. None of them starts,
+  holds or merges work.
 - Item actions, with `operator_mcp.allow_actions: true` (a separate opt-in,
   off by default, so filing items never grants acting on them): `unblock_item` (id, message, fresh),
   `send_message`, `answer_question` (each question to its answer),
   `answer_decision` (an option's label and/or words; an option that carries an
   action stays on the board), `decide_permission` (deny; allow once only with
-  `operator_mcp.allow_permissions`, never an allow rule), `sync_item` and
-  `rerun_ci`. Each takes the engine path the board's button does, and its
-  Activity line says `[operator]`, not `[user]`. Plan approval, merges and
-  discards stay on the board.
+  `operator_mcp.allow_permissions`, never an allow rule), `sync_item`,
+  `rerun_ci` and `file_note` (a note filed as an issue in
+  `feedback.issue_repo`). Each takes the engine path the board's button does,
+  and its Activity line says `[operator]`, not `[user]`.
+- Decisions, with `operator_mcp.allow_decisions: true` (a third opt-in, off by
+  default): `approve_plan` (notes, hold), `reject_plan`, `discard_item` and
+  `close_as_done`, each as the board makes it and recorded as `[operator]`.
+  Approving an epic-shaped plan as one item and deleting a remote branch on a
+  discard stay on the board, and merges are always planestro's.
 
 Register it once per project, at **user scope**, under a name of its own.
 `planestro status` prints each instance's MCP URL:
@@ -321,7 +332,11 @@ dir from the current directory (`planestro.yml`, or `planning/planestro.yml` in
 the repo or its main checkout from a linked worktree), or from `PLANESTRO_DATA_DIR`.
 It runs the CLI from `PLANESTRO_DIR`, else the checkout the plugin was installed
 from, else `../planestro` beside the repo. That checkout needs `npm install`. The registered MCP
-server is the one on `PLANESTRO_URL` (default `http://127.0.0.1:4300`). Install
+server is a small stdio bridge (`scripts/mcp-proxy.mjs`) to the operator endpoint of
+the session's own project: it finds the data dir the same way and reads the URL
+from `<data dir>/.planestro/instance.json`, and refuses a server on that port that
+serves another project. So a session in each repo reaches its own backlog, whatever
+port it runs on; `PLANESTRO_URL`, when set, overrides it. Install
 the plugin at **user scope** (the default): workers load project settings, and a
 project-scope install would put the skill in front of them too.
 

@@ -55,6 +55,6 @@ blocked or awaiting and why; PR and CI; the plan in a few lines; the last five A
 
 **Anything else** is a question about the backlog. Answer it from `get_state`, `list_items` (filters:
 `'{"status":"IN_REVIEW"}'`, `'{"epic":"HH-113"}'`, `'{"queued":true}'`, `'{"q":"text"}'`) and `get_item`
-through the same script. The plugin also registers the `planestro` MCP server (the server on
-`$PLANESTRO_URL`, default `http://127.0.0.1:4300`); its tools are the same, so use them when they are
-connected and the project matches.
+through the same script. The plugin also registers the `planestro` MCP server, a bridge to
+this project's own running server (`$PLANESTRO_URL` overrides it); its tools are the same, so use them when they are
+connected.

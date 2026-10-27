@@ -31,3 +31,14 @@ jobs:
       # The suites drive real git in temp dirs; none of them touches the network, GitHub or Claude.
       - run: npm test
       - run: npm run build
+      # The browser suite: the built app in Chromium against `planestro sample` (dry-run, no network or login).
+      - run: npx playwright install --with-deps chromium
+      - run: npm run e2e
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7

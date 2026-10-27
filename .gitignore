@@ -2,11 +2,16 @@ node_modules/
 dist/
 dist.next/
 dist.old/
+dist.next-*/
+dist.old-*/
 .planestro/
 *.log
 .DS_Store
 spikes/out/
 tmp/
+# Playwright's output (npm run e2e)
+test-results/
+playwright-report/
 # Claude Code's machine-local settings and the worktrees its sessions make here
 .claude/settings.local.json
 .claude/worktrees/

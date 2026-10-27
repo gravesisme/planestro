@@ -1,4 +1,4 @@
-import { noteTitle, type JournalEntry } from '@planestro/shared';
+import { noteTitle, PLANESTRO_REPO, type JournalEntry } from '@planestro/shared';
 import type { DataStore } from '../store/DataStore.ts';
 import type { GhPort, IssueInfo } from './ports.ts';
 
@@ -98,6 +98,19 @@ export function likelyMatches(note: { ts: string; item?: string; text: string },
     .sort((a, b) => b.shared - a.shared)
     .slice(0, 3)
     .map((x) => x.i);
+}
+
+/**
+ * Whether this machine's gh login maintains planestro (may push to its repo): only then is planestro's own tracker
+ * offered for `feedback.issue_repo` in one click. Everyone else keeps the reviewed new-issue page, since notes are
+ * model-written and may name private items. Asked once per process; any failure reads as no.
+ */
+const maintainer = new WeakMap<GhPort, Promise<boolean>>();
+export function maintainsPlanestro(gh: GhPort): Promise<boolean> {
+  if (!gh.canPush) return Promise.resolve(false);
+  let asked = maintainer.get(gh);
+  if (!asked) maintainer.set(gh, asked = gh.canPush(PLANESTRO_REPO).catch(() => false));
+  return asked;
 }
 
 const filing = new Set<string>();

@@ -26,6 +26,9 @@ export type FileNoteOutcome =
   | { outcome: 'filed' | 'linked'; issue: { number: number; url?: string } }
   | { outcome: 'candidates'; candidates: { number: number; title: string; url: string; state: string }[] };
 
+/** One run of the daily efficiency audit (#348), newest first: see AuditRecord in packages/shared/src/auditDigest.ts. */
+export interface AuditRun { ts: string; slot: string; outcome: 'noted' | 'repeat' | 'nothing_new' | 'skipped' | 'failed'; key?: string; what?: string; note?: string; issues?: number[]; reason?: string; usd?: number; tokens?: number }
+
 /** A change to one MCP server (#237): `env` / `headers` set a value, `null` removes it, '' keeps it. */
 export interface McpServerBody { command?: string | null; args?: string[]; url?: string | null; env?: Record<string, string | null>; headers?: Record<string, string | null>; enabled?: boolean }
 /** A server an import could bring in: names only, never a key's value. */
@@ -232,7 +235,9 @@ export const api = {
   reviewAllQuestions: () => req<{ reviewing: string[] }>('POST', '/api/questions/review-all'),
   resolveQuestion: (id: string, status: 'resolved' | 'withdrawn' = 'resolved', resolution?: string) => req<QuestionView>('POST', `/api/questions/${encodeURIComponent(id)}/resolve`, { status, resolution }),
   reopenQuestion: (id: string) => req<QuestionView>('POST', `/api/questions/${encodeURIComponent(id)}/reopen`),
+  feedbackMaintainer: () => req<{ repo: string; maintainer: boolean }>('GET', '/api/orchestrator/notes/maintainer'),
   orchestratorNotes: () => req<NoteView[]>('GET', '/api/orchestrator/notes'),
+  efficiencyAudits: () => req<AuditRun[]>('GET', '/api/efficiency/audits'),
   notesSeen: () => req<{ seen: string }>('GET', '/api/orchestrator/notes/seen'),
   markNotesSeen: (upTo: string) => req<{ seen: string }>('POST', '/api/orchestrator/notes/seen', { up_to: upTo }),
   importableIssues: () => req<ImportableIssues>('GET', '/api/issues/importable'),

@@ -48,3 +48,19 @@ describe('the app shell refuses to load anything from elsewhere', () => {
     expect(appCsp('evil" ; script-src *')).not.toMatch(/evil/);
   });
 });
+
+describe('a server that started before the UI was built serves it once it lands (2026-10-27)', () => {
+  it('says the UI is not built, then serves the page with no restart', async () => {
+    const dist = join(mkdtempSync(join(tmpdir(), 'planestro-web-')), 'dist');
+    const app = new Hono();
+    serveWeb(app, dist);
+    const before = await app.request('/');
+    expect(before.status).toBe(503);
+    expect(await before.text()).toContain('the web UI is not built');
+    mkdirSync(dist);
+    writeFileSync(join(dist, 'index.html'), '<!doctype html><p>board</p>');
+    const after = await app.request('/items/TP-1');
+    expect(after.status).toBe(200);
+    expect(await after.text()).toContain('board');
+  });
+});

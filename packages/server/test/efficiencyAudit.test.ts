@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { USAGE_TURN, EFFICIENCY_AUDIT, auditDigest, dayBefore, isoLocal } from '@planestro/shared';
 import { DataStore } from '../src/store/DataStore.ts';
-import { auditSlotDue, runEfficiencyAudit, previousRecommendation } from '../src/engine/efficiencyAudit.ts';
+import { auditSlotDue, runEfficiencyAudit, previousRecommendation, auditHistory } from '../src/engine/efficiencyAudit.ts';
 import { NOTE_TYPE, NOTE_LINK_TYPE, notesWithLinks } from '../src/engine/feedback.ts';
 import type { CustomTurnOptions, TurnResult } from '../src/engine/ports.ts';
 import { LiveEngine } from '../src/engine/LiveEngine.ts';
@@ -77,7 +77,7 @@ describe('daily efficiency audit (#348)', () => {
     expect(s.journal.read({ type: NOTE_TYPE })).toHaveLength(1);
   });
 
-  it('a waste that is still yesterday\'s unacted note is said on that note, not filed again; once acted on, it files anew', async () => {
+  it('a waste that is still yesterday\'s unacted note is said on that note, not filed again; once acted on, it is nothing new', async () => {
     const s = await setup();
     turn(s, '2026-10-13T12:00:00+00:00', 'HH-1', 3);
     await runEfficiencyAudit(deps(s, auditor(rec)), '2026-10-14T03:30:00+00:00');
@@ -88,12 +88,22 @@ describe('daily efficiency audit (#348)', () => {
     expect(r).toMatchObject({ outcome: 'repeat', key: rec.key });
     expect(s.journal.read({ type: NOTE_TYPE })).toHaveLength(1);
     expect(notesWithLinks(s)[0].links.comments[0]).toContain('still the biggest waste on 2026-10-14');
-    // The user files it as an issue: acted on, so the same waste is a new note the next day.
-    s.journal.append({ type: NOTE_LINK_TYPE, actor: 'user', data: { note: notesWithLinks(s)[0].ts, handled: true } });
+    // The user files it as an issue: acted on, so the same waste again is nothing new, with no note in the Console.
+    s.journal.append({ type: NOTE_LINK_TYPE, actor: 'user', data: { note: notesWithLinks(s)[0].ts, issues: [{ number: 484 }] } });
     expect(previousRecommendation(s)).toMatchObject({ key: rec.key, acted: true });
     turn(s, '2026-10-15T12:00:00+00:00', 'HH-1', 3);
-    expect((await runEfficiencyAudit(deps(s, auditor(rec)), '2026-10-16T03:30:00+00:00')).outcome).toBe('noted');
+    const again: CustomTurnOptions[] = [];
+    expect(await runEfficiencyAudit(deps(s, auditor(rec, again)), '2026-10-16T03:30:00+00:00')).toMatchObject({ outcome: 'nothing_new', key: rec.key, issues: [484] });
+    expect(again[0].prompt).toContain(`\`${rec.key}\` (filed as #484)`);
+    expect(s.journal.read({ type: NOTE_TYPE })).toHaveLength(1);
+    expect(notesWithLinks(s)[0].links.comments).toHaveLength(1);
+    // A different waste in between does not make the old key new again.
+    turn(s, '2026-10-16T12:00:00+00:00', 'HH-1', 3);
+    await runEfficiencyAudit(deps(s, auditor({ ...rec, key: 'planner-cost' })), '2026-10-17T03:30:00+00:00');
+    turn(s, '2026-10-17T12:00:00+00:00', 'HH-1', 3);
+    expect((await runEfficiencyAudit(deps(s, auditor(rec)), '2026-10-18T03:30:00+00:00')).outcome).toBe('nothing_new');
     expect(s.journal.read({ type: NOTE_TYPE })).toHaveLength(2);
+    expect(auditHistory(s).map((h) => h.outcome)).toEqual(['nothing_new', 'noted', 'nothing_new', 'repeat', 'noted']);
   });
 
   it('a wake that files nothing is recorded as failed, and its slot is not run again', async () => {

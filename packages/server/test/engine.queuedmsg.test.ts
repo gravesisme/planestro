@@ -50,6 +50,22 @@ describe('messages wait with a parked question; children read their epic (#128)'
     expect((fm.op_data as any)?.pending_messages ?? []).toEqual([]);
   });
 
+  it('a block over a message the session has not read is refused, and the message is its next turn (#491, LM-66)', async () => {
+    const { store, engine } = await setup();
+    const it = store.createItem({ title: 'Rain art', description: 'x' });
+    store.mutateItem(it.id, [{ set: { status: 'IN_PROGRESS', op_data: { pending_messages: ['Attach the takes with add_note.'] } } }], 'engine');
+    const tools = (engine as any).makeTools(it.id);
+    const answer = await tools.report_blocked('cannot attach images');
+    expect(answer).toMatch(/^Not recorded: the user wrote to you while you worked \(1 message\)[\s\S]*it reaches you as your next message/);
+    const fm = store.requireItem(it.id).file.frontmatter;
+    expect(fm.blocked).toBeFalsy();
+    expect((fm.op_data as any).pending_messages).toEqual(['Attach the takes with add_note.']);
+    expect(getSection(store.requireItem(it.id).file, 'Activity')).toContain('report_blocked refused: 1 message from the user is waiting for the session');
+    store.mutateItem(it.id, [{ set: { op_data: {} } }], 'engine');
+    expect(await tools.report_blocked('cannot attach images')).toMatch(/^Recorded/);
+    expect(store.requireItem(it.id).file.frontmatter.blocked_reason).toBe('agent_blocked');
+  });
+
   it("a child's prompt context carries its epic's Notes after its own", async () => {
     const { store } = await setup();
     const epic = store.createItem({ title: 'Surface update', description: 'x', kind: 'epic' } as any);

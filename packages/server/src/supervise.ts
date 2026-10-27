@@ -23,17 +23,29 @@ const WEB_DIR = join(ROOT, 'packages/web');
 const QUIET_MS = 1500;      // a save-all or a branch switch lands as a burst; act once it settles
 const BUSY_POLL_MS = 5000;
 
+/** Where this supervisor builds the UI: its own folder, so two `serve --watch` on one checkout never share one. */
+export const webBuildDir = (pid = process.pid): string => `dist.next-${pid}`;
+
 /**
- * Puts a finished build (`<webDir>/dist.next`) in place of `<webDir>/dist` with two renames, so the running server
+ * Puts a finished build (`<webDir>/<next>`) in place of `<webDir>/dist` with two renames, so the running server
  * never finds the UI missing: vite empties its outDir first, and a build straight into `dist` left page loads
- * failing on a missing index.html for its whole length (and a failed build left no UI at all).
+ * failing on a missing index.html for its whole length (and a failed build left no UI at all). Two supervisors on one
+ * checkout (HH and LM) rebuild on the same pull: each builds and sets aside in folders of its own, and one that loses
+ * the race keeps the other's build, putting its own `dist` back if it had moved it aside (2026-10-27: a shared
+ * `dist.next` left no `dist` at all).
  */
-export function swapWebBuild(webDir: string): void {
-  const dist = join(webDir, 'dist'), next = join(webDir, 'dist.next'), old = join(webDir, 'dist.old');
-  rmSync(old, { recursive: true, force: true });
-  if (existsSync(dist)) renameSync(dist, old);
-  renameSync(next, dist);
-  rmSync(old, { recursive: true, force: true });
+export function swapWebBuild(webDir: string, nextName = 'dist.next'): void {
+  const dist = join(webDir, 'dist'), next = join(webDir, nextName), old = join(webDir, `dist.old-${process.pid}`);
+  for (const stale of [old, join(webDir, 'dist.old')]) rmSync(stale, { recursive: true, force: true });
+  try { renameSync(dist, old); } catch { /* none yet, or another swap has it in hand */ }
+  try {
+    renameSync(next, dist);
+  } catch {
+    if (!existsSync(join(dist, 'index.html')) && existsSync(old)) { rmSync(dist, { recursive: true, force: true }); renameSync(old, dist); }
+    rmSync(next, { recursive: true, force: true });
+  } finally {
+    rmSync(old, { recursive: true, force: true });
+  }
 }
 
 /** What to do about one burst of changes. Pure, so the policy is testable without processes. */
@@ -111,6 +123,31 @@ export async function waitUntilUp(probe: () => Promise<unknown>, o: { alive: () 
     await nap(o.delayMs ?? 500);
   }
   return o.alive() ? 'timeout' : 'exited';
+}
+
+/** How long a draining server may go unanswered before the restart goes ahead anyway: it is hung, not busy. */
+const UNANSWERED_LIMIT_MS = 120_000;
+
+/**
+ * Wait for a draining server to have nothing running (#90). A poll it does not answer (a 4 s timeout while a turn's
+ * results land, a 5xx) says nothing about its turns, so it is waited out like a busy one; only a server unanswered for
+ * `unansweredMs` straight is restarted regardless, and the caller is told so. On 2026-10-27 one unanswered poll ended
+ * the wait: HH restarted under HH-621's implement turn and killed its `run_heavy` batch three seconds from its result.
+ */
+export async function waitForIdle(
+  peek: () => Promise<{ idle: boolean; running: string[] } | undefined>,
+  o: { stopping: () => boolean; nap: (ms: number) => Promise<unknown>; pollMs?: number; unansweredMs?: number; onBusy?: (running: string[]) => void },
+): Promise<'idle' | 'unanswered' | 'stopping'> {
+  const poll = o.pollMs ?? BUSY_POLL_MS, limit = o.unansweredMs ?? UNANSWERED_LIMIT_MS;
+  let silent = 0, told = false;
+  for (;;) {
+    if (o.stopping()) return 'stopping';
+    const s = await peek();
+    if (s?.idle) return 'idle';
+    if (s) { silent = 0; if (!told) { told = true; o.onBusy?.(s.running); } }
+    else if ((silent += poll) > limit) return 'unanswered';
+    await o.nap(poll);
+  }
 }
 
 /**
@@ -194,21 +231,23 @@ export async function supervise(o: SuperviseOptions): Promise<void> {
         const plan = planFor([...pending]); pending.clear();
         if (plan.rebuild) {
           log('web source changed: rebuilding the UI');
-          if (await run('npm', ['--workspace', 'packages/web', 'run', '--silent', 'build', '--', '--outDir', 'dist.next'])) {
-            rmSync(join(WEB_DIR, 'dist.next'), { recursive: true, force: true });
+          const outDir = webBuildDir();
+          if (await run('npm', ['--workspace', 'packages/web', 'run', '--silent', 'build', '--', '--outDir', outDir])) {
+            rmSync(join(WEB_DIR, outDir), { recursive: true, force: true });
             log('web build failed; the previous UI stays in place');
-          } else swapWebBuild(WEB_DIR);
+          } else swapWebBuild(WEB_DIR, outDir);
         }
         if (!plan.restart) continue;
         // Drain rather than interrupt: agents run most of the day, so an idle gap has to be made. The
         // drain dies with the old process, so there is nothing to undo afterwards (#90: a PAUSE here
         // looked like the user's, was resumed by hand, and could outlive a failed restart).
         const drained = await drainForUpdate();
-        for (let s = await peek(), told = false; s && !s.idle && !stopping; s = await peek()) {
-          if (!told) { told = true; log(`server source changed: ${drained ? 'draining for the update' : 'could not drain; waiting'}, then restarting once this finishes: ${s.running.length ? s.running.join(', ') : 'the running turns'} (Ctrl-C and rerun to restart now)`); }
-          await nap(BUSY_POLL_MS);
-        }
-        if (stopping) break;
+        const waited = await waitForIdle(peek, {
+          stopping: () => stopping, nap,
+          onBusy: (running) => log(`server source changed: ${drained ? 'draining for the update' : 'could not drain; waiting'}, then restarting once this finishes: ${running.length ? running.join(', ') : 'the running turns'} (Ctrl-C and rerun to restart now)`),
+        });
+        if (waited === 'stopping' || stopping) break;
+        if (waited === 'unanswered') log(`the server has not answered ${base}/api/state for ${UNANSWERED_LIMIT_MS / 60_000} min; restarting it anyway`);
         log(`server source changed: restarting (${new Date().toISOString()})`);
         await stop();
         if (stopping) break;

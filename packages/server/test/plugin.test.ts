@@ -1,9 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import { createServer } from 'node:net';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { OPERATOR_READ_TOOLS } from '../src/routes/mcp.ts';
+import { startServer } from '../src/server.ts';
+import { MockEngine } from '../src/engine/MockEngine.ts';
+import { makeFixture } from './helpers.ts';
+
+const freePort = () => new Promise<number>((done) => { const s = createServer(); s.listen(0, '127.0.0.1', () => { const p = (s.address() as { port: number }).port; s.close(() => done(p)); }); });
 
 // The Claude Code plugin (#175, step 3): plugins/planestro, listed by .claude-plugin/marketplace.json.
 const ROOT = resolve(import.meta.dirname, '..', '..', '..');
@@ -31,8 +37,42 @@ describe('the Claude Code plugin (#175)', () => {
     expect(skill).toMatch(/never with `run_in_background`/);
   });
 
-  it('registers the running server\'s operator endpoint, port overridable', () => {
-    expect(json(join(PLUGIN, '.mcp.json')).mcpServers.planestro).toEqual({ type: 'http', url: '${PLANESTRO_URL:-http://127.0.0.1:4300}/mcp' });
+  it('registers a stdio bridge to the session\'s own project, not a fixed port (LM-72)', () => {
+    expect(json(join(PLUGIN, '.mcp.json')).mcpServers.planestro).toEqual({ command: 'node', args: ['${CLAUDE_PLUGIN_ROOT}/scripts/mcp-proxy.mjs'] });
+  });
+
+  it('the bridge reaches the server its project recorded, refuses another project\'s, and says why when none runs', async () => {
+    const { dataDir } = makeFixture();
+    const port = await freePort();
+    const srv = await startServer({ dataDir, port, log: () => {}, engineFactory: (s, em) => new MockEngine(s, em) });
+    try {
+      const project = (record?: object) => {
+        const root = realpathSync(mkdtempSync(join(tmpdir(), 'planestro-proj-')));
+        mkdirSync(join(root, 'planning', '.planestro'), { recursive: true });
+        writeFileSync(join(root, 'planning', 'planestro.yml'), 'x: 1\n');
+        if (record) writeFileSync(join(root, 'planning', '.planestro', 'instance.json'), JSON.stringify(record));
+        return root;
+      };
+      // The fixture's own data dir, with the record a start writes (its pid long gone: never the evidence).
+      writeFileSync(join(dataDir, '.planestro', 'instance.json'), JSON.stringify({ data_dir: dataDir, url: `http://127.0.0.1:${port}`, pid: 999999 }));
+      const ask = (cwd: string) => new Promise<any[]>((done) => {
+        const p = spawn(process.execPath, [join(PLUGIN, 'scripts', 'mcp-proxy.mjs')], { cwd, env: { ...process.env, PLANESTRO_URL: '', CLAUDE_PROJECT_DIR: cwd, PLANESTRO_DATA_DIR: '' } });
+        let buf = ''; const got: any[] = [];
+        p.stdout.on('data', (d) => { buf += d; let i; while ((i = buf.indexOf('\n')) >= 0) { got.push(JSON.parse(buf.slice(0, i))); buf = buf.slice(i + 1); } if (got.length === 2) { p.kill(); done(got.sort((a, b) => a.id - b.id)); } });
+        p.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } } })}\n`);
+        p.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`);
+        setTimeout(() => p.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' })}\n`), 200);
+      });
+      const [init, list] = await ask(dataDir);
+      expect(init.result.instructions).toContain(`(${dataDir})`);
+      expect(list.result.tools.map((t: { name: string }) => t.name).sort()).toEqual([...OPERATOR_READ_TOOLS].sort());
+      // Another project whose record points at that port: the server there is not its own.
+      const [other] = await ask(project({ url: `http://127.0.0.1:${port}`, pid: 1 }));
+      expect(other.result.instructions).toMatch(/^No planestro backlog is reachable: .* serves another project/);
+      const [none, empty] = await ask(project());
+      expect(none.result.instructions).toMatch(/planestro has not been started for .*planning/);
+      expect(empty.result.tools).toEqual([]);
+    } finally { await srv.engine.stop(); srv.server.close(); srv.store.close(); }
   });
 
   it('its script is executable and finds the data dir from the repo, a subdirectory or a linked worktree', () => {

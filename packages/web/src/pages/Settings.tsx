@@ -6,7 +6,7 @@ import {
 } from '@planestro/shared/view';
 // A key's default is read from the zod schema, so this lazy page alone loads the root entry and zod with it (#408).
 import { settingChanged, settingDefault } from '@planestro/shared';
-import { api, type McpImportCandidate, type McpServerBody, type PairingCode, type State } from '../api.ts';
+import { api, type AuditRun, type McpImportCandidate, type McpServerBody, type PairingCode, type State } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { DesktopNotifications } from '../components/DesktopNotifications.tsx';
 import { ActionButton } from '../components/ActionButton.tsx';
@@ -86,6 +86,7 @@ export function SettingsPage() {
             </div>
           ))}
           {!searching && tab === 'workers' && <RulesInEffect state={state} />}
+          {!searching && tab === 'orchestrator' && <AuditHistory enabled={Boolean(state.config.efficiency_audit?.enabled)} />}
           {!rows.length && <p className="settings-empty">Nothing matches. Try a key like <code>ci.</code> or a word like “budget”.</p>}
         </section>
       </div>
@@ -113,6 +114,40 @@ function StorageBlock({ state }: { state: State }) {
           {state.invalid.length > 0 && <ul className="small settings-invalid">{state.invalid.map((i) => <li key={i.path}><code>{i.path}</code>: {i.error}</li>)}</ul>}
         </div>
         <div className="ctl"><ActionButton working="Committing…" onAct={() => act(() => api.gitCommit())}>Commit now</ActionButton><ActionButton working="Pushing…" onAct={() => act(() => api.gitPush())}>Push</ActionButton><ActionButton working="Reloading…" onAct={() => act(() => api.reload())} title="Read every file again: for edits made by hand while planestro runs">Reload from disk</ActionButton></div>
+      </div>
+    </div>
+  );
+}
+
+const AUDIT_OUTCOME: Record<AuditRun['outcome'], string> = { noted: 'new note', repeat: 'still open', nothing_new: 'nothing new', skipped: 'skipped', failed: 'failed' };
+
+/** What the daily efficiency audit found each day (#348), including the days it found nothing new and filed no note. */
+function AuditHistory({ enabled }: { enabled: boolean }) {
+  const [runs, setRuns] = useState<AuditRun[] | null>(null);
+  useEffect(() => { api.efficiencyAudits().then(setRuns, () => setRuns([])); }, []);
+  if (!runs || (!runs.length && !enabled)) return null;
+  const spent = (r: AuditRun) => [r.usd !== undefined ? `$${r.usd.toFixed(2)}` : '', r.tokens ? `${Math.round(r.tokens / 1000)}k tok` : ''].filter(Boolean).join(' · ');
+  return (
+    <div className="settings-group">
+      <h3>Audit history</h3>
+      <div className="settings-row wide">
+        <div>
+          <div className="label">What each audit found</div>
+          <div className="sum">A new note goes to Planestro feedback in the Console. A waste whose note is still open gets a line on that note; one already filed as an issue or handled is recorded here as nothing new, with no note.</div>
+          {runs.length
+            ? <ul className="audit-history">{runs.map((r) => (
+                <li key={r.ts}>
+                  <span className="when">{r.slot.slice(0, 10)}</span>
+                  <span className={`chip ${r.outcome === 'failed' ? 'warn' : ''}`}>{AUDIT_OUTCOME[r.outcome] ?? r.outcome}</span>
+                  <span className="what">
+                    {r.outcome === 'nothing_new' ? <>No new way to make planestro more efficient: the biggest waste is still <code>{r.key}</code>, already {r.issues?.length ? <>filed as {r.issues.map((n) => `#${n}`).join(', ')}</> : 'handled'}.</> : r.what ?? r.reason ?? ''}
+                    {r.outcome !== 'nothing_new' && r.key && <> <code>{r.key}</code></>}
+                  </span>
+                  {spent(r) && <span className="small muted">{spent(r)}</span>}
+                </li>
+              ))}</ul>
+            : <div className="meta"><span>No audit has run yet.</span></div>}
+        </div>
       </div>
     </div>
   );
@@ -160,11 +195,20 @@ function SettingRow({ def, value, changed, state }: { def: SettingDef; value: un
           {def.detail && <button className="link" aria-expanded={more} onClick={() => setMore(!more)}>{more ? 'Less' : 'Learn more'}</button>}
         </div>
         {more && def.detail && <div className="more">{def.detail.map((p) => <p key={p}>{p}</p>)}</div>}
+        {def.key === 'feedback.issue_repo' && !value && <MaintainerOffer def={def} />}
         {def.key === 'engine.mode' && modeNote(state.engine.modes) && <div className="sum rules-error" role="status">{modeNote(state.engine.modes)}</div>}
       </div>
       <Control def={def} value={value} state={state} />
     </div>
   );
+}
+
+/** planestro's own tracker in one click, offered only to a login that can push to it: anyone else's notes stay reviewed. */
+function MaintainerOffer({ def }: { def: SettingDef }) {
+  const [repo, setRepo] = useState<string>();
+  useEffect(() => { api.feedbackMaintainer().then((r) => r.maintainer && setRepo(r.repo), () => {}); }, []);
+  if (!repo) return null;
+  return <div className="sum"><ActionButton working="Saving…" onAct={() => save(def, repo)}>Use {repo}</ActionButton> <span className="small muted">Your GitHub login maintains planestro, so its notes can go straight to its tracker.</span></div>;
 }
 
 /** A warning a row earns from the rest of the config, e.g. a fallback switch whose model has no fallback. */
