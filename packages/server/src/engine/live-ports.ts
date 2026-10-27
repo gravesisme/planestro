@@ -580,6 +580,9 @@ export class LiveGhPort implements GhPort {
     const url = (await gh(['issue', 'create', '--repo', repo, '--title', a.title, '--body', a.body])).trim().split('\n').pop()!;
     return { number: Number(url.split('/').pop()), url };
   }
+  async canPush(repo: string): Promise<boolean> {
+    return (await ghRead(['api', `repos/${repo}`, '--jq', '.permissions.push // false'])).trim() === 'true';
+  }
   async closePr(repo: string, number: number, comment: string) { await gh(['pr', 'close', String(number), '--repo', repo, '--comment', comment]); }
   async reopenPr(repo: string, number: number) { await gh(['pr', 'reopen', String(number), '--repo', repo]); }
   async prClosedBy(repo: string, number: number): Promise<PrClosure | null> {
