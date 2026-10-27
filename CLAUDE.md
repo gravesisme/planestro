@@ -140,6 +140,7 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   it never goes to triage, and only the user's picks resume the worker. A role needs `pick` takes (#318): the user keeps
   up to that many and regenerates the rest (note optional); the worker re-auditions with them in `kept` (locked, still
   served) until every role is filled. The #207 shape (`{take}` / `{regenerate}`, `allow_regenerate`) still reads.
+  A Codex exec worker (no planestro tools) carries `attach` and `audition` in its final message, applied through the same tools (#491).
 - A worker's hand-off for review (#355, #372) is `review_handoff` (operational): at `report_done`, the managed
   pictures attached since the previous one (`attached`) and its advisory `flags` (`{path, cell?, reason, severity?}`,
   also added by `add_note`). The item page shows them first (flagged first, compare pairs grouped by name); flags never
@@ -210,6 +211,7 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   “waiting: saved instruction” and explains admission waits, including an incompatible phase or missing model.
   Restart recovery replays the saved instruction in the compatible session, preserving its answer/ruling
   rather than substituting a generic carry-on prompt.
+  `report_blocked` is refused in words while user messages wait for the session (#491): they go as its next turn, never under a block.
 - A session slot is held only while something drives the item (a turn, an engine step,
   an op), never by an epic. An active item that nothing drives for
   `concurrency.stall_after_min` is carried on once (`driveStalls`), then blocked `stalled`.
