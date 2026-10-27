@@ -1,6 +1,6 @@
 /**
  * The session's lost connection to planestro, while the item still carries it (#167, HH-377): `op_data.mcp_drop`, set at the
- * first error of the turn and cleared by the next turn that runs without one.
+ * first error of the turn and cleared by the next turn once its first planestro call answers (else as it ends without one).
  */
 export function connectionDropOf(fm: { op_data?: Record<string, unknown> }): { error: string; at: string; tool?: string; finalMessage?: string } | undefined {
   const d = fm.op_data?.mcp_drop as { error?: unknown; at?: unknown; tool?: unknown; final_message?: unknown } | undefined;

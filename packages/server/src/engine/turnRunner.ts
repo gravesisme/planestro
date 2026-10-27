@@ -407,7 +407,7 @@ export class TurnRunner {
         // Scoped rules (…@worktree) are planestro's to judge in onPermission; the SDK's allow-list never sees them.
         allowedTools: sdkRules([...BASE_ALLOWED[phase], ...rules.allow, ...extraAllowed], rules),
         extraDirs: [this.ctx.store.dataDir], maxBudgetUsd: turnCap,
-        tools: this.ctx.makeTools(id),
+        tools: this.heldConnection(id, this.ctx.makeTools(id)),
         onUndelivered: (r) => this.recordOutbox(id, r),
         onConnectionDrop: (d) => this.recordDrop(id, d),
         onCommandRan: (r) => this.ctx.recordTestRun(id, cwd, r, 'bash'),
@@ -616,6 +616,28 @@ export class TurnRunner {
       { set: { op_data: { ...(cur.op_data ?? {}), mcp_drop: d } } },
       { activity: { actor: 'app', text: `the session lost its connection to planestro at ${d.at}${d.tool ? ` (on ${d.tool})` : ''}: ${d.error}. Its planestro calls and permission requests may not arrive until a new turn` } },
     ], 'engine');
+  }
+
+  /**
+   * The turn's tools, the first of which to answer clears a drop an earlier turn left: its connection is shown to work, so
+   * the card no longer says "lost connection" beside "implementing…" until the turn ends (HH-621). A drop this turn made
+   * stays until it is settled (settleDrop).
+   */
+  private heldConnection(id: string, tools: TurnTools): TurnTools {
+    const earlier = (this.ctx.store.getItem(id)?.file.frontmatter.op_data?.mcp_drop as { at?: string } | undefined)?.at;
+    if (earlier === undefined) return tools;
+    let checked = false;
+    const clear = () => {
+      if (checked) return;
+      checked = true;
+      const fm = this.ctx.store.getItem(id)?.file.frontmatter;
+      if (!fm?.op_data || (fm.op_data.mcp_drop as { at?: string } | undefined)?.at !== earlier) return;
+      const { mcp_drop: _gone, ...rest } = fm.op_data;
+      this.ctx.store.mutateItem(id, [{ set: { op_data: rest } }, { activity: { actor: 'app', text: "the session's connection to planestro answered this turn; the earlier drop is cleared" } }], 'engine');
+    };
+    const held = {} as Record<string, unknown>;
+    for (const [k, f] of Object.entries(tools)) held[k] = typeof f === 'function' ? async (...a: unknown[]) => { const r = await (f as (...x: unknown[]) => Promise<unknown>)(...a); clear(); return r; } : f;
+    return held as unknown as TurnTools;
   }
 
   /**

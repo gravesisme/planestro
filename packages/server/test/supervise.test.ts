@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { planFor, busyTurns, restartIdle, acquireSupervisorLock, releaseSupervisorLock, supervisorLockPath, childExitVerdict, waitUntilUp, swapWebBuild, webBuildDir } from '../src/supervise.ts';
+import { planFor, busyTurns, restartIdle, acquireSupervisorLock, releaseSupervisorLock, supervisorLockPath, childExitVerdict, waitUntilUp, swapWebBuild, webBuildDir, waitForIdle } from '../src/supervise.ts';
 import { createServer } from 'node:net';
 import { makeFixture } from './helpers.ts';
 import { startServer } from '../src/server.ts';
@@ -28,6 +28,22 @@ describe('serve --watch policy', () => {
     rmSync(join(web, 'dist'), { recursive: true });
     swapWebBuild(web);
     expect(readFileSync(join(web, 'dist/index.html'), 'utf8')).toBe('first');
+  });
+  it('a drain waits out a poll the server does not answer, and goes ahead only on idle or a hung server (2026-10-27)', async () => {
+    const nap = async () => undefined;
+    const busy = { idle: false, running: ['HH-621: implement turn'] };
+    // HH-621 was mid run_heavy: one unanswered poll used to restart under it.
+    let polls = [busy, undefined, undefined, busy, { idle: true, running: [] }];
+    const told: string[][] = [];
+    expect(await waitForIdle(async () => polls.shift(), { stopping: () => false, nap, onBusy: (r) => told.push(r) })).toBe('idle');
+    expect(polls).toEqual([]);
+    expect(told).toEqual([['HH-621: implement turn']]);
+    // Unanswered for longer than the limit: hung, restarted anyway. An answer in between resets the count.
+    polls = [busy, undefined, undefined, busy, undefined, undefined, undefined];
+    let n = 0;
+    expect(await waitForIdle(async () => { n++; return polls.shift(); }, { stopping: () => false, nap, pollMs: 5, unansweredMs: 10 })).toBe('unanswered');
+    expect(n).toBe(7);
+    expect(await waitForIdle(async () => busy, { stopping: () => true, nap })).toBe('stopping');
   });
   it('two supervisors on one checkout build apart, and a swap whose build is gone keeps the UI (2026-10-27)', () => {
     expect(webBuildDir(101)).not.toBe(webBuildDir(102));

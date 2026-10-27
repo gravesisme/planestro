@@ -199,7 +199,7 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   (a `report_done` refused for debug markers resumes the session with the refusal instead). `report_done` is refused
   in words while the branch adds a `planestro:debug-begin`/`-end` line (the `debug` template, #240; `addedLinesWith`). The prompt goes to the SDK as a stream held open while background work runs, so
   stdin is not closed under it (sdk-notes gotcha 11). A drop is shown on the item within the turn (`DropWatch` →
-  `op_data.mcp_drop`, the card's **lost connection**, cleared by the next turn that runs with its connection); a work turn
+  `op_data.mcp_drop`, the card's **lost connection**, cleared once the next turn's first planestro call answers); a work turn
   that ends after one with no report landed or applied blocks `connection_lost`, with the session's last message for the
   orchestrator to recover the report from.
 - An instruction waiting for a slot, pause, drain or provider guard is persisted in `op_data.pending_turn`;

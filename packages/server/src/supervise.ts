@@ -125,6 +125,31 @@ export async function waitUntilUp(probe: () => Promise<unknown>, o: { alive: () 
   return o.alive() ? 'timeout' : 'exited';
 }
 
+/** How long a draining server may go unanswered before the restart goes ahead anyway: it is hung, not busy. */
+const UNANSWERED_LIMIT_MS = 120_000;
+
+/**
+ * Wait for a draining server to have nothing running (#90). A poll it does not answer (a 4 s timeout while a turn's
+ * results land, a 5xx) says nothing about its turns, so it is waited out like a busy one; only a server unanswered for
+ * `unansweredMs` straight is restarted regardless, and the caller is told so. On 2026-10-27 one unanswered poll ended
+ * the wait: HH restarted under HH-621's implement turn and killed its `run_heavy` batch three seconds from its result.
+ */
+export async function waitForIdle(
+  peek: () => Promise<{ idle: boolean; running: string[] } | undefined>,
+  o: { stopping: () => boolean; nap: (ms: number) => Promise<unknown>; pollMs?: number; unansweredMs?: number; onBusy?: (running: string[]) => void },
+): Promise<'idle' | 'unanswered' | 'stopping'> {
+  const poll = o.pollMs ?? BUSY_POLL_MS, limit = o.unansweredMs ?? UNANSWERED_LIMIT_MS;
+  let silent = 0, told = false;
+  for (;;) {
+    if (o.stopping()) return 'stopping';
+    const s = await peek();
+    if (s?.idle) return 'idle';
+    if (s) { silent = 0; if (!told) { told = true; o.onBusy?.(s.running); } }
+    else if ((silent += poll) > limit) return 'unanswered';
+    await o.nap(poll);
+  }
+}
+
 /**
  * `planestro serve --watch`: keep one server child alive and current. Server or shared source
  * changes restart it — but never under a running agent turn: the server drains for an update
@@ -217,11 +242,12 @@ export async function supervise(o: SuperviseOptions): Promise<void> {
         // drain dies with the old process, so there is nothing to undo afterwards (#90: a PAUSE here
         // looked like the user's, was resumed by hand, and could outlive a failed restart).
         const drained = await drainForUpdate();
-        for (let s = await peek(), told = false; s && !s.idle && !stopping; s = await peek()) {
-          if (!told) { told = true; log(`server source changed: ${drained ? 'draining for the update' : 'could not drain; waiting'}, then restarting once this finishes: ${s.running.length ? s.running.join(', ') : 'the running turns'} (Ctrl-C and rerun to restart now)`); }
-          await nap(BUSY_POLL_MS);
-        }
-        if (stopping) break;
+        const waited = await waitForIdle(peek, {
+          stopping: () => stopping, nap,
+          onBusy: (running) => log(`server source changed: ${drained ? 'draining for the update' : 'could not drain; waiting'}, then restarting once this finishes: ${running.length ? running.join(', ') : 'the running turns'} (Ctrl-C and rerun to restart now)`),
+        });
+        if (waited === 'stopping' || stopping) break;
+        if (waited === 'unanswered') log(`the server has not answered ${base}/api/state for ${UNANSWERED_LIMIT_MS / 60_000} min; restarting it anyway`);
         log(`server source changed: restarting (${new Date().toISOString()})`);
         await stop();
         if (stopping) break;
