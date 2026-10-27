@@ -332,7 +332,11 @@ dir from the current directory (`planestro.yml`, or `planning/planestro.yml` in
 the repo or its main checkout from a linked worktree), or from `PLANESTRO_DATA_DIR`.
 It runs the CLI from `PLANESTRO_DIR`, else the checkout the plugin was installed
 from, else `../planestro` beside the repo. That checkout needs `npm install`. The registered MCP
-server is the one on `PLANESTRO_URL` (default `http://127.0.0.1:4300`). Install
+server is a small stdio bridge (`scripts/mcp-proxy.mjs`) to the operator endpoint of
+the session's own project: it finds the data dir the same way and reads the URL
+from `<data dir>/.planestro/instance.json`, and refuses a server on that port that
+serves another project. So a session in each repo reaches its own backlog, whatever
+port it runs on; `PLANESTRO_URL`, when set, overrides it. Install
 the plugin at **user scope** (the default): workers load project settings, and a
 project-scope install would put the skill in front of them too.
 
