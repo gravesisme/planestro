@@ -188,8 +188,9 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   `test_runs.patterns` (Bash on Claude, or a run_heavy batch) journals one `test.run` with the worktree's tree as it ended (#347);
   whole-suite runs and repeats on a tree unchanged since that command's green run are the report's wasted runs, never refused.
   The daily efficiency audit (#348, `efficiency_audit`, off by default) builds its digest of these in code (`auditDigest`) and
-  spends one capped wake on the orchestrator's model whose only tool files one planestro feedback note (or a line on the last
-  one, while it stands unacted); `efficiency.audit` and the slot's `op.begin` are its memory, so a slot never runs twice.
+  spends one capped wake on the orchestrator's model whose only tool files one planestro feedback note (or a line on that key's
+  note while it stands unacted; a key already filed as an issue or handled is `nothing_new`, no note); `efficiency.audit` and
+  the slot's `op.begin` are its memory, so a slot never runs twice. Settings → Orchestrator lists every run (`GET /efficiency/audits`).
 - A report (`submit_plan`, `submit_breakdown`, `report_done`, `report_blocked`) whose call never reached planestro is applied
   from the turn's record (#167): the port keeps the session's last lost report with its arguments, the engine
   persists it in `op_data.outbox` and applies it through the same tool when the turn ends (or at the next start),
