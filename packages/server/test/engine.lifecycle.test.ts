@@ -907,7 +907,35 @@ describe('a lost connection to planestro is flagged on the item; an unrecovered 
     expect(store.getItem(item.id)!.file.frontmatter.blocked).toBeUndefined();
     await engine.approvePlan(item.id);
     await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
-    expect(activityOf(store, item.id)).toContain("the session's connection to planestro held this turn; the earlier drop is cleared");
+    // The implement turn's first planestro call cleared it, before the turn ended (HH-621: not beside "implementing…").
+    expect(activityOf(store, item.id)).toContain("the session's connection to planestro answered this turn; the earlier drop is cleared");
+    expect(store.getItem(item.id)!.file.frontmatter.op_data?.mcp_drop).toBeUndefined();
+  });
+
+  it('the next turn clears an earlier drop at its first planestro call that answers, while it still runs (HH-621)', async () => {
+    const seen: { store?: DataStore; flagged?: unknown; turns: string[] } = { turns: [] };
+    const during: unknown[] = [];
+    const port = (world: FakeWorld) => {
+      const inner = dropping('plan', 'delivered', seen)(world);
+      return { async runTurn(o: TurnOptions): Promise<TurnResult> {
+        if (o.phase === 'implement') {
+          const fm = () => seen.store!.listItems()[0].file.frontmatter;
+          during.push(fm().op_data?.mcp_drop);
+          await o.tools.append_activity('starting');
+          during.push(fm().op_data?.mcp_drop, fm().op);
+        }
+        return inner.runTurn(o);
+      } };
+    };
+    const { store, engine } = await setup({ claude: port });
+    seen.store = store;
+    const item = store.createItem({ title: 'Flaky line', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY' && !store.getItem(item.id)!.file.frontmatter.op);
+    await engine.approvePlan(item.id);
+    await waitFor(() => during.length === 3);
+    expect(during).toEqual([DROP, undefined, 'implement_turn']);
   });
 
   it('a turn that ends after a drop with no report to apply stops as connection_lost and wakes the orchestrator with its last message', async () => {
