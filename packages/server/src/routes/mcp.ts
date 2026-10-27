@@ -3,7 +3,9 @@ import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { STATUSES, PRIORITIES, KINDS, decisionOf } from '@planestro/shared';
-import { actingAs, type DataStore, type StoredItem } from '../store/DataStore.ts';
+import { actingAs, type DataStore, type StoredItem, type ItemOp } from '../store/DataStore.ts';
+import { notesWithLinks, fileNote, markNotes } from '../engine/feedback.ts';
+import type { GhPort } from '../engine/ports.ts';
 import type { Engine } from '../engine/Engine.ts';
 import { TOOL_VERSION } from '../config.ts';
 import { listInstances, readInstance, pgidOf, uptime, type Instance } from '../instances.ts';
@@ -17,20 +19,23 @@ import { allowedHosts, hostnameOf } from '../guard.ts';
 // more (#232): submitting stays the user's word (#73). `operator_mcp.allow_actions`, a separate opt-in,
 // adds the item actions a supervising session needs (#365), each through the same engine call as the
 // board's route and written to Activity as `[operator]`, not `[user]`; plan approval, merges and
-// discards stay on the board. It is a different thing from
+// discards stay on the board unless `operator_mcp.allow_decisions`, a third opt-in, offers them too (approve or send back
+// a plan, discard, close as done). Item edits and the feedback notes ride the first two. It is a different thing from
 // the in-process `planestro` server each worker and the orchestrator get (submit_plan, report_done,
 // …), and must never reach them: workers never touch planning state (invariant 1). They run with
 // strictMcpConfig (Claude) or --ignore-user-config (Codex), so a user-scope registration is not
 // inherited, and a project's own MCP servers may not point at an operator endpoint (operatorMcpUrl).
 
 /** The tools this endpoint always offers. */
-export const OPERATOR_READ_TOOLS = ['list_items', 'get_item', 'get_state'] as const;
-/** Listed only with `operator_mcp.allow_writes` (#232); off, they are unknown tools. */
-export const OPERATOR_WRITE_TOOLS = ['create_item'] as const;
+export const OPERATOR_READ_TOOLS = ['list_items', 'get_item', 'get_state', 'list_notes'] as const;
+/** Listed only with `operator_mcp.allow_writes` (#232); off, they are unknown tools. Files only: nothing starts work. */
+export const OPERATOR_WRITE_TOOLS = ['create_item', 'edit_item', 'mark_note'] as const;
 /** Listed only with `operator_mcp.allow_actions` (#365); off, they are unknown tools. */
-export const OPERATOR_ACTION_TOOLS = ['unblock_item', 'send_message', 'answer_question', 'answer_decision', 'decide_permission', 'sync_item', 'rerun_ci'] as const;
+export const OPERATOR_ACTION_TOOLS = ['unblock_item', 'send_message', 'answer_question', 'answer_decision', 'decide_permission', 'sync_item', 'rerun_ci', 'file_note'] as const;
+/** Listed only with `operator_mcp.allow_decisions`: the board's decisions about an item's run, for a supervising session the user directs. */
+export const OPERATOR_DECISION_TOOLS = ['approve_plan', 'reject_plan', 'discard_item', 'close_as_done'] as const;
 /** Every tool this endpoint can offer; operatorMcp.test.ts pins that a worker session gets none of them. */
-export const OPERATOR_TOOLS = [...OPERATOR_READ_TOOLS, ...OPERATOR_WRITE_TOOLS, ...OPERATOR_ACTION_TOOLS] as const;
+export const OPERATOR_TOOLS = [...OPERATOR_READ_TOOLS, ...OPERATOR_WRITE_TOOLS, ...OPERATOR_ACTION_TOOLS, ...OPERATOR_DECISION_TOOLS] as const;
 
 /** Whether a URL is some planestro server's operator endpoint: `/mcp` on a host and port a recorded instance serves, or any loopback `/mcp` on a known port. */
 export function operatorMcpUrl(url: string, instances: (Pick<Instance, 'port'> & Partial<Pick<Instance, 'host' | 'url'>>)[] = [], aliases: readonly string[] = []): boolean {
@@ -115,8 +120,8 @@ type ActingEngine = Engine & {
 
 export function operatorServer(store: DataStore, engine: Engine): McpServer {
   // Read per request (the server is made per request), so turning the key off in Settings takes effect at once.
-  const { allow_writes: writes, allow_actions: actions } = store.config.operator_mcp;
-  const offers = [writes && 'create_item, which files a new item for the user to submit', actions && 'item actions (unblock_item, send_message, answer_question, answer_decision, decide_permission, sync_item, rerun_ci) that act as the board does, recorded in Activity as [operator]'].filter(Boolean).join(', and ');
+  const { allow_writes: writes, allow_actions: actions, allow_decisions: decisions } = store.config.operator_mcp;
+  const offers = [writes && 'create_item, which files a new item for the user to submit, edit_item and mark_note', actions && 'item actions (unblock_item, send_message, answer_question, answer_decision, decide_permission, sync_item, rerun_ci, file_note) that act as the board does, recorded in Activity as [operator]', decisions && 'decisions (approve_plan, reject_plan, discard_item, close_as_done) as the board makes them'].filter(Boolean).join(', and ');
   const server = new McpServer({ name: 'planestro', version: TOOL_VERSION }, { instructions: `The backlog of ${store.config.project.name} (${store.dataDir}), ${offers ? `with ${offers}` : 'read-only'}. get_state for the overview, list_items to find items, get_item for one.` });
   server.registerTool('list_items', {
     description: 'List backlog items, one summary line each (id, title, kind, status, priority, epic, blocked reason, awaiting, needs_you, PR and CI). Filters combine.',
@@ -166,8 +171,96 @@ export function operatorServer(store: DataStore, engine: Engine): McpServer {
       return json(itemSummary(store, item));
     } catch (e) { return { ...json({ error: (e as Error).message }), isError: true }; }
   });
+  server.registerTool('list_notes', {
+    description: "The orchestrator's notes about planestro itself (the Console's Planestro feedback), oldest first, each with what became of it: the issues it was filed as, handled with none, or open. `open` lists only those nothing was done with.",
+    inputSchema: { open: z.boolean().optional().describe('true: only notes not yet filed or handled') },
+    annotations: READ_ONLY,
+  }, async ({ open }) => json(notesWithLinks(store).filter((n) => !open || !(n.links.handled || n.links.issues.length)).map((n) => ({ ts: n.ts, ...(n.item ? { item: n.item } : {}), text: n.data?.text, ...n.links }))));
+  if (writes) registerWrites(server, store);
   if (actions) registerItemActions(server, store, engine as ActingEngine);
+  if (decisions) registerDecisions(server, store, engine);
   return server;
+}
+
+const opError = (e: unknown) => ({ ...json({ error: (e as Error).message }), isError: true });
+
+/** Edits and note links (`allow_writes`): file changes that start, stop or merge nothing. */
+function registerWrites(server: McpServer, store: DataStore): void {
+  server.registerTool('edit_item', {
+    description: "Edit an item's planning fields and its Description or Notes, as the board's edit does. Nothing here starts, stops or merges work: status, holds, branch, PR, models and the Plan stay on the board. A null clears priority, release or parent.",
+    inputSchema: {
+      id: z.string().describe('The item id, e.g. HH-143'),
+      title: z.string().trim().min(1).optional(),
+      category: z.string().optional().describe(`One of ${store.config.categories.join(', ')}`),
+      priority: z.enum(PRIORITIES).nullable().optional(),
+      release: z.string().min(1).nullable().optional().describe('A release version, or null to clear'),
+      parent: z.string().nullable().optional().describe('The epic it belongs to, or null to take it out'),
+      depends_on: z.array(z.string()).optional().describe('Item ids it waits on (replaces the list)'),
+      description: z.string().optional().describe('The new Description, whole, in Markdown'),
+      notes: z.string().optional().describe('The new Notes, whole, in Markdown'),
+    },
+    annotations: FILES,
+  }, async ({ id, description, notes, ...fields }) => {
+    try {
+      const cur = store.requireItem(id);
+      const set: Record<string, unknown> = {}; const unset: string[] = [];
+      for (const [k, v] of Object.entries(fields)) { if (v === null) unset.push(k); else if (v !== undefined) set[k] = v; }
+      if (set.category && !store.config.categories.includes(set.category as string)) throw new Error(`unknown category ${set.category}`);
+      if (set.release) store.requireRelease(set.release as string);
+      if (set.parent && store.requireItem(set.parent as string).file.frontmatter.kind !== 'epic') throw new Error(`${set.parent} is not an epic`);
+      for (const d of (set.depends_on as string[] | undefined) ?? []) if (!store.getItem(d)) throw new Error(`no item ${d}`);
+      const ops: ItemOp[] = [...(Object.keys(set).length ? [{ set }] : []), ...(unset.length ? [{ unset }] : []), ...(description !== undefined ? [{ section: 'Description', body: description }] : []), ...(notes !== undefined ? [{ section: 'Notes', body: notes }] : [])];
+      if (!ops.length) return json(itemSummary(store, cur));
+      const edited = await actingAs('operator', async () => store.editItem(id, ops));
+      store.journal.append({ type: 'operator_mcp.action', item: id, actor: 'operator', data: { tool: 'edit_item', fields: [...Object.keys(set), ...unset, ...(description !== undefined ? ['Description'] : []), ...(notes !== undefined ? ['Notes'] : [])] } });
+      return json(itemSummary(store, edited));
+    } catch (e) { return opError(e); }
+  });
+  server.registerTool('mark_note', {
+    description: 'Record what became of an orchestrator note about planestro (list_notes): the issues it was filed as by hand, or handled with no issue. Creates nothing on GitHub.',
+    inputSchema: { note: z.string().describe("The note's ts, as list_notes gives it"), issues: z.array(z.number().int().positive()).optional().describe('Issue numbers it became'), handled: z.boolean().optional().describe('true: dealt with, no issue'), comment: z.string().optional() },
+    annotations: FILES,
+  }, async ({ note, issues, handled, comment }) => {
+    try { markNotes(store, [{ note, ...(issues ? { issues } : {}), ...(handled ? { handled } : {}), ...(comment ? { comment } : {}) }]); return json(notesWithLinks(store).find((n) => n.ts === note)!.links); }
+    catch (e) { return opError(e); }
+  });
+}
+
+/**
+ * The board's decisions about an item's run (`allow_decisions`), each through the engine call its route makes, written to
+ * Activity as `[operator]`. What the board keeps to a person's tick stays there: an epic's plan approved as one item, the
+ * remote branch's deletion on a discard.
+ */
+function registerDecisions(server: McpServer, store: DataStore, engine: Engine): void {
+  const id = z.string().describe('The item id, e.g. HH-143');
+  const decide = async (tool: string, itemId: string, args: Record<string, unknown>, fn: () => Promise<string | void>) => {
+    try {
+      if (!store.getItem(itemId)) throw new Error(`no item ${itemId}`);
+      const said = await actingAs('operator', fn);
+      store.journal.append({ type: 'operator_mcp.action', item: itemId, actor: 'operator', data: { tool, ...args } });
+      return json({ ...(said ? { said } : {}), item: itemSummary(store, store.requireItem(itemId)) });
+    } catch (e) { return opError(e); }
+  };
+  server.registerTool('approve_plan', {
+    description: "Approve an item's plan (PLAN_READY), as the board's Approve does: implementation starts. `notes` go to the implementer; `hold` keeps its PR out of the merge until the user releases it. A plan that reads as an epic is refused: approving it as one item stays on the board.",
+    inputSchema: { id, notes: z.string().optional().describe('Approval notes for the implementer'), hold: z.string().trim().min(1).optional().describe('Why its PR must wait for the user') },
+    annotations: ACTS,
+  }, ({ id: itemId, notes, hold }) => decide('approve_plan', itemId, { ...(notes ? { notes } : {}), ...(hold ? { hold } : {}) }, () => engine.approvePlan(itemId, notes, 'user', { ...(hold ? { hold } : {}) })));
+  server.registerTool('reject_plan', {
+    description: "Send an item's plan back to its planner with what to change, as the board's Request changes does.",
+    inputSchema: { id, message: z.string().trim().min(1).describe('What the planner should change') },
+    annotations: ACTS,
+  }, ({ id: itemId, message }) => decide('reject_plan', itemId, { message }, () => engine.rejectPlan(itemId, message)));
+  server.registerTool('discard_item', {
+    description: "Discard work no longer wanted (QUEUED through IN_REVIEW), as the board's Discard does: the turn stops, its PR is closed with the reason, it leaves its epic and goes to the Icebox. Its remote branch is kept: deleting it is the user's tick on the board.",
+    inputSchema: { id, reason: z.string().trim().min(1).describe('Why, for the PR and Activity') },
+    annotations: { ...ACTS, destructiveHint: true },
+  }, ({ id: itemId, reason }) => decide('discard_item', itemId, { reason }, () => engine.discard(itemId, reason, { deleteBranch: false })));
+  server.registerTool('close_as_done', {
+    description: "Close an item as done for work that landed some other way, as the board's Close as done does. Up to IN_REVIEW; its worktree and branch go only when clean with nothing ahead of the base.",
+    inputSchema: { id, reason: z.string().optional().describe('Where the work landed') },
+    annotations: { ...ACTS, destructiveHint: true },
+  }, ({ id: itemId, reason }) => decide('close_as_done', itemId, { ...(reason ? { reason } : {}) }, () => engine.closeAsDone(itemId, reason)));
 }
 
 /**
@@ -232,6 +325,17 @@ function registerItemActions(server: McpServer, store: DataStore, engine: Acting
     if (!engine.syncWithBase) throw new Error('syncing a branch needs the live engine');
     return said(await engine.syncWithBase(itemId, { by: 'user' }));
   }));
+  server.registerTool('file_note', {
+    description: "File an orchestrator note about planestro (list_notes) as an issue in feedback.issue_repo, as the Console's File as issue does: an issue carrying the note's marker is linked instead, and a likely match is offered first (`candidates`) unless `force`.",
+    inputSchema: { note: z.string().describe("The note's ts, as list_notes gives it"), force: z.boolean().optional().describe('File even though likely matches were offered') },
+    annotations: ACTS,
+  }, async ({ note, force }) => {
+    try {
+      const gh = (engine as Engine & { orchestrator?: { gh?: GhPort } }).orchestrator?.gh;
+      if (!gh) throw new Error('filing issues needs the live engine');
+      return json(await fileNote(store, gh, note, { ...(force ? { force } : {}) }));
+    } catch (e) { return { ...json({ error: (e as Error).message }), isError: true }; }
+  });
   server.registerTool('rerun_ci', {
     description: "Re-run the head's red or cancelled CI run, as the board's Re-run CI does; its new attempt is the verdict that counts.",
     inputSchema: { id },
