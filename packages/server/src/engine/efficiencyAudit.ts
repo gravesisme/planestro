@@ -3,13 +3,14 @@ import { auditDigest, turnsOn, dayBefore, parseCron, prevSlot, isoInZone, isoLoc
 import type { DataStore } from '../store/DataStore.ts';
 import type { Ports, TurnResult, CustomToolDef } from './ports.ts';
 import type { Orchestrator } from './orchestrator.ts';
-import { NOTE_TYPE, NOTE_LINK_TYPE, notesWithLinks } from './feedback.ts';
+import { NOTE_TYPE, NOTE_LINK_TYPE, notesWithLinks, type NoteView } from './feedback.ts';
 
 // ---- the daily one-fix efficiency audit (#348) ----
 // Once a day, at `efficiency_audit.cron` on this machine's clock, code builds a digest of the last days' usage (no model
 // cost) and one wake on the orchestrator's model reads it and names the single biggest waste: one planestro feedback
-// note, or, when that is still yesterday's note and nothing was done with it, a line on that note instead of a duplicate.
-// Its only tool files that one note. The slot is its memory: a slot begun (`op.begin`) is never run again, so a restart
+// note, or, when that waste already has a note, no new one: a line on it while nothing was done with it, or, once it was
+// filed as an issue or handled, "nothing new" in the audit's history (Settings) and nothing in the Console. Its only tool
+// files that one note. The slot is its memory: a slot begun (`op.begin`) is never run again, so a restart
 // mid-audit never pays twice.
 
 const OP = 'efficiency_audit';
@@ -37,6 +38,23 @@ export function previousRecommendation(store: DataStore): (PreviousRecommendatio
   return { at: last.ts, key: String(d.key ?? ''), what: String(d.what ?? ''), note: d.note!, acted: Boolean(note && (note.links.handled || note.links.issues.length)) };
 }
 
+/** The latest note an audit filed under each key, newest first, with what became of it. */
+export function auditNotesByKey(store: DataStore): Map<string, NoteView> {
+  const byKey = new Map<string, NoteView>();
+  for (const n of notesWithLinks(store).reverse()) {
+    const key = n.data?.source === 'efficiency_audit' && typeof n.data?.key === 'string' ? n.data.key : '';
+    if (key && !byKey.has(key)) byKey.set(key, n);
+  }
+  return byKey;
+}
+const acted = (n: NoteView): boolean => n.links.handled || n.links.issues.length > 0;
+const actedAs = (n: NoteView): string => (n.links.issues.length ? `filed as ${n.links.issues.map((i) => `#${i.number}`).join(', ')}` : 'marked handled');
+
+/** Every audit slot as it ended, newest first: the history Settings shows. */
+export function auditHistory(store: DataStore, limit = 90): (AuditRecord & { ts: string })[] {
+  return store.journal.read({ type: EFFICIENCY_AUDIT }).slice(-limit).reverse().map((e) => ({ ...(e.data as unknown as AuditRecord), ts: e.ts }));
+}
+
 export interface AuditDeps {
   store: DataStore;
   agents: Ports['agents'];
@@ -53,7 +71,7 @@ export async function runEfficiencyAudit(deps: AuditDeps, slot: string): Promise
   const finish = (r: AuditRecord): AuditRecord => {
     store.journal.append({ type: EFFICIENCY_AUDIT, actor: 'engine', data: { ...r } });
     store.journal.end(opId, undefined, r.outcome === 'failed' ? 'failed' : 'ok', { outcome: r.outcome });
-    deps.log(r.outcome === 'failed' ? 'warn' : 'info', `efficiency audit ${slot.slice(0, 10)}: ${r.outcome}${r.what ? `: ${r.what}` : r.reason ? ` (${r.reason})` : ''}`);
+    deps.log(r.outcome === 'failed' ? 'warn' : 'info', `efficiency audit ${slot.slice(0, 10)}: ${r.outcome === 'nothing_new' ? 'nothing new' : r.outcome}${r.what ? `: ${r.what}` : r.reason ? ` (${r.reason})` : ''}`);
     return r;
   };
   // The slot's day is the day it runs on: the digest ends the day before, whose turns are all in.
@@ -66,6 +84,7 @@ export async function runEfficiencyAudit(deps: AuditDeps, slot: string): Promise
   if (!agent?.runCustomTurn) return finish({ slot, outcome: 'skipped', reason: `the ${pick.runner} runner cannot run it` });
   if (pick.accountMissing) return finish({ slot, outcome: 'skipped', reason: pick.accountMissing });
   const previous = previousRecommendation(store);
+  const known = [...auditNotesByKey(store)].slice(0, 12).map(([key, n]) => `\`${key}\` (${acted(n) ? actedAs(n) : 'open'})`);
   const digest = auditDigest(entries, { today: through, days: cfg.days, ...(previous ? { previous } : {}) });
   let filed: AuditRecord | undefined;
   const tool: CustomToolDef = {
@@ -82,10 +101,16 @@ export async function runEfficiencyAudit(deps: AuditDeps, slot: string): Promise
       if (filed) return 'Already filed: one recommendation a day. End your turn.';
       const key = String(a.key ?? '').trim().slice(0, 80) || 'unnamed';
       const what = String(a.what ?? '').trim().slice(0, 300);
-      if (previous && !previous.acted && key === previous.key) {
-        store.journal.append({ type: NOTE_LINK_TYPE, actor: 'orchestrator', data: { note: previous.note, comment: `still the biggest waste on ${through} (efficiency audit): ${String(a.evidence ?? '').slice(0, 600)}` } });
-        filed = { slot, outcome: 'repeat', key, what: what || previous.what, note: previous.note };
-        return 'Recorded on the last note, which is still open: nothing new was filed. End your turn.';
+      const prior = auditNotesByKey(store).get(key);
+      if (prior && acted(prior)) {
+        // Already filed as an issue or handled: saying it again is noise. The history keeps that the audit ran.
+        filed = { slot, outcome: 'nothing_new', key, what, note: prior.ts, ...(prior.links.issues.length ? { issues: prior.links.issues.map((i) => i.number) } : {}) };
+        return `That waste was already ${actedAs(prior)}: recorded as nothing new, no note filed. End your turn.`;
+      }
+      if (prior) {
+        store.journal.append({ type: NOTE_LINK_TYPE, actor: 'orchestrator', data: { note: prior.ts, comment: `still the biggest waste on ${through} (efficiency audit): ${String(a.evidence ?? '').slice(0, 600)}` } });
+        filed = { slot, outcome: 'repeat', key, what: what || String(prior.data?.text ?? '').slice(0, 300), note: prior.ts };
+        return 'Recorded on that note, which is still open: nothing new was filed. End your turn.';
       }
       const text = [`Efficiency audit ${through}: ${what}`, `Evidence: ${String(a.evidence ?? '')}`, `Change: ${String(a.change ?? '')}`, `Expected saving: ${String(a.saving ?? '')}`].join('\n\n');
       const note = store.journal.append({ type: NOTE_TYPE, actor: 'orchestrator', data: { text, source: 'efficiency_audit', key } });
@@ -96,7 +121,8 @@ export async function runEfficiencyAudit(deps: AuditDeps, slot: string): Promise
   const prompt = [
     `# Daily efficiency audit, ${through}`,
     `Below is a digest of planestro's usage over the ${cfg.days} days up to ${through}, counted by code from what it records. Find the single biggest avoidable waste in it and name ONE fix: a dumb, mechanical change (an allow rule, a prompt-partial trim, a test filter, a model switch for one role, a setting) with the evidence and the expected saving. Prefer the largest saving you can back with the numbers here.`,
-    previous ? `The last recommendation (${previous.at.slice(0, 10)}, key \`${previous.key}\`) was ${previous.acted ? 'acted on' : 'NOT acted on yet'}. If it is still the biggest waste, file it with the same key: planestro then notes it on that recommendation instead of filing a duplicate.` : '',
+    previous ? `The last recommendation (${previous.at.slice(0, 10)}, key \`${previous.key}\`) was ${previous.acted ? 'acted on' : 'NOT acted on yet'}.` : '',
+    known.length ? `Recommendations already filed, by key: ${known.join('; ')}. If the biggest waste is one of these, file it with that exact key: an open one gets a line on its note, and one already filed as an issue or handled is recorded as nothing new (a fix may not show in the digest until its window has passed).` : '',
     'Call file_recommendation exactly once, then end your turn. You have no other tools and need none: everything is in the digest.',
     '---',
     digest,

@@ -1,6 +1,7 @@
 import { parkSummary } from '../engine/parks.ts';
 import { suggestForStore } from '../engine/allowSuggest.ts';
 import { notesWithLinks, fileNote, markNotes, notesSeen, markNotesSeen } from '../engine/feedback.ts';
+import { auditHistory } from '../engine/efficiencyAudit.ts';
 import { importIssues, importableIssues } from '../engine/issueImport.ts';
 import type { GhPort } from '../engine/ports.ts';
 import { previewSwitch, applySwitch, itemModelSwitchOps } from '../providerSwitch.ts';
@@ -631,6 +632,8 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   // The orchestrator's suggestions about planestro itself (dogfood f8): a list of their own, not buried in Activity.
   // Each with what became of it (#231): the issues it was filed as, or handled by hand.
   api.get('/orchestrator/notes', (c) => c.json(notesWithLinks(store)));
+  // The daily efficiency audit's runs, newest first (#348): what each found, including the days it found nothing new.
+  api.get('/efficiency/audits', (c) => c.json(auditHistory(store)));
   // The read marker (#305), one for every device: it only moves forward, and every open page hears it as `journal.appended`.
   api.get('/orchestrator/notes/seen', (c) => c.json({ seen: notesSeen(store) }));
   api.post('/orchestrator/notes/seen', async (c) => {
