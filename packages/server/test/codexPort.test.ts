@@ -36,6 +36,10 @@ function run() {
   const final = /ASK/.test(prompt) ? { outcome: 'question', summary: 'need a call', question: 'Pixel art or painted?' }
     : /STUCK/.test(prompt) ? { outcome: 'blocked', summary: 'the sandbox refused the network', question: null }
     : /WAIT/.test(prompt) ? { outcome: 'done', summary: 'Generated icon.png and committed it.', question: null, hold: 'until the header art has merged' }
+    : /SHOW/.test(prompt) ? { outcome: 'done', summary: 'Drew three icons.', question: null, attach: { paths: ['a.png', 'b.png'], note: 'the icons' }, audition: null }
+    : /PICK/.test(prompt) ? { outcome: 'question', summary: 'Pick an icon.', question: null, attach: null, audition: { title: 'Icons', roles: [{ id: 'icon', name: 'App icon', where: null, prompt: null, pick: null, kept: null, takes: ['a.png', 'b.png'] }] } }
+    : /WRONG/.test(prompt) ? { outcome: 'question', summary: 'Pick an icon.', question: null, audition: { title: 'Icons', roles: [] } }
+    : /UNREAD/.test(prompt) ? { outcome: 'blocked', summary: 'stuck on the art', question: null }
     : /GIVE/.test(prompt) ? { outcome: 'done', summary: 'Generated icon.png and committed it.', question: null, hand_off: { to: 'TP-2', paths: ['icon.png'], note: 'the icon' } }
     : { outcome: 'done', summary: 'Generated icon.png and committed it.', question: null };
   if (!/SILENT/.test(prompt)) fs.writeFileSync(out, JSON.stringify(final));
@@ -47,7 +51,7 @@ function setup() {
   const dir = mkdtempSync(join(tmpdir(), 'planestro-fakecodex-'));
   const bin = join(dir, 'codex'); writeFileSync(bin, FAKE); chmodSync(bin, 0o755);
   const calls: string[] = []; const output: string[] = []; const questions: unknown[][] = [];
-  const tools = { report_done: async (s: string, _parts?: unknown, hold?: string) => { calls.push(`done:${s}${hold ? ` (hold: ${hold})` : ''}`); return 'ok'; }, report_blocked: async (s: string) => { calls.push(`blocked:${s}`); return 'ok'; }, hand_off: async (to: string, paths: string[], note: string) => { calls.push(`hand_off:${to}:${paths.join(',')}:${note}`); return 'Delivered'; } } as unknown as TurnTools;
+  const tools = { report_done: async (s: string, _parts?: unknown, hold?: string) => { calls.push(`done:${s}${hold ? ` (hold: ${hold})` : ''}`); return 'ok'; }, report_blocked: async (s: string) => { calls.push(`blocked:${s}`); return /stuck on the art/.test(s) ? 'Not recorded: the user wrote to you while you worked (1 message).' : 'Recorded. End your turn now.'; }, add_note: async (m: string, attach?: string[]) => { calls.push(`note:${m}:${(attach ?? []).join(',')}`); return 'Attached for the user: a.png, b.png.'; }, request_audition: async (a: any) => { calls.push(`audition:${JSON.stringify(a)}`); return a.roles.length ? 'Audition recorded by planestro: the user hears the takes.' : 'Rejected: roles: at least one.'; }, hand_off: async (to: string, paths: string[], note: string) => { calls.push(`hand_off:${to}:${paths.join(',')}:${note}`); return 'Delivered'; } } as unknown as TurnTools;
   const opts = (prompt: string, extra: Partial<AgentTurnOptions> = {}): AgentTurnOptions => ({ itemId: 'TP-1', phase: 'implement', cwd: dir, prompt, systemAppend: 'RULES', extraDirs: ['/data'], tools, onQuestion: async (q) => { questions.push(q); }, onOutput: (t) => output.push(t), ...extra });
   const args = () => JSON.parse(readFileSync(join(dir, 'args.json'), 'utf8')) as string[];
   return { port: new LiveCodexPort(bin), bin, opts, calls, output, questions, args, dir };
@@ -139,6 +143,31 @@ describe('LiveCodexPort (against a recorded fake codex)', () => {
     expect(r.done).toBe('Generated icon.png and committed it.');
     expect(t.calls).toEqual(['hand_off:TP-2:icon.png:the icon', 'done:Generated icon.png and committed it.']);
     expect(FINAL_SCHEMA.required).toContain('hand_off'); // structured output: every property is required, so the field is always there (null when unused)
+  });
+
+  it('an exec turn attaches pictures and puts takes to the user through the same tools (#491, LM-66)', async () => {
+    const t = setup();
+    const shown = await t.port.runTurn(t.opts('SHOW them'));
+    expect(t.calls).toEqual(['note:the icons:a.png,b.png', 'done:Drew three icons.']);
+    expect(shown.done).toBe('Drew three icons.');
+    t.calls.length = 0;
+    const picked = await t.port.runTurn(t.opts('PICK one'));
+    expect(picked).toMatchObject({ parked: 'audition', isError: false });
+    expect(t.calls).toEqual(['audition:{"title":"Icons","roles":[{"id":"icon","name":"App icon","takes":["a.png","b.png"]}]}']);
+    expect(t.questions).toEqual([]);
+    t.calls.length = 0;
+    const refused = await t.port.runTurn(t.opts('WRONG takes'));
+    expect(refused.parked).toBeUndefined();
+    expect(refused.blocked).toBe('the audition was refused: Rejected: roles: at least one.');
+    expect(FINAL_SCHEMA.required).toEqual(expect.arrayContaining(['attach', 'audition']));
+  });
+
+  it('a block refused over an unread message stands as no block, so the message is sent next (#491)', async () => {
+    const t = setup();
+    const r = await t.port.runTurn(t.opts('UNREAD'));
+    expect(r.blocked).toBeUndefined();
+    expect(t.calls).toEqual(['blocked:stuck on the art']);
+    expect(t.output.some((o) => o.startsWith('report_blocked: Not recorded'))).toBe(true);
   });
 
   it('a hold in the final message reaches report_done; null or blank is no hold (#97)', async () => {

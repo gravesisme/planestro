@@ -1626,6 +1626,13 @@ export class LiveEngine implements Engine {
         // A park is a wait, not a block (#168): refused in words while the session waits on a ruling.
         const parked = parkedRefusal(s.requireItem(id).file.frontmatter);
         if (parked) return parked;
+        // A block over a message the session has not read (#491, LM-66): refused, the messages kept, and afterTurn sends
+        // them as its next message once the turn ends. A block that stood would have left them unread.
+        const unread = ((s.requireItem(id).file.frontmatter.op_data?.pending_messages as string[] | undefined) ?? []).length;
+        if (unread) {
+          s.mutateItem(id, [{ activity: { actor: 'app', text: `report_blocked refused: ${unread} message${unread === 1 ? '' : 's'} from the user ${unread === 1 ? 'is' : 'are'} waiting for the session` } }], 'engine');
+          return `Not recorded: the user wrote to you while you worked (${unread} message${unread === 1 ? '' : 's'}), and planestro does not block over a message you have not read. End your turn now without reporting blocked: ${unread === 1 ? 'it reaches' : 'they reach'} you as your next message. If you are still blocked after reading ${unread === 1 ? 'it' : 'them'}, call report_blocked then.`;
+        }
         if (parts !== undefined) this.recordParts(id, parts);
         const cur = s.requireItem(id).file.frontmatter;
         // A retry of a block that did land (#167): no second block, triage or wake.

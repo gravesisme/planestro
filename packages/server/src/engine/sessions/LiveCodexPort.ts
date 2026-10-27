@@ -9,6 +9,7 @@ import { CodexAppServerPort, codexEnv } from './CodexAppServerPort.ts';
 import { projectSkills, skillsInPrompt } from './projectSkills.ts';
 import { IMAGE_TOOL_NOTE } from './imageToolNote.ts';
 import { APPLY_PATCH_NOTE } from './patchNote.ts';
+import { AUDITION_PARKED } from '../parks.ts';
 import type { AccountCredentials, AgentPort, AgentTurnOptions, TurnOptions, CustomTurnOptions, TurnResult } from '../ports.ts';
 
 /**
@@ -30,6 +31,22 @@ export const FINAL_SCHEMA = {
     question: { type: ['string', 'null'] },
     hold: { type: ['string', 'null'] },
     parts: { type: ['array', 'null'], items: { type: 'object', properties: { name: { type: 'string' }, state: { type: 'string', enum: ['accepted', 'pending', 'rejected'] }, reason: { type: ['string', 'null'] } }, required: ['name', 'state', 'reason'], additionalProperties: false } },
+    // What add_note and request_audition do for a session with tools (#491, LM-66): exec has none, so its final message carries them.
+    attach: {
+      type: ['object', 'null'],
+      properties: { paths: { type: 'array', items: { type: 'string' } }, note: { type: 'string' } },
+      required: ['paths', 'note'],
+      additionalProperties: false,
+    },
+    audition: {
+      type: ['object', 'null'],
+      properties: {
+        title: { type: 'string' },
+        roles: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, name: { type: 'string' }, where: { type: ['string', 'null'] }, prompt: { type: ['string', 'null'] }, pick: { type: ['integer', 'null'] }, kept: { type: ['array', 'null'], items: { type: 'string' } }, takes: { type: 'array', items: { type: 'string' } } }, required: ['id', 'name', 'where', 'prompt', 'pick', 'kept', 'takes'], additionalProperties: false } },
+      },
+      required: ['title', 'roles'],
+      additionalProperties: false,
+    },
     hand_off: {
       type: ['object', 'null'],
       properties: { to: { type: 'string' }, paths: { type: 'array', items: { type: 'string' } }, note: { type: 'string' } },
@@ -37,11 +54,14 @@ export const FINAL_SCHEMA = {
       additionalProperties: false,
     },
   },
-  required: ['outcome', 'summary', 'question', 'hold', 'parts', 'hand_off'],
+  required: ['outcome', 'summary', 'question', 'hold', 'parts', 'attach', 'audition', 'hand_off'],
   additionalProperties: false,
 } as const;
 
-export interface CodexFinal { outcome: 'done' | 'blocked' | 'question'; summary: string; question: string | null; /** Done, but the pull request must not merge yet: what it waits for (#97). */ hold?: string | null; hand_off?: { to: string; paths: string[]; note: string } | null; parts?: unknown[] | null }
+export interface CodexFinal { outcome: 'done' | 'blocked' | 'question'; summary: string; question: string | null; /** Done, but the pull request must not merge yet: what it waits for (#97). */ hold?: string | null; hand_off?: { to: string; paths: string[]; note: string } | null; parts?: unknown[] | null; /** Pictures for the user, as add_note's `attach`. */ attach?: { paths: string[]; note: string }; /** Takes to pick from, as request_audition's argument. */ audition?: unknown }
+
+/** An audition as request_audition takes it: the schema's nulls (strict output has no optional keys) left out. */
+const withoutNulls = (v: unknown): unknown => (Array.isArray(v) ? v.map(withoutNulls) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).filter(([, x]) => x !== null).map(([k, x]) => [k, withoutNulls(x)])) : v);
 
 /** A lenient read of the final message: the schema is enforced by Codex, but a crash can leave anything. */
 export function parseFinal(text: string | undefined): CodexFinal | undefined {
@@ -51,7 +71,9 @@ export function parseFinal(text: string | undefined): CodexFinal | undefined {
     if (v && (v.outcome === 'done' || v.outcome === 'blocked' || v.outcome === 'question') && typeof v.summary === 'string') {
       const h = v.hand_off;
       const hand_off = h && typeof h === 'object' && typeof h.to === 'string' && Array.isArray(h.paths) && h.paths.every((p) => typeof p === 'string') ? { to: h.to, paths: h.paths, note: typeof h.note === 'string' ? h.note : '' } : null;
-      return { outcome: v.outcome, summary: v.summary, question: typeof v.question === 'string' ? v.question : null, ...(typeof v.hold === 'string' && v.hold.trim() ? { hold: v.hold.trim() } : {}), hand_off, ...(Array.isArray(v.parts) && v.parts.length ? { parts: v.parts } : {}) };
+      const a = v.attach;
+      const attach = a && typeof a === 'object' && Array.isArray(a.paths) && a.paths.length && a.paths.every((p) => typeof p === 'string') ? { paths: a.paths, note: typeof a.note === 'string' ? a.note : '' } : undefined;
+      return { outcome: v.outcome, summary: v.summary, question: typeof v.question === 'string' ? v.question : null, ...(typeof v.hold === 'string' && v.hold.trim() ? { hold: v.hold.trim() } : {}), hand_off, ...(Array.isArray(v.parts) && v.parts.length ? { parts: v.parts } : {}), ...(attach ? { attach } : {}), ...(v.audition && typeof v.audition === 'object' ? { audition: withoutNulls(v.audition) } : {}) };
     }
   } catch { /* not JSON */ }
   return undefined;
@@ -114,7 +136,7 @@ export class LiveCodexPort implements AgentPort {
     // There is no system-prompt flag: the worker rules ride at the top of the prompt, every turn. The project's
     // skills (#238) ride once, with a new thread: a resumed one holds them already, and exec has no tool to ask with.
     const skills = o.skills && !o.resume ? skillsInPrompt(projectSkills(o.cwd)) : '';
-    const prompt = `${o.systemAppend.trim()}\n\n${APPLY_PATCH_NOTE}\n\n${IMAGE_TOOL_NOTE}${skills ? `\n\n${skills}` : ''}\n\n---\n\n${o.prompt.trim()}\n\nEnd your turn with ONLY the JSON object described above: {"outcome": "done" | "blocked" | "question", "summary": "...", "parts": [...] or null, "question": "..." or null, "hold": null or "<what the pull request waits for>", "hand_off": null or {"to": "<item id that waits on this one>", "paths": ["<files in your worktree, relative>"], "note": "<what they are and how to use them>"}}. Use hand_off only when another backlog item needs files you made before your branch merges. Use hold only with "done", and only when the pull request must not merge yet because the plan or the request says it waits for something ("until TD-12 has merged"): planestro then keeps it out of the merge queue until the user releases it.`;
+    const prompt = `${o.systemAppend.trim()}\n\n${APPLY_PATCH_NOTE}\n\n${IMAGE_TOOL_NOTE}${skills ? `\n\n${skills}` : ''}\n\n---\n\n${o.prompt.trim()}\n\nEnd your turn with ONLY the JSON object described above: {"outcome": "done" | "blocked" | "question", "summary": "...", "parts": [...] or null, "question": "..." or null, "hold": null or "<what the pull request waits for>", "attach": null or {"paths": ["<images in your worktree, relative>"], "note": "<what they show>"}, "audition": null or {"title": "<what is auditioned>", "roles": [{"id": "<short id>", "name": "<what the role is>", "where": null or "<where it plays>", "prompt": null or "<what the takes were made from>", "pick": null or <how many to keep>, "kept": null or [<takes kept earlier>], "takes": ["<new candidate files, relative>"]}]}, "hand_off": null or {"to": "<item id that waits on this one>", "paths": ["<files in your worktree, relative>"], "note": "<what they are and how to use them>"}}. Use attach to show the user pictures you made (the whole set a request names, not a sample). Use audition when the user is to hear or see takes and pick before you build on one: give outcome "question" and a summary of what is auditioned, and planestro resumes you with the picks. Use hand_off only when another backlog item needs files you made before your branch merges. Use hold only with "done", and only when the pull request must not merge yet because the plan or the request says it waits for something ("until TD-12 has merged"): planestro then keeps it out of the merge queue until the user releases it.`;
 
     let killed = false;
     this.lastError = undefined;
@@ -156,8 +178,21 @@ export class LiveCodexPort implements AgentPort {
       const answer = await o.tools.hand_off(final.hand_off.to, final.hand_off.paths, final.hand_off.note ?? '');
       o.onOutput(`hand_off → ${final.hand_off.to}: ${answer}`);
     }
+    if (final.attach) o.onOutput(`attach: ${await o.tools.add_note(final.attach.note || 'Pictures for review.', final.attach.paths)}`);
+    if (final.audition) {
+      const answer = await o.tools.request_audition(final.audition);
+      o.onOutput(`audition: ${answer}`);
+      if (answer.startsWith(AUDITION_PARKED)) { result.parked = 'audition'; return result; }
+      // Refused (a missing take, a bad shape): the turn cannot try again, so it stops with the reason, not a question nobody can answer.
+      if (final.outcome !== 'done') { const blocked = `the audition was refused: ${answer}`; if ((await o.tools.report_blocked(blocked, final.parts ?? undefined)).startsWith('Recorded')) result.blocked = blocked; return result; }
+    }
     if (final.outcome === 'done') { const answer = await o.tools.report_done(final.summary, final.parts ?? undefined, final.hold ?? undefined); if (!answer.startsWith('Rejected')) result.done = final.summary; }
-    else if (final.outcome === 'blocked') { await o.tools.report_blocked(final.summary, final.parts ?? undefined); result.blocked = final.summary; }
+    else if (final.outcome === 'blocked') {
+      // Refused in words (a park, or a user message it has not read, #491): no block stands, and afterTurn sends what waits.
+      const answer = await o.tools.report_blocked(final.summary, final.parts ?? undefined);
+      if (answer.startsWith('Recorded') || answer.startsWith('Already recorded')) result.blocked = final.summary;
+      else o.onOutput(`report_blocked: ${answer}`);
+    }
     else if (final.parts) await o.tools.report_progress(final.parts);
     else { await o.onQuestion([{ question: final.question ?? final.summary, header: 'Codex asks', options: [] }]); result.parked = 'question'; }
     return result;
