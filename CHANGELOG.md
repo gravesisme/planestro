@@ -2,10 +2,38 @@
 
 ## Unreleased
 
+## 1.0.2 — 2026-10-27
+
+### Fixed
+
+- The Claude Code plugin's MCP server reaches the session's own project, not whatever server holds port
+  4300: a small stdio bridge finds the project's data dir and its running server, and refuses a server
+  that serves another project. `PLANESTRO_URL` still overrides (#497).
+- `serve --watch` no longer restarts under a live turn when one status poll goes unanswered; it waits,
+  and restarts anyway only after two minutes of silence. A "lost connection" left by an earlier turn
+  clears at the next turn's first planestro call that answers (#493, #494).
+- Two `--watch` servers on one checkout no longer lose the web UI when both rebuild it after a pull; a
+  server that started without a UI serves it once a build lands (#490).
+- A worker's `report_blocked` is refused while messages from you wait for its session: they go as its next
+  turn instead of being left unread under a block (#495, #491).
+- A rebase a session resolved is checked against the base tip it was rebased onto, so a base that moved
+  meanwhile no longer reads as a failed rebase (#488, #485).
+- `unblock_item` with `sync_first` and a message delivers the message to an in-review session (#487, #486).
+- The "needs you" button reads "1 item needs you" to a screen reader, not "1 items need you".
+
+### Added
+
+- The operator MCP endpoint offers `list_notes`, `edit_item` and `mark_note` (with `allow_writes`),
+  `file_note` (with `allow_actions`), and, behind a new opt-in `operator_mcp.allow_decisions`,
+  `approve_plan`, `reject_plan`, `discard_item` and `close_as_done`, each recorded as `[operator]` (#496).
+- Codex exec workers can attach pictures and request an audition through their final message (#495, #491).
+- Settings → Orchestrator lists every daily efficiency audit run, and an audit whose biggest waste was
+  already filed or handled records "nothing new" instead of filing the note again (#489).
+- When your GitHub login maintains planestro, "File notes as issues in" offers its tracker in one
+  click (#492).
 - A browser test suite (`npm run e2e`, Playwright, run in CI): the board, the item page and an item
   driven from queue through plan approval to merged in Chromium against the sample, and both pages at
-  phone width.
-- The "needs you" button reads "1 item needs you" to a screen reader, not "1 items need you".
+  phone width (#483).
 
 ## 1.0.1 — 2026-10-21
 
