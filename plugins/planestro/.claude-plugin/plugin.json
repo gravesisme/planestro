@@ -1,6 +1,6 @@
 {
   "name": "planestro",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "description": "/planestro: status, start, stop and item lookup for planestro servers, and this project's running server's backlog tools over MCP.",
   "author": { "name": "David Graves", "url": "https://github.com/gravesisme" },
   "homepage": "https://github.com/gravesisme/planestro",
