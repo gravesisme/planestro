@@ -1925,12 +1925,29 @@ export class LiveEngine implements Engine {
     const fm = this.store.requireItem(id).file.frontmatter;
     if (!fm.blocked && fm.awaiting !== 'user') return `nothing to unblock: ${id} is not blocked${fm.awaiting ? ` (it is awaiting ${fm.awaiting}; answer that instead)` : ''}`;
     const busy = this.busyWith(id); if (busy) return `not now: ${busy}`;
+    // A message no session will read is refused before anything moves (#500): LM-64's red epic was told "the session resumes", and nothing ran for 3.5 h.
+    const noSession = message?.trim() ? this.epicMessageRefusal(fm) : undefined;
+    if (noSession) return `not possible: ${noSession}`;
     const noFresh = fresh ? this.freshRefusal(fm, message) : undefined;
     if (noFresh) return `not possible: ${noFresh}`;
     // Sync first (p29): the branch takes in what merged since it was cut before the session resumes; a refusal leaves it blocked.
     if (syncFirst) return this.syncWithBase(id, { by: 'orchestrator', unblock: { message: message?.trim() || undefined, fresh } });
     await this.unblock(id, message?.trim() || undefined, 'orchestrator', { fresh });
-    return message?.trim() && this.phaseFor(fm.status) ? (fresh ? 'unblocked; a fresh session starts with a brief and your message as its task' : 'unblocked; the session resumes with your message') : 'unblocked; the pipeline retries from where it stopped';
+    // Said from the phase unblock itself resumes in (sessionPhaseOf), never the status alone (#500).
+    if (!message?.trim()) return 'unblocked; the pipeline retries from where it stopped';
+    if (!this.sessionPhaseOf(fm)) return `unblocked; the pipeline retries from where it stopped. ${id} is ${fm.status}, with no session to resume: your message is in its Activity log only`;
+    return fresh ? 'unblocked; a fresh session starts with a brief and your message as its task' : 'unblocked; the session resumes with your message';
+  }
+
+  /**
+   * Why a message to this epic would reach no session (#500), with what works instead; undefined while it has one (its
+   * breakdown's planner). Past its breakdown an epic's work is its children's, and its red pull request is fixed by a new one.
+   */
+  private epicMessageRefusal(fm: { id: string; kind?: string; status: Status; branch?: string; blocked_reason?: string }): string | undefined {
+    if (fm.kind !== 'epic' || this.sessionPhaseOf(fm)) return undefined;
+    const head = `${fm.id} is an epic ${fm.status === 'IN_REVIEW' ? 'in review' : `that is ${fm.status}`}: past its breakdown it has no session for a message to resume, so nothing was unblocked.`;
+    if (fm.status === 'IN_REVIEW') return `${head} Its pull request's own fix is a new child: leave ask_user_decision with an option whose action is { tool: "create_item", args: { title, description, parent: "${fm.id}", submit: true } } (the description is the whole brief: what failed and where); the child is cut from ${fm.branch ?? 'its integration branch'} and merges into it, the epic goes back in progress for it, this stop is cleared and its pull request is reused. A flake: rerun_ci. unblock_item without a message re-enters the merge pipeline on the same CI run.`;
+    return `${head} unblock_item without a message retries what an epic can (its integration branch); a message for the work goes to its children (message_session, annotate_item), or to a new child offered on a decision card (create_item with parent "${fm.id}").`;
   }
 
   /**
@@ -2131,6 +2148,9 @@ export class LiveEngine implements Engine {
     const resume = (by !== 'user'
       ? `The last step stopped on a transient failure (${reason}), which has been retried. Nothing of yours was lost: check your worktree and continue where you left off.`
       : `The user unblocked this item (it had stopped: ${reason}). Nothing of yours was lost: check your worktree and continue where you left off.`) + (message ? `\n\n${message}` : '');
+    // An epic with a new child (a fix filed for its red PR, #500) goes back in progress for it on the next tick, which clears this stop: re-reading the red run here only raced it.
+    const newWork = fm.kind === 'epic' && fm.status === 'IN_REVIEW' ? this.store.derived(item).children.filter((c) => !['MERGED', 'FINISHED', 'ICEBOX'].includes(this.store.requireItem(c).file.frontmatter.status)) : [];
+    if (newWork.length) { this.poke(); return `not now: ${newWork.join(', ')} is new work for epic ${id}, which goes back in progress for it (its pull request is reused and this stop is cleared); nothing to retry`; }
     // A conflict once handed to a session that never finished it is the pipeline's again: it re-syncs, and a conflict comes back to a session.
     if (fm.status === 'IN_REVIEW') { clear(`retrying the merge pipeline after ${reason}`, [{ set: { ci_result: 'pending', op_data: { ...(opData ?? {}), needs_session_rebase: false } } }]); this.poke(); return /^ci_red/.test(reason) ? 'retrying: it re-enters the merge pipeline, which reads the same CI run again (it does not run CI again: use rerun_ci to re-run its failed jobs)' : 'retrying: it re-enters the merge pipeline'; }
     if (fm.status === 'MERGED') { clear(`retrying cleanup after ${reason}`); this.runJob(id, () => this.cleanupReconcile.cleanup(id)); return 'retrying the cleanup (it still needs positive evidence before deleting anything)'; }

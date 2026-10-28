@@ -215,10 +215,13 @@ export class Epics {
     const pr = await this.ctx.ports.gh.prView(this.ctx.github, this.ctx.store.requireItem(id).file.frontmatter.pr!);
     const fm = this.ctx.store.requireItem(id).file.frontmatter;
     if (pr.state !== 'OPEN' || fm.status !== 'IN_REVIEW' || (fm.op && fm.op !== 'awaiting_ci')) return;
+    // A CI stop is the verdict on a head the new child replaces (#500: a fix child filed for a red epic): it ends here, card
+    // and triage with it, or the epic stayed blocked in progress and driveEpics never submitted it again. Any other stop stays.
+    const ciStop = Boolean(fm.blocked && /^ci_/.test(fm.blocked_reason ?? ''));
     this.ctx.store.mutateItem(id, [
       { transition: { to: 'IN_PROGRESS', actor: 'engine' } },
-      { unset: ['op', 'op_started_at', 'ci_result'] },
-      { activity: { actor: 'app', text: `new child ${children.join(', ')}: epic back in progress; PR #${pr.number} stays open and is reused` } },
+      { unset: ['op', 'op_started_at', 'ci_result', ...(ciStop ? ['blocked', 'blocked_reason', 'triage', ...(fm.awaiting === 'user' ? ['awaiting', 'awaiting_data'] : [])] : [])] },
+      { activity: { actor: 'app', text: `new child ${children.join(', ')}: epic back in progress; PR #${pr.number} stays open and is reused${ciStop ? ` (its ${fm.blocked_reason} stop is cleared: the PR's next head carries the child)` : ''}` } },
     ], 'engine', { commit: `${id}: reopen for ${children.join(', ')}` });
     this.ctx.note('info', `${id}: reopened for new child ${children.join(', ')}; PR #${pr.number} is reused`);
     void this.ctx.tick();
