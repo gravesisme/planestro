@@ -1,6 +1,6 @@
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { WORKTREE_SCOPE, trimEndBlanks, type Config, type PermissionRedirect } from '@planestro/shared';
 import type { PermissionRequest } from './ports.ts';
 import { literal, readShell, type Command, type Item, type Word } from './shell.ts';
@@ -18,10 +18,12 @@ const scoped = (patterns: string[]): string[] => patterns.map((p) => `Bash(${p} 
 /**
  * What every project's workers run between the commands that matter, allowed while the command
  * stays in the worktree: reading, comparing, printing. LM-24 parked five times on `echo "exit $?"`.
- * `find` is not here (`-delete`, `-exec`) nor `sed` (its `w` and `e` commands), nor anything that
+ * `find` is not here (`-delete`, `-exec`); `sed` and `awk` are judged by their script (`filterAt`, #503); nor is anything that
  * runs what it is given; the few flags of these that do are refused (`RUNS_ANOTHER`).
  */
-const SCOPED_READERS = scoped(['echo', 'printf', 'pwd', 'true', 'false', ':', 'test', '[', 'diff', 'ls', 'cat', 'grep', 'rg', 'sort', 'uniq', 'cut', 'tr', 'wc', 'head', 'tail', 'basename', 'dirname', 'date', 'sleep', 'command -v', 'which', 'file', 'stat', 'du', 'git grep', 'git rev-parse', 'git branch --show-current']);
+const SCOPED_READERS = scoped(['echo', 'printf', 'pwd', 'true', 'false', ':', 'test', '[', 'diff', 'ls', 'cat', 'grep', 'rg', 'sort', 'uniq', 'cut', 'tr', 'wc', 'head', 'tail', 'basename', 'dirname', 'date', 'sleep', 'command -v', 'which', 'file', 'stat', 'du', 'column', 'git grep', 'git rev-parse', 'git branch --show-current',
+  // A planning turn has no unscoped git readers (#503: `git diff`, `git show`, `git log` parked on HH): read the worktree's history in place.
+  'git status', 'git diff', 'git show', 'git log', 'git ls-files', 'git ls-tree', 'git check-ignore', 'git blame', 'git cat-file']);
 const SCOPED_WRITERS = scoped(['mkdir -p']);
 
 export const BASE_ALLOWED: Record<'plan' | 'implement' | 'fix', string[]> = {
@@ -280,7 +282,163 @@ const RUNS_ANOTHER: { command: string[]; flag: RegExp; readOnly?: boolean }[] = 
   { command: ['git', 'grep'], flag: /^(-O|--open-files-in-pager)/ },
   { command: ['sort'], flag: /^--compress-program/ },
   { command: ['sort'], flag: /^(-[A-Za-z]*o|--output)/, readOnly: true },
+  ...['diff', 'show', 'log'].flatMap((sub) => [{ command: ['git', sub], flag: /^--ext-diff$/ }, { command: ['git', sub], flag: /^--output(=|$)/, readOnly: true }]),
 ];
+
+/**
+ * A `sed` script that only prints (#503): addresses, `s` and `y` without the `w`/`e` flags, and the commands that
+ * edit the pattern space. Nothing that reads or writes a file by name (`r`, `w`), runs one (`e`) or is not known
+ * here. A delimiter inside a bracket (`s/[/]/x/`) is refused: BSD and GNU sed end that regex in different places.
+ */
+export function sedScriptPrintsOnly(s: string): boolean {
+  let i = 0;
+  const delimited = (d: string): boolean => {
+    if (!d || d === '\\' || d === '\n') return false;
+    let bracket = false;
+    for (; i < s.length; i++) {
+      const c = s[i];
+      if (c === '\\') { i++; continue; }
+      if (c === '\n') return false;
+      if (bracket) { if (c === d) return false; if (c === ']') bracket = false; continue; }
+      if (c === '[') { bracket = true; if (s[i + 1] === '^') i++; if (s[i + 1] === ']') i++; continue; }
+      if (c === d) { i++; return true; }
+    }
+    return false;
+  };
+  const address = (): boolean => {
+    if (/[0-9]/.test(s[i] ?? '')) { while (/[0-9~]/.test(s[i] ?? '')) i++; return true; }
+    if (s[i] === '$') { i++; return true; }
+    if (s[i] === '/') { i++; if (!delimited('/')) return false; while (/[IM]/.test(s[i] ?? '')) i++; return true; }
+    if (s[i] === '\\') { i += 2; if (!delimited(s[i - 1])) return false; while (/[IM]/.test(s[i] ?? '')) i++; return true; }
+    return true;
+  };
+  const end = (): boolean => { while (s[i] === ' ' || s[i] === '\t') i++; return i >= s.length || /[;\n}#]/.test(s[i]); };
+  while (i < s.length) {
+    if (/[\s;]/.test(s[i])) { i++; continue; }
+    if (s[i] === '#') { while (i < s.length && s[i] !== '\n') i++; continue; }
+    if (s[i] === '}') { i++; continue; }
+    if (!address()) return false;
+    if (s[i] === ',') { i++; if (s[i] === '+' || s[i] === '~') { i++; while (/[0-9]/.test(s[i] ?? '')) i++; } else if (!address()) return false; }
+    while (s[i] === ' ' || s[i] === '\t' || s[i] === '!') i++;
+    const c = s[i++];
+    if (c === '{') continue;
+    if (c === 's') {
+      const d = s[i++];
+      if (!delimited(d) || !delimited(d)) return false;
+      while (/[gpiImM0-9]/.test(s[i] ?? '')) i++;
+      if (!end()) return false;
+      continue;
+    }
+    if (c === 'y') { const d = s[i++]; if (!delimited(d) || !delimited(d) || !end()) return false; continue; }
+    if (c === ':' || c === 'b' || c === 't' || c === 'T') { while (i < s.length && !/[;\n]/.test(s[i])) i++; continue; }
+    if (c === 'q' || c === 'Q' || c === 'l') { while (/[0-9]/.test(s[i] ?? '')) i++; if (!end()) return false; continue; }
+    if (c && 'pPdDnNgGhHx='.includes(c)) { if (!end()) return false; continue; }
+    return false;
+  }
+  return true;
+}
+
+/**
+ * An `awk` program that only prints to standard output (#503): no `system`, `getline` or `close`, no `|` to or from
+ * a command, no `print … >` into a file, no gawk `@include`/`@load` or indirect call. Strings and regex literals are
+ * set aside before the pipe and redirect checks (`/^<<<|^>>>/` is a pattern, `$1>625` a comparison); the names are
+ * looked for in the whole text.
+ */
+export function awkProgramPrintsOnly(p: string): boolean {
+  if (/\b(system|getline|close|ARGV|ARGC)\b|@/.test(p)) return false;
+  let out = '';
+  let prev = '';
+  for (let i = 0; i < p.length; i++) {
+    const c = p[i];
+    if (c === '"') { for (i++; i < p.length && p[i] !== '"'; i++) if (p[i] === '\\') i++; out += '""'; prev = '"'; continue; }
+    if (c === '/' && (prev === '' || '(,{};!~&|?:=\n'.includes(prev))) {
+      let bracket = false;
+      for (i++; i < p.length; i++) {
+        if (p[i] === '\\') { i++; continue; }
+        if (bracket) { if (p[i] === ']') bracket = false; continue; }
+        if (p[i] === '[') { bracket = true; if (p[i + 1] === ']') i++; continue; }
+        if (p[i] === '/' || p[i] === '\n') break;
+      }
+      out += '//'; prev = '/'; continue;
+    }
+    out += c;
+    if (!/[ \t]/.test(c)) prev = c;
+  }
+  if (/\|/.test(out.replace(/\|\|/g, ''))) return false;
+  return !/\bprintf?\b[^;{}\n]*>/.test(out);
+}
+
+/**
+ * The arguments of a `sed` or `awk` that only reads (#503): the options that print, and a script that prints only.
+ * A script given by file (`-f`), in place (`-i`), or with any option not known here, is not. Returns which arguments
+ * are scripts: they name no file, so the path check passes over them (`s/.*x//` is no `..`).
+ */
+function filterReadsOnly(tool: string, args: string[]): Set<number> | null {
+  const scripts: { at: number; text: string }[] = [];
+  let options = true;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (options && a === '--') { options = false; continue; }
+    if (options && a.startsWith('-') && a !== '-') {
+      if (tool === 'sed') {
+        if (/^--(quiet|silent|regexp-extended|posix|separate|unbuffered|null-data|debug|sandbox)$/.test(a)) continue;
+        if (a.startsWith('--expression=')) { scripts.push({ at: i, text: a.slice(13) }); continue; }
+        const m = /^-([nErsuz]*)(e(.*))?$/.exec(a);
+        if (a !== '--expression' && !m) return null;
+        if (a === '--expression' || (m?.[2] !== undefined && !m[3])) { if (i + 1 >= args.length) return null; i++; scripts.push({ at: i, text: args[i] }); continue; }
+        if (m?.[3]) scripts.push({ at: i, text: m[3] });
+        continue;
+      }
+      if (/^-[Fv]./.test(a)) continue;
+      if (a === '-F' || a === '-v') { i++; continue; }
+      return null;
+    }
+    if (!scripts.length) { scripts.push({ at: i, text: a }); if (tool === 'awk') options = false; }
+  }
+  const prints = tool === 'sed' ? sedScriptPrintsOnly : awkProgramPrintsOnly;
+  return scripts.length && scripts.every((x) => prints(x.text)) ? new Set(scripts.map((x) => x.at)) : null;
+}
+
+/** Read-only file tools (#503): they may look anywhere in the worktree and the scratch folders, as Bash's readers may. */
+const READ_TOOLS = new Set(['Read', 'Grep', 'Glob', 'LS', 'NotebookRead']);
+
+/** A path as the file system resolves it: its deepest existing ancestor's real path, the rest as written. */
+function realOf(abs: string): string {
+  let head = abs;
+  const tail: string[] = [];
+  for (let guard = 0; guard < 256; guard++) {
+    try { return join(realpathSync.native(head), ...tail.reverse()); } catch { /* not there yet */ }
+    const up = dirname(head);
+    if (up === head) break;
+    tail.push(basename(head));
+    head = up;
+  }
+  return abs;
+}
+
+/**
+ * A read-only file tool on a path inside the worktree or a scratch folder (#503): HH workers parked on Read of
+ * `/tmp/hh589/anvil.png`, crops they had just written there. Judged as written and through every symlink: a link in
+ * /tmp to the home folder reads outside. The main checkout still asks (it is the base, not the worker's branch).
+ */
+function toolReadsInside(req: PermissionRequest, worktree: string): boolean {
+  if (!READ_TOOLS.has(req.tool)) return false;
+  const roots = [worktree, ...SCRATCH];
+  const realRoots = roots.map(realOf);
+  const inside = (raw: unknown): boolean => {
+    if (raw === undefined || raw === null || raw === '') return true;
+    if (typeof raw !== 'string' || raw.startsWith('~')) return false;
+    const abs = resolve(worktree, raw);
+    return roots.some((r) => within(abs, r)) && realRoots.some((r) => within(realOf(abs), r));
+  };
+  const { file_path, path, notebook_path, pattern } = req.input as Record<string, unknown>;
+  if (!inside(file_path) || !inside(path) || !inside(notebook_path)) return false;
+  if (req.tool === 'Glob' && typeof pattern === 'string') {
+    if (pattern.split('/').includes('..') || pattern.startsWith('~')) return false;
+    if (isAbsolute(pattern) && !inside(pattern.split(/[*?[{]/)[0] || '/')) return false;
+  }
+  return true;
+}
 
 export interface ScopeOptions {
   /** A planning turn: nothing is written, so output goes nowhere but /dev/null. */
@@ -314,9 +472,11 @@ function segmentAllowed(raw: string, prefixes: string[], worktree?: string): boo
  * rule, scoped (`…@worktree`) or not, and nothing it names lies outside the worktree.
  */
 export function allowedByRules(req: PermissionRequest, rules: string[], worktree?: string, scope: ScopeOptions = {}): boolean {
-  if (req.tool !== 'Bash') return rules.includes(req.tool);
+  if (req.tool !== 'Bash') return rules.includes(req.tool) || (worktree !== undefined && toolReadsInside(req, worktree));
   rules = rules.map((r) => r.trim());
   const command = String(req.input.command ?? '');
+  // What no rule may approve is never allowed here either (#503: `git diff --outp=../x` read as `git diff*`).
+  if (gitDenial(command)) return false;
   const asWritten = firstReading(command, prefixesOf(sdkRules(rules)), worktree, scope);
   if (asWritten || !worktree) return asWritten;
   return staysInWorktree(command, prefixesOf(rules.map((r) => r.endsWith(SCOPE) ? r.slice(0, -SCOPE.length) : r)), worktree, scope);
@@ -475,15 +635,41 @@ function staysInWorktree(command: string, prefixes: string[], worktree: string, 
     }
     // The command word is the rules' to judge; what it is given must stay inside.
     const names = it.words.map(literal);
-    if (!it.words.slice(1).every(stays(!names.some((n) => n !== null && MAKES.has(n))))) return false;
+    // A sed or awk that only prints (#503): its script names no file.
+    const filter = filterAt(it.text, names, it.words, vars, dirs);
+    const lenient = !names.some((n) => n !== null && MAKES.has(n));
+    if (!it.words.every((w, i) => i === 0 || filter?.has(i) || stays(lenient)(w))) return false;
     for (const refused of RUNS_ANOTHER) {
       if (refused.readOnly && !scope.readOnly) continue;
       const from = names.findIndex((_, i) => refused.command.every((c, j) => names[i + j] === c));
       if (from >= 0 && it.words.slice(from + refused.command.length).some((w) => expand(w, vars, dirs)?.values.some((v) => refused.flag.test(v)))) return false;
     }
-    if (!segmentAllowed(trimEndBlanks(it.text.replace(HEREDOC, '')), prefixes, worktree)) return false;
+    if (!segmentAllowed(trimEndBlanks(it.text.replace(HEREDOC, '')), prefixes, worktree) && !filter) return false;
   }
   return true;
+}
+
+/**
+ * A `sed` or `awk` that only prints (#503), whatever the rules say: `grep -n x f | awk -F: '$1>625'` and
+ * `sed -n 1,40p f` parked HH workers while every path they named was in the worktree. Every argument must be one the
+ * command itself makes known, and the segment must set nothing that changes what runs.
+ */
+function filterAt(text: string, names: (string | null)[], words: Word[], vars: Vars, dirs: string[]): Set<number> | null {
+  const { command, unsafe } = normalizeSegment(text);
+  const tool = command.split(/\s/)[0];
+  if (unsafe || (tool !== 'sed' && tool !== 'awk')) return null;
+  const at = names.indexOf(tool) + 1;
+  // Every way a loop's variable can fill them in (`for f in a b; do awk … $f`), each judged whole.
+  let lists: string[][] = [[]];
+  for (const w of words.slice(at)) {
+    const e = expand(w, vars, dirs);
+    if (!e?.known || lists.length * e.values.length > MAX_EXPANSIONS) return null;
+    lists = lists.flatMap((l) => e.values.map((v) => [...l, v]));
+  }
+  // A word is a script only where every reading makes it one.
+  const found = lists.map((args) => filterReadsOnly(tool, args));
+  if (found.some((f) => !f)) return null;
+  return new Set([...found[0]!].filter((i) => found.every((f) => f!.has(i))).map((i) => i + at));
 }
 
 /** Permission rule that would pre-approve exactly this request on resume. */

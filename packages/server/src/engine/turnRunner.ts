@@ -11,13 +11,14 @@ import { commandGrant, commandForms, matchesCommandGrant, type CommandGrant } fr
 import { hostNote, keptPathsNote, cwdNote } from './hostNote.ts';
 import { quietTransientFailure, patchRejected, PATCH_REJECTED_RETRY } from './transient.ts';
 import { heavyRedirects } from './heavyRuns.ts';
+import { resolveSecretEnv, redactSecretEnv } from './secretEnv.ts';
 import { MAX_ORCHESTRATOR_DENIALS } from './orchestratorDenials.ts';
 import type { Guards } from './guards.ts';
 import type { Triage } from './triage.ts';
 import type { ReviewUndo } from './reviewUndo.ts';
 
 /** A turn this engine started (LiveEngine's `turns`): what the board shows of it, and its abort. */
-export interface RunningTurn { model: string; phase: TurnPhase; startedAt: string; lastOutput: string; abort: AbortController; waiting?: string; oneShot?: string; lastOutputAt?: number }
+export interface RunningTurn { model: string; phase: TurnPhase; startedAt: string; lastOutput: string; abort: AbortController; waiting?: string; oneShot?: string; lastOutputAt?: number; /** run_heavy calls in flight (#502): quiet by design, not a hung turn. */ heavy?: number }
 
 /**
  * Turn running (#404, seam 9): one turn of an item's session, from the choice of how to start it to what it cost. runTurnFor
@@ -150,6 +151,16 @@ export class TurnRunner {
   private recordUsage(item: string, def: ModelDef, model: string, role: UsageRole, op: string, result: TurnResult, at: { stage: UsageStage; resumed?: boolean }): void {
     const data = usageTurnData({ provider: def.runner ?? 'claude', model, role, op, accounting: modelCapabilities(def).accounting, ...at, result });
     if (data) this.ctx.store.journal.append({ type: USAGE_TURN, item, actor: 'engine', data: { ...data } });
+  }
+
+  /**
+   * The values `secret_env` hands a worker turn (#501), read from their files now; one that cannot be read is said in
+   * Activity by name and file (never a value) and the turn starts without it. Undefined when nothing is handed over.
+   */
+  secretEnv(id: string): Record<string, string> | undefined {
+    const { env, missing } = resolveSecretEnv(this.ctx.store.local.secret_env, this.ctx.repo);
+    if (missing.length) this.ctx.store.mutateItem(id, [{ activity: { actor: 'app', text: `secret_env not handed to this turn: ${missing.join('; ')}` } }], 'engine');
+    return Object.keys(env).length ? env : undefined;
   }
 
   /**
@@ -301,7 +312,9 @@ export class TurnRunner {
     // A heavy command (#218) is redirected to run_heavy, so it never runs beside another or under a CI job on this host.
     const effective = this.ctx.store.permissionRules();
     const rules = { ...effective, redirect: [...effective.redirect, ...heavyRedirects(this.ctx.store.config)] };
-    const policy = makePolicy(this.ctx.store.config, d.base_branch!, cwd, {}, rules);
+    // What the user's secret_env hands an implement or fix turn (#501), read now; a planner gets none. The deny list's refusal names them.
+    const secretEnv = phase === 'plan' ? undefined : this.secretEnv(id);
+    const policy = makePolicy(this.ctx.store.config, d.base_branch!, cwd, { env: Object.keys(secretEnv ?? {}) }, rules);
     // Tools from outside (f5): the model row names MCP servers, the machine-local file holds them with
     // their keys. A name with no server on this machine is a stop, not a session without its tools.
     const mcpServers: Record<string, McpServerSpec> = {};
@@ -353,7 +366,7 @@ export class TurnRunner {
       result = await this.ctx.withRunnerSlot(runner, () => this.ctx.withSessionSlot(id, () => { if (abort.signal.aborted && !this.ctx.stopping) return Promise.resolve<TurnResult>({ subtype: 'killed', isError: false, costUsd: 0, numTurns: 0, text: '' });
         if (this.ctx.stopping || this.ctx.guards.paused || this.ctx.guards.draining || this.ctx.guarded(runner, account.name)) return Promise.resolve<TurnResult>({ subtype: 'deferred', isError: false, costUsd: 0, numTurns: 0, text: '' }); admitted(); return beforeRun().then(() => agent.runTurn({
         itemId: id, phase, cwd, model: model as string,
-        transport: modelCapabilities(def).transport, ...runnerTurnSettings(def), ...this.ctx.accountTurnOptions(account),
+        transport: modelCapabilities(def).transport, ...runnerTurnSettings(def), ...this.ctx.accountTurnOptions(account), ...(secretEnv ? { env: secretEnv } : {}),
         maxTokens: metered ? undefined : Math.min(budget.tokens - (fm.tokens ?? 0), phase === 'plan' ? fm.op_data?.plan_retry_turns ? 10_000 : this.ctx.store.config.budget_tokens_per_plan_turn : Infinity),
         onApproval: async (req) => {
           if (abort.signal.aborted || this.ctx.store.requireItem(id).file.frontmatter.taken_over) return;
@@ -446,7 +459,7 @@ export class TurnRunner {
           this.ctx.store.mutateItem(id, [{ set: { awaiting: 'question', awaiting_data: { questions, requested_at: this.ctx.now(), park } } }, { activity: { actor: 'app', text: `parked: agent asked ${questions.length} question(s)` } }, ...triage.ops], 'engine', { commit: `${id}: awaiting answers` });
           if (triage.on) this.ctx.wakeWhenIdle(id, 'worker_question');
         },
-        onOutput: (text) => { const t = this.ctx.turns.get(id); if (t) { t.lastOutput = text.slice(-400); t.lastOutputAt = Date.now(); } this.ctx.emit({ type: 'session.output', id, text }); },
+        onOutput: (raw) => { const text = redactSecretEnv(raw, secretEnv); const t = this.ctx.turns.get(id); if (t) { t.lastOutput = text.slice(-400); t.lastOutputAt = Date.now(); } this.ctx.emit({ type: 'session.output', id, text }); },
         signal: abort.signal,
       })); }, abort.signal), abort.signal);
     } finally {

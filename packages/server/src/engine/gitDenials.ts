@@ -3,7 +3,7 @@ import { literal, readShell } from './shell.ts';
 /**
  * Git calls no allow rule may approve: the SDK approves `Bash(git diff*)` or `Bash(git fetch*)` by itself,
  * before planestro's policy is asked, so these are judged in the PreToolUse hook as well as in `makePolicy`.
- * `--output` makes a read (diff, log, show, format-patch) write any file; a fetch refspec (`+sha:refs/heads/x`,
+ * `--output` makes a read (diff, log, show, format-patch) write any file, `--no-index` read any; a fetch refspec (`+sha:refs/heads/x`,
  * `a:b`) rewrites a ref in the store every worktree shares, outside planestro's ref lock. And the ways an allowed
  * git call runs a program of the worker's choosing without a park (#340): `rebase --exec`, `--upload-pack`, `-c core.*`.
  */
@@ -21,7 +21,10 @@ export function gitDenial(command: string): string | null {
     if (sub === 'config') { const w = configWrite(rest); if (w !== null && !SAFE_CONFIG.test(w)) return `git config ${w || '(edit)'} changes what git runs; leave git's configuration as it is.`; }
     if (sub === 'rebase' && rest.some((a) => a === '--exec' || a.startsWith('--exec=') || /^-[A-Za-z]*x/.test(a))) return 'git rebase --exec runs a command for each commit; run it yourself after the rebase.';
     if (rest.some((a) => /^--(upload-pack|receive-pack|exec)(=|$)/.test(a) || ((sub === 'fetch' || sub === 'clone' || sub === 'ls-remote' || sub === 'pull') && /^-u/.test(a)))) return 'that option runs a program on the remote side; planestro fetches for you.';
-    if (rest.some((a) => a === '--output' || a.startsWith('--output='))) return 'git --output writes a file wherever it is told; print to the terminal or redirect inside your worktree.';
+    // git takes a long option by any unambiguous start of it (`--outp=x` is `--output=x`) (#503).
+    if (rest.some((a) => abbreviates(a, 'output', 3))) return 'git --output writes a file wherever it is told; print to the terminal or redirect inside your worktree.';
+    // `git diff*` is the SDK's to approve, and --no-index makes it read any two files on the machine (#503).
+    if (rest.some((a) => abbreviates(a, 'no-index', 4))) return 'git diff --no-index reads files outside the repository; compare files with diff, inside your worktree.';
     if (sub === 'fetch') {
       const operands = rest.filter((a) => !a.startsWith('-'));
       if (operands.slice(1).some((r) => r.startsWith('+') || r.includes(':'))) return 'a fetch refspec updates refs other worktrees share; planestro fetches for you (git fetch origin is fine).';
@@ -29,6 +32,13 @@ export function gitDenial(command: string): string | null {
   }
   return null;
 }
+
+/** Whether `arg` is the long option `--name`, written whole or cut to at least `min` letters, with or without `=value`. */
+const abbreviates = (arg: string, name: string, min: number): boolean => {
+  if (!arg.startsWith('--')) return false;
+  const given = arg.slice(2).split('=')[0];
+  return given.length >= min && name.startsWith(given);
+};
 
 /** `-c` keys that change only how git prints or who a commit is by; anything else (core.*, alias.*, a pager, an ssh command) may run a program. */
 const SAFE_CONFIG = /^(user\.(name|email)|color(\.[\w.-]+)?|advice\.[\w-]+|log\.[\w-]+|diff\.(renames|noprefix|mnemonicprefix|relative|context|algorithm)|merge\.conflictstyle|commit\.gpgsign|init\.defaultbranch)$/i;

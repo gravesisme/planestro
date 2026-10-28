@@ -30,8 +30,8 @@ describe('allow rules suggested from the ruling history (#169)', () => {
   });
 
   it('proposes a worktree rule for a safe kind of command that keeps being approved, with its count', () => {
-    const rep = suggestAllowRules([...many('git check-ignore -v tmp/x', 4), ...many('pgrep -f soak || echo stopped', 3)], [], { scope });
-    expect(rep.suggestions.map((s) => s.rule)).toEqual(['Bash(git check-ignore *)@worktree', 'Bash(pgrep *)@worktree']);
+    const rep = suggestAllowRules([...many('git describe --tags', 4), ...many('pgrep -f soak || echo stopped', 3)], [], { scope });
+    expect(rep.suggestions.map((s) => s.rule)).toEqual(['Bash(git describe *)@worktree', 'Bash(pgrep *)@worktree']);
     expect(rep.suggestions[0]).toMatchObject({ approvals: 4, unlocks: 4, class: 'git-read' });
     expect(rep.replay.current.allowed_now).toBe(0);
     expect(rep.replay.proposed).toEqual({ allowed_now: 7, still_parks: 0, false_allows: 0 });

@@ -9,6 +9,8 @@ import { makePolicy, ruleFor, allowedByRules, BASE_ALLOWED } from './policy.ts';
 import { answeredCommand, commandShape, rulingText, parkedRefusal, permissionGrantRefusal } from './parks.ts';
 import { commandGrant, commandForms } from './sessions/nativeApproval.ts';
 import { workerCommandEnv } from './sessions/commandEnv.ts';
+import { redactSecretEnv } from './secretEnv.ts';
+import { secretsNamedIn } from './secrets.ts';
 import { Orchestrator } from './orchestrator.ts';
 import { NeedsYouWatch, type Wait } from './needsYou.ts';
 import { auditSlotDue, runEfficiencyAudit } from './efficiencyAudit.ts';
@@ -1539,8 +1541,11 @@ export class LiveEngine implements Engine {
       if (epic) ops.push({ activity: { actor: 'app', text: `this reads as an epic, not one item: ${epic.reason}. Approval is refused; convert it to an epic` } });
       const stated = epic ? null : holdShapeOf(plan);
       if (stated) ops.push({ activity: { actor: 'app', text: `its plan states a merge hold: "${stated.quote}". Approving it can hold its pull request` } });
+      // A step that reads a secret file is refused when it runs, after approval (#501, LM-50): said now, with the way to sanction it.
+      const secrets = secretsNamedIn(plan, this.repo);
+      if (secrets.length) ops.push({ activity: { actor: 'app', text: `its plan names ${secrets.map((x) => `${x.path} (${x.what})`).join(', ')}: planestro's secret deny list refuses every worker read of ${secrets.length === 1 ? 'that file' : 'those files'}, approved plan or not. If a step needs a value from one, the user names it under secret_env in planestro.local.yml and the worker's environment gets it as a variable` } });
       s.mutateItem(id, ops, 'engine', { commit: `${id}: submit plan` });
-      this.note(epic ? 'warn' : 'info', `${id}: plan submitted — ${epic ? `it reads as an epic (${epic.reason}): convert it rather than approve it` : delegated ? 'the orchestrator decides (you asked it to)' : 'needs your approval'}`);
+      this.note(epic || secrets.length ? 'warn' : 'info', `${id}: plan submitted — ${epic ? `it reads as an epic (${epic.reason}): convert it rather than approve it` : delegated ? 'the orchestrator decides (you asked it to)' : 'needs your approval'}${secrets.length ? `; it names secret files workers cannot read (${secrets.map((x) => x.path).join(', ')}): see secret_env` : ''}`);
       this.wakeOrchestrator('plan_review', id);
       return epic?.source === 'breakdown'
         ? 'Breakdown recorded by planestro as this item\'s plan, flagged as an epic: the user decides whether to convert it. End your turn now.'
@@ -1645,7 +1650,8 @@ export class LiveEngine implements Engine {
       request_audition: async (audition) => this.workerTools.requestAudition(id, audition),
       get_item: async () => serializeItemFile(s.requireItem(id).file),
       runners_busy: async () => this.runnerStatus(),
-      ...(this.store.config.heavy_runs.enabled ? { run_heavy: async (commands: string[]) => this.runHeavy(id, commands) } : {}),
+      // Offered always (#502): the one way a worker holds a run past the CLI's 10-minute foreground cap; `enabled` adds the turn-taking.
+      run_heavy: async (commands: string[]) => this.runHeavy(id, commands),
     };
   }
 
@@ -1691,7 +1697,8 @@ export class LiveEngine implements Engine {
   /**
    * A worker's heavy local run: what its rules (or the project's heavy patterns) let it run, in its worktree, one heavy
    * run at a time, each batch after any CI job on a runner sharing this host (`heavy_runs.shared_labels`) has ended.
-   * The waits are the lock and CI, never a person (invariant 2); a turn that is stopped stops waiting.
+   * The waits are the lock and CI, never a person (invariant 2); a turn that is stopped stops waiting. With
+   * `heavy_runs.enabled` off it is only a long run (#502): no lock, no CI wait, still one call of any length.
    */
   private async runHeavy(id: string, commands: string[]): Promise<string> {
     const cfg = this.store.config.heavy_runs;
@@ -1699,27 +1706,32 @@ export class LiveEngine implements Engine {
     if (!fm.worktree) return 'Rejected: this item has no worktree to run in.';
     const cwd = this.absWorktree(fm.worktree);
     const rules = this.store.permissionRules();
-    const policy = makePolicy(this.store.config, this.store.derived(item).base_branch!, cwd, {}, rules);
+    // What secret_env hands the worker's session reaches its heavy runs (#501); what they print comes back redacted.
+    const secrets = this.turnRunner.secretEnv(id);
+    const policy = makePolicy(this.store.config, this.store.derived(item).base_branch!, cwd, { env: Object.keys(secrets ?? {}) }, rules);
     for (const command of commands) {
       const why = policy.deny({ tool: 'Bash', input: { command } });
       if (why) return `Rejected: ${why} Nothing was run.`;
       if (!allowedByRules({ tool: 'Bash', input: { command } }, [...BASE_ALLOWED.implement, ...rules.allow, ...heavyAllowRules(this.store.config)], cwd)) return `Rejected: run_heavy runs only commands your allow rules or the project's heavy_runs.patterns permit, and \`${command.slice(0, 200)}\` is neither. Nothing was run.`;
     }
     // The command sees what the worker's own commands would (#228), by its runner.
-    const env = workerCommandEnv(this.store.config.models.find((m) => m.id === fm.implementer)?.runner ?? 'claude', this.store.config);
+    const env = workerCommandEnv(this.store.config.models.find((m) => m.id === fm.implementer)?.runner ?? 'claude', this.store.config, secrets);
     const signal = this.turns.get(id)?.abort.signal;
     const stopped = () => signal?.aborted || this.stopping || this.store.requireItem(id).file.frontmatter.taken_over;
     const say = (text: string) => this.store.mutateItem(id, [{ activity: { actor: 'app', text: `heavy run: ${text}` } }], 'engine');
     const out: string[] = [];
     const t0 = Date.now();
-    const holder = this.heavyLock.holder;
-    const release = await this.heavyLock.acquire(id, signal);
+    const holder = cfg.enabled ? this.heavyLock.holder : undefined;
+    const release = cfg.enabled ? await this.heavyLock.acquire(id, signal) : () => {};
     if (!release) return 'Stopped: this turn was stopped while waiting for the heavy-run lock. Nothing was run.';
+    // A run says nothing while it runs: the quiet-turn watchdog leaves the turn alone until it answers (#502).
+    const turn = this.turns.get(id);
+    if (turn) turn.heavy = (turn.heavy ?? 0) + 1;
     try {
       if (holder !== undefined) { const w = `waited ${took(Date.now() - t0)} for ${holder}'s heavy run`; out.push(w); say(w); }
       for (const [i, command] of commands.entries()) {
         const label = commands.length > 1 ? `batch ${i + 1}/${commands.length}: ` : '';
-        if (cfg.yield_to_ci && cfg.shared_labels.length) {
+        if (cfg.enabled && cfg.yield_to_ci && cfg.shared_labels.length) {
           const w0 = Date.now(); let first: string[] | undefined; let unread = '';
           for (;;) {
             if (stopped()) return [...out, `Stopped: this turn was stopped while waiting for CI${label ? ` before ${label.slice(0, -2)}` : ''}.`].join('\n');
@@ -1736,13 +1748,13 @@ export class LiveEngine implements Engine {
         const r0 = Date.now();
         const r = await this.ports.proc.run(command, { cwd, timeoutMs: cfg.timeout_min * 60_000, ...env, ...(signal ? { signal } : {}) });
         await this.recordTestRun(id, cwd, { command, ok: r.code === 0, ms: Date.now() - r0 }, 'run_heavy');
-        const tail = `${r.stdout}${r.stderr ? `\n[stderr]\n${r.stderr}` : ''}`.trim().slice(-4000);
+        const tail = redactSecretEnv(`${r.stdout}${r.stderr ? `\n[stderr]\n${r.stderr}` : ''}`.trim(), secrets).slice(-4000);
         out.push(`${label}\`${command}\` exited ${r.code}${tail ? `:\n${tail}` : ''}`);
         if (r.code !== 0 && i < commands.length - 1) { out.push(`The batches after it were not run.`); break; }
       }
       say(`ran ${commands.length === 1 ? `\`${commands[0].slice(0, 120)}\`` : `${commands.length} batches`} in ${took(Date.now() - t0)}`);
       return out.join('\n');
-    } finally { release(); }
+    } finally { release(); if (turn) { turn.heavy = (turn.heavy ?? 1) - 1; turn.lastOutputAt = Date.now(); } }
   }
 
   // ---- loop until green (#171) ----
@@ -1925,12 +1937,32 @@ export class LiveEngine implements Engine {
     const fm = this.store.requireItem(id).file.frontmatter;
     if (!fm.blocked && fm.awaiting !== 'user') return `nothing to unblock: ${id} is not blocked${fm.awaiting ? ` (it is awaiting ${fm.awaiting}; answer that instead)` : ''}`;
     const busy = this.busyWith(id); if (busy) return `not now: ${busy}`;
+    // A message no session will read is refused before anything moves (#500): LM-64's red epic was told "the session resumes", and nothing ran for 3.5 h.
+    // An engine stop is retried, its message a note in Activity (#211, #439): said so below, not refused.
+    const noSession = message?.trim() && !LiveEngine.engineStop(fm) ? this.epicMessageRefusal(fm) : undefined;
+    if (noSession) return `not possible: ${noSession}`;
     const noFresh = fresh ? this.freshRefusal(fm, message) : undefined;
     if (noFresh) return `not possible: ${noFresh}`;
     // Sync first (p29): the branch takes in what merged since it was cut before the session resumes; a refusal leaves it blocked.
     if (syncFirst) return this.syncWithBase(id, { by: 'orchestrator', unblock: { message: message?.trim() || undefined, fresh } });
     await this.unblock(id, message?.trim() || undefined, 'orchestrator', { fresh });
-    return message?.trim() && this.phaseFor(fm.status) ? (fresh ? 'unblocked; a fresh session starts with a brief and your message as its task' : 'unblocked; the session resumes with your message') : 'unblocked; the pipeline retries from where it stopped';
+    // Said from the phase unblock itself resumes in (sessionPhaseOf), never the status alone (#500).
+    if (!message?.trim()) return 'unblocked; the pipeline retries from where it stopped';
+    if (!this.sessionPhaseOf(fm)) return `unblocked; the pipeline retries from where it stopped. ${id} is ${fm.status}, with no session to resume: your message is in its Activity log only`;
+    return fresh ? 'unblocked; a fresh session starts with a brief and your message as its task' : 'unblocked; the session resumes with your message';
+  }
+
+  /**
+   * Why a message to this epic would reach no session (#500), with what works instead; undefined while it has one (its
+   * breakdown's planner). Past its breakdown an epic's work is its children's, and its red pull request is fixed by a new one.
+   */
+  private epicMessageRefusal(fm: { id: string; kind?: string; status: Status; branch?: string; blocked_reason?: string }, who: 'orchestrator' | 'user' = 'orchestrator'): string | undefined {
+    if (fm.kind !== 'epic' || this.sessionPhaseOf(fm)) return undefined;
+    // The user's words (the item page, the operator MCP): no tool names, the same two ways out.
+    if (who === 'user') return `${fm.id} is an epic ${fm.status === 'IN_REVIEW' ? 'in review' : 'past its breakdown'}: it has no session to read a message, so it was not unblocked. ${fm.status === 'IN_REVIEW' ? 'To fix its pull request, add a fix child to the epic: it is cut from the epic\'s branch and merges into it, the epic goes back in progress for it and this stop is cleared. For a flaky check, re-run CI. Or unblock without a message to retry the merge on the same CI run.' : 'Unblock without a message to retry what an epic can, or message its children.'}`;
+    const head = `${fm.id} is an epic ${fm.status === 'IN_REVIEW' ? 'in review' : `that is ${fm.status}`}: past its breakdown it has no session for a message to resume, so nothing was unblocked.`;
+    if (fm.status === 'IN_REVIEW') return `${head} Its pull request's own fix is a new child: leave ask_user_decision with an option whose action is { tool: "create_item", args: { title, description, parent: "${fm.id}", submit: true } } (the description is the whole brief: what failed and where); the child is cut from ${fm.branch ?? 'its integration branch'} and merges into it, the epic goes back in progress for it, this stop is cleared and its pull request is reused. A flake: rerun_ci. unblock_item without a message re-enters the merge pipeline on the same CI run.`;
+    return `${head} unblock_item without a message retries what an epic can (its integration branch); a message for the work goes to its children (message_session, annotate_item), or to a new child offered on a decision card (create_item with parent "${fm.id}").`;
   }
 
   /**
@@ -2131,6 +2163,9 @@ export class LiveEngine implements Engine {
     const resume = (by !== 'user'
       ? `The last step stopped on a transient failure (${reason}), which has been retried. Nothing of yours was lost: check your worktree and continue where you left off.`
       : `The user unblocked this item (it had stopped: ${reason}). Nothing of yours was lost: check your worktree and continue where you left off.`) + (message ? `\n\n${message}` : '');
+    // An epic with a new child (a fix filed for its red PR, #500) goes back in progress for it on the next tick, which clears this stop: re-reading the red run here only raced it.
+    const newWork = fm.kind === 'epic' && fm.status === 'IN_REVIEW' ? this.store.derived(item).children.filter((c) => !['MERGED', 'FINISHED', 'ICEBOX'].includes(this.store.requireItem(c).file.frontmatter.status)) : [];
+    if (newWork.length) { this.poke(); return `not now: ${newWork.join(', ')} is new work for epic ${id}, which goes back in progress for it (its pull request is reused and this stop is cleared); nothing to retry`; }
     // A conflict once handed to a session that never finished it is the pipeline's again: it re-syncs, and a conflict comes back to a session.
     if (fm.status === 'IN_REVIEW') { clear(`retrying the merge pipeline after ${reason}`, [{ set: { ci_result: 'pending', op_data: { ...(opData ?? {}), needs_session_rebase: false } } }]); this.poke(); return /^ci_red/.test(reason) ? 'retrying: it re-enters the merge pipeline, which reads the same CI run again (it does not run CI again: use rerun_ci to re-run its failed jobs)' : 'retrying: it re-enters the merge pipeline'; }
     if (fm.status === 'MERGED') { clear(`retrying cleanup after ${reason}`); this.runJob(id, () => this.cleanupReconcile.cleanup(id)); return 'retrying the cleanup (it still needs positive evidence before deleting anything)'; }
@@ -2269,19 +2304,26 @@ export class LiveEngine implements Engine {
     return undefined;
   }
 
+  /** A stop that is planestro's own (a server-side git or gh failure, a restart mid-op): retried, and a message with it is a note in Activity (#211). */
+  private static engineStop(fm: { blocked_reason?: string }): boolean { return /^(engine_error|interrupted_)/.test(fm.blocked_reason ?? ''); }
+
   /** User-driven unblock: clears the flag and, if the item is in a session phase, resumes with a message. With `fresh`, in a new conversation that gets a brief. */
-  async unblock(id: string, message?: string, by: 'user' | 'orchestrator' | 'engine' = 'user', opts: { fresh?: boolean; retried?: boolean } = {}): Promise<void> {
+  async unblock(id: string, message?: string, by: 'user' | 'orchestrator' | 'engine' = 'user', opts: { fresh?: boolean; retried?: boolean; fromCard?: boolean } = {}): Promise<void> {
     const fm = this.store.requireItem(id).file.frontmatter;
     if (fm.taken_over) throw new Error(`${id} is taken over: hand it back instead`);
     const refusal = opts.fresh ? this.freshRefusal(fm, message) : undefined;
     if (refusal) throw new Error(refusal);
+    // The user's message to an epic with no session is refused, the stop kept (#500): clearing it dropped the message unsaid.
+    // A card's answer (`fromCard`) is already in Activity and needs no session; it unblocks as before.
+    const noSession = by === 'user' && message?.trim() && !opts.retried && !opts.fromCard && !LiveEngine.engineStop(fm) ? this.epicMessageRefusal(fm, 'user') : undefined;
+    if (noSession) throw new Error(noSession);
     // Without a message there is nothing to tell a session, so "unblock" means "carry on from where
     // it stopped": the same step retry_op takes (open the PR for committed work, re-enter the merge
     // pipeline, requeue a setup that never ran, resume the session). Clearing the flag alone left
     // items idle with nothing driving them (HH-115, HH-125).
     // A stop that is planestro's own (a server-side git or gh failure, a restart mid-op) is retried the
     // same way with a message too: the session can't fix it, and resuming it cost a turn and a re-block (#211).
-    const engineStop = /^(engine_error|interrupted_)/.test(fm.blocked_reason ?? '');
+    const engineStop = LiveEngine.engineStop(fm);
     // A rebase left stopped for a session that is no longer coming to it (HH-532) is aborted: the item goes on from its branch as it was.
     if (fm.op_data?.rebase_continue && !fm.op_data?.pending_turn && !this.busyWith(id)) await this.baseSync.dropHeldRebase(id, 'unblocked');
     if ((!message || (engineStop && !opts.fresh)) && !opts.retried && fm.blocked && !this.busyWith(id)) {
