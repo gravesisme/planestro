@@ -475,6 +475,8 @@ export function allowedByRules(req: PermissionRequest, rules: string[], worktree
   if (req.tool !== 'Bash') return rules.includes(req.tool) || (worktree !== undefined && toolReadsInside(req, worktree));
   rules = rules.map((r) => r.trim());
   const command = String(req.input.command ?? '');
+  // What no rule may approve is never allowed here either (#503: `git diff --outp=../x` read as `git diff*`).
+  if (gitDenial(command)) return false;
   const asWritten = firstReading(command, prefixesOf(sdkRules(rules)), worktree, scope);
   if (asWritten || !worktree) return asWritten;
   return staysInWorktree(command, prefixesOf(rules.map((r) => r.endsWith(SCOPE) ? r.slice(0, -SCOPE.length) : r)), worktree, scope);

@@ -38,6 +38,19 @@ describe('read-only commands in the worktree (#503)', () => {
     expect(allowed('git show --ext-diff HEAD', BASE_ALLOWED.plan)).toBe(false);
   });
 
+  it('never lets a git reader write a file, read outside the repository or reach another one', () => {
+    const policy = makePolicy(config(), 'trunk', wt);
+    for (const c of ['git diff --output=../x', 'git log -p --output=/tmp/y', 'git show --output x HEAD', 'git diff --outp=../x', 'git log --out=/tmp/y', 'git diff --no-index /etc/passwd f', 'git diff --no-ind a b', 'git --no-pager diff --no-index a b']) {
+      expect(policy.deny(bash(c)), c).toBeTruthy();
+      for (const rules of [BASE_ALLOWED.implement, BASE_ALLOWED.fix, BASE_ALLOWED.plan, ['Bash(git diff*)', 'Bash(git log*)', 'Bash(git show*)', 'Bash(git --no-pager diff *)']]) expect(allowed(c, rules), c).toBe(false);
+    }
+    expect(policy.deny(bash('git diff --no-index ~/.aws/credentials /dev/null'))).toMatch(/secret/);
+    for (const c of ['GIT_DIR=/other/.git git show HEAD', 'GIT_WORK_TREE=/other git diff', 'git --work-tree=/other diff', 'git --git-dir=/other/.git cat-file -p HEAD', 'git -C /other show HEAD', 'git -C ../T-2 log', 'cd .. && git log'])
+      for (const rules of [BASE_ALLOWED.implement, BASE_ALLOWED.plan]) expect(allowed(c, rules), c).toBe(false);
+    // What stays as it was: the readers print, and a redirect inside the worktree is how to keep their output.
+    for (const c of ['git diff --stat', 'git log --oneline -3', 'git diff > tmp/d.patch', 'git diff --output-indicator-new=+ HEAD', 'git log --no-merges -3']) expect(allowed(c), c).toBe(true);
+  });
+
   it('parks a sed or awk that writes, runs or reads by name', () => {
     for (const c of [
       "sed -i '' s/a/b/ f", 'sed -i.bak s/a/b/ f', 'sed --in-place s/a/b/ f', 'sed -I s/a/b/ f', "sed 's/a/b/w out' f", "sed 's/a/b/e' f", "sed -n 'w out' f",
