@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { auditDigest, turnsOn, dayBefore, parseCron, prevSlot, isoInZone, isoLocal, modelCapabilities, usageTurnData, USAGE_TURN, EFFICIENCY_AUDIT, AUDIT_DIGEST_TYPES, type AuditRecord, type PreviousRecommendation, type JournalEntry } from '@planestro/shared';
+import { auditDigest, clampTitle, NOTE_TITLE_MAX, turnsOn, dayBefore, parseCron, prevSlot, isoInZone, isoLocal, modelCapabilities, usageTurnData, USAGE_TURN, EFFICIENCY_AUDIT, AUDIT_DIGEST_TYPES, type AuditRecord, type PreviousRecommendation, type JournalEntry } from '@planestro/shared';
 import type { DataStore } from '../store/DataStore.ts';
 import type { Ports, TurnResult, CustomToolDef } from './ports.ts';
 import type { Orchestrator } from './orchestrator.ts';
@@ -92,6 +92,7 @@ export async function runEfficiencyAudit(deps: AuditDeps, slot: string): Promise
     description: 'File your one recommendation for today. Call it exactly once.',
     schema: {
       key: z.string().describe('A short stable name for what the waste is about, e.g. "planner-fable-cost" or "HH-412-whole-suite-runs". Reuse the last recommendation\'s key when it is the same waste.'),
+      title: z.string().describe(`At most ${NOTE_TITLE_MAX} characters, like a git commit subject: the change and what it saves, read at a glance (e.g. "Allow read-only grep/sed/git diff in worker worktrees"). No date; the list shows it.`),
       what: z.string().describe('The waste, in one line.'),
       evidence: z.string().describe('The numbers from the digest that show it.'),
       change: z.string().describe('One specific mechanical change: an allow rule, a prompt-partial trim, a test filter, a model for one role, a setting.'),
@@ -113,7 +114,8 @@ export async function runEfficiencyAudit(deps: AuditDeps, slot: string): Promise
         return 'Recorded on that note, which is still open: nothing new was filed. End your turn.';
       }
       const text = [`Efficiency audit ${through}: ${what}`, `Evidence: ${String(a.evidence ?? '')}`, `Change: ${String(a.change ?? '')}`, `Expected saving: ${String(a.saving ?? '')}`].join('\n\n');
-      const note = store.journal.append({ type: NOTE_TYPE, actor: 'orchestrator', data: { text, source: 'efficiency_audit', key } });
+      const title = clampTitle(String(a.title ?? '') || what);
+      const note = store.journal.append({ type: NOTE_TYPE, actor: 'orchestrator', data: { ...(title ? { title } : {}), text, source: 'efficiency_audit', key } });
       filed = { slot, outcome: 'noted', key, what, note: note.ts };
       return `Filed under planestro feedback at ${note.ts}. End your turn.`;
     },
