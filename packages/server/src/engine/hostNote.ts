@@ -48,3 +48,15 @@ export function keptPathsNote(paths: string[], checkout: string, orchestrator = 
     : '- Leave them there; do not copy them into the main checkout yourself, even if a brief says to.');
   return lines.join('\n');
 }
+
+/**
+ * A long harness and the 10-minute cap on a worker's foreground Bash call (#502), said in code because a data dir's copy of
+ * orchestrator-system predates it. LM-75's browser harness outran the cap, so the worker ran it in the background and
+ * followed its log with Monitor, and the orchestrator flagged that against the project's "one foreground harness" rule.
+ */
+export function longRunNote(): string {
+  return ['', '', '## Long runs and the 10-minute cap', '',
+    "- A worker's foreground shell command is capped at 10 minutes. A longer run (a browser or e2e harness, a long suite) goes through the worker's run_heavy tool, which holds it as one call of any length.",
+    '- One run_heavy call, or one self-contained harness started in the background and followed to its end with Monitor (or by reading its log), is one foreground harness run under a rule that asks for one. Do not flag either as non-compliant, and do not ask a worker to split a harness to fit the cap. What such a rule forbids is several harnesses at once or pieces of one run separately.',
+  ].join('\n');
+}

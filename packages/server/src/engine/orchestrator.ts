@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { modelCapabilities, clampTitle, NOTE_TITLE_MAX, runnerTurnSettings, type ModelDef, type Runner, getSection, planToolsMissing, mcpServersNamed, epicFlagOf, holdShapeOf, heldReasonOf, previewOf, type HoldFlag, partsSummary, serializeItemFile, serializeQuestionFile, parseThread, isoLocal, renormalize, laneOf, findModel, resolveTurnModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, type ServerEvent, parseActivity, usageTurnData, USAGE_TURN, resolveAccount, guardKey, unavailableKey, unavailableView, sameSessionStore, DEFAULT_ACCOUNT, fenceExternal, outsideTitle } from '@planestro/shared';
 import { parkHint, permissionGrantRefusal } from './parks.ts';
 import { precedents, rulingsFromJournal, worktreeFinder, worstOf } from './allowSuggest.ts';
-import { hostNote, keptPathsNote } from './hostNote.ts';
+import { hostNote, keptPathsNote, longRunNote } from './hostNote.ts';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import { DRY_RUN_SESSION_PREFIX } from './ports.ts';
 import type { Ports, CustomToolDef, TurnResult } from './ports.ts';
@@ -480,7 +480,7 @@ export class Orchestrator {
   private readonly host = hostNote();
   private systemIntro(): string {
     // The host note goes with the standing rules: the orchestrator writes instructions for workers on this machine.
-    const host = `${this.host}${keptPathsNote(this.store.config.worktrees.copy_to_checkout, this.store.codeRepoPath(), true)}`;
+    const host = `${this.host}${keptPathsNote(this.store.config.worktrees.copy_to_checkout, this.store.codeRepoPath(), true)}${longRunNote()}`;
     try { return `${this.store.renderPrompt('orchestrator-system', undefined)}\n\n${host}`; }
     catch { return `You are the planestro orchestrator: the judgment layer over a deterministic pipeline. Decide, instruct and annotate through the planestro tools; never perform git/gh operations yourself.\n\n${host}`; }
   }

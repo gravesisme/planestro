@@ -234,13 +234,14 @@ export class Scheduler {
   quietStopped = new Map<string, string>();
   /**
    * `concurrency.turn_quiet_min`: a turn that has said nothing for that long is stopped. The stall detector skips live
-   * turns, and a session held open by a background process (or a hung CLI) kept its slot until a person noticed.
+   * turns, and a session held open by a background process (or a hung CLI) kept its slot until a person noticed. A turn
+   * whose run_heavy is running is not quiet (#502): planestro itself holds that call.
    */
   private driveQuietTurns(): void {
     const min = this.ctx.store.config.concurrency.turn_quiet_min;
     if (!min) return;
     for (const [id, t] of this.ctx.turns) {
-      if (t.waiting || t.abort.signal.aborted || t.lastOutputAt === undefined || Date.now() - t.lastOutputAt < min * 60_000) continue;
+      if (t.waiting || t.heavy || t.abort.signal.aborted || t.lastOutputAt === undefined || Date.now() - t.lastOutputAt < min * 60_000) continue;
       const why = `no output for ${min} min (concurrency.turn_quiet_min)`;
       this.quietStopped.set(id, why); this.stoppedFor.set(id, why);
       t.abort.abort();

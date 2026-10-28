@@ -1645,7 +1645,8 @@ export class LiveEngine implements Engine {
       request_audition: async (audition) => this.workerTools.requestAudition(id, audition),
       get_item: async () => serializeItemFile(s.requireItem(id).file),
       runners_busy: async () => this.runnerStatus(),
-      ...(this.store.config.heavy_runs.enabled ? { run_heavy: async (commands: string[]) => this.runHeavy(id, commands) } : {}),
+      // Offered always (#502): the one way a worker holds a run past the CLI's 10-minute foreground cap; `enabled` adds the turn-taking.
+      run_heavy: async (commands: string[]) => this.runHeavy(id, commands),
     };
   }
 
@@ -1691,7 +1692,8 @@ export class LiveEngine implements Engine {
   /**
    * A worker's heavy local run: what its rules (or the project's heavy patterns) let it run, in its worktree, one heavy
    * run at a time, each batch after any CI job on a runner sharing this host (`heavy_runs.shared_labels`) has ended.
-   * The waits are the lock and CI, never a person (invariant 2); a turn that is stopped stops waiting.
+   * The waits are the lock and CI, never a person (invariant 2); a turn that is stopped stops waiting. With
+   * `heavy_runs.enabled` off it is only a long run (#502): no lock, no CI wait, still one call of any length.
    */
   private async runHeavy(id: string, commands: string[]): Promise<string> {
     const cfg = this.store.config.heavy_runs;
@@ -1712,14 +1714,17 @@ export class LiveEngine implements Engine {
     const say = (text: string) => this.store.mutateItem(id, [{ activity: { actor: 'app', text: `heavy run: ${text}` } }], 'engine');
     const out: string[] = [];
     const t0 = Date.now();
-    const holder = this.heavyLock.holder;
-    const release = await this.heavyLock.acquire(id, signal);
+    const holder = cfg.enabled ? this.heavyLock.holder : undefined;
+    const release = cfg.enabled ? await this.heavyLock.acquire(id, signal) : () => {};
     if (!release) return 'Stopped: this turn was stopped while waiting for the heavy-run lock. Nothing was run.';
+    // A run says nothing while it runs: the quiet-turn watchdog leaves the turn alone until it answers (#502).
+    const turn = this.turns.get(id);
+    if (turn) turn.heavy = (turn.heavy ?? 0) + 1;
     try {
       if (holder !== undefined) { const w = `waited ${took(Date.now() - t0)} for ${holder}'s heavy run`; out.push(w); say(w); }
       for (const [i, command] of commands.entries()) {
         const label = commands.length > 1 ? `batch ${i + 1}/${commands.length}: ` : '';
-        if (cfg.yield_to_ci && cfg.shared_labels.length) {
+        if (cfg.enabled && cfg.yield_to_ci && cfg.shared_labels.length) {
           const w0 = Date.now(); let first: string[] | undefined; let unread = '';
           for (;;) {
             if (stopped()) return [...out, `Stopped: this turn was stopped while waiting for CI${label ? ` before ${label.slice(0, -2)}` : ''}.`].join('\n');
@@ -1742,7 +1747,7 @@ export class LiveEngine implements Engine {
       }
       say(`ran ${commands.length === 1 ? `\`${commands[0].slice(0, 120)}\`` : `${commands.length} batches`} in ${took(Date.now() - t0)}`);
       return out.join('\n');
-    } finally { release(); }
+    } finally { release(); if (turn) { turn.heavy = (turn.heavy ?? 1) - 1; turn.lastOutputAt = Date.now(); } }
   }
 
   // ---- loop until green (#171) ----
