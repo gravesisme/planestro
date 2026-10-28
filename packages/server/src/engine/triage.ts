@@ -33,7 +33,7 @@ export interface TriageContext {
   note(level: 'info' | 'warn' | 'error', message: string): void;
   /** `card`: a decision the engine files itself, the user's from the start (#242). */
   block(id: string, reason: string, detail: string, awaiting?: 'user', stall?: undefined, card?: Omit<Decision, 'requested_at' | 'reason'>): void;
-  unblock(id: string, message: string | undefined, by: 'user', opts?: { fresh?: boolean }): Promise<void>;
+  unblock(id: string, message: string | undefined, by: 'user', opts?: { fresh?: boolean; fromCard?: boolean }): Promise<void>;
   wakeOrchestrator(type: string, item?: string, data?: Record<string, unknown>): void;
   poke(): void;
   /** Why an item cannot take a step now (a job or a turn running), or undefined. */
@@ -370,6 +370,6 @@ export class Triage {
     if (carry) { this.ctx.wakeOrchestrator('decision_answered', id, { question: decision.question, answer: said, options: decision.options.map((o) => `${o.label}: ${o.description}`).join(' | '), ...(raisedNote ? { budget: `${raisedNote}Resume it with unblock_item${fresh ? ' and fresh: true, as the option promised' : ''}.` } : fresh ? { budget: 'The option promised a fresh session: unblock_item with fresh: true and the instruction as its message.' } : {}), ...(done ? { action: `${doneNote}What is left is this item's own stop.` } : {}) }); return; }
     // No orchestrator to carry it out: a blocked session hears the answer itself; a worker's question stays for you to answer.
     const cur = this.ctx.store.requireItem(id).file.frontmatter;
-    if (cur.blocked || cur.awaiting === 'user') await this.ctx.unblock(id, `The user was asked: ${decision.question}\nTheir answer: ${said}${raisedNote ? `\n${raisedNote}` : ''}${doneNote ? `\n${doneNote}` : ''}`, 'user', { fresh });
+    if (cur.blocked || cur.awaiting === 'user') await this.ctx.unblock(id, `The user was asked: ${decision.question}\nTheir answer: ${said}${raisedNote ? `\n${raisedNote}` : ''}${doneNote ? `\n${doneNote}` : ''}`, 'user', { fresh, fromCard: true });
   }
 }
