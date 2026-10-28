@@ -250,6 +250,9 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   one a past approval would have hit) and drift over the journal's `tools.ran` (one per Claude worker turn: what ran
   without a park): allow rules nothing matched, approvals rising. Neither is applied. A delegated permission request
   carries the earlier rulings on its kind of command and the `permission-rubric` partial.
+  Beside them stand planestro's own built-in readers (`BASE_ALLOWED`, after every deny): what only reads, every path it
+  names in the worktree or a scratch folder. That covers Read/Grep/Glob there (symlinks followed, the main checkout still
+  asks) and a `sed` or `awk` whose script only prints (`filterAt`: no `w`/`e`/`r`, no `system`/`getline`/`|`/`print >`) (#503).
 - Semantic git commits only (`HH-143: approve plan`), scoped to the paths the
   mutation touched; telemetry is checkpointed (`planestro: checkpoint <ts>`).
 - Releases (`releases/<version>.md`) are a second file type beside items: status
