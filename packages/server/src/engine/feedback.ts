@@ -138,7 +138,7 @@ export async function fileNote(store: DataStore, gh: GhPort, ts: string, opts: {
       if (candidates.length) return { outcome: 'candidates', candidates: candidates.map(({ number, title, url, state }) => ({ number, title, url, state })) };
     }
     const body = `${text.trim()}\n\n---\nFiled by planestro from an orchestrator note${note.item ? ` on ${note.item}` : ''} in ${store.config.project.name}, ${ts}.\n\n${noteMarker(ts)}\n`;
-    const made = await gh.issueCreate(repo, { title: noteTitle(note.item, text), body });
+    const made = await gh.issueCreate(repo, { title: noteTitle(note.item, text, note.data?.title), body });
     return { outcome: 'filed', issue: record(store, ts, [{ number: made.number, url: made.url }], 'filed')[0] };
   } finally { filing.delete(key); }
 }

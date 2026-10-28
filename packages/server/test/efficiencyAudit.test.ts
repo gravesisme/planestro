@@ -34,7 +34,7 @@ function auditor(args: Record<string, unknown> | undefined, seen: CustomTurnOpti
   } as any;
 }
 const deps = (s: DataStore, agents: any) => ({ store: s, agents, orchestrator: { modelForWake: () => ({ runner: 'claude' as const, model: 'claude-opus-5-5', label: 'Opus' }) }, log: () => {} });
-const rec = { key: 'HH-1-whole-suite', what: 'HH-1 runs the whole suite every turn', evidence: '9 whole-suite runs, 41 min', change: 'add --only-file to the worker prompt partial', saving: '$4/day' };
+const rec = { key: 'HH-1-whole-suite', title: 'Run only the changed test file on HH-1 worker turns', what: 'HH-1 runs the whole suite every turn', evidence: '9 whole-suite runs, 41 min', change: 'add --only-file to the worker prompt partial', saving: '$4/day' };
 
 describe('daily efficiency audit (#348)', () => {
   it('is off by default, and once on, due once per slot', async () => {
@@ -71,6 +71,7 @@ describe('daily efficiency audit (#348)', () => {
     expect(notes).toHaveLength(1);
     expect(notes[0].data!.text).toContain('Efficiency audit 2026-10-14: HH-1 runs the whole suite every turn');
     expect(notes[0].data!.text).toContain('Change: add --only-file');
+    expect(notes[0].data!.title).toBe('Run only the changed test file on HH-1 worker turns');
     expect(s.journal.read({ type: USAGE_TURN }).at(-1)!.data).toMatchObject({ role: 'orchestrator', op: 'efficiency_audit', usd: 0.31 });
     // A second call in the same wake files nothing more.
     expect(await seen[0].mcpTools[0].handler(rec)).toMatch(/^Already filed/);

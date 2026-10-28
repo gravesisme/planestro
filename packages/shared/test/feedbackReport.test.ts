@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { PLANESTRO_REPO_URL, REPORT_TRUNCATED, REPORT_URL_MAX, noteTitle, reportIssueUrl } from '../src/feedbackReport.ts';
+import { NOTE_TITLE_MAX, PLANESTRO_REPO_URL, REPORT_TRUNCATED, REPORT_URL_MAX, clampTitle, noteSubject, noteTitle, reportIssueUrl } from '../src/feedbackReport.ts';
 
 const parts = (url: string) => { const u = new URL(url); return { base: `${u.origin}${u.pathname}`, title: u.searchParams.get('title') ?? '', body: u.searchParams.get('body') ?? '' }; };
 
@@ -33,6 +33,19 @@ describe('Report to planestro: the new-issue link for a note while feedback.issu
     for (const leak of ['HH-12', 'hurricane', 'data_dir', '/Users/']) expect(decodeURIComponent(url)).not.toContain(leak);
     // what the note says itself goes as written
     expect(parts(reportIssueUrl({ text: 'HH-12 parked twice.' })).title).toBe('HH-12 parked twice.');
+  });
+
+  it('titles a note like a commit subject: the one it was filed with, else its first sentence, at most 72 characters', () => {
+    const text = 'unblock_item on an epic in review said the session resumes, but none started. The PR sat red for 3.5 h.';
+    expect(noteSubject({ text })).toBe('unblock_item on an epic in review said the session resumes, but none…');
+    expect(noteSubject({ title: '  unblock_item on a red epic starts no session ', text })).toBe('unblock_item on a red epic starts no session');
+    expect(noteTitle('LM-64', text, 'unblock_item on a red epic starts no session')).toBe('LM-64: unblock_item on a red epic starts no session');
+    expect(parts(reportIssueUrl({ text, title: 'unblock_item on a red epic starts no session' })).title).toBe('unblock_item on a red epic starts no session');
+    expect(noteSubject({ text: 'Efficiency audit 2026-10-27: Workers park on grep. Evidence: 27 parks.' })).toBe('Workers park on grep.');
+    // one line, cut at a word, never past the limit, even with no space to cut at
+    expect(clampTitle('first line\nsecond')).toBe('first line');
+    for (const t of [text, 'x'.repeat(200), `${'word '.repeat(30)}`]) expect(Array.from(clampTitle(t)).length).toBeLessThanOrEqual(NOTE_TITLE_MAX);
+    expect(clampTitle('x'.repeat(200))).toBe(`${'x'.repeat(NOTE_TITLE_MAX - 1)}…`);
   });
 
   it('keeps the link under the cap, cutting the body at a code point and saying so', () => {

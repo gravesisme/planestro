@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
-import { heldReasonOf, reportIssueUrl, type JournalEntry } from '@planestro/shared/view';
+import { heldReasonOf, noteSubject, reportIssueUrl, type JournalEntry } from '@planestro/shared/view';
 import { version as PLANESTRO_VERSION } from '../../package.json';
 import { DndContext, MouseSensor, TouchSensor, useSensor, useSensors, closestCenter, type DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable';
@@ -179,7 +179,7 @@ function PlanestroNotes() {
     <div className="section"><h2>planestro feedback{unread > 0 && <span className="badge-n">{unread}</span>}</h2>
       <p className="muted small">The orchestrator's suggestions about planestro itself: a tool it lacked, a rule that misfired, a card that could not do what it asked. They are for you, not for the items.</p>
       {!notes.length && <p className="muted small">None yet.</p>}
-      <ul className="activity">{shown.map((n, i) => <li key={`${n.ts}-${i}`} className={isUnread(n, seen) ? 'unread' : ''}><span className="at">{n.ts.slice(5, 16).replace('T', ' ')}</span><span className="muted">{n.item && items.some((x) => x.id === n.item) ? <Link to={`/items/${n.item}`}>{n.item}</Link> : (n.item ?? 'planestro')}</span><span>{String(n.data?.text ?? '')}<NoteFiling note={n} repo={repo} /></span></li>)}</ul>
+      <ul className="activity">{shown.map((n, i) => <li key={`${n.ts}-${i}`} className={isUnread(n, seen) ? 'unread' : ''}><span className="at">{n.ts.slice(5, 16).replace('T', ' ')}</span><span className="muted">{n.item && items.some((x) => x.id === n.item) ? <Link to={`/items/${n.item}`}>{n.item}</Link> : (n.item ?? 'planestro')}</span><span><NoteText note={n} /><NoteFiling note={n} repo={repo} /></span></li>)}</ul>
       {(unread > 0 || older > 0) && <div className="row">
         {unread > 0 && <ActionButton className="small" working="Marking…" onAct={() => act(() => useStore.getState().markNotesRead(newestShown))}>Mark all read</ActionButton>}
         {older > 0 && <button className="small" onClick={() => setPages((p) => p + 1)}>Show older ({older})</button>}
@@ -189,6 +189,18 @@ function PlanestroNotes() {
   );
 }
 
+/**
+ * One note as a commit reads: its subject in bold (`noteSubject`: the title it was filed with, or its first sentence),
+ * then the text, held to two lines until clicked, so a page of them reads in a glance.
+ */
+function NoteText({ note }: { note: NoteView }) {
+  const [open, setOpen] = useState(false);
+  const text = String(note.data?.text ?? '');
+  return <>
+    <strong style={{ display: 'block' }}>{noteSubject({ title: note.data?.title, text })}</strong>
+    <span className={`note-body${open ? '' : ' clamped'}`} title={open ? undefined : 'Show all'} onClick={() => setOpen((o) => !o)}>{text}</span>
+  </>;
+}
 
 /**
  * What became of one note (#231): the issues it was filed as, or handled; else **File as issue** (only with
@@ -231,7 +243,7 @@ function NoteFiling({ note, repo }: { note: NoteView; repo?: string }) {
         </span>
       : !candidates && <span className="row small" style={{ flexWrap: 'wrap' }}>
           {repo && <button className="small" disabled={busy} title={`Opens an issue in ${repo}, unless one is already filed`} onClick={() => file()}>{busy ? 'Filing…' : 'File as issue'}</button>}
-          {!repo && <a className="button small" href={reportIssueUrl({ text: String(note.data?.text ?? ''), version: PLANESTRO_VERSION })} target="_blank" rel="noopener">Report to planestro</a>}
+          {!repo && <a className="button small" href={reportIssueUrl({ text: String(note.data?.text ?? ''), title: note.data?.title, version: PLANESTRO_VERSION })} target="_blank" rel="noopener">Report to planestro</a>}
           <button className="small" disabled={busy} onClick={() => setMarking('')}>Mark handled</button>
           {!repo && <span className="muted">Opens a prefilled issue on GitHub for you to review and submit: remove anything private first.</span>}
         </span>}
