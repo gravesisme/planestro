@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
-import { STATUSES, PRIORITIES, KINDS, decisionOf } from '@planestro/shared';
+import { STATUSES, PRIORITIES, KINDS, decisionOf, laneOf } from '@planestro/shared';
 import { actingAs, type DataStore, type StoredItem, type ItemOp } from '../store/DataStore.ts';
 import { notesWithLinks, fileNote, markNotes } from '../engine/feedback.ts';
 import type { GhPort } from '../engine/ports.ts';
@@ -20,7 +20,9 @@ import { allowedHosts, hostnameOf } from '../guard.ts';
 // adds the item actions a supervising session needs (#365), each through the same engine call as the
 // board's route and written to Activity as `[operator]`, not `[user]`; plan approval, merges and
 // discards stay on the board unless `operator_mcp.allow_decisions`, a third opt-in, offers them too (approve or send back
-// a plan, discard, close as done). Item edits and the feedback notes ride the first two. It is a different thing from
+// a plan, discard, close as done). Submitting an item and moving it in or out of the Icebox or along its column is a fourth,
+// `operator_mcp.allow_submit`: the developer's own session at the keyboard does what they ask without going around the
+// endpoint to the board's HTTP routes, where it would read as `[user]`. Item edits and the feedback notes ride the first two. It is a different thing from
 // the in-process `planestro` server each worker and the orchestrator get (submit_plan, report_done,
 // …), and must never reach them: workers never touch planning state (invariant 1). They run with
 // strictMcpConfig (Claude) or --ignore-user-config (Codex), so a user-scope registration is not
@@ -34,8 +36,18 @@ export const OPERATOR_WRITE_TOOLS = ['create_item', 'edit_item', 'mark_note'] as
 export const OPERATOR_ACTION_TOOLS = ['unblock_item', 'send_message', 'answer_question', 'answer_decision', 'decide_permission', 'sync_item', 'rerun_ci', 'file_note'] as const;
 /** Listed only with `operator_mcp.allow_decisions`: the board's decisions about an item's run, for a supervising session the user directs. */
 export const OPERATOR_DECISION_TOOLS = ['approve_plan', 'reject_plan', 'discard_item', 'close_as_done'] as const;
+/** Listed only with `operator_mcp.allow_submit`: submit an item, move it in or out of the Icebox or along its column, as the board does. */
+export const OPERATOR_SUBMIT_TOOLS = ['submit_item', 'move_item'] as const;
 /** Every tool this endpoint can offer; operatorMcp.test.ts pins that a worker session gets none of them. */
-export const OPERATOR_TOOLS = [...OPERATOR_READ_TOOLS, ...OPERATOR_WRITE_TOOLS, ...OPERATOR_ACTION_TOOLS, ...OPERATOR_DECISION_TOOLS] as const;
+export const OPERATOR_TOOLS = [...OPERATOR_READ_TOOLS, ...OPERATOR_WRITE_TOOLS, ...OPERATOR_ACTION_TOOLS, ...OPERATOR_DECISION_TOOLS, ...OPERATOR_SUBMIT_TOOLS] as const;
+
+/** Each opt-in, what it adds: named in the endpoint's instructions while it is off, so a session says which setting would offer a tool instead of going around the endpoint. */
+const OPT_INS = [
+  ['allow_writes', 'create_item, edit_item, mark_note'],
+  ['allow_actions', 'unblock_item, send_message, answer_question, answer_decision, decide_permission, sync_item, rerun_ci, file_note'],
+  ['allow_decisions', 'approve_plan, reject_plan, discard_item, close_as_done'],
+  ['allow_submit', 'submit_item, move_item'],
+] as const;
 
 /** Whether a URL is some planestro server's operator endpoint: `/mcp` on a host and port a recorded instance serves, or any loopback `/mcp` on a known port. */
 export function operatorMcpUrl(url: string, instances: (Pick<Instance, 'port'> & Partial<Pick<Instance, 'host' | 'url'>>)[] = [], aliases: readonly string[] = []): boolean {
@@ -120,9 +132,13 @@ type ActingEngine = Engine & {
 
 export function operatorServer(store: DataStore, engine: Engine): McpServer {
   // Read per request (the server is made per request), so turning the key off in Settings takes effect at once.
-  const { allow_writes: writes, allow_actions: actions, allow_decisions: decisions } = store.config.operator_mcp;
-  const offers = [writes && 'create_item, which files a new item for the user to submit, edit_item and mark_note', actions && 'item actions (unblock_item, send_message, answer_question, answer_decision, decide_permission, sync_item, rerun_ci, file_note) that act as the board does, recorded in Activity as [operator]', decisions && 'decisions (approve_plan, reject_plan, discard_item, close_as_done) as the board makes them'].filter(Boolean).join(', and ');
-  const server = new McpServer({ name: 'planestro', version: TOOL_VERSION }, { instructions: `The backlog of ${store.config.project.name} (${store.dataDir}), ${offers ? `with ${offers}` : 'read-only'}. get_state for the overview, list_items to find items, get_item for one.` });
+  const cfg = store.config.operator_mcp;
+  const { allow_writes: writes, allow_actions: actions, allow_decisions: decisions, allow_submit: submits } = cfg;
+  const offers = [writes && `create_item, which files a new item${submits ? '' : ' for the user to submit'}, edit_item and mark_note`, actions && 'item actions (unblock_item, send_message, answer_question, answer_decision, decide_permission, sync_item, rerun_ci, file_note) that act as the board does, recorded in Activity as [operator]', decisions && 'decisions (approve_plan, reject_plan, discard_item, close_as_done) as the board makes them', submits && 'submit_item and move_item (Icebox, backlog, order), on the user\'s word'].filter(Boolean).join(', and ');
+  const off = OPT_INS.filter(([key]) => !cfg[key]).map(([key, tools]) => `operator_mcp.${key} (${tools})`);
+  // A session that wants what no tool offers must not reach for the board's HTTP routes or the item files: it would act as the user, unrecorded as [operator].
+  const limits = `Change the backlog only through these tools: never through planestro's HTTP API or by editing its files.${off.length ? ` Off in this project's planestro.yml: ${off.join('; ')}. To do one of those, say which setting would offer it (Settings → Your own MCP clients), or leave it to the user on the board.` : ''}`;
+  const server = new McpServer({ name: 'planestro', version: TOOL_VERSION }, { instructions: `The backlog of ${store.config.project.name} (${store.dataDir}), ${offers ? `with ${offers}` : 'read-only'}. get_state for the overview, list_items to find items, get_item for one. ${limits}` });
   server.registerTool('list_items', {
     description: 'List backlog items, one summary line each (id, title, kind, status, priority, epic, blocked reason, awaiting, needs_you, PR and CI). Filters combine.',
     inputSchema: {
@@ -179,6 +195,7 @@ export function operatorServer(store: DataStore, engine: Engine): McpServer {
   if (writes) registerWrites(server, store);
   if (actions) registerItemActions(server, store, engine as ActingEngine);
   if (decisions) registerDecisions(server, store, engine);
+  if (submits) registerSubmit(server, store, engine);
   return server;
 }
 
@@ -261,6 +278,49 @@ function registerDecisions(server: McpServer, store: DataStore, engine: Engine):
     inputSchema: { id, reason: z.string().optional().describe('Where the work landed') },
     annotations: { ...ACTS, destructiveHint: true },
   }, ({ id: itemId, reason }) => decide('close_as_done', itemId, { ...(reason ? { reason } : {}) }, () => engine.closeAsDone(itemId, reason)));
+}
+
+/**
+ * Submitting and moving (`allow_submit`), for the developer's own session acting on what they ask: each the call the board's
+ * Submit and drag make (`Engine.submitItem`, `DataStore.move`), journaled and written to Activity as `[operator]`. Taking
+ * started work out of its column is a discard (`allow_decisions`), so the Icebox here takes only what has not started.
+ */
+function registerSubmit(server: McpServer, store: DataStore, engine: Engine): void {
+  const id = z.string().describe('The item id, e.g. HH-143');
+  const run = async (tool: string, itemId: string, args: Record<string, unknown>, fn: () => Promise<string>) => {
+    try {
+      if (!store.getItem(itemId)) throw new Error(`no item ${itemId}`);
+      const said = await actingAs('operator', fn);
+      store.journal.append({ type: 'operator_mcp.action', item: itemId, actor: 'operator', data: { tool, ...args } });
+      return json({ said, item: itemSummary(store, store.requireItem(itemId)) });
+    } catch (e) { return opError(e); }
+  };
+  server.registerTool('submit_item', {
+    description: "Submit a Not yet submitted item, as its page's Submit does, when the user asks for it: a worker item is queued for planning and the engine admits it when a slot is free; an epic is never queued, its breakdown is planned and the user approves the children. Refused, saying why, for an item already submitted, stopped, taken over, implemented outside planestro, waiting on unmerged dependencies, or an epic that already has children (submit those). An item in the Icebox: move_item it to backlog first. After create_item, this is how a new item starts.",
+    inputSchema: { id },
+    annotations: ACTS,
+  }, ({ id: itemId }) => run('submit_item', itemId, {}, async () => {
+    const item = store.requireItem(itemId); const fm = item.file.frontmatter; const d = store.derived(item);
+    if (fm.status === 'ICEBOX') throw new Error(`${itemId} is in the Icebox: move_item it to backlog first, then submit it`);
+    // The board's Submit refuses these too: a queued item that could never be admitted is worse than a refusal.
+    if (fm.kind !== 'epic' && fm.status === 'NOT_YET_SUBMITTED' && !d.deps_satisfied) throw new Error(`${itemId} depends on ${(fm.depends_on ?? []).join(', ')}, not all merged yet: submit it once they are`);
+    if (fm.kind !== 'epic' && d.base_branch_error) throw new Error(d.base_branch_error);
+    const how = await engine.submitItem(itemId, 'submitted through the operator MCP');
+    return how === 'planning' ? `epic ${itemId} is having its breakdown planned (it is not queued: the user approves the children it proposes)` : `${itemId} is queued for planning`;
+  }));
+  server.registerTool('move_item', {
+    description: "Move an item as the board's drag and menu do. `icebox`: park an item that has not started (Not yet submitted or Queued); started work comes out through discard_item. `backlog`: back to Not yet submitted, from the Icebox or from Queued (cancelling the submit). `top` / `bottom` / `before` / `after` (with `ref`, an item in the same column): its order within its column and priority band; changing the band is edit_item's priority.",
+    inputSchema: { id, to: z.enum(['icebox', 'backlog', 'top', 'bottom', 'before', 'after']).describe('Where it goes'), ref: z.string().optional().describe('For before/after: the item it goes beside') },
+    annotations: FILES,
+  }, ({ id: itemId, to, ref }) => run('move_item', itemId, { to, ...(ref ? { ref } : {}) }, async () => {
+    const fm = store.requireItem(itemId).file.frontmatter;
+    if (to === 'icebox' && !['NOT_YET_SUBMITTED', 'QUEUED'].includes(fm.status)) throw new Error(`${itemId} is ${fm.status}: work on it has started, so it leaves through discard_item (it stops the turn, closes any PR and says what became of the branch), or the user moves it on the board`);
+    if (to === 'backlog' && !['ICEBOX', 'QUEUED'].includes(fm.status)) throw new Error(`${itemId} is ${fm.status}: only an item in the Icebox or Queued goes back to Not yet submitted`);
+    if ((to === 'before' || to === 'after') && !ref) throw new Error(`${to} needs ref: the item it goes beside`);
+    if (ref) { const r = store.requireItem(ref).file.frontmatter; if (laneOf(r.status) !== laneOf(fm.status)) throw new Error(`${ref} is in another column (${r.status}); before/after order items within one`); }
+    const moved = store.move(itemId, to, ref, 'user').file.frontmatter;
+    return to === 'icebox' ? `${itemId} is in the Icebox` : to === 'backlog' ? `${itemId} is back in Not yet submitted` : `${itemId} moved ${to}${ref ? ` ${ref}` : ''} in ${moved.status}`;
+  }));
 }
 
 /**

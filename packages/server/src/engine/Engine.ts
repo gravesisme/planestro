@@ -34,6 +34,8 @@ export interface Engine {
   rejectPlan(id: string, message: string): Promise<void>;
   message(id: string, text: string): Promise<void>;
   respond(id: string, payload: Record<string, unknown>): Promise<void>;
+  /** Submit an item as the user does on its page (Triage.submitAsUser): a worker item is queued, an epic has its breakdown planned. Throws the refusal. */
+  submitItem(id: string, why: string): Promise<'queued' | 'planning'>;
   /** Have the planner propose an epic's children; `why` prefixes the Activity line (a "start" redirected here). */
   planEpic(id: string, why?: string): Promise<void>;
   /** Create the children (as the user edited them), open the epic and queue what can start. Returns the new ids. */
