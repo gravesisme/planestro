@@ -67,7 +67,7 @@ describe('the machine policy file (#229)', () => {
 describe('allow-rule suggestions under the merged rules (#229)', () => {
   const entry = (i: number, decision: 'allow' | 'deny', command: string, reason?: string) => ({ ts: `2026-10-0${1 + (i % 7)}T10:00:00-04:00`, type: 'permission.answered', actor: 'orchestrator', item: `TP-${(i % 3) + 1}`, data: { tool: 'Bash', decision, command, ...(reason ? { reason } : {}) } });
   const journal = [
-    ...[0, 1, 2, 3].map((i) => entry(i, 'allow', 'git check-ignore -v tmp/x')),
+    ...[0, 1, 2, 3].map((i) => entry(i, 'allow', 'git describe --tags')),
     ...[4, 5, 6].map((i) => entry(i, 'deny', "python3 - <<'EOF'\nopen('a','w').write('x')\nEOF", 'use the Edit tool')),
   ];
   const source = (rules?: { allow: string[]; deny: string[] }): RulingSource => ({
@@ -79,10 +79,10 @@ describe('allow-rule suggestions under the merged rules (#229)', () => {
 
   it('counts a machine or local allow as present, and replays every layer\'s denials', () => {
     const alone = suggestForStore(source({ allow: [], deny: [] }), { minApprovals: 3, minItems: 2 });
-    expect(alone.suggestions.map((x) => x.rule)).toContain('Bash(git check-ignore *)@worktree');
+    expect(alone.suggestions.map((x) => x.rule)).toContain('Bash(git describe *)@worktree');
     expect(alone.redirects.map((x) => x.rule)).toEqual(['Bash(python3)']);
-    const merged = suggestForStore(source({ allow: ['Bash(git check-ignore *)@worktree'], deny: ['Bash(python3 *)'] }), { minApprovals: 3, minItems: 2 });
-    expect(merged.suggestions.map((x) => x.rule)).not.toContain('Bash(git check-ignore *)@worktree');
+    const merged = suggestForStore(source({ allow: ['Bash(git describe *)@worktree'], deny: ['Bash(python3 *)'] }), { minApprovals: 3, minItems: 2 });
+    expect(merged.suggestions.map((x) => x.rule)).not.toContain('Bash(git describe *)@worktree');
     expect(merged.replay.current.allowed_now).toBe(4);
     expect(merged.redirects).toEqual([]);
   });

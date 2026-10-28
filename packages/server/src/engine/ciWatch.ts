@@ -256,7 +256,8 @@ export class CiWatch {
       // An epic's red that is likely the base's waits for the base (#204), once; red again after that comes here as ever.
       const waited = fm.kind === 'epic' && source === 'github' ? await this.ctx.baseSync.waitForBaseFix(id, headSha, log) : undefined;
       if (waited === true) return;
-      this.ctx.block(id, 'ci_red', `CI is red and there is no session to hand the failure to; investigate by hand${waited ?? ''}`);
+      // An epic's integration branch has no session (#500): its fix is a new child, said where the orchestrator reads it.
+      this.ctx.block(id, 'ci_red', fm.kind === 'epic' ? `CI is red and an epic has no session to hand the failure to${waited ?? ''}. A real failure is fixed by a new child (parent ${id}), cut from ${fm.branch ?? 'its integration branch'} and merged into it: the epic goes back in progress for it and its PR is reused. A flake: rerun_ci` : `CI is red and there is no session to hand the failure to; investigate by hand${waited ?? ''}`);
       return;
     }
     if (count >= 2) { this.ctx.block(id, 'ci_red_twice', `CI failed ${count} times`); this.ctx.wakeOrchestrator('ci_red_again', id, { failed_log: fenceExternal(log.slice(0, 3000), `ci-log ${ci?.runId ? `run ${ci.runId}` : 'local run'}`) }); return; }

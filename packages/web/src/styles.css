@@ -102,6 +102,8 @@ main { padding: 16px; flex: 1; }
 .drawer-now { margin: 10px 0 8px; padding: 8px 10px; background: var(--panel2); border: 1px solid var(--line); border-left: 3px solid var(--muted); border-radius: var(--radius); }
 .drawer-now-line { display: flex; align-items: center; gap: 8px; font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
 .drawer-now .pulse { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); animation: run-pulse 1.4s ease-in-out infinite; }
+.note-body { display: block; white-space: pre-wrap; overflow-wrap: anywhere; cursor: pointer; }
+.note-body.clamped { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .drawer-now-out { margin-top: 4px; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
 .drawer-now.tone-running { border-left-color: var(--ok); } .tone-running .drawer-now-line { color: var(--ok); }
 .drawer-now.tone-you, .drawer-now.tone-wait, .drawer-now.tone-held { border-left-color: var(--warn); } .tone-you .drawer-now-line, .tone-wait .drawer-now-line { color: var(--warn); }

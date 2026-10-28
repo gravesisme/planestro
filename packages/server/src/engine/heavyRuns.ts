@@ -46,6 +46,19 @@ export function ciOnSharedHost(report: RunnerReport, shared: string[]): string[]
   return out;
 }
 
+/**
+ * How long one planestro tool call may take on Claude (#502): the in-process server's own timeout, so a run_heavy that
+ * waits its turn and runs a 2-hour harness is never cut by an `MCP_TOOL_TIMEOUT` in the environment (the CLI's default
+ * is ~28 h; an `sdk` server has no idle timeout). The batches' own limit is `heavy_runs.timeout_min`.
+ */
+export const PLANESTRO_TOOL_TIMEOUT_MS = 24 * 3_600_000;
+
+/**
+ * What a worker hears when its foreground Bash call hit its timeout (#502): Claude Code caps a foreground command at
+ * 10 minutes and moves one that runs past it to the background. run_heavy holds a run of any length as one call.
+ */
+export const LONG_RUN_NOTE = "That command ran past the 10-minute cap on a foreground Bash call and was moved to the background. For a command that runs longer than that (a browser or e2e harness, a long suite), run it with planestro's run_heavy tool instead: it holds one run of any length (up to heavy_runs.timeout_min) as a single call and answers with its exit code and output tail, and it counts as one foreground run. Do not split the run into pieces to fit the cap.";
+
 export const HEAVY_REDIRECT = "This is a heavy local run: run it through planestro's run_heavy tool, which runs one heavy run at a time on this machine and waits while CI runs on a runner that shares it";
 
 /** The project's heavy-command patterns as redirects to run_heavy: a Bash call that matches one is refused with the way to run it. */

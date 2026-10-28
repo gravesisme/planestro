@@ -218,7 +218,7 @@ export interface TurnTools {
   get_item(): Promise<string>;
   /** The CI runners' state per label (#216), read by planestro's own gh: what a standing rule asks a worker to check before a heavy run. */
   runners_busy?(): Promise<string>;
-  /** A heavy local run (#218): one at a time across the data dir, each batch after any CI job on a runner sharing this host; offered when `heavy_runs.enabled`. */
+  /** A long or heavy local run as one call with no 10-minute cap (#502), offered in every work turn; with `heavy_runs.enabled` also one at a time across the data dir, each batch after any CI job on a runner sharing this host (#218). */
   run_heavy?(commands: string[]): Promise<string>;
 }
 export interface PermissionRequest { tool: string; input: Record<string, unknown> }
@@ -256,6 +256,8 @@ export interface AgentTurnOptions {
   account?: AccountCredentials;
   /** Other accounts' config folders (#242): secret, like ~/.ssh, for whatever the worker runs. */
   secretDirs?: string[];
+  /** Values the user's `secret_env` hands this implement or fix turn (#501): set in the session's environment, its commands' too. Never logged. */
+  env?: Record<string, string>;
   maxTokens?: number;
   /** Persist and park, or consume an exact saved command grant before returning allow. */
   onApproval?(req: PermissionRequest): Promise<'allow' | void>;

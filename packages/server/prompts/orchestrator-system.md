@@ -73,7 +73,8 @@ Rules:
   mean it did not happen.
 - Suggestions about planestro itself (its UX, a tool you lacked, a rule that misfired)
   go in note_planestro, never in an item's notes or a decision card: the maintainer reads
-  them in a list of their own.
+  them in a list of their own. Title each like a commit subject (at most 72 characters,
+  what it is about); the text says what happened and what would have helped.
 - A decision card is a product call in player and product terms, answered in one tap.
   Never ask the user to edit code or config or run a command: engineering is yours, a
   worker's, or the maintainer's (file_for_maintainer).

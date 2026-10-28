@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { gitWritableRoots } from './gitWritableRoots.ts';
 export { gitWritableRoots } from './gitWritableRoots.ts';
 import { budgetTokens, codexSplit, emptySplit, splitPlus } from '@planestro/shared';
-import { CodexAppServerPort, codexEnv } from './CodexAppServerPort.ts';
+import { CodexAppServerPort, codexEnv, secretEnvArgs } from './CodexAppServerPort.ts';
 import { projectSkills, skillsInPrompt } from './projectSkills.ts';
 import { IMAGE_TOOL_NOTE } from './imageToolNote.ts';
 import { APPLY_PATCH_NOTE } from './patchNote.ts';
@@ -129,7 +129,7 @@ export class LiveCodexPort implements AgentPort {
     // grants WRITE access, and a worker must never be able to write the data dir (reads are unrestricted).
     // The git dirs a commit writes, by config rather than --add-dir, which `resume` does not take.
     const roots = gitWritableRoots(o.cwd);
-    const shared = ['--json', '--ignore-user-config', '-c', 'sandbox_mode="workspace-write"', ...(roots.length ? ['-c', `sandbox_workspace_write.writable_roots=${JSON.stringify(roots)}`] : []), '--output-schema', schemaFile, '-o', lastFile, ...this.extraArgs, ...(o.model ? ['-m', o.model] : []), ...(o.effort ? ['-c', `model_reasoning_effort="${o.effort}"`] : []), ...(o.serviceTier ? ['-c', `service_tier="${o.serviceTier}"`] : []), ...(o.images ?? []).flatMap((p) => ['-i', p])];
+    const shared = ['--json', '--ignore-user-config', '-c', 'sandbox_mode="workspace-write"', ...(roots.length ? ['-c', `sandbox_workspace_write.writable_roots=${JSON.stringify(roots)}`] : []), '--output-schema', schemaFile, '-o', lastFile, ...secretEnvArgs(o.env), ...this.extraArgs, ...(o.model ? ['-m', o.model] : []), ...(o.effort ? ['-c', `model_reasoning_effort="${o.effort}"`] : []), ...(o.serviceTier ? ['-c', `service_tier="${o.serviceTier}"`] : []), ...(o.images ?? []).flatMap((p) => ['-i', p])];
     const args = o.resume
       ? ['exec', 'resume', o.resume, ...shared]
       : ['exec', '-s', 'workspace-write', '-C', o.cwd, ...shared];
@@ -145,7 +145,7 @@ export class LiveCodexPort implements AgentPort {
       // stdin MUST be ignored: given a pipe, `codex exec` waits on it forever. And `--` MUST end the
       // options: `-i` takes one or more files, so a prompt right after an image is read as another
       // image, and codex, finding no prompt, reads stdin — and gets nothing ("No prompt provided via stdin").
-      const child = spawn(this.codexBin, [...args, '--', prompt], { cwd: o.cwd, env: codexEnv(this.passthrough(), codexHomeOf(o.account)), stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(this.codexBin, [...args, '--', prompt], { cwd: o.cwd, env: codexEnv(this.passthrough(), codexHomeOf(o.account), o.env), stdio: ['ignore', 'pipe', 'pipe'] });
       const onAbort = () => { killed = true; child.kill('SIGTERM'); };
       if (o.signal?.aborted) onAbort(); else o.signal?.addEventListener('abort', onAbort, { once: true });
       let buf = '';

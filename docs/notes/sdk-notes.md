@@ -283,6 +283,19 @@ a live worker) would have matched it.
    (0.3.251). Exercised live on 2026-10-20 (CLI 2.1.305, SDK 0.3.305): an
    allow-listed `tail -n 1 .env` and a read-only `cat .env` were both refused by
    the hook before running.
+20. **A long run outlives the Bash cap only as a planestro tool call (#502).**
+   Read from the CLI 2.1.306 binary, not exercised live: a foreground Bash call
+   is capped at `BASH_MAX_TIMEOUT_MS` (default 600 000 ms); one that runs past
+   its timeout is moved to the background and its result carries
+   `timedOutAfterMs` (`BashOutput` in sdk-tools.d.ts), which `longRunHook`
+   answers with a PostToolUse `additionalContext` naming run_heavy. An MCP tool
+   call's wall-clock limit is the server's `timeout` (createSdkMcpServer, 0.3.306),
+   else `MCP_TOOL_TIMEOUT`, else 1e8 ms (~28 h); an `sdk` server has no idle
+   timeout, and the SDK's in-process `mcp_message` round trip sets none. So
+   run_heavy's call is bounded by `heavy_runs.timeout_min` a batch, and the
+   planestro server pins `timeout` (24 h) so an `MCP_TOOL_TIMEOUT` in the user's
+   environment cannot cut it. Codex app-server dynamic tool calls (codex-cli
+   0.154) showed no timeout of their own in the binary's strings.
 
 ## Engine decisions confirmed by the spike
 

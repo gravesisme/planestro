@@ -10,6 +10,7 @@ import { gitDenial } from '../gitDenials.ts';
 
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] });
 import { workerTools } from './workerTools.ts';
+import { LONG_RUN_NOTE, PLANESTRO_TOOL_TIMEOUT_MS } from '../heavyRuns.ts';
 /**
  * A worker's shell goes back to its worktree after every command (#96): without this a `cd` carries
  * over to the next call, and neither the policy nor the orchestrator can say where a command runs.
@@ -88,7 +89,7 @@ export class LiveClaudePort implements ClaudePort {
   async runTurn(o: TurnOptions): Promise<TurnResult> {
     const result: TurnResult = { subtype: 'success', isError: false, costUsd: 0, numTurns: 0, text: '' };
     const planestro = createSdkMcpServer({
-      name: 'planestro', version: '1',
+      name: 'planestro', version: '1', timeout: PLANESTRO_TOOL_TIMEOUT_MS,
       tools: workerTools(o, result).map((t) => (tool as any)(t.name, t.description, t.schema, async (args: Record<string, unknown>) => text(await t.handler(args)))),
     });
     const abortController = new AbortController();
@@ -128,13 +129,14 @@ export class LiveClaudePort implements ClaudePort {
         ...resumed.options,
         // The secret-file deny list (#227) before anything else: allow rules and the CLI's own approvals never reach canUseTool.
         // What ran without a park is counted from the tool calls that ran (#203): the SDK's own approvals never reach canUseTool.
-        hooks: { ...(resumed.options.hooks as object | undefined), PreToolUse: [{ hooks: [secretHook(o.cwd, { dirs: o.secretDirs }, (id) => ran.refused(id)), ran.started()] }], PostToolUse: [{ hooks: [ran.hook()] }], PostToolUseFailure: [{ hooks: [ran.hook()] }] },
+        hooks: { ...(resumed.options.hooks as object | undefined), PreToolUse: [{ hooks: [secretHook(o.cwd, { dirs: o.secretDirs, env: Object.keys(o.env ?? {}) }, (id) => ran.refused(id)), ran.started()] }], PostToolUse: [{ hooks: [ran.hook(), ...(o.tools.run_heavy && o.phase !== 'plan' ? [longRunHook()] : [])] }], PostToolUseFailure: [{ hooks: [ran.hook()] }] },
         // The model's own servers ride along; their tools are not allow-listed, so every call reaches canUseTool and the engine's count.
         mcpServers: { planestro, ...(o.mcpServers ?? {}) } as any, strictMcpConfig: true, settingSources: ['project'],
         allowedTools: allow.rules,
         additionalDirectories: o.extraDirs, maxBudgetUsd: o.maxBudgetUsd, abortController,
         ...(this.claudeBin ? { pathToClaudeCodeExecutable: this.claudeBin } : {}),
-        env: { ...claudeEnv(process.env, o.account), ...PINNED },
+        // secret_env's values (#501) on top of the login's environment; PINNED last, and the engine refuses the names planestro keeps.
+        env: { ...claudeEnv(process.env, o.account), ...o.env, ...PINNED },
         canUseTool: async (toolName, input, { toolUseID }) => {
           const res = await decide(toolName, input);
           if (res.behavior !== 'allow') ran.refused(toolUseID);
@@ -162,6 +164,19 @@ export function secretHook(cwd: string, o: SecretOptions = {}, onDeny?: (toolUse
     const why = secretDenial(req, cwd, o) ?? (req.tool === 'Bash' ? gitDenial(String(req.input.command ?? '')) : null);
     if (why) onDeny?.(input.tool_use_id);
     return why ? { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `Not allowed: ${why}` } } : { continue: true };
+  };
+}
+
+/**
+ * A foreground Bash call that ran past its timeout (the CLI's 10-minute cap) and was moved to the background (#502): the
+ * worker is told, beside the result, to run a long harness through run_heavy instead of following it with Monitor.
+ */
+export function longRunHook(): HookCallback {
+  return async (input) => {
+    if (input.hook_event_name !== 'PostToolUse' || input.tool_name !== 'Bash') return { continue: true };
+    const r = input.tool_response as { timedOutAfterMs?: unknown } | undefined;
+    if (typeof r?.timedOutAfterMs !== 'number') return { continue: true };
+    return { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: LONG_RUN_NOTE } };
   };
 }
 

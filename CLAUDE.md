@@ -91,6 +91,8 @@ orchestrator's `runner_status`, a worker's `runners_busy`) is said once per labe
 every item on it, never a triage each (`op_data.runner_stall`), and a runner taking a job again sends them back to CI (#216).
 A worker's heavy local run goes through `run_heavy` (`heavy_runs`, #218; matching Bash is redirected to it): one at a time
 (`HeavyLock`, in memory), each batch after any CI job on a `shared_labels` runner has ended, read from that same report.
+run_heavy is offered even with `heavy_runs` off, then with no lock or CI wait: the one run of any length past the CLI's 10-minute
+foreground cap (#502); a Bash call that hit the cap is told so, and the orchestrator counts either as one foreground harness run.
 A held item (`skip_merge`) skips only the merge: its new commits are pushed and its
 CI is polled from the tick, outside the merge chain (`driveHeld`).
 Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
@@ -238,6 +240,12 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   the project's `permissions`, then `planestro.local.yml`'s; lists are unioned (`DataStore.permissionRules`, each rule
   with its sources), a deny from any layer wins (`sdkRules` keeps a touched allow off the SDK's list), secrets first. Suggestions,
   redirects and drift read the merged rules.
+- The secret-file deny list (#227) is never overridden. A value a step needs from such a file is handed over by name (#501):
+  `secret_env` in planestro.local.yml (hand-edited only: no Settings field, API or tool writes it) maps an env var to a dotenv
+  planestro reads as each implement or fix turn starts, into that session's environment and its `run_heavy` commands (never a
+  planner's or the orchestrator's). Values never reach a prompt, the journal, Activity or an item file; output is redacted. A
+  refused read names the variables the session has; a plan naming a secret file is warned about at hand-in (`secretsNamedIn`).
+  `planestro.local.yml` and `~/.planestro/policy.yml` are themselves on the list, so no ruling lets a worker sanction itself.
 - Allow rules are suggested from the ruling history, never applied (`allowSuggest.ts`, #169: `planestro
   permissions suggest`, `GET /permissions/suggest`, the Console). Rulings come from Activity
   (`permission allow (reason): Bash(…)`) and, whole, from `permission.answered` (`tool`, `command`,
@@ -250,6 +258,9 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   one a past approval would have hit) and drift over the journal's `tools.ran` (one per Claude worker turn: what ran
   without a park): allow rules nothing matched, approvals rising. Neither is applied. A delegated permission request
   carries the earlier rulings on its kind of command and the `permission-rubric` partial.
+  Beside them stand planestro's own built-in readers (`BASE_ALLOWED`, after every deny): what only reads, every path it
+  names in the worktree or a scratch folder. That covers Read/Grep/Glob there (symlinks followed, the main checkout still
+  asks) and a `sed` or `awk` whose script only prints (`filterAt`: no `w`/`e`/`r`, no `system`/`getline`/`|`/`print >`) (#503).
 - Semantic git commits only (`HH-143: approve plan`), scoped to the paths the
   mutation touched; telemetry is checkpointed (`planestro: checkpoint <ts>`).
 - Releases (`releases/<version>.md`) are a second file type beside items: status
