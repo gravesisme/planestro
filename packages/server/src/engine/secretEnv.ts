@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { LocalConfig } from '@planestro/shared';
+import { RESERVED_ENV } from './secrets.ts';
 
 /**
  * Secrets handed to a worker's environment (#501): `secret_env` in planestro.local.yml names env vars and the dotenv
@@ -11,11 +12,6 @@ import type { LocalConfig } from '@planestro/shared';
  */
 export type SecretEnvConfig = NonNullable<LocalConfig['secret_env']>;
 
-/**
- * Names a secret_env entry may not set: the login switches and tokens planestro keeps from sessions (#242, #340), and
- * what places a session (its config home, PATH, HOME). Setting one would undo a guard, not hand over a key.
- */
-export const RESERVED_ENV = new Set(['ANTHROPIC_API_KEY', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'PATH', 'HOME', 'SHELL', 'USER', 'TMPDIR', 'CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR']);
 
 /** A dotenv's `KEY=value` lines: `export ` allowed, `#` comments, single quotes literal, double quotes with \n escapes. */
 export function parseDotenv(text: string): Map<string, string> {

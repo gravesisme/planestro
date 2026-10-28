@@ -1,13 +1,16 @@
-import { describe, it, expect, afterEach } from 'vitest';
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { describe, it, expect, afterEach, beforeAll, afterAll } from 'vitest';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { LocalConfig, NOT_USER_FACING, SETTINGS, getSection } from '@planestro/shared';
+import { Config, LocalConfig, NOT_USER_FACING, SETTINGS, getSection } from '@planestro/shared';
 import { DataStore } from '../src/store/DataStore.ts';
 import { LiveEngine } from '../src/engine/LiveEngine.ts';
 import { FakeWorld, DryRunGitPort, DryRunGhPort, DryRunProcPort, DryRunClaudePort } from '../src/engine/dryrun-ports.ts';
 import type { Ports, TurnOptions, TurnResult } from '../src/engine/ports.ts';
 import { parseDotenv, resolveSecretEnv, redactSecretEnv } from '../src/engine/secretEnv.ts';
 import { secretDenial, secretsNamedIn } from '../src/engine/secrets.ts';
+import { makePolicy } from '../src/engine/policy.ts';
+import { secretHook } from '../src/engine/sessions/LiveClaudePort.ts';
 import { codexEnv, secretEnvArgs } from '../src/engine/sessions/CodexAppServerPort.ts';
 import { workerCommandEnv } from '../src/engine/sessions/commandEnv.ts';
 import { makeFixture, sleep } from './helpers.ts';
@@ -136,5 +139,88 @@ describe('secret_env in a live turn (#501, LM-50)', () => {
     const written = (readdirSync(store.dataDir, { recursive: true }) as string[]).filter((f) => !f.split('/').includes('.git') && statSync(join(store.dataDir, f)).isFile());
     expect(written.length).toBeGreaterThan(3);
     expect(written.filter((f) => readFileSync(join(store.dataDir, f), 'utf8').includes('sk_live_lm50'))).toEqual([]);
+  });
+});
+
+/**
+ * The user's own files are on the deny list (#501 review): a Bash write outside the worktree only parks, and a ruling
+ * (the orchestrator's decide_permission) could grant it, so a worker could append its own secret_env. No longer.
+ */
+describe('planestro.local.yml and ~/.planestro/policy.yml: no worker reads or writes them (#501)', () => {
+  let root: string, home: string, wt: string, data: string;
+  const config = () => Config.parse({
+    schema_version: 2, tool_version: '0.1.0', project: { name: 'T', id_prefix: 'T' },
+    code_repo: { path: '..', default_branch: 'trunk' },
+    models: [{ id: 'm', label: 'M', claude_model: 'x' }], defaults: { planner: 'm', implementer: 'm', category: 'C' }, categories: ['C'],
+    permissions: { allow: ['Bash(*)', 'Write', 'Edit', 'Read'], deny: [] },
+  });
+  beforeAll(() => {
+    root = realpathSync(mkdtempSync(join(tmpdir(), 'pl-userfiles-')));
+    home = join(root, 'home'); wt = join(root, 'repo', 'wt'); data = join(root, 'repo', 'planning');
+    mkdirSync(join(home, '.planestro'), { recursive: true }); mkdirSync(wt, { recursive: true }); mkdirSync(data, { recursive: true });
+    writeFileSync(join(home, '.planestro', 'policy.yml'), 'allow: []\n');
+    writeFileSync(join(data, 'planestro.local.yml'), 'mcp_servers: {}\n');
+    writeFileSync(join(data, 'planestro.yml'), 'x: 1\n');
+    writeFileSync(join(wt, 'a.txt'), 'x');
+    symlinkSync(join(data, 'planestro.local.yml'), join(wt, 'innocent.txt'));
+  });
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  it('refuses every Bash form that writes or reads them, before any rule or ruling', () => {
+    const o = { home };
+    const local = join(data, 'planestro.local.yml');
+    const commands = [
+      `printf 'secret_env: {X: {file: ~/.ssh/id_ed25519}}' >> ${local}`,
+      `echo 'secret_env: {}' > ../planning/planestro.local.yml`,
+      `echo x | tee -a ../planning/planestro.local.yml`,
+      `sed -i '' 's/a/b/' ${local}`,
+      `cp /tmp/evil.yml ${local}`,
+      `mv /tmp/evil.yml ../planning/./planestro.local.yml`,
+      `cat ../planning/../planning/planestro.local.yml`,
+      `cat ../planning/*.yml`,
+      `cat ../planning/planestro.local.y?l`,
+      `cd ../planning && cat planestro.local.yml`,
+      `cd ../planning && echo x >> planestro.local.yml`,
+      `cd ${data} && cat *`,
+      `echo x >> ~/.planestro/policy.yml`,
+      `cat $HOME/.planestro/policy.yml`,
+      `cat ~/.planestro/pol*`,
+      `cat innocent.txt`,
+    ];
+    for (const command of commands) {
+      const why = secretDenial({ tool: 'Bash', input: { command } }, wt, o);
+      expect(why, command).toMatch(/the user's own planestro configuration/);
+      expect(why, command).toContain('no rule or ruling overrides that');
+    }
+    // The policy refuses it first, whatever allow rule matches (Bash(*) here).
+    const policy = makePolicy(config(), 'trunk', wt, o);
+    for (const command of commands) expect(policy.deny({ tool: 'Bash', input: { command } }), command).toMatch(/user's own planestro configuration/);
+  });
+
+  it('refuses the file tools on them, by absolute path, .., ~ or a symlink', () => {
+    const o = { home };
+    const policy = makePolicy(config(), 'trunk', wt, o);
+    for (const [tool, input] of [
+      ['Write', { file_path: join(data, 'planestro.local.yml'), content: 'secret_env: {}' }],
+      ['Edit', { file_path: '../planning/planestro.local.yml', old_string: 'a', new_string: 'b' }],
+      ['MultiEdit', { file_path: '~/.planestro/policy.yml', edits: [] }],
+      ['Read', { file_path: join(wt, 'innocent.txt') }],
+      ['Read', { file_path: `${data}/../planning/planestro.local.yml` }],
+      ['Glob', { pattern: 'planestro.local.yml', path: data }],
+    ] as const) {
+      expect(policy.deny({ tool, input: input as Record<string, unknown> }), `${tool} ${JSON.stringify(input)}`).toMatch(/user's own planestro configuration/);
+    }
+  });
+
+  it('the PreToolUse hook refuses it too, before anything the CLI approves by itself', async () => {
+    const hook = secretHook(wt, { home });
+    const out = await hook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: `echo x >> ${join(data, 'planestro.local.yml')}` }, tool_use_id: 't' } as never, 't', { signal: new AbortController().signal });
+    expect(JSON.stringify(out)).toContain('deny');
+  });
+
+  it('leaves ordinary work alone: a count in the worktree, the project config, a search for the name', () => {
+    const o = { home };
+    for (const command of ['wc -l *', 'cat a.txt', `cat ${join(data, 'planestro.yml')}`, 'grep -rn planestro.local.yml src', 'rm -f /tmp/*.log', 'git commit -m "document planestro.local.yml"'])
+      expect(secretDenial({ tool: 'Bash', input: { command } }, wt, o), command).toBeNull();
   });
 });

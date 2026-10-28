@@ -194,8 +194,12 @@ anywhere else matches nothing and parks. Codex workers are governed by their san
 **Secret files** are on a built-in deny list (`engine/secrets.ts`, #227) that no rule overrides:
 `~/.ssh`, `~/.aws`, `~/.gnupg`, gcloud config (`~/.config/gcloud`, `$CLOUDSDK_CONFIG`), `.git/config`,
 `.env*` (except `.env.example`), `*.pem`, `*.key`, `id_rsa*` / `id_ed25519*`, `credentials.json`,
-`secrets.*`, and Codex's login (`$CODEX_HOME/auth.json` and the copy in `~/.planestro/codex`). Paths
-are judged as written and through symlinks. For Claude workers it is checked before everything else,
+`secrets.*`, Codex's login (`$CODEX_HOME/auth.json` and the copy in `~/.planestro/codex`), and the
+user's own planestro files, `planestro.local.yml` (any file of that name) and `~/.planestro/policy.yml`
+(#501): what they grant a session (`secret_env`, allow rules, MCP keys) is the user's word, so no ruling
+on a parked command can let a worker write itself one. Paths are judged as written and through symlinks,
+from the worktree and from any folder the command `cd`s into; a glob counts where it could name one of
+these, except in the worktree and the scratch folders (`wc -l *` stays a count). For Claude workers it is checked before everything else,
 in a PreToolUse hook: before the built-in read-only helpers (`tail`, `head`, `wc`, `git --no-pager …`),
 before `@worktree` rules and `permissions.allow`, and before what the CLI approves by itself (its own
 read-only commands, reads in the worktree, edits under acceptEdits). It covers the file tools' paths
