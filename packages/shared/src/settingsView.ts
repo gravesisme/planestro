@@ -299,7 +299,8 @@ export const NOT_USER_FACING: Record<SettingFile, readonly string[]> = {
   // engine.paused is the header's PAUSE AUTOMATION lever; the rest is what the usage guard recorded; model_unavailable is written by the model cards' Mark unavailable.
   // permissions (#229) is hand-edited, like ~/.planestro/policy.yml: Workers & permissions shows it under Rules in effect.
   // accounts (#242) are hand-edited too: a second login or key per runner, named with where its credential is.
-  local: ['engine.paused', 'engine.paused_by', 'engine.provider_guards', 'engine.provider_guard_last', 'engine.disk_guard', 'model_unavailable', 'permissions', 'accounts'],
+  // secret_env (#501) is hand-edited only: what a worker may be handed from a secret file is the user's word, never a field a page or tool writes.
+  local: ['engine.paused', 'engine.paused_by', 'engine.provider_guards', 'engine.provider_guard_last', 'engine.disk_guard', 'model_unavailable', 'permissions', 'accounts', 'secret_env'],
 };
 
 export function settingDef(file: SettingFile, key: string): SettingDef | undefined { return SETTINGS.find((s) => s.file === file && s.key === key); }

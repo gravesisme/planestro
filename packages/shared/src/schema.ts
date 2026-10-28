@@ -698,6 +698,13 @@ export const LocalConfig = z.object({
   mcp_import_skip: z.array(z.string()).optional(),
   /** Other logins per runner (#242), by name ("default" is the runner's own login). Hand-edited here; never committed. */
   accounts: z.record(z.string().regex(/^(?!default$)[a-z0-9][a-z0-9_-]{0,39}$/, 'an account name is lowercase letters, digits, - and _ (and not "default")'), AccountDef).optional(),
+  /**
+   * Secrets a worker's commands may use without reading the file that holds them (#501): each env var named here is
+   * read by planestro from `file` (a dotenv; relative to the code repo's checkout, `~/` allowed) under `key` (default:
+   * the var's own name) as each implement or fix turn starts, and set in that session's environment and its run_heavy
+   * commands. The file stays on the secret deny list (#227). Hand-edited only: no Settings field, API or tool writes it.
+   */
+  secret_env: z.record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'an environment variable name is letters, digits and _'), z.object({ file: z.string().min(1), key: z.string().min(1).optional() })).optional(),
   /** Models this machine's account cannot use right now, by model id (`<id>@<account>` for a named account): detected usage limits and ones marked in Settings. */
   model_unavailable: z.record(z.string(), ModelUnavailable).optional(),
   /**

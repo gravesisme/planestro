@@ -19,6 +19,8 @@ export interface SecretOptions {
   dirs?: readonly string[];
   /** Whether a path exists (tests). */
   exists?(path: string): boolean;
+  /** The env vars this session was handed from `secret_env` (#501), by name: the denial points at them instead of the file. */
+  env?: readonly string[];
 }
 
 /** Directories whose every file is a secret, under the home folder. */
@@ -140,7 +142,7 @@ export function secretDenial(req: PermissionRequest, cwd: string, o: SecretOptio
   if (req.tool.startsWith('mcp__')) return null;
   const say = (path: string, what: string) => what.startsWith('.git/')
     ? `${path} is git's own ${what.slice(5)}: git runs what it holds or names, so planestro's built-in deny list lets no worker read or write it, and no rule overrides that. Commit as you are; if the work truly needs it changed, report_blocked saying why.`
-    : `${path} is a secret file (${what}): planestro's built-in deny list lets no worker read or write it, and no rule overrides that. Do the work without it; if it truly needs the file, report_blocked saying why.`;
+    : `${path} is a secret file (${what}): planestro's built-in deny list lets no worker read or write it, and no rule overrides that. ${secretEnvHint(o.env)}`;
   if (req.tool === 'Bash') {
     const hit = secretInCommand(String(req.input.command ?? ''), cwd, o);
     return hit ? say(hit.path, hit.what) : null;
@@ -154,4 +156,32 @@ export function secretDenial(req: PermissionRequest, cwd: string, o: SecretOptio
     if (what) return say(v, what);
   }
   return null;
+}
+
+/**
+ * What a worker refused a secret file is told to do instead (#501): use what `secret_env` handed this session, or ask
+ * for a value by name. The user sanctions one in planestro.local.yml; nothing a model calls can.
+ */
+export function secretEnvHint(env: readonly string[] = []): string {
+  const have = env.length ? `This session's environment already holds ${env.map((n) => `$${n}`).join(', ')} from the user's secret_env: use ${env.length === 1 ? 'that' : 'those'}, never the file. ` : '';
+  return `${have}Do the work without it; if it truly needs a value from the file, report_blocked naming the variable it needs: the user can hand it to the session's environment with secret_env in planestro.local.yml, and the file stays closed.`;
+}
+
+/** A token in prose that may name a file: quotes, brackets and trailing punctuation off. */
+const PROSE_TOKEN = /[^\s`'"()<>\[\]{}|,;]+/g;
+
+/**
+ * The secret files a plan names (#501), for a warning at hand-in: a step that reads one will be refused when it runs.
+ * Prose, so a name counts by its shape alone (`.env.local`, `~/.aws/credentials`), with no check that it exists.
+ */
+export function secretsNamedIn(text: string, cwd: string, o: SecretOptions = {}): { path: string; what: string }[] {
+  const found = new Map<string, string>();
+  for (const m of text.replace(URL, ' ').matchAll(PROSE_TOKEN)) {
+    const token = m[0].replace(/[.:!?]+$/, '');
+    if (!token || /[*?]/.test(token) || found.has(token)) continue;
+    const what = secretPath(token, cwd, o);
+    // Git's own files are no plan's business to name; .git/config in prose is not a step that reads a secret.
+    if (what && !what.startsWith('.git/')) found.set(token, what);
+  }
+  return [...found].map(([path, what]) => ({ path, what }));
 }

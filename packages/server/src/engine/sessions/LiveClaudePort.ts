@@ -129,13 +129,14 @@ export class LiveClaudePort implements ClaudePort {
         ...resumed.options,
         // The secret-file deny list (#227) before anything else: allow rules and the CLI's own approvals never reach canUseTool.
         // What ran without a park is counted from the tool calls that ran (#203): the SDK's own approvals never reach canUseTool.
-        hooks: { ...(resumed.options.hooks as object | undefined), PreToolUse: [{ hooks: [secretHook(o.cwd, { dirs: o.secretDirs }, (id) => ran.refused(id)), ran.started()] }], PostToolUse: [{ hooks: [ran.hook(), ...(o.tools.run_heavy && o.phase !== 'plan' ? [longRunHook()] : [])] }], PostToolUseFailure: [{ hooks: [ran.hook()] }] },
+        hooks: { ...(resumed.options.hooks as object | undefined), PreToolUse: [{ hooks: [secretHook(o.cwd, { dirs: o.secretDirs, env: Object.keys(o.env ?? {}) }, (id) => ran.refused(id)), ran.started()] }], PostToolUse: [{ hooks: [ran.hook(), ...(o.tools.run_heavy && o.phase !== 'plan' ? [longRunHook()] : [])] }], PostToolUseFailure: [{ hooks: [ran.hook()] }] },
         // The model's own servers ride along; their tools are not allow-listed, so every call reaches canUseTool and the engine's count.
         mcpServers: { planestro, ...(o.mcpServers ?? {}) } as any, strictMcpConfig: true, settingSources: ['project'],
         allowedTools: allow.rules,
         additionalDirectories: o.extraDirs, maxBudgetUsd: o.maxBudgetUsd, abortController,
         ...(this.claudeBin ? { pathToClaudeCodeExecutable: this.claudeBin } : {}),
-        env: { ...claudeEnv(process.env, o.account), ...PINNED },
+        // secret_env's values (#501) on top of the login's environment; PINNED last, and the engine refuses the names planestro keeps.
+        env: { ...claudeEnv(process.env, o.account), ...o.env, ...PINNED },
         canUseTool: async (toolName, input, { toolUseID }) => {
           const res = await decide(toolName, input);
           if (res.behavior !== 'allow') ran.refused(toolUseID);

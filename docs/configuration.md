@@ -209,6 +209,26 @@ not reads, and a command inside the sandbox raises no approval for planestro to 
 can still read these files (`cat ~/.ssh/id_ed25519`). Keep secrets a Codex worker must not see off
 the machine it runs on, or out of its user's reach.
 
+**A value a step needs from a secret file** (#501: an API key in the main checkout's `.env.local`) is
+handed over by name, never by opening the file: `secret_env` in planestro.local.yml maps an environment
+variable to the dotenv it is read from, and planestro (not the model) reads it as each implement or fix
+turn starts and sets it in that session's environment and its `run_heavy` commands, so the command uses
+`$ELEVENLABS_API_KEY` and the file stays denied. A planner gets none, nor does the orchestrator. It is
+hand-edited only (no Settings field, API or tool writes it, so no model can sanction itself), names
+planestro keeps for itself (`ANTHROPIC_API_KEY`, `GH_TOKEN`, `PATH`, `HOME`, `CODEX_HOME`, …) are refused,
+and a value that cannot be read is said in the item's Activity by name and file, never by value. What a
+command prints is redacted (`[secret_env NAME]`) in the live output and in a `run_heavy` result, and a
+value of yours is in the session's environment: the model can print it, so name only what the work needs.
+A refused read tells the worker which variables its session already has. A plan that names a secret file
+gets an Activity line and a warning at hand-in, before anyone approves a step the deny list will refuse.
+
+```yaml
+# planestro.local.yml
+secret_env:
+  ELEVENLABS_API_KEY: { file: .env.local }                       # relative: the code repo's checkout
+  OTHER_TOKEN: { file: ~/keys/service.env, key: SERVICE_TOKEN }  # key defaults to the variable's name
+```
+
 Rules match each segment of a chained or piped command (`&&`, `||`, `;`, `|`), and every
 segment must match. Before matching, each segment is reduced to the command it actually runs:
 leading plain `NAME=value` assignments and the harmless wrappers `timeout N`/`gtimeout N`,
@@ -405,6 +425,7 @@ Default: **Release notes** and **Notes**.
 | `paired_devices` | Devices that may use planestro from another machine (#403), each `paired_devices.id`, `paired_devices.name`, `paired_devices.token_sha256` (the token's sha256, never the token) and `paired_devices.created_at`: written by pairing, never by hand. A request from anywhere but this machine (a loopback peer) must carry a paired device's token: the `planestro_token` cookie the pairing page sets (HttpOnly, SameSite=Strict, 400 days), or `Authorization: Bearer <token>` for an MCP client. Without one the API, `/ws`, `/mcp` and attachments answer 401 and a page load redirects to `/pair`. `planestro pair` (or **Pair a device** in Settings → Access, on this machine only) mints a one-time code good for 10 minutes, with `/pair?code=<code>` links (and a QR code of the first) for the addresses the server is reachable at, none on a loopback bind (the link carries the code, never a token; the page fills it in and waits for Pair); ten wrong codes void every pending one. Only the token's sha256 is stored; **Revoke** removes a device and its next request gets a 401. This machine never needs a token. |
 | `allowed_hosts` | Extra names this machine is reached by — a Tailscale or DNS name for the phone. The server answers only requests addressed to `localhost`, `127.0.0.1`, the `--host` it is bound to (with `0.0.0.0`: this machine's hostname and interface addresses) and these; anything else, and any request from another website, gets a 403. |
 | `codex_bin` | Path to `codex`, if not on `PATH`. Only used by models with `runner: codex`. |
+| `secret_env` | Values a worker's commands may use from a secret file without reading it (#501), by environment variable: `{ file, key? }`, `file` a dotenv (relative to the code repo's checkout, `~/` allowed), `key` its name there (default: the variable's). Read at each implement and fix turn, set in that session's environment and its `run_heavy` commands; the file stays on the deny list. Hand-edited here only. See **A value a step needs from a secret file** above. |
 | `accounts` | Other logins for the same runner ([second accounts](#a-second-account-for-the-same-provider)), by name: `{ runner, label?, home }`. Hand-edited here; the default login is `default`. |
 | `model_unavailable` | Models this machine's account cannot use right now, by model id (`<id>@<account>` for a named account): `{ until, reason, since, manual }`. Written when a turn fails on a usage limit and by **mark unavailable** in Settings; cleared there or when `until` passes. Per machine because usage belongs to the account logged in here. |
 | `engine.paused` | The PAUSE AUTOMATION lever, persisted. |

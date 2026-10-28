@@ -77,11 +77,21 @@ export function loginHint(home: string): string {
  * GH_TOKEN, *_API_KEY, AWS_* never reach a worker (#228). `passthrough` is the project's codex_env_passthrough;
  * the home is set last, so a listed CODEX_HOME cannot point an app-server back at the shared login.
  */
-export function codexEnv(passthrough: readonly string[] = [], home = process.env.CODEX_HOME): NodeJS.ProcessEnv {
+export function codexEnv(passthrough: readonly string[] = [], home = process.env.CODEX_HOME, secrets: Record<string, string> = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const key of ['PATH', 'HOME', 'USER', 'SHELL', 'TMPDIR', 'LANG', 'SYSTEMROOT', ...passthrough]) if (process.env[key] !== undefined) env[key] = process.env[key];
+  // What the user's secret_env hands a worker turn (#501), by name; never the home, set below.
+  Object.assign(env, secrets);
   if (home) env.CODEX_HOME = home;
   return env;
+}
+
+/**
+ * Codex drops a variable named like *KEY*, *SECRET* or *TOKEN* from its commands unless told not to: with secret_env's
+ * values in its environment (#501) it keeps them. The environment is planestro's allowlist (codexEnv), so nothing else rides along.
+ */
+export function secretEnvArgs(secrets: Record<string, string> | undefined): string[] {
+  return secrets && Object.keys(secrets).length ? ['-c', 'shell_environment_policy.ignore_default_excludes=true'] : [];
 }
 
 export class Connection {
@@ -91,8 +101,8 @@ export class Connection {
   readonly closed: Promise<void>;
   handler: (message: Rpc) => void = () => {};
   stderr = '';
-  constructor(bin: string, home: string, cwd: string, passthrough: readonly string[] = []) {
-    this.child = spawn(bin, ['app-server', '--stdio', '-c', 'mcp_servers={}', '-c', 'features.apps=false', '-c', 'features.multi_agent=false', '-c', 'features.plugins=false', '-c', 'features.skill_mcp_dependency_install=false', '-c', 'features.skip_host_skill_discovery=true'], { cwd, env: codexEnv(passthrough, home), stdio: 'pipe' });
+  constructor(bin: string, home: string, cwd: string, passthrough: readonly string[] = [], secrets: Record<string, string> = {}) {
+    this.child = spawn(bin, ['app-server', '--stdio', '-c', 'mcp_servers={}', '-c', 'features.apps=false', '-c', 'features.multi_agent=false', '-c', 'features.plugins=false', '-c', 'features.skill_mcp_dependency_install=false', '-c', 'features.skip_host_skill_discovery=true', ...secretEnvArgs(secrets)], { cwd, env: codexEnv(passthrough, home, secrets), stdio: 'pipe' });
     // Deliberately keep stdin open. It carries replies until the turn and tool work are over.
     createInterface({ input: this.child.stdout }).on('line', (line) => {
       let m: Rpc; try { m = JSON.parse(line); } catch { return; }
@@ -163,7 +173,7 @@ export class CodexAppServerPort implements AgentPort {
     const images = !readOnly && (o as TurnOptions).nativeImages === true;
     const at = this.homeFor(o);
     const home = isolatedCodexHome(at.home, this.inheritAuth, at.authFrom);
-    const rpc = new Connection(this.bin, home, home, this.passthrough());
+    const rpc = new Connection(this.bin, home, home, this.passthrough(), worker ? (o as TurnOptions).env : undefined);
     let scope: ScopedTools | undefined, thread: string | undefined, turn: string | undefined;
     let finish!: () => void;
     const ended = new Promise<void>((r) => { finish = r; });

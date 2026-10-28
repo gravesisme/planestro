@@ -240,6 +240,11 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   the project's `permissions`, then `planestro.local.yml`'s; lists are unioned (`DataStore.permissionRules`, each rule
   with its sources), a deny from any layer wins (`sdkRules` keeps a touched allow off the SDK's list), secrets first. Suggestions,
   redirects and drift read the merged rules.
+- The secret-file deny list (#227) is never overridden. A value a step needs from such a file is handed over by name (#501):
+  `secret_env` in planestro.local.yml (hand-edited only: no Settings field, API or tool writes it) maps an env var to a dotenv
+  planestro reads as each implement or fix turn starts, into that session's environment and its `run_heavy` commands (never a
+  planner's or the orchestrator's). Values never reach a prompt, the journal, Activity or an item file; output is redacted. A
+  refused read names the variables the session has; a plan naming a secret file is warned about at hand-in (`secretsNamedIn`).
 - Allow rules are suggested from the ruling history, never applied (`allowSuggest.ts`, #169: `planestro
   permissions suggest`, `GET /permissions/suggest`, the Console). Rulings come from Activity
   (`permission allow (reason): Bash(…)`) and, whole, from `permission.answered` (`tool`, `command`,
