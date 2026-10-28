@@ -67,8 +67,14 @@ export interface Policy { deny(req: PermissionRequest): string | null }
  * sets one is never auto-allowed (it parks for a decision), whatever command follows.
  */
 const DANGEROUS_ENV = /^(PATH|IFS|ENV|BASH_ENV|SHELL|SHELLOPTS|PS4|PROMPT_COMMAND|HOME|NODE_OPTIONS|NODE_PATH|PERL5OPT|PERL5LIB|PYTHONPATH|PYTHONSTARTUP|RUBYOPT|RUBYLIB|LD_\w*|DYLD_\w*|GIT_\w*)$/;
-/** A plain assignment: NAME=value where the value is one word with no expansion, quotes or redirection. */
-const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=([^\s'"`$<>|;&(){}\\]*)\s+/;
+/** `$NAME` or `${NAME}`: a variable, nothing more (no `${X:-…}`, no `$(…)`). */
+const VAR_REF = String.raw`\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\}`;
+/**
+ * A plain assignment: NAME=value where the value is one word of plain characters and variables, bare or in double quotes
+ * with no blank (`HH_SEED=$s`, `OUT="tmp/$s.log"`; #515), and no command substitution, quoting trick or redirection. An
+ * assignment never splits its value, so a variable there is one word, as a literal is.
+ */
+const ASSIGNMENT = new RegExp(String.raw`^([A-Za-z_][A-Za-z0-9_]*)=((?:[^\s'"` + '`' + String.raw`$<>|;&(){}\\]|${VAR_REF}|"(?:[^"` + '`' + String.raw`$\\\s]|${VAR_REF})*")*)\s+`);
 /**
  * Wrappers that only bound or schedule the command they run, so the command after them is what
  * a rule should judge: `timeout 120 godot …` is a godot run. Options are the common harmless ones;

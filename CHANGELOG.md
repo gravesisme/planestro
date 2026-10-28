@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Fixed
+
+- A command behind an assignment whose value is a variable (`for s in 1 3 7; do HH_SEED=$s ./tools/run_checks.sh x; done`)
+  is judged as the command it runs, as `HH_SEED=3 ./tools/…` always was: it no longer parks under a rule that covers it
+  (HH-625 parked seven times in half an hour), and it no longer hides a denied command (`X=$y gh pr create`) or a heavy
+  run from the `run_heavy` redirect (#515).
+
 ### Added
 
 - The operator MCP endpoint offers `submit_item` and `move_item` behind a new opt-in,
