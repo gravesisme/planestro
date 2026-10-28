@@ -383,7 +383,7 @@ export class LiveEngine implements Engine {
       worktreeDirt: (cwd) => this.worktreeDirt(cwd),
       makeTools: (id) => this.makeTools(id),
       recordTestRun: (id, cwd, run, source) => this.recordTestRun(id, cwd, run, source),
-      recordPark: (id, kind, what, asked) => this.recordPark(id, kind, what, asked),
+      recordPark: (id, kind, what, asked, shape) => this.recordPark(id, kind, what, asked, shape),
       permissionsDelegated: () => this.permissionsDelegated(),
       mayAskOrchestrator: (fm) => this.mayAskOrchestrator(fm),
       wakeOrchestrator: (type, item, data) => this.wakeOrchestrator(type, item, data),
@@ -998,10 +998,13 @@ export class LiveEngine implements Engine {
     throw new Error(`unknown response kind ${String(payload.kind)}`);
   }
 
-  /** A park begins (#108): journaled with what was asked, its kind of command and who it went to. Returns its id. */
-  private recordPark(id: string, kind: 'permission' | 'question' | 'audition', what: string, asked: 'user' | 'orchestrator'): string {
+  /**
+   * A park begins (#108): journaled with what was asked, its kind of command and who it went to. Returns its id. `parked`
+   * is the command that parked when the caller knows it (`parkedShape`); else the request's first.
+   */
+  private recordPark(id: string, kind: 'permission' | 'question' | 'audition', what: string, asked: 'user' | 'orchestrator', parked?: string): string {
     const park = `park-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-    const shape = kind === 'permission' ? commandShape(what) : undefined;
+    const shape = kind === 'permission' ? parked ?? commandShape(what) : undefined;
     this.store.journal.append({ type: 'permission.parked', item: id, actor: 'engine', data: { park, kind, what: what.slice(0, 300), ...(shape ? { shape } : {}), asked } });
     return park;
   }

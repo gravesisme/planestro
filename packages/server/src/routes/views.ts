@@ -53,7 +53,7 @@ function parkHintOf(store: DataStore, item: StoredItem) {
   const permission = fm.awaiting === 'permission' || (fm.awaiting === 'orchestrator' && d?.kind === 'permission');
   if (!permission || d?.tool !== 'Bash') return null;
   const command = String((d.input as { command?: unknown } | undefined)?.command ?? '');
-  return parkHint(store.journal.read({ item: fm.id, type: 'permission.parked' }), command, store.permissionRules().allow) ?? null;
+  return parkHint(store.journal.read({ item: fm.id, type: 'permission.parked' }), command, store.permissionRules().allow, typeof d.park === 'string' ? d.park : undefined) ?? null;
 }
 export type ItemView = ReturnType<typeof itemView>;
 
