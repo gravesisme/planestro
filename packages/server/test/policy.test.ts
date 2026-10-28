@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { allowedByRules, makePolicy, normalizeSegment, BASE_ALLOWED } from '../src/engine/policy.ts';
+import { allowedByRules, makePolicy, normalizeSegment, sdkRules, BASE_ALLOWED } from '../src/engine/policy.ts';
 import { Config } from '@planestro/shared';
 
 const bash = (command: string) => ({ tool: 'Bash', input: { command } });
@@ -84,6 +84,44 @@ describe('deny rules see through prefixes', () => {
   it('does not deny ordinary prefixed work', () => {
     expect(policy.deny(bash('CHECK_JOBS=4 ./tools/run_checks.sh x | tail -30'))).toBeNull();
     expect(policy.deny(bash('timeout 120 godot --headless --script a.gd'))).toBeNull();
+  });
+});
+
+// #517: a rule could meet only a command's start, so a flag after a check name (`run_checks.sh x --repeat 20`) went by.
+describe('a * between words stands for any words (#517)', () => {
+  const config = Config.parse({
+    schema_version: 2, tool_version: '0.1.0', project: { name: 'T', id_prefix: 'T' },
+    code_repo: { path: '..', default_branch: 'trunk', release_branch: 'release' },
+    models: [{ id: 'm', label: 'M', claude_model: 'x' }], defaults: { planner: 'm', implementer: 'm', category: 'C' }, categories: ['C'],
+    permissions: { allow: [], deny: ['Bash(./tools/run_checks.sh * --repeat *)'] },
+  });
+  const policy = makePolicy(config, 'trunk', '/w');
+
+  it('a deny meets the flag first, after one argument or several, behind a prefix and in a loop', () => {
+    for (const c of [
+      './tools/run_checks.sh --repeat 20',
+      './tools/run_checks.sh mine_cart --repeat 20',
+      './tools/run_checks.sh a b --stress --repeat 5',
+      'HH_SEED=7 ./tools/run_checks.sh harrison_autopilot --repeat 10',
+      'for s in 1 2; do HH_SEED=$s ./tools/run_checks.sh mine_cart --repeat 3; done',
+    ]) expect(policy.deny(bash(c)), c).toMatch(/denied by planestro policy/);
+  });
+
+  it('a deny with a * between words refuses nothing without the words after it', () => {
+    for (const c of ['./tools/run_checks.sh mine_cart', './tools/run_checks.sh x--repeat 2', 'tools/run_checks.sh x --repeat 2'])
+      expect(policy.deny(bash(c)), c).toBeNull();
+  });
+
+  it('an allow rule reads the * the same way, and a * between words is literal text nowhere', () => {
+    const allow = ['Bash(./tools/run_checks.sh * --repeat *)', 'Bash(npm run * -- --ci)'];
+    for (const c of ['./tools/run_checks.sh mine_cart --repeat 20', './tools/run_checks.sh --repeat 2', 'npm run test -- --ci'])
+      expect(allowedByRules(bash(c), allow), c).toBe(true);
+    for (const c of ['./tools/run_checks.sh mine_cart', 'npm run test -- --ci --watch', 'npm run test', './tools/run_checks.sh * --repeat 2x'])
+      expect(allowedByRules(bash(c), allow), c).toBe(c === './tools/run_checks.sh * --repeat 2x');
+  });
+
+  it('a deny with a * between words keeps an allow on the same command off the SDK list', () => {
+    expect(sdkRules(['Bash(./tools/run_checks.sh *)', 'Bash(./tools/run_checks.sh mine_cart*)', 'Bash(npm test)'], ['Bash(./tools/run_checks.sh * --repeat *)'])).toEqual(['Bash(npm test)']);
   });
 });
 
