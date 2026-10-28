@@ -493,6 +493,7 @@ export const Config = z.object({
    * Heavy local runs (#218): a worker's `run_heavy` runs one at a time across the data dir, and before each batch waits
    * while a CI job runs on a runner carrying one of `shared_labels` (this host's runners). A Bash call matching one of
    * `patterns` (a command prefix, or a `Bash(…)` rule) is redirected to it, and run_heavy may run what they match.
+   * run_heavy itself is offered either way (#502): off, it is only a long run past the CLI's 10-minute foreground cap.
    */
   heavy_runs: z.object({
     enabled: z.boolean().default(false),

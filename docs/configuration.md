@@ -272,9 +272,17 @@ waited for, and how long, is in its answer and the item's Activity. A Bash call 
 patterns or the allow rules permit and nothing the deny rules refuse. Waiting on the lock or on
 CI is not waiting on a person: a turn that is stopped stops waiting.
 
+`run_heavy` is offered to every implementing worker, `enabled` or not (#502): a Claude worker's
+foreground Bash call is capped at 10 minutes, and a run longer than that (a browser or e2e harness,
+a long suite) goes through `run_heavy` as one call of any length, up to `timeout_min` a batch. With
+`enabled` off it runs at once, with no lock and no CI wait. A foreground command that hits the cap
+is moved to the background by the CLI, and the worker is told beside its result to use `run_heavy`.
+The orchestrator counts one `run_heavy` call, or one self-contained background harness followed to
+its end, as one foreground harness run.
+
 | Key | Default | |
 |---|---|---|
-| `heavy_runs.enabled` | `false` | Offer workers `run_heavy` and redirect the patterns to it. |
+| `heavy_runs.enabled` | `false` | Heavy runs take turns (the lock and the CI wait) and the patterns are redirected to `run_heavy`. |
 | `heavy_runs.patterns` | `[]` | Commands that count as heavy: a command prefix (`npm run stress`) or a `Bash(…)` rule. |
 | `heavy_runs.shared_labels` | `[]` | Runner labels whose runners share this machine (`hh-mac`). |
 | `heavy_runs.yield_to_ci` | `true` | Wait while CI runs on those labels; `false` keeps only the one-at-a-time lock. |

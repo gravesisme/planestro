@@ -17,7 +17,7 @@ import type { Triage } from './triage.ts';
 import type { ReviewUndo } from './reviewUndo.ts';
 
 /** A turn this engine started (LiveEngine's `turns`): what the board shows of it, and its abort. */
-export interface RunningTurn { model: string; phase: TurnPhase; startedAt: string; lastOutput: string; abort: AbortController; waiting?: string; oneShot?: string; lastOutputAt?: number }
+export interface RunningTurn { model: string; phase: TurnPhase; startedAt: string; lastOutput: string; abort: AbortController; waiting?: string; oneShot?: string; lastOutputAt?: number; /** run_heavy calls in flight (#502): quiet by design, not a hung turn. */ heavy?: number }
 
 /**
  * Turn running (#404, seam 9): one turn of an item's session, from the choice of how to start it to what it cost. runTurnFor
