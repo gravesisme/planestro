@@ -186,6 +186,11 @@ describe('planestro.local.yml and ~/.planestro/policy.yml: no worker reads or wr
       `cat $HOME/.planestro/policy.yml`,
       `cat ~/.planestro/pol*`,
       `cat innocent.txt`,
+      // #508's read-only built-ins (sed -n, awk, head, git diff --no-index) are allowed with no park: the deny list still wins.
+      `sed -n 1p ../planning/planestro.local.yml`,
+      `awk 1 ~/.planestro/policy.yml`,
+      `head -5 ${join(data, 'planestro.local.yml')}`,
+      `git diff --no-index /dev/null ../planning/planestro.local.yml`,
     ];
     for (const command of commands) {
       const why = secretDenial({ tool: 'Bash', input: { command } }, wt, o) ?? `not refused: ${command}`;
@@ -207,6 +212,9 @@ describe('planestro.local.yml and ~/.planestro/policy.yml: no worker reads or wr
       ['Read', { file_path: join(wt, 'innocent.txt') }],
       ['Read', { file_path: `${data}/../planning/planestro.local.yml` }],
       ['Glob', { pattern: 'planestro.local.yml', path: data }],
+      ['Grep', { pattern: 'secret_env', path: join(data, 'planestro.local.yml') }],
+      ['Grep', { pattern: 'allow', path: '~/.planestro/policy.yml' }],
+      ['Read', { file_path: '~/.planestro/policy.yml' }],
     ] as const) {
       expect(policy.deny({ tool, input: input as Record<string, unknown> }) ?? `not refused: ${tool} ${JSON.stringify(input)}`, `${tool} ${JSON.stringify(input)}`).toMatch(/user's own planestro configuration/);
     }
