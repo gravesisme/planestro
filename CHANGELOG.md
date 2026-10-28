@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- The operator MCP endpoint offers `submit_item` and `move_item` behind a new opt-in,
+  `operator_mcp.allow_submit`: your own Claude Code or Codex session can queue an item, plan an
+  epic's breakdown, park an item that has not started in the Icebox or bring one back, and reorder
+  a column, each as the board does it and recorded as `[operator]`. While an opt-in is off, the
+  endpoint's instructions name it, so a session says which setting would offer a tool instead of
+  calling planestro's HTTP API, where its change would read as yours.
+
 ## 1.1.0 — 2026-10-28
 
 ### Fixed

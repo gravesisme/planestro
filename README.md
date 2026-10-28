@@ -284,6 +284,13 @@ in:
   `close_as_done`, each as the board makes it and recorded as `[operator]`.
   Approving an epic-shaped plan as one item and deleting a remote branch on a
   discard stay on the board, and merges are always planestro's.
+- Submitting and moving, with `operator_mcp.allow_submit: true` (a fourth
+  opt-in, off by default): `submit_item` (a worker item is queued for
+  planning, an epic has its breakdown planned) and `move_item` (`icebox` for an
+  item that has not started, `backlog` from the Icebox or Queued, `top`,
+  `bottom`, `before`/`after` another), each as the board does it and recorded
+  as `[operator]`. With `allow_writes` too, a session you ask to "file it and
+  queue it" does exactly that, through the endpoint.
 
 Register it once per project, at **user scope**, under a name of its own.
 `planestro status` prints each instance's MCP URL:

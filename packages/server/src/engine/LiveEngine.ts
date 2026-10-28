@@ -1425,6 +1425,8 @@ export class LiveEngine implements Engine {
   // ---- epics (#404, seam 5): planning, breakdown approval, the integration branch and epic PRs live in epics.ts ----
   /** Have an epic's planner propose its children (Epics.planEpic). */
   planEpic(id: string, why?: string): Promise<void> { return this.epics.planEpic(id, why); }
+  /** Submit an item as the user does on its page (Triage.submitAsUser). */
+  async submitItem(id: string, why: string): Promise<'queued' | 'planning'> { return this.triage.submitAsUser(id, why); }
   /** Create the approved children, open the epic and queue what can start (Epics.approveBreakdown). */
   approveBreakdown(id: string, edited?: BreakdownChild[], opts: { queue?: boolean } = {}): Promise<string[]> { return this.epics.approveBreakdown(id, edited, opts); }
   /** Children the user rendered from a list, added to an epic (Epics.addChildren). */
