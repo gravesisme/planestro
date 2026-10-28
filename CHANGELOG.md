@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+## 1.1.0 — 2026-10-28
+
+### Fixed
+
+- A worker could read any file on the machine with `git diff --no-index <path>`, and write outside its
+  worktree with an abbreviated `git diff --outp=<path>`: both slipped past the deny under the built-in
+  `git diff` / `git log` / `git show` rules. `--no-index` and `--output` are now denied in every form, and a
+  rule check can no longer allow a command the git deny refuses (#508, #503).
+- `unblock_item` with a message on an epic past its breakdown no longer reports "the session resumes"
+  while dropping the message: it is refused in words, the stop is kept, and the reply says what works
+  (a fix child for a red epic in review, `rerun_ci` for a flake). Your own **Unblock** refuses the same way,
+  in plain words. A fix child filed for a red epic takes it back in progress and clears its CI stop, so the
+  reused PR is driven again (#505, #500).
+- Read-only work inside a worker's own worktree no longer parks for a permission ruling: the Read, Grep
+  and Glob tools there and in scratch folders (symlinks followed), `sed` / `awk` whose script only prints,
+  and git readers (`status`, `diff`, `show`, `log`, `ls-files`, `ls-tree`, `blame`, `cat-file`, …).
+  Secrets and every deny still come first; writes, `xargs`, `python3 -c` and paths outside the worktree
+  still ask (#508, #503).
+- A harness that runs longer than the CLI's 10-minute foreground Bash cap has a home: `run_heavy` is offered
+  in every work turn, holds one run of any length (up to `heavy_runs.timeout_min`), and is not stopped by
+  the quiet-turn watchdog. A Bash call that hits the cap is pointed at it, and the orchestrator counts either
+  `run_heavy` or one background harness followed with Monitor as a single foreground run (#507, #502).
+
+### Added
+
+- `secret_env` in planestro.local.yml hands a worker a value from a secret file by name, never the file:
+  `ELEVENLABS_API_KEY: { file: .env.local }` puts that one key in the environment of implement and fix
+  turns and their `run_heavy` commands (never a planner's or the orchestrator's). It is hand-edited only,
+  values never reach a prompt, the journal, Activity or an item file, and command output is redacted. A
+  refused secret read names the variables the session already has, and a plan that names a secret file is
+  flagged when it is handed in (#506, #501).
+- Feedback notes carry a title of at most 72 characters, like a commit subject. The Console shows it in
+  bold above the note, held to two lines until clicked, and a filed issue takes it as its title. Older
+  notes read their first sentence (#504).
+
+### Changed
+
+- `planestro.local.yml` and `~/.planestro/policy.yml` are on the secret-file deny list: no worker reads or
+  writes them by any tool or ruling, so nothing a model calls can sanction itself a secret (#506).
+- `heavy_runs.enabled` now only turns on turn-taking (one heavy run at a time, waiting on CI for shared
+  runners); `run_heavy` itself is always there (#507).
+
 ## 1.0.2 — 2026-10-27
 
 ### Fixed
