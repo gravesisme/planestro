@@ -194,7 +194,7 @@ describe('what parks cost (#108)', () => {
     const claude = () => ({
       async runTurn(o: TurnOptions): Promise<TurnResult> {
         if (o.phase === 'plan') { await o.tools.submit_plan('# p'); return { sessionId: 's', subtype: 'success', isError: false, costUsd: 0.5, numTurns: 1, text: '', planSubmitted: '# p' }; }
-        if (asks < 2) { asks++; const r = await o.onPermission({ tool: 'Bash', input: { command: `npx tsx tools/check-${asks}.ts` } }); if (r.action === 'park') return { sessionId: 's', subtype: 'success', isError: false, costUsd: 2, numTurns: 1, text: '', parked: 'permission' }; }
+        if (asks < 2) { asks++; const r = await o.onPermission({ tool: 'Bash', input: { command: asks === 1 ? 'npx tsx tools/check-1.ts' : 'grep -n check tools/list.txt | npx tsx tools/check-2.ts' } }); if (r.action === 'park') return { sessionId: 's', subtype: 'success', isError: false, costUsd: 2, numTurns: 1, text: '', parked: 'permission' }; }
         await o.tools.report_done('done');
         return { sessionId: 's', subtype: 'success', isError: false, costUsd: 7.25, numTurns: 1, text: '', done: 'done' };
       },
@@ -217,9 +217,10 @@ describe('what parks cost (#108)', () => {
     await waitFor(() => ['IN_REVIEW', 'MERGED', 'FINISHED'].includes(status(store, item.id)), 8000);
     const parked = store.journal.read({ item: item.id, type: 'permission.parked' });
     const answered = store.journal.read({ item: item.id, type: 'permission.answered' });
+    // the second parked on its npx tsx, not on the grep its line starts with (#503's audit blamed the first word)
     expect(parked.map((p) => p.data?.shape)).toEqual(['npx tsx', 'npx tsx']);
     expect(answered.map((a) => [a.data?.park, a.data?.by, a.data?.decision])).toEqual(parked.map((p) => [p.data?.park, 'user', 'allow']));
-    expect(answered.map((a) => [a.data?.tool, a.data?.command])).toEqual([['Bash', 'npx tsx tools/check-1.ts'], ['Bash', 'npx tsx tools/check-2.ts']]);   // replayable (#169)
+    expect(answered.map((a) => [a.data?.tool, a.data?.command])).toEqual([['Bash', 'npx tsx tools/check-1.ts'], ['Bash', 'grep -n check tools/list.txt | npx tsx tools/check-2.ts']]);   // replayable (#169)
     const resumes = store.journal.read({ item: item.id, type: 'op.begin' }).filter((b) => b.data?.resumes_park);
     expect(resumes.map((b) => b.data?.resumes_park)).toEqual(parked.map((p) => p.data?.park));
     expect(store.getItem(item.id)!.file.frontmatter.op_data?.resume_park).toBeUndefined();

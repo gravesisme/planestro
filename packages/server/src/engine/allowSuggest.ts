@@ -79,6 +79,16 @@ export function segmentsOf(command: string, worktree: string): Segment[] | null 
   return out;
 }
 
+/**
+ * The kind of command that made a Bash request park: the first of its commands the turn's rules do not allow (`allowed`
+ * judges one command's text), so `grep x f | awk '…'` parks as `awk`, not `grep` (#503's audit blamed the first word). A
+ * request whose every command passes alone (it parked as a whole: a redirect, a chain) reads as its first command.
+ */
+export function parkedShape(command: string, worktree: string, allowed: (text: string) => boolean): string | undefined {
+  const blocked = segmentsOf(command, worktree)?.find((s) => !allowed(s.text));
+  return blocked?.shape ?? commandShape(command);
+}
+
 /** The class of one command, from its words (null where a word is an expansion). */
 export function classify(words: (string | null)[], text = words.join(' ')): CommandClass {
   const head = words[0];
