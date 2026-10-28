@@ -256,6 +256,8 @@ export interface AgentTurnOptions {
   account?: AccountCredentials;
   /** Other accounts' config folders (#242): secret, like ~/.ssh, for whatever the worker runs. */
   secretDirs?: string[];
+  /** Values the user's `secret_env` hands this implement or fix turn (#501): set in the session's environment, its commands' too. Never logged. */
+  env?: Record<string, string>;
   maxTokens?: number;
   /** Persist and park, or consume an exact saved command grant before returning allow. */
   onApproval?(req: PermissionRequest): Promise<'allow' | void>;

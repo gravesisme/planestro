@@ -9,6 +9,8 @@ import { makePolicy, ruleFor, allowedByRules, BASE_ALLOWED } from './policy.ts';
 import { answeredCommand, commandShape, rulingText, parkedRefusal, permissionGrantRefusal } from './parks.ts';
 import { commandGrant, commandForms } from './sessions/nativeApproval.ts';
 import { workerCommandEnv } from './sessions/commandEnv.ts';
+import { redactSecretEnv } from './secretEnv.ts';
+import { secretsNamedIn } from './secrets.ts';
 import { Orchestrator } from './orchestrator.ts';
 import { NeedsYouWatch, type Wait } from './needsYou.ts';
 import { auditSlotDue, runEfficiencyAudit } from './efficiencyAudit.ts';
@@ -1539,8 +1541,11 @@ export class LiveEngine implements Engine {
       if (epic) ops.push({ activity: { actor: 'app', text: `this reads as an epic, not one item: ${epic.reason}. Approval is refused; convert it to an epic` } });
       const stated = epic ? null : holdShapeOf(plan);
       if (stated) ops.push({ activity: { actor: 'app', text: `its plan states a merge hold: "${stated.quote}". Approving it can hold its pull request` } });
+      // A step that reads a secret file is refused when it runs, after approval (#501, LM-50): said now, with the way to sanction it.
+      const secrets = secretsNamedIn(plan, this.repo);
+      if (secrets.length) ops.push({ activity: { actor: 'app', text: `its plan names ${secrets.map((x) => `${x.path} (${x.what})`).join(', ')}: planestro's secret deny list refuses every worker read of ${secrets.length === 1 ? 'that file' : 'those files'}, approved plan or not. If a step needs a value from one, the user names it under secret_env in planestro.local.yml and the worker's environment gets it as a variable` } });
       s.mutateItem(id, ops, 'engine', { commit: `${id}: submit plan` });
-      this.note(epic ? 'warn' : 'info', `${id}: plan submitted — ${epic ? `it reads as an epic (${epic.reason}): convert it rather than approve it` : delegated ? 'the orchestrator decides (you asked it to)' : 'needs your approval'}`);
+      this.note(epic || secrets.length ? 'warn' : 'info', `${id}: plan submitted — ${epic ? `it reads as an epic (${epic.reason}): convert it rather than approve it` : delegated ? 'the orchestrator decides (you asked it to)' : 'needs your approval'}${secrets.length ? `; it names secret files workers cannot read (${secrets.map((x) => x.path).join(', ')}): see secret_env` : ''}`);
       this.wakeOrchestrator('plan_review', id);
       return epic?.source === 'breakdown'
         ? 'Breakdown recorded by planestro as this item\'s plan, flagged as an epic: the user decides whether to convert it. End your turn now.'
@@ -1701,14 +1706,16 @@ export class LiveEngine implements Engine {
     if (!fm.worktree) return 'Rejected: this item has no worktree to run in.';
     const cwd = this.absWorktree(fm.worktree);
     const rules = this.store.permissionRules();
-    const policy = makePolicy(this.store.config, this.store.derived(item).base_branch!, cwd, {}, rules);
+    // What secret_env hands the worker's session reaches its heavy runs (#501); what they print comes back redacted.
+    const secrets = this.turnRunner.secretEnv(id);
+    const policy = makePolicy(this.store.config, this.store.derived(item).base_branch!, cwd, { env: Object.keys(secrets ?? {}) }, rules);
     for (const command of commands) {
       const why = policy.deny({ tool: 'Bash', input: { command } });
       if (why) return `Rejected: ${why} Nothing was run.`;
       if (!allowedByRules({ tool: 'Bash', input: { command } }, [...BASE_ALLOWED.implement, ...rules.allow, ...heavyAllowRules(this.store.config)], cwd)) return `Rejected: run_heavy runs only commands your allow rules or the project's heavy_runs.patterns permit, and \`${command.slice(0, 200)}\` is neither. Nothing was run.`;
     }
     // The command sees what the worker's own commands would (#228), by its runner.
-    const env = workerCommandEnv(this.store.config.models.find((m) => m.id === fm.implementer)?.runner ?? 'claude', this.store.config);
+    const env = workerCommandEnv(this.store.config.models.find((m) => m.id === fm.implementer)?.runner ?? 'claude', this.store.config, secrets);
     const signal = this.turns.get(id)?.abort.signal;
     const stopped = () => signal?.aborted || this.stopping || this.store.requireItem(id).file.frontmatter.taken_over;
     const say = (text: string) => this.store.mutateItem(id, [{ activity: { actor: 'app', text: `heavy run: ${text}` } }], 'engine');
@@ -1741,7 +1748,7 @@ export class LiveEngine implements Engine {
         const r0 = Date.now();
         const r = await this.ports.proc.run(command, { cwd, timeoutMs: cfg.timeout_min * 60_000, ...env, ...(signal ? { signal } : {}) });
         await this.recordTestRun(id, cwd, { command, ok: r.code === 0, ms: Date.now() - r0 }, 'run_heavy');
-        const tail = `${r.stdout}${r.stderr ? `\n[stderr]\n${r.stderr}` : ''}`.trim().slice(-4000);
+        const tail = redactSecretEnv(`${r.stdout}${r.stderr ? `\n[stderr]\n${r.stderr}` : ''}`.trim(), secrets).slice(-4000);
         out.push(`${label}\`${command}\` exited ${r.code}${tail ? `:\n${tail}` : ''}`);
         if (r.code !== 0 && i < commands.length - 1) { out.push(`The batches after it were not run.`); break; }
       }
