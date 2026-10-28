@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DataStore } from '../src/store/DataStore.ts';
 import { LiveEngine } from '../src/engine/LiveEngine.ts';
+import { apiRoutes } from '../src/routes/api.ts';
 import { FakeWorld, DryRunGitPort, DryRunGhPort, DryRunProcPort, DryRunClaudePort } from '../src/engine/dryrun-ports.ts';
 import type { Ports } from '../src/engine/ports.ts';
 import { makeFixture, sleep } from './helpers.ts';
@@ -71,6 +72,10 @@ describe('a red epic in review (#500, LM-64)', () => {
       expect(r).toContain('unblock_item without a message');
     }
     expect(fmOf(store, epic).blocked_reason).toBe('agent_blocked');
+    // planestro's own stop is retried, a message with it a note (#211, #439): unblocked, and said to be Activity only.
+    store.mutateItem(epic, [{ set: { blocked_reason: 'engine_error' } }], 'engine');
+    expect(await hooks.orchestratorUnblocks(epic, 'Benign race.')).toMatch(/your message is in its Activity log only$/);
+    await waitFor(() => !fmOf(store, epic).blocked);
   }, 20000);
 
   it('a fix child takes the epic back in progress and clears its CI stop and card; retry_op meanwhile says why not', async () => {
@@ -96,5 +101,23 @@ describe('a red epic in review (#500, LM-64)', () => {
     store.mutateItem(item.id, [{ set: { status: 'MERGED', blocked: true, blocked_reason: 'cleanup_failed' } }], 'engine');
     await engine.start();
     expect(await hooks.orchestratorUnblocks(item.id, 'Try again.')).toMatch(/with no session to resume: your message is in its Activity log only$/);
+  }, 20000);
+
+  it("the user's own unblock with a message is refused in plain words, the stop kept; without one it unblocks; a card's answer still does", async () => {
+    const { store, engine, epic } = await redEpic();
+    await engine.start();
+    const app = apiRoutes(store, engine);
+    const res = await app.request(`/items/${epic}/unblock`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message: 'Fix the trail test.' }) });
+    expect(res.status).toBe(400);
+    const error = String((await res.json()).error);
+    expect(error).toMatch(/is an epic in review: it has no session to read a message, so it was not unblocked/);
+    expect(error).toContain('add a fix child to the epic');
+    expect(error).toContain('unblock without a message');
+    expect(error).not.toMatch(/ask_user_decision|create_item|parent:|rerun_ci|unblock_item/);
+    expect(fmOf(store, epic).blocked_reason).toBe('ci_red');
+    expect(activityOf(store, epic)).not.toContain('unblocked');
+    // A decision card answered with no orchestrator to carry it (fromCard): the answer is in Activity, and the stop is cleared as before.
+    await (engine as unknown as { unblock(id: string, m: string, by: 'user', o: { fromCard: boolean }): Promise<void> }).unblock(epic, 'The user was asked: fix it?\nTheir answer: Leave it', 'user', { fromCard: true });
+    expect(activityOf(store, epic)).toContain('unblocked: The user was asked: fix it?');
   }, 20000);
 });
