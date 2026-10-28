@@ -11,6 +11,9 @@ describe('normalizeSegment', () => {
     expect(normalizeSegment('timeout 120 godot --headless --script a.gd')).toEqual({ command: 'godot --headless --script a.gd', unsafe: false });
     expect(normalizeSegment('A=1 B=two timeout -k 5 90s nice -n 10 env C=3 godot --headless')).toEqual({ command: 'godot --headless', unsafe: false });
     expect(normalizeSegment('nohup time -p ./tools/run_checks.sh').command).toBe('./tools/run_checks.sh');
+    // A value that is a variable is one word: an assignment does not split it (#515).
+    for (const s of ['HH_SEED=$s ./tools/run_checks.sh x', 'HH_SEED=${s} ./tools/run_checks.sh x', 'HH_SEED="$s" ./tools/run_checks.sh x', 'OUT=tmp/run-$s.log ./tools/run_checks.sh x']) expect(normalizeSegment(s).command, s).toBe('./tools/run_checks.sh x');
+    expect(normalizeSegment('PATH=$p ./tools/run_checks.sh x').unsafe).toBe(true);
   });
 
   it('marks environment names that change what runs', () => {
@@ -20,7 +23,7 @@ describe('normalizeSegment', () => {
   });
 
   it('leaves anything it cannot vouch for in place', () => {
-    for (const s of ['X="a b" ./tools/run_checks.sh', 'X=$(evil) ./tools/run_checks.sh', 'X=`evil` ./tools/run_checks.sh', 'timeout --signal=KILL 5 godot', 'sudo godot --headless', 'env -i godot']) {
+    for (const s of ['X="a b" ./tools/run_checks.sh', 'X="$a $b" ./tools/run_checks.sh', 'X=${a:-b} ./tools/run_checks.sh', 'X="$(evil)" ./tools/run_checks.sh', 'X=$(evil) ./tools/run_checks.sh', 'X=`evil` ./tools/run_checks.sh', 'timeout --signal=KILL 5 godot', 'sudo godot --headless', 'env -i godot']) {
       expect(normalizeSegment(s).command, s).toBe(s);
     }
   });
@@ -71,6 +74,10 @@ describe('deny rules see through prefixes', () => {
       'nohup gh pr create --fill',
       'A=1 git checkout trunk',
       'timeout 60 npm publish',
+      // A value that is a variable hides nothing either (#515).
+      'X=$y gh pr create --fill',
+      'for t in 1; do TAG=$t npm publish; done',
+      'A="$b" git checkout trunk',
     ]) expect(policy.deny(bash(c)), c).not.toBeNull();
   });
 
