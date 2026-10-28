@@ -108,6 +108,18 @@ describe('heavy local runs (#218)', () => {
     expect(heavyRedirects(store.config)).toEqual([]);
     expect(tools(engine, id).run_heavy).toBeDefined();   // offered either way (#502)
   });
+
+  it('a heavy pattern with a * between words meets the flag after a check name, and run_heavy runs it (#517)', async () => {
+    const { store, engine, log, item } = await setup({ runners: [], jobs: [] }, { patterns: ['./tools/run_checks.sh * --repeat'] });
+    const policy = makePolicy(store.config, 'trunk', '/wt', {}, { deny: [], redirect: heavyRedirects(store.config) });
+    for (const c of ['./tools/run_checks.sh --repeat 20', './tools/run_checks.sh mine_cart --repeat 20', 'for s in 1 2; do HH_SEED=$s ./tools/run_checks.sh boss --stress --repeat 5; done'])
+      expect(policy.deny({ tool: 'Bash', input: { command: c } }), c).toMatch(/run_heavy/);
+    expect(policy.deny({ tool: 'Bash', input: { command: './tools/run_checks.sh mine_cart' } })).toBeNull();
+    const id = item('x');
+    expect(await tools(engine, id).run_heavy(['./tools/run_checks.sh mine_cart --repeat 20'])).not.toMatch(/^Rejected/);
+    expect(await tools(engine, id).run_heavy(['./tools/run_checks.sh mine_cart'])).toMatch(/^Rejected/);
+    expect(log).toEqual(['start ./tools/run_checks.sh mine_cart --repeat 20', 'end ./tools/run_checks.sh mine_cart --repeat 20']);
+  });
 });
 
 // #502 (LM-75): a browser harness outran the 10-minute cap on a foreground Bash call, so the worker backgrounded it and

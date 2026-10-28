@@ -146,7 +146,7 @@ instead of your login. A `planestro.local.yml` that still has `anthropic_api_key
 | Key | Default | |
 |---|---|---|
 | `permissions.allow` | `[]` | Extra allow rules (`Bash(npm test*)`, …) on top of the built-in ones. "Always allow" in the UI appends here. A rule ending in `@worktree` holds only while the command stays in the item's worktree (below). |
-| `permissions.deny` | `[]` | Extra deny patterns, checked before anything else. |
+| `permissions.deny` | `[]` | Extra deny patterns, checked before anything else. In these and in allow rules, a ` * ` between words stands for any words, none included (`Bash(./tools/run_checks.sh * --repeat *)`, #517). |
 | `permissions.redirect` | `[]` | Denials that say what to do instead (#203): each entry is a `permissions.redirect.rule`, read as a deny pattern is (`Bash(python3 *)` or a bare prefix), and a `permissions.redirect.message`. A call it matches is refused up front with the message, never parked for a ruling. Edited in the file; Settings shows it under Rules in effect. |
 | `codex_env_passthrough` | `[]` | Environment variable names a Codex worker's commands may see (#228). A Codex process, `exec` or `app-server`, starts with `PATH`, `HOME`, `USER`, `SHELL`, `TMPDIR`, `LANG` and its `CODEX_HOME` only, so `GH_TOKEN`, `*_API_KEY`, `AWS_*` and the like never reach a command it runs. List what the project's tools need (`HTTPS_PROXY`). Codex signs in from its home (`codex login`); an `OPENAI_API_KEY` in planestro's environment reaches it only if listed here. Read at each turn. |
 
@@ -307,7 +307,7 @@ its end, as one foreground harness run.
 | Key | Default | |
 |---|---|---|
 | `heavy_runs.enabled` | `false` | Heavy runs take turns (the lock and the CI wait) and the patterns are redirected to `run_heavy`. |
-| `heavy_runs.patterns` | `[]` | Commands that count as heavy: a command prefix (`npm run stress`) or a `Bash(…)` rule. |
+| `heavy_runs.patterns` | `[]` | Commands that count as heavy: a command prefix (`npm run stress`) or a `Bash(…)` rule. A ` * ` between words stands for any words, none included, so `./tools/run_checks.sh * --repeat` meets the flag first or after any check names (#517). |
 | `heavy_runs.shared_labels` | `[]` | Runner labels whose runners share this machine (`hh-mac`). |
 | `heavy_runs.yield_to_ci` | `true` | Wait while CI runs on those labels; `false` keeps only the one-at-a-time lock. |
 | `heavy_runs.poll_s` | `30` | How often a waiting run reads the runners again. |

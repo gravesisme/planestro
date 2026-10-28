@@ -37,6 +37,18 @@ export function denyPrefixes(deny: string[]): string[] {
   return deny.map((d) => d.trim()).filter(Boolean).map((d) => { const m = /^Bash\((.*)\)$/.exec(d); return m ? m[1].replace(/\s*\*$/, '').trim() : d; }).filter(Boolean);
 }
 
+/**
+ * A rule's ` * ` between words (#517) stands for any words, none included: `./tools/run_checks.sh * --repeat` meets
+ * the flag after a check name, where a plain prefix meets it only first. Elsewhere a `*` ends a prefix, as before.
+ */
+const midWild = (p: string): string => p.split(' * ').map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join(' (?:.* )?');
+/** Whether a command starts with a denied or redirected prefix, its ` * ` read as any words (#517). */
+export function startsWithRule(command: string, prefix: string): boolean {
+  return prefix.includes(' * ') ? new RegExp(`^${midWild(prefix)}`).test(command) : command.startsWith(prefix);
+}
+/** The literal start of a prefix: what every command it meets begins with. */
+const headOf = (prefix: string): string => prefix.split(' * ')[0];
+
 /** The refusals a policy judges beyond its own (#229, #203): every layer's denials, and redirects (a deny with its own message). */
 export interface PolicyRules { deny: string[]; redirect?: PermissionRedirect[] }
 const asRules = (r: string[] | PolicyRules): PolicyRules => (Array.isArray(r) ? { deny: r } : r);
@@ -55,8 +67,8 @@ export function sdkRules(rules: string[], deny: string[] | PolicyRules = []): st
     if (r.endsWith(SCOPE)) return false;
     const m = /^Bash\((.*)\)$/.exec(r);
     if (!m) return true;
-    const allow = m[1].replace(/\s*\*$/, '').trim();
-    return !denied.some((d) => allow.startsWith(d) || d.startsWith(allow));
+    const allow = headOf(m[1].replace(/\s*\*$/, '').trim());
+    return !denied.map(headOf).some((d) => allow.startsWith(d) || d.startsWith(allow));
   });
 }
 
@@ -260,13 +272,13 @@ export function makePolicy(config: Config, baseBranch: string, worktree: string,
         const own = unanchor(seg.trim(), worktree);
         for (const form of new Set([own, unanchor(normalizeSegment(own).command, worktree)])) {
           for (const r of rules) if (r.re.test(form)) return r.why;
-          for (const d of userDeny) if (form.trim().startsWith(d)) return `denied by planestro policy (${d}).`;
+          for (const d of userDeny) if (startsWithRule(form.trim(), d)) return `denied by planestro policy (${d}).`;
         }
       }
       for (const seg of segments) {
         const own = unanchor(seg.trim(), worktree);
         for (const form of new Set([own, unanchor(normalizeSegment(own).command, worktree)])) {
-          for (const r of redirects) if (form.trim().startsWith(r.prefix)) return `${r.message} (planestro policy redirects ${r.prefix}).`;
+          for (const r of redirects) if (startsWithRule(form.trim(), r.prefix)) return `${r.message} (planestro policy redirects ${r.prefix}).`;
         }
       }
       return null;
@@ -454,7 +466,12 @@ export interface ScopeOptions {
 }
 
 const prefixesOf = (rules: string[]): string[] => rules.filter((r) => r.startsWith('Bash(') && r.endsWith(')')).map((r) => r.slice(5, -1));
-const matchesAny = (seg: string, prefixes: string[]): boolean => prefixes.some((p) => p.endsWith(' *') ? (seg + ' ').startsWith(p.slice(0, -1)) : p.endsWith('*') ? seg.startsWith(p.slice(0, -1)) : seg === p);
+const matchesRule = (seg: string, p: string): boolean => {
+  const [body, tail] = p.endsWith(' *') ? [p.slice(0, -2), '(?: .*)?'] : p.endsWith('*') ? [p.slice(0, -1), '.*'] : [p, ''];
+  if (body.includes(' * ')) return new RegExp(`^${midWild(body)}${tail}$`).test(seg);  // #517
+  return p.endsWith(' *') ? (seg + ' ').startsWith(p.slice(0, -1)) : p.endsWith('*') ? seg.startsWith(p.slice(0, -1)) : seg === p;
+};
+const matchesAny = (seg: string, prefixes: string[]): boolean => prefixes.some((p) => matchesRule(seg, p));
 
 /** One segment against the rules: as written, or as the command it runs once prefixes are peeled. */
 function segmentAllowed(raw: string, prefixes: string[], worktree?: string): boolean {
