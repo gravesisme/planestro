@@ -188,13 +188,13 @@ describe('planestro.local.yml and ~/.planestro/policy.yml: no worker reads or wr
       `cat innocent.txt`,
     ];
     for (const command of commands) {
-      const why = secretDenial({ tool: 'Bash', input: { command } }, wt, o);
+      const why = secretDenial({ tool: 'Bash', input: { command } }, wt, o) ?? `not refused: ${command}`;
       expect(why, command).toMatch(/the user's own planestro configuration/);
       expect(why, command).toContain('no rule or ruling overrides that');
     }
     // The policy refuses it first, whatever allow rule matches (Bash(*) here).
     const policy = makePolicy(config(), 'trunk', wt, o);
-    for (const command of commands) expect(policy.deny({ tool: 'Bash', input: { command } }), command).toMatch(/user's own planestro configuration/);
+    for (const command of commands) expect(policy.deny({ tool: 'Bash', input: { command } }) ?? `not refused: ${command}`, command).toMatch(/user's own planestro configuration/);
   });
 
   it('refuses the file tools on them, by absolute path, .., ~ or a symlink', () => {
@@ -208,7 +208,7 @@ describe('planestro.local.yml and ~/.planestro/policy.yml: no worker reads or wr
       ['Read', { file_path: `${data}/../planning/planestro.local.yml` }],
       ['Glob', { pattern: 'planestro.local.yml', path: data }],
     ] as const) {
-      expect(policy.deny({ tool, input: input as Record<string, unknown> }), `${tool} ${JSON.stringify(input)}`).toMatch(/user's own planestro configuration/);
+      expect(policy.deny({ tool, input: input as Record<string, unknown> }) ?? `not refused: ${tool} ${JSON.stringify(input)}`, `${tool} ${JSON.stringify(input)}`).toMatch(/user's own planestro configuration/);
     }
   });
 
@@ -220,7 +220,7 @@ describe('planestro.local.yml and ~/.planestro/policy.yml: no worker reads or wr
 
   it('leaves ordinary work alone: a count in the worktree, the project config, a search for the name', () => {
     const o = { home };
-    for (const command of ['wc -l *', 'cat a.txt', `cat ${join(data, 'planestro.yml')}`, 'grep -rn planestro.local.yml src', 'rm -f /tmp/*.log', 'git commit -m "document planestro.local.yml"'])
+    for (const command of ['wc -l *', 'cat a.txt', 'cat /tmp/*', `cat ${join(data, 'planestro.yml')}`, 'grep -rn planestro.local.yml src', 'rm -f /tmp/*.log', 'git commit -m "document planestro.local.yml"'])
       expect(secretDenial({ tool: 'Bash', input: { command } }, wt, o), command).toBeNull();
   });
 });

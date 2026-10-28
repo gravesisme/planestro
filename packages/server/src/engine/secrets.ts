@@ -80,11 +80,11 @@ function listed(abs: string, o: SecretOptions, worktree = '/'): string | null {
   if (/^\/proc\/[^/]+\/environ$/.test(abs)) return "a process's environment (/proc/*/environ)";
   // The user's own files (#501): what they say a session gets (secret_env, mcp_servers' keys, allow rules) is the user's
   // word, so no worker writes or reads them, whatever a ruling allows (a Bash append outside the worktree only parks).
-  // A glob in the last part counts when it could name them (`../planning/*.yml`, `~/.planestro/pol?cy.yml`), except in
-  // the worktree and scratch folders, where neither file lives: `wc -l *` stays a count.
-  const last = basename(abs), dir = dirname(abs);
-  const globbed = /[*?[]/.test(last) && ![worktree, '/tmp', '/private/tmp', tmpdir()].some((r) => within(dir, resolve(r)));
-  const could = (name: string) => last === name || (globbed && globRe(last).test(name));
+  // A glob in the last part counts when it could name them (`../planning/*.yml`, `~/.planestro/pol?cy.yml`): outside the
+  // worktree and scratch folders always, inside them when the file is there (a data dir under /tmp). `wc -l *` stays a count.
+  const last = basename(abs), dir = dirname(abs), exists = o.exists ?? existsSync;
+  const scratch = [worktree, '/tmp', '/private/tmp', tmpdir()].some((r) => within(dir, resolve(r)));
+  const could = (name: string) => last === name || (/[*?[]/.test(last) && globRe(last).test(name) && (!scratch || exists(join(dir, name))));
   if (could('planestro.local.yml')) return USER_FILE_LOCAL;
   if (could('policy.yml') && [join(home, '.planestro'), ...(process.env.PLANESTRO_HOME ? [resolve(process.env.PLANESTRO_HOME)] : [])].includes(dirname(abs))) return USER_FILE_POLICY;
   // What git runs by itself (#340): a hook before an allowed `git commit`, or a program its configuration names
