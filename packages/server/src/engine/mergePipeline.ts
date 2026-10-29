@@ -7,7 +7,7 @@ import type { CleanupReconcile } from './cleanupReconcile.ts';
 import type { ReviewUndo } from './reviewUndo.ts';
 import { syncFailed, type BaseSync } from './baseSync.ts';
 import type { CiWatch } from './ciWatch.ts';
-import type { RunnerStall } from './runners.ts';
+import { stallWords, type RunnerStall } from './runners.ts';
 import { TRANSIENT } from './transient.ts';
 import { HELD_POLL_MS } from './heldPoll.ts';
 
@@ -477,7 +477,7 @@ export class MergePipeline {
     }
     // A timeout on a runner that looks stalled or offline is the runner's, said once for every item on it (#216), not triaged item by item.
     const stall = verdict === 'timeout' || verdict === 'queue_timeout' ? await this.ctx.ciWatch.runnerStallFor(id) : undefined;
-    const onRunner = stall ? `; runner ${stall.label} looks stalled or offline` : '';
+    const onRunner = stall ? `; ${stallWords(stall)}` : '';
     if (verdict === 'timeout') { this.ctx.store.journal.end(opId, id, 'aborted', { reason: 'ci_timeout' }); this.ctx.block(id, 'ci_timeout', `CI for ${headSha.slice(0, 7)} ran longer than ${cfg.timeout_min} min after a runner started it${this.ctx.ciWatch.ciQueueNote()}${onRunner}`, 'user', stall); return; }
     if (verdict === 'queue_timeout') { this.ctx.store.journal.end(opId, id, 'aborted', { reason: 'ci_queue_timeout' }); this.ctx.block(id, 'ci_timeout', `CI for ${headSha.slice(0, 7)} waited ${cfg.queue_timeout_min} min for a runner and never started${this.ctx.ciWatch.ciQueueNote()}${onRunner}. A queue, not a failure: check the runners' capacity, not the change`, 'user', stall); return; }
     if (verdict === 'blocked') {
