@@ -7,6 +7,7 @@ import { FakeWorld, DryRunGitPort, DryRunGhPort, DryRunProcPort, DryRunClaudePor
 import { workerTools } from '../src/engine/sessions/workerTools.ts';
 import { stateView } from '../src/routes/views.ts';
 import type { CiStatus, Ports, TurnOptions, TurnResult, CustomTurnOptions, RunnerReport } from '../src/engine/ports.ts';
+import { LabelProgress, stallOf, recovered } from '../src/engine/runners.ts';
 import { makeFixture, sleep } from './helpers.ts';
 
 // #216: nobody in planestro could see the CI runners, so a sleeping self-hosted runner, a busy queue and a billing
@@ -109,7 +110,7 @@ describe('runner status (#216)', () => {
     for (const id of ids) {
       expect(fmOf(store, id).blocked_reason).toBe('ci_timeout');
       expect(fmOf(store, id).triage).toBeUndefined();
-      expect(activityOf(store, id)).toMatch(/runner hh-mac looks stalled or offline/);
+      expect(activityOf(store, id)).toMatch(/runner hh-mac is offline/);
     }
     expect(wakes(store, 'blocked_ci_timeout')).toHaveLength(0);
     expect(engine.runnerStalls().map((g) => ({ label: g.label, items: [...g.items].sort() }))).toEqual([{ label: 'hh-mac', items: [...ids].sort() }]);
@@ -144,4 +145,55 @@ describe('runner status (#216)', () => {
     expect(fmOf(store, it.id).op_data?.runner_stall).toBeUndefined();
     expect(engine.runnerStalls()).toEqual([]);
   });
+
+  // #519: hh-mac's two runners were online and busy all afternoon with a queue that drained (two PRs merged), and the
+  // banner said "stalled or offline" and woke the orchestrator three times.
+  it('every runner busy is a queue while jobs start and finish, and a stall only once nothing has moved for ci.timeout_min', () => {
+    const busy = (running: number[]): RunnerReport => ({
+      runners: [{ name: 'mac-1', online: true, busy: true, labels: MAC }, { name: 'mac-2', online: true, busy: true, labels: MAC }],
+      jobs: [{ runId: 1, status: 'queued', labels: MAC }, ...running.map((runId, i) => ({ runId, status: 'in_progress' as const, labels: MAC, runner: `mac-${i + 1}` }))],
+    });
+    const progress = new LabelProgress(); const min = 60_000;
+    const quiet = (now: number) => ({ quietMin: (l: string) => progress.quietMin(l, now), windowMin: 45 });
+    progress.observe(busy([7, 8]), 0);
+    progress.observe(busy([8, 9]), 30 * min);   // job 7 finished, job 9 started
+    expect(stallOf(busy([8, 9]), 1, quiet(70 * min))).toBeUndefined();
+    expect(stallOf(busy([8, 9]), 1)).toBeUndefined();   // with no watch at all, busy is never a stall
+    progress.observe(busy([8, 9]), 70 * min);
+    const stall = stallOf(busy([8, 9]), 1, quiet(76 * min))!;
+    expect(stall).toEqual(expect.objectContaining({ label: 'hh-mac', why: 'quiet', quiet_min: 46 }));
+    expect(recovered(busy([8, 9]), [stall], quiet(77 * min))).toBe(false);
+    // One finishes: the label moved, so the stall is over.
+    progress.observe(busy([9, 10]), 80 * min);
+    expect(recovered(busy([9, 10]), [stall], quiet(80 * min))).toBe(true);
+    // Offline is a stall at once, with no window.
+    const off: RunnerReport = { runners: [{ name: 'mac-1', online: false, busy: false, labels: MAC }], jobs: [{ runId: 1, status: 'queued', labels: MAC }] };
+    expect(stallOf(off, 1, quiet(0))).toEqual(expect.objectContaining({ why: 'offline' }));
+  });
+
+  it('items queued behind busy runners whose jobs move raise no banner and no runner_stalled wake', async () => {
+    const report: RunnerReport = { runners: [{ name: 'mac-1', online: true, busy: true, labels: MAC }, { name: 'mac-2', online: true, busy: true, labels: MAC }], jobs: [] };
+    const { store, engine } = await setup(report);
+    store.updateConfig((doc) => { doc.setIn(['ci', 'queue_timeout_min'], 100); }, 'config: short queue timeout');
+    engine.runnerStallGatherMs = 0;
+    // Each CI look moves the clock 7 min, and another job on hh-mac starts: the queue drains, slowly.
+    let clock = 0; let n = 0;
+    (engine as any).ciNow = () => clock;
+    (engine as any).ports.gh.ciForSha = async (_r: string, _b: string, sha: string): Promise<CiStatus> => {
+      clock += 7 * 60_000; n++;
+      report.jobs = [{ runId: 1, status: 'queued', labels: MAC }, { runId: 500 + n, status: 'in_progress', labels: MAC, runner: 'mac-1' }];
+      (engine as any).runnersAt = 0;
+      return { state: 'pending', queued: true, runId: 1, sha };
+    };
+    const it = store.createItem({ title: 'Behind a busy queue', description: 'x' });
+    store.transition(it.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => fmOf(store, it.id).status === 'PLAN_READY');
+    await engine.approvePlan(it.id);
+    await waitFor(() => wakes(store, 'blocked_ci_timeout').length > 0, 60_000);
+    expect(fmOf(store, it.id).op_data?.runner_stall).toBeUndefined();
+    expect(engine.runnerStalls()).toEqual([]);
+    expect(wakes(store, 'runner_stalled')).toHaveLength(0);
+    expect(activityOf(store, it.id)).not.toMatch(/looks stalled|is offline/);
+  }, 120_000);
 });

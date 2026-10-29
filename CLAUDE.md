@@ -89,6 +89,8 @@ under the same per-head `flake_rerun`, no fix turn, not counted; matched again i
 A CI wait on a runner label that looks stalled or offline (`runners.ts`, read by the gh port's `runners`, cached 30 s; the
 orchestrator's `runner_status`, a worker's `runners_busy`) is said once per label: one banner and one `runner_stalled` wake for
 every item on it, never a triage each (`op_data.runner_stall`), and a runner taking a job again sends them back to CI (#216).
+A label is stalled when its runners are offline, or all busy with no job started or finished on it for `ci.timeout_min`
+(`LabelProgress`, in memory); a busy label whose jobs move is a queue, never a stall (#519).
 A worker's heavy local run goes through `run_heavy` (`heavy_runs`, #218; matching Bash is redirected to it): one at a time
 (`HeavyLock`, in memory), each batch after any CI job on a `shared_labels` runner has ended, read from that same report.
 run_heavy is offered even with `heavy_runs` off, then with no lock or CI wait: the one run of any length past the CLI's 10-minute

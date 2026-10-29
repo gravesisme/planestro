@@ -4,7 +4,7 @@ import type { Ports, TurnPhase, CiQueue, RunnerReport } from './ports.ts';
 import type { BaseSync } from './baseSync.ts';
 import { findWorkflow, infraPatternIn, prSkippedByPaths } from './ciFilters.ts';
 import { TRANSIENT } from './transient.ts';
-import { runnerStatusText, stallOf, recovered, type RunnerStall } from './runners.ts';
+import { runnerStatusText, stallOf, recovered, stallWords, LabelProgress, type Quiet, type RunnerStall } from './runners.ts';
 import { recordCiResult } from '../concurrency.ts';
 
 /**
@@ -327,7 +327,7 @@ export class CiWatch {
     const stall = await this.runnerStallFor(id);
     const fm = this.ctx.store.requireItem(id).file.frontmatter;
     const had = fm.op_data?.runner_stall as RunnerStall | undefined;
-    if (stall ? had?.label === stall.label && had.run_id === stall.run_id : !had) return;
+    if (stall ? had?.label === stall.label && had.run_id === stall.run_id && had.why === stall.why : !had) return;
     const { runner_stall: _was, ...rest } = fm.op_data ?? {};
     this.ctx.store.mutateItem(id, [{ set: { op_data: stall ? { ...rest, runner_stall: this.stallMark(stall) } : rest } }], 'engine');
   }
@@ -337,9 +337,18 @@ export class CiWatch {
   async runnerStallFor(id: string): Promise<RunnerStall | undefined> {
     const run = (this.ctx.store.getItem(id)?.file.frontmatter.op_data?.ci as { runId?: number } | undefined)?.runId;
     if (!run) return undefined;
-    const r = await this.ctx.readRunners(RUNNER_CHECK_MS).catch(() => undefined);
-    return r ? stallOf(r.report, run) : undefined;
+    const r = await this.readRunners();
+    return r ? stallOf(r.report, run, this.quiet()) : undefined;
   }
+  /** When a job last started or finished on each label (#519): every reading planestro's own checks take is watched. */
+  private progress = new LabelProgress();
+  private async readRunners(): Promise<{ report: RunnerReport; at: string } | undefined> {
+    const r = await this.ctx.readRunners(RUNNER_CHECK_MS).catch(() => undefined);
+    if (r) this.progress.observe(r.report, this.ciNow());
+    return r;
+  }
+  /** A label with every runner busy is a stall only once nothing has started or finished on it for longer than a job may run (ci.timeout_min). */
+  private quiet(): Quiet { const now = this.ciNow(); return { quietMin: (label) => this.progress.quietMin(label, now), windowMin: this.ctx.store.config.ci.timeout_min }; }
   /** The marker an item carries while it waits on a stalled label; one already woken for that label joins it without a wake of its own. */
   stallMark(stall: RunnerStall): RunnerStall & { at: string; woken?: boolean } {
     const woken = this.runnerStalls().some((g) => g.label === stall.label && g.woken);
@@ -349,7 +358,7 @@ export class CiWatch {
    * Items whose CI waits on a runner label that looks stalled or offline (#216): blocked ci_timeout on it, or still
    * polling with their run queued on it. One banner and one wake per label, never a triage per item.
    */
-  runnerStalls(): { label: string; items: string[]; since: string; woken: boolean; stalls: RunnerStall[] }[] {
+  runnerStalls(): { label: string; items: string[]; since: string; woken: boolean; stalls: RunnerStall[]; said: string }[] {
     const groups = new Map<string, { label: string; items: string[]; since: string; woken: boolean; stalls: RunnerStall[] }>();
     for (const i of this.ctx.store.listItems()) {
       const fm = i.file.frontmatter;
@@ -359,7 +368,7 @@ export class CiWatch {
       g.items.push(i.id); g.stalls.push(m); g.woken ||= Boolean(m.woken); if (m.at < g.since) g.since = m.at;
       groups.set(m.label, g);
     }
-    return [...groups.values()];
+    return [...groups.values()].map((g) => ({ ...g, said: stallWords(g.stalls[0]) }));
   }
   private drivingRunnerStalls = false;
   /**
@@ -372,9 +381,9 @@ export class CiWatch {
     if (!groups.length) return;
     this.drivingRunnerStalls = true;
     try {
-      const r = await this.ctx.readRunners(RUNNER_CHECK_MS).catch(() => undefined);
+      const r = await this.readRunners();
       for (const g of groups) {
-        if (r && recovered(r.report, g.stalls)) {
+        if (r && recovered(r.report, g.stalls, this.quiet())) {
           this.ctx.note('info', `runner ${g.label} is taking jobs again: ${g.items.join(', ')} wait for CI again`);
           for (const id of g.items) {
             const fm = this.ctx.store.requireItem(id).file.frontmatter;
@@ -387,11 +396,12 @@ export class CiWatch {
         const blocked = g.items.filter((id) => this.ctx.store.requireItem(id).file.frontmatter.blocked).length;
         if (g.woken || (g.items.length < 2 && !blocked) || Date.now() - Date.parse(g.since) < this.runnerStallGatherMs) continue;
         for (const id of g.items) { const fm = this.ctx.store.requireItem(id).file.frontmatter; this.ctx.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), runner_stall: { ...(fm.op_data?.runner_stall as object), woken: true } } } }], 'engine'); }
-        this.ctx.note('warn', `runner ${g.label} looks stalled or offline: ${g.items.join(', ')} are waiting on it`);
+        const said = g.said;
+        this.ctx.note('warn', `${said}: ${g.items.join(', ')} are waiting on it`);
         this.ctx.wakeOrchestrator('runner_stalled', undefined, {
-          runner: `${g.label} looks stalled or offline: ${g.items.join(', ')} ${g.items.length === 1 ? 'is' : 'are'} waiting on it (${blocked} blocked ci_timeout, ${g.items.length - blocked} still waiting for a runner)`,
+          runner: `${said}: ${g.items.join(', ')} ${g.items.length === 1 ? 'is' : 'are'} waiting on it (${blocked} blocked ci_timeout, ${g.items.length - blocked} still waiting for a runner)`,
           runners: r ? runnerStatusText(r.report, this.ctx.github, r.at) : '(could not read the runners)',
-          policy: 'One signal for every item waiting on this runner label, instead of a triage each. Do not re-run or retry them one by one: once a runner for it takes a job again, planestro sends the blocked ones back to waiting for CI by itself. Judge what the runner needs (a machine asleep or offline, a billing block, a full queue) from runner_status; if it needs a person, ask the user once (ask_user) for all of them.',
+          policy: 'One signal for every item waiting on this runner label, instead of a triage each. Do not re-run or retry them one by one: once a runner for it takes a job again, planestro sends the blocked ones back to waiting for CI by itself. Judge what the runner needs (a machine asleep or offline, a billing block, a job hung on a busy runner) from runner_status; if it needs a person, ask the user once (ask_user) for all of them.',
         });
       }
     } finally { this.drivingRunnerStalls = false; }

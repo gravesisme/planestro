@@ -133,8 +133,8 @@ export function publicLocal(local: LocalConfig): LocalConfig {
 }
 
 /** One banner per runner label that looks stalled or offline (#216), with the items waiting on it. */
-export function runnerStallsView(engine: { runnerStalls?(): { label: string; items: string[]; since: string }[] }) {
-  const stalls = engine.runnerStalls?.().map(({ label, items, since }) => ({ label, items, since })) ?? [];
+export function runnerStallsView(engine: { runnerStalls?(): { label: string; items: string[]; since: string; said?: string }[] }) {
+  const stalls = engine.runnerStalls?.().map(({ label, items, since, said }) => ({ label, items, since, ...(said ? { said } : {}) })) ?? [];
   return stalls.length ? { runner_stalls: stalls } : {};
 }
 
@@ -152,7 +152,7 @@ export function slotsView(store: DataStore, engine: Pick<Engine, 'sessions' | 's
   return { max: store.config.concurrency.max_sessions, running, waiting, ...(stepped ? { stepped_down: stepped } : {}) };
 }
 
-export function stateView(store: DataStore, engine: { mode: string; paused: boolean; ciQueue?: { queued: number; running: number }; runnerStalls?(): { label: string; items: string[]; since: string }[]; sessions(): SessionView[]; slotUsage?: Engine['slotUsage']; restartReadiness?(): { draining: boolean; by?: 'user' | 'update'; idle: boolean; running: string[] } }, git: unknown) {
+export function stateView(store: DataStore, engine: { mode: string; paused: boolean; ciQueue?: { queued: number; running: number }; runnerStalls?(): { label: string; items: string[]; since: string; said?: string }[]; sessions(): SessionView[]; slotUsage?: Engine['slotUsage']; restartReadiness?(): { draining: boolean; by?: 'user' | 'update'; idle: boolean; running: string[] } }, git: unknown) {
   return {
     schema: store.schema,
     readOnly: store.readOnly,

@@ -14,7 +14,7 @@ import { secretsNamedIn } from './secrets.ts';
 import { Orchestrator } from './orchestrator.ts';
 import { NeedsYouWatch, type Wait } from './needsYou.ts';
 import { auditSlotDue, runEfficiencyAudit } from './efficiencyAudit.ts';
-import { runnerStatusText, type RunnerStall } from './runners.ts';
+import { runnerStatusText, stallWords, type RunnerStall } from './runners.ts';
 import { HeavyLock, ciOnSharedHost, heavyAllowRules, took } from './heavyRuns.ts';
 import type { ReviewImage, ReviewDiff, UndoTurnPreview } from './Engine.ts';
 import { ReviewUndo } from './reviewUndo.ts';
@@ -1363,7 +1363,7 @@ export class LiveEngine implements Engine {
   get runnerStallGatherMs(): number { return this.ciWatch.runnerStallGatherMs; }
   set runnerStallGatherMs(ms: number) { this.ciWatch.runnerStallGatherMs = ms; }
   /** Items whose CI waits on a runner label that looks stalled or offline (CiWatch.runnerStalls, #216). */
-  runnerStalls(): { label: string; items: string[]; since: string; woken: boolean; stalls: RunnerStall[] }[] { return this.ciWatch.runnerStalls(); }
+  runnerStalls(): { label: string; items: string[]; since: string; woken: boolean; stalls: RunnerStall[]; said: string }[] { return this.ciWatch.runnerStalls(); }
   /** A red CI run for a head (CiWatch.onCiRed). */
   private onCiRed(id: string, opId: string, headSha: string, logText: string | undefined, source: 'github' | 'local', canFix = true): Promise<void> { return this.ciWatch.onCiRed(id, opId, headSha, logText, source, canFix); }
   /** A known flake's one re-run per head (CiWatch.rerunIfFlaky). */
@@ -1908,7 +1908,7 @@ export class LiveEngine implements Engine {
       // running under a take-over blocked HH-136, by then in review with its PR, as agent_blocked).
       if (cur.taken_over) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `not blocked (${reason}), since you have this item: ${detail.replace(/\s+/g, ' ').slice(0, 300)}` } }], 'engine'); return; }
       // A stop for a person goes to the orchestrator first (triage); it resolves it or asks one plain question.
-      const triage = card ? { on: false, ops: [] as ItemOp[] } : stall ? { on: false, ops: [{ set: { op_data: { ...(cur.op_data ?? {}), runner_stall: this.ciWatch.stallMark(stall) } } }, { activity: { actor: 'app', text: `not triaged: runner ${stall.label} looks stalled or offline, and every item waiting on it is said in one signal; it waits for CI again by itself once a runner takes a job` } }] as ItemOp[] } : this.triage.triageOps(cur, reason);
+      const triage = card ? { on: false, ops: [] as ItemOp[] } : stall ? { on: false, ops: [{ set: { op_data: { ...(cur.op_data ?? {}), runner_stall: this.ciWatch.stallMark(stall) } } }, { activity: { actor: 'app', text: `not triaged: ${stallWords(stall)}, and every item waiting on it is said in one signal; it waits for CI again by itself once a runner takes a job` } }] as ItemOp[] } : this.triage.triageOps(cur, reason);
       // A card that was waiting for an answer is about a stop that no longer exists: this block replaces it (HH-162, dogfood p42).
       const { decision: staleCard, ...restData } = cur.awaiting_data ?? {};
       this.store.mutateItem(id, [

@@ -111,7 +111,7 @@ export function App() {
       {error && <div className="banner error">{error}</div>}
       {modeNote(state?.engine.modes) && <div className="banner warn" role="status">Engine mode · {modeNote(state?.engine.modes)}</div>}
       {slots?.stepped_down && <div className="banner warn">planestro stepped concurrency down to {limitsLabel(slots.stepped_down.to)}{slots.stepped_down.reason ? `: ${slots.stepped_down.reason.replace(/^stepped down: /, '')}` : ''}. Raise it again from the status menu once the machine is healthy.</div>}
-      {runnerStalls.map((r) => <div key={r.label} className="banner warn">Runner {r.label} looks stalled or offline: {r.items.join(', ')} {r.items.length === 1 ? 'is' : 'are'} waiting on it. They wait for CI again once a runner takes a job.</div>)}
+      {runnerStalls.map((r) => <div key={r.label} className="banner warn">{(r.said ?? `runner ${r.label} looks stalled or offline`).replace(/^r/, 'R')}: {r.items.join(', ')} {r.items.length === 1 ? 'is' : 'are'} waiting on it. They wait for CI again once a runner takes a job.</div>)}
       {state?.readOnly && <div className="banner warn">Data dir schema is {state.config.schema_version} ({state.schema}) — read-only until migrated.</div>}
       {state?.invalid.length ? <div className="banner warn">{state.invalid.length} invalid file(s): {state.invalid.map((i) => `${i.path.split('/').pop()} — ${i.error}`).join('; ')}</div> : null}
       <main>
