@@ -19,7 +19,9 @@ function NewReleaseDialog({ latest, taken, onClose }: { latest?: string; taken: 
   const [version, setVersion] = useState(suggestions[1] ?? suggestions[0] ?? '');
   const [title, setTitle] = useState('');
   const [date, setDate] = useState('');
-  const carried = useStore((s) => s.state?.config.releases.sections.filter((d) => d.carry).map((d) => d.title) ?? []);
+  // Select the stored array and derive from it: a selector that builds a new array every call never settles (React #185).
+  const sections = useStore((s) => s.state?.config.releases.sections);
+  const carried = (sections ?? []).filter((d) => d.carry).map((d) => d.title);
   return (
     <div className="dialog" onClick={onClose}>
       <form onClick={(e) => e.stopPropagation()} onSubmit={(e) => e.preventDefault()}>
