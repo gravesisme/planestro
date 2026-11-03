@@ -63,7 +63,7 @@ export function ItemCard({ item, sortable = true, onSelect, selection }: {
             {agent?.kind === 'wait' && <span className="tag wait" title={agent.reason}>waiting: saved instruction</span>}
             {fm.parts?.length ? <span className={`tag ${fm.parts.some((p) => p.state === 'rejected') ? 'hot' : fm.parts.every((p) => p.state === 'accepted') ? 'ok' : 'wait'}`} title={fm.parts.map((p) => `${p.name}: ${p.state}`).join(', ')}>parts {fm.parts.filter((p) => p.state === 'accepted').length}/{fm.parts.length}</span> : null}
             {(() => { const cfg = state?.config; if (!cfg || d.lane !== 'board') return null; const usd = (fm.cost_usd ?? 0) / (fm.budget_usd ?? cfg.budget_usd_per_item); const tok = (fm.tokens ?? 0) / (fm.budget_tokens ?? cfg.budget_tokens_per_item); const share = Math.max(usd, tok); return share >= 0.8 ? <span className={`tag ${share >= 1 ? 'hot' : 'wait'}`} title="Of this item's budget; raise it on the item page">budget {Math.round(share * 100)}%</span> : null; })()}
-            {!d.deps_satisfied && <span className="tag">waits on {fm.depends_on.join(', ')}</span>}
+            {!d.deps_satisfied && <span className="tag">waits on {(d.waits_on ?? fm.depends_on).join(', ')}</span>}
             {fm.taken_over && <span className="tag yours" title={`You took it over${fm.taken_over.note ? `: ${fm.taken_over.note}` : ''}. Nothing automatic touches it until you hand it back.`}>yours · by hand</span>}
             {fm.resume_after && <span className="tag" title={`Resumes when these have merged, with: ${fm.resume_after.message}`}>resumes after {waitsFor(fm.resume_after)}</span>}
             {lane === 'done' && fm.finished_at && <span>{fm.finished_at.slice(0, 16).replace('T', ' ')}</span>}

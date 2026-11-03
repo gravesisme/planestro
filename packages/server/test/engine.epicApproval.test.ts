@@ -90,6 +90,32 @@ describe('epic breakdown approval and unblock (#438, #439)', () => {
     expect(activityOf(store, epic)).not.toContain('"path" argument');
   }, 20000);
 
+  it('#525: an epic whose own dependency is not merged queues its approved children, but neither cuts its branch nor starts one until it is', async () => {
+    const ctx = await setup();
+    const { store, engine, world } = ctx;
+    const dep = store.createItem({ title: 'Seal the packs', description: 'The other epic this one builds on.' });
+    const epic = store.createItem({ title: 'Tide chart view', description: 'A chart of the day\'s tide with its own icon and header art.', kind: 'epic', category: 'Game', depends_on: [dep.id] });
+    await engine.start();
+    await engine.planEpic(epic.id);
+    await waitFor(() => fmOf(store, epic.id).awaiting === 'breakdown_approval');
+    const created = await engine.approveBreakdown(epic.id);
+    await waitFor(() => created.every((c) => fmOf(store, c).status === 'QUEUED') && !!fmOf(store, epic.id).op_data?.branch_deferred);
+    await sleep(300);   // several ticks: nothing is admitted and nothing is pushed
+    expect(world.remoteBranches.has('feature/tide-chart-view')).toBe(false);
+    expect(created.every((c) => fmOf(store, c).status === 'QUEUED')).toBe(true);
+    expect(store.derived(store.getItem(created[0])!).waits_on).toEqual([dep.id]);
+    expect(activityOf(store, epic.id)).toContain(`integration branch feature/tide-chart-view not cut yet: ${epic.id} waits on ${dep.id}`);
+    // Its retry path (#439) does not cut it early either.
+    await (engine as unknown as { epics: { ensureEpicBranch(id: string): Promise<void> } }).epics.ensureEpicBranch(epic.id);
+    expect(world.remoteBranches.has('feature/tide-chart-view')).toBe(false);
+
+    store.mutateItem(dep.id, [{ set: { status: 'MERGED' } }], 'engine');
+    await waitFor(() => world.remoteBranches.has('feature/tide-chart-view'));
+    await waitFor(() => created.some((c) => fmOf(store, c).status !== 'QUEUED'));
+    expect(fmOf(store, epic.id).op_data?.branch_deferred).toBeUndefined();
+    expect(activityOf(store, epic.id)).toContain('opened integration branch feature/tide-chart-view from origin/trunk');
+  }, 20000);
+
   it('#439: an engine step that throws logs its stack to the server log', async () => {
     const lines: string[] = [];
     const { dataDir, codeRepo } = makeFixture();

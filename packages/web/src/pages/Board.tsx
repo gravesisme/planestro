@@ -32,7 +32,7 @@ function dropAction(item: ItemView, to: string): { run?: () => Promise<unknown>;
   if (!findTransition(from, to as Status, 'user', item.derived.flavor)) return { why: `${item.id} cannot be dragged from ${statusLabel(from)} to ${statusLabel(to)}` };
   if (from === 'PLAN_READY') return { why: `open ${item.id} to approve its plan or request changes` };
   if (to === 'QUEUED' && item.derived.base_branch_error) return { why: item.derived.base_branch_error };
-  if (to === 'QUEUED' && !item.derived.deps_satisfied) return { why: `${item.id} waits on ${item.frontmatter.depends_on.join(', ')}` };
+  if (to === 'QUEUED' && !item.derived.deps_satisfied) return { why: `${item.id} waits on ${(item.derived.waits_on ?? item.frontmatter.depends_on).join(', ')}` };
   return { run: () => api.transition(item.id, to as Status) };
 }
 

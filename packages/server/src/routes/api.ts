@@ -204,12 +204,13 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
       // Out of review only by Discard (#135): it closes the pull request and says what became of the branch.
       if (to === 'ICEBOX' && it.file.frontmatter.status === 'IN_REVIEW') throw new Error('use Discard: it closes the pull request and says what becomes of the branch');
       const d = store.derived(it);
-      if (to === 'QUEUED' && !d.deps_satisfied) throw new Error('dependencies are not merged yet');
+      if (to === 'QUEUED' && !d.deps_satisfied) throw new Error(`dependencies are not merged yet: ${d.waits_on.join(', ')}`);
       if (to === 'QUEUED' && d.base_branch_error) throw new Error(d.base_branch_error);
       const e = engine as Engine & { openEpic?: (id: string) => Promise<void> };
       if (to === 'IN_PROGRESS' && it.file.frontmatter.kind === 'epic' && e.openEpic) {
         // Started with no children, an epic opens a branch nothing ever drives: its planner breaks it down instead (dogfood p56, LM-2).
         if (!d.children.length && it.file.frontmatter.status === 'NOT_YET_SUBMITTED') await engine.planEpic(id, 'start: no children yet, so the planner breaks the epic down first');
+        else if (!d.deps_satisfied) throw new Error(`dependencies are not merged yet: ${d.waits_on.join(', ')} (queue its children instead: they wait for them, and the branch is cut once they are merged)`);
         else await e.openEpic(id);
         return c.json(itemView(store, store.requireItem(id)));
       }
@@ -280,7 +281,9 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
       const action = c.req.param('action');
       const id = c.req.param('id');
       if (action === 'open' && e.openEpic) {
-        if (!store.derived(store.requireItem(id)).children.length) throw new Error(`${id} has no children yet: plan the breakdown, or add children first`);   // dogfood p56, LM-2
+        const d = store.derived(store.requireItem(id));
+        if (!d.children.length) throw new Error(`${id} has no children yet: plan the breakdown, or add children first`);   // dogfood p56, LM-2
+        if (!d.deps_satisfied) throw new Error(`${id} waits on ${d.waits_on.join(', ')}: its branch is cut once they are merged`);   // #525
         await e.openEpic(id);
       }
       else if (action === 'submit' && e.submitEpic) await e.submitEpic(id);
