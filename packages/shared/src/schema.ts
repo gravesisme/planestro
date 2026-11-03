@@ -76,7 +76,7 @@ export const OPERATIONAL_KEYS = [
   'merge_order', 'skip_merge', 'hold_reason', 'hold_waits_on', 'review_hold', 'review_handoff', 'loop_state', 'delivered', 'validated_by', 'parts', 'blocked', 'blocked_reason', 'cost_usd', 'turns', 'agent_turns', 'tokens',
   'imported_from', 'dates_estimated', 'scheduled_from', 'created_by',
 ] as const;
-export const DERIVED_KEYS = ['base_branch', 'lane', 'external', 'children', 'deps_satisfied', 'needs_you'] as const;
+export const DERIVED_KEYS = ['base_branch', 'lane', 'external', 'children', 'deps_satisfied', 'waits_on', 'needs_you'] as const;
 /** Canonical frontmatter key order; unknown keys follow, alphabetically. */
 export const ITEM_KEY_ORDER: readonly string[] = [...AUTHORITATIVE_KEYS, ...OPERATIONAL_KEYS];
 

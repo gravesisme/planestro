@@ -9,7 +9,7 @@ import { planReviewByDefault,
   parseReleaseFile, serializeReleaseFile, setReleaseSection, sortReleases, compareVersions, getReleaseSection, VERSION_RE, DATE_RE, defaultRelease,
   parseScheduleFile, serializeScheduleFile, setScheduleDescription, scheduleDescription, scheduleContext, withHistory, parseCron, validTimeZone, RenderError, SCHEDULE_NAME_RE, PRIORITIES, KINDS,
   parseQuestionFile, serializeQuestionFile, setQuestionSection, appendThread, questionNumber, QUESTION_SECTIONS,
-  applyTransition, flavorOf, laneOf, needsYou, baseBranchOf, depsSatisfied,
+  applyTransition, flavorOf, laneOf, needsYou, baseBranchOf, unmetDeps,
   rankForTop, rankForBottom, rankBefore, rankAfter, renormalize, sortByRank, priorityBand,
   isoLocal, SCHEMA_VERSION, chatAttachmentKind, chatAttachmentRefusal, CHAT_ATTACHMENTS_DIR, type ChatAttachment,
   type ItemFile, type ItemFrontmatter, type PromptFile, type ReleaseFile, type ReleaseStatus, type QuestionFile, type QuestionStatus, type ScheduleFile, type ThreadActor, type Status, type Actor, type Flavor, type Lane, type Priority,
@@ -49,7 +49,7 @@ export interface StoredQuestion { id: string; path: string; file: QuestionFile }
 export interface StoredSchedule { name: string; path: string; file: ScheduleFile }
 export interface InvalidFile { path: string; error: string }
 
-export interface Derived { lane: Lane; needs_you: boolean; external: boolean; flavor: Flavor; base_branch?: string; base_branch_error?: string; deps_satisfied: boolean; children: string[] }
+export interface Derived { lane: Lane; needs_you: boolean; external: boolean; flavor: Flavor; base_branch?: string; base_branch_error?: string; deps_satisfied: boolean; /** What it still waits on: its own depends_on, then its epic's (#525). */ waits_on: string[]; children: string[] }
 
 export type ItemOp =
   | { set: Partial<ItemFrontmatter> & Record<string, unknown> }
@@ -297,9 +297,10 @@ export class DataStore {
     let base_branch: string | undefined; let base_branch_error: string | undefined;
     try { base_branch = this.liveBase(baseBranchOf(fm, parent, this.defaultBranch())); } catch (e) { base_branch_error = (e as Error).message; }
     const flavor = this.flavorOf(fm);
+    const waits_on = unmetDeps(fm, (id) => this.items.get(id)?.file.frontmatter);
     return {
       lane: laneOf(fm.status), needs_you: needsYou(fm), flavor, external: flavor === 'external', base_branch, base_branch_error,
-      deps_satisfied: depsSatisfied(fm, (id) => this.items.get(id)?.file.frontmatter),
+      deps_satisfied: waits_on.length === 0, waits_on,
       children: [...(this.children().get(fm.id) ?? [])],
     };
   }

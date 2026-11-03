@@ -169,8 +169,30 @@ export function baseBranchOf(fm: Pick<ItemFrontmatter, 'base_branch_override' | 
   return defaultBranch;
 }
 
-export function depsSatisfied(fm: Pick<ItemFrontmatter, 'depends_on'>, lookup: (id: string) => Pick<ItemFrontmatter, 'status'> | undefined): boolean {
-  return fm.depends_on.every((id) => { const d = lookup(id); return d !== undefined && isDone(d.status); });
+type DepsLookup = (id: string) => (Pick<ItemFrontmatter, 'status'> & Partial<Pick<ItemFrontmatter, 'depends_on' | 'parent'>>) | undefined;
+type DepsOf = Pick<ItemFrontmatter, 'depends_on'> & Partial<Pick<ItemFrontmatter, 'parent'>>;
+
+/**
+ * What an item still waits on, in order: its own `depends_on`, then each enclosing epic's (#525). A child inherits its
+ * epic's dependencies, so a breakdown approved early never starts work on a base that lacks them.
+ */
+export function unmetDeps(fm: DepsOf, lookup: DepsLookup): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  let cur: DepsOf | undefined = fm;
+  while (cur) {
+    for (const id of cur.depends_on ?? []) { const d = lookup(id); if ((d === undefined || !isDone(d.status)) && !out.includes(id)) out.push(id); }
+    const up: string | undefined = cur.parent;
+    if (!up || seen.has(up)) break;
+    seen.add(up);
+    const p = lookup(up);
+    cur = p ? { depends_on: p.depends_on ?? [], parent: p.parent } : undefined;
+  }
+  return out;
+}
+
+export function depsSatisfied(fm: DepsOf, lookup: DepsLookup): boolean {
+  return unmetDeps(fm, lookup).length === 0;
 }
 
 export const ACTIVE_STATUSES: readonly Status[] = ['PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW', 'MERGED'];

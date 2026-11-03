@@ -51,7 +51,7 @@ export interface ItemView {
   merged_since_cut?: string[];
   /** Set on a done or iceboxed item in /api/state: no Plan, Activity text or `delivered`, and only its newest Activity. `useFullItem` loads the rest. */
   summary?: true;
-  derived: { lane: 'board' | 'icebox' | 'done'; needs_you: boolean; external: boolean; flavor: 'worker' | 'epic' | 'external'; base_branch?: string; base_branch_error?: string; deps_satisfied: boolean; children: string[] };
+  derived: { lane: 'board' | 'icebox' | 'done'; needs_you: boolean; external: boolean; flavor: 'worker' | 'epic' | 'external'; base_branch?: string; base_branch_error?: string; deps_satisfied: boolean; waits_on?: string[]; children: string[] };
 }
 export interface ReviewImage { path: string; change: 'added' | 'modified' | 'deleted'; bytes?: number; width?: number; height?: number; kind?: 'image' | 'audio' | 'model' | 'text' }
 /** One changed file's unified diff against the base (#233). */

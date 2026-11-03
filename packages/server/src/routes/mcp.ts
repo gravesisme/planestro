@@ -303,7 +303,7 @@ function registerSubmit(server: McpServer, store: DataStore, engine: Engine): vo
     const item = store.requireItem(itemId); const fm = item.file.frontmatter; const d = store.derived(item);
     if (fm.status === 'ICEBOX') throw new Error(`${itemId} is in the Icebox: move_item it to backlog first, then submit it`);
     // The board's Submit refuses these too: a queued item that could never be admitted is worse than a refusal.
-    if (fm.kind !== 'epic' && fm.status === 'NOT_YET_SUBMITTED' && !d.deps_satisfied) throw new Error(`${itemId} depends on ${(fm.depends_on ?? []).join(', ')}, not all merged yet: submit it once they are`);
+    if (fm.kind !== 'epic' && fm.status === 'NOT_YET_SUBMITTED' && !d.deps_satisfied) throw new Error(`${itemId} waits on ${d.waits_on.join(', ')}, not all merged yet: submit it once they are`);
     if (fm.kind !== 'epic' && d.base_branch_error) throw new Error(d.base_branch_error);
     const how = await engine.submitItem(itemId, 'submitted through the operator MCP');
     return how === 'planning' ? `epic ${itemId} is having its breakdown planned (it is not queued: the user approves the children it proposes)` : `${itemId} is queued for planning`;

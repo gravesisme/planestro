@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { applyTransition, findTransition, flavorOf, laneOf, needsYou, baseBranchOf, depsSatisfied, TRANSITIONS, allowedTransitions, kindConversionRefusal } from '../src/transitions.ts';
+import { applyTransition, findTransition, flavorOf, laneOf, needsYou, baseBranchOf, depsSatisfied, unmetDeps, TRANSITIONS, allowedTransitions, kindConversionRefusal } from '../src/transitions.ts';
 import { STATUSES, type ItemFrontmatter } from '../src/schema.ts';
 
 const base: ItemFrontmatter = { schema: 1, id: 'HH-1', kind: 'item', title: 't', category: 'c', status: 'NOT_YET_SUBMITTED', depends_on: [], attachments: [], created_at: '2026-01-01T00:00:00+00:00', updated_at: '2026-01-01T00:00:00+00:00' };
@@ -83,6 +83,22 @@ describe('transitions', () => {
     expect(depsSatisfied({ depends_on: ['A'] }, lookup)).toBe(true);
     expect(depsSatisfied({ depends_on: ['A', 'B'] }, lookup)).toBe(false);
     expect(depsSatisfied({ depends_on: ['Z'] }, lookup)).toBe(false);
+  });
+
+  it('#525: a child inherits its epic\'s dependencies, own first, without looping on a parent cycle', () => {
+    const items: Record<string, any> = {
+      A: { status: 'MERGED' }, B: { status: 'IN_PROGRESS' }, C: { status: 'QUEUED' },
+      E: { status: 'IN_PROGRESS', depends_on: ['B', 'A'] },
+      L1: { status: 'IN_PROGRESS', depends_on: ['C'], parent: 'L2' }, L2: { status: 'IN_PROGRESS', depends_on: ['B'], parent: 'L1' },
+    };
+    const lookup = (id: string) => items[id];
+    expect(unmetDeps({ depends_on: [], parent: 'E' }, lookup)).toEqual(['B']);
+    expect(unmetDeps({ depends_on: ['C', 'B'], parent: 'E' }, lookup)).toEqual(['C', 'B']);
+    expect(depsSatisfied({ depends_on: [], parent: 'E' }, lookup)).toBe(false);
+    items.B.status = 'FINISHED';
+    expect(depsSatisfied({ depends_on: [], parent: 'E' }, lookup)).toBe(true);
+    expect(unmetDeps({ depends_on: [], parent: 'L1' }, lookup)).toEqual(['C']);
+    expect(unmetDeps({ depends_on: [], parent: 'gone' }, lookup)).toEqual([]);
   });
 });
 
