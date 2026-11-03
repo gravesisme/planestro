@@ -143,11 +143,21 @@ describe('the operator MCP endpoint (#175, step 2)', () => {
       expect(text(await client.callTool({ name: 'reject_plan', arguments: { id: item.id, message: 'Split the torches out.' } })).item.status).toBe('PLAN_IN_PROGRESS');
       srv.store.mutateItem(item.id, [{ set: { status: 'PLAN_READY' } }], 'engine');
       expect(text(await client.callTool({ name: 'approve_plan', arguments: { id: item.id, notes: 'Go.' } })).item.status).toBe('IN_PROGRESS');
+      // #528: the board's Hold and Release hold, on the user's word.
+      const notHeld = await client.callTool({ name: 'release_hold', arguments: { id: item.id } }) as any;
+      expect(notHeld.isError).toBe(true);
+      expect(notHeld.content[0].text).toContain(`${item.id} is not held`);
+      expect((await client.callTool({ name: 'set_hold', arguments: { id: item.id, reason: '' } })).isError).toBe(true);
+      await client.callTool({ name: 'set_hold', arguments: { id: item.id, reason: "the designer's in-game check" } });
+      expect(srv.store.requireItem(item.id).file.frontmatter).toMatchObject({ skip_merge: true, hold_reason: "the designer's in-game check", hold_waits_on: 'person' });
+      await client.callTool({ name: 'release_hold', arguments: { id: item.id, note: 'checked on device' } });
+      expect(srv.store.requireItem(item.id).file.frontmatter.skip_merge).toBeUndefined();
       expect(text(await client.callTool({ name: 'close_as_done', arguments: { id: item.id, reason: 'landed in #9' } })).item.status).toBe('FINISHED');
       const activity = srv.store.requireItem(item.id).file.sections.find((s) => s.title === 'Activity')!.body;
       expect(activity).toMatch(/\[operator\] approval notes: Go\./);
+      expect(activity).toMatch(/\[operator\] held out of the merge queue: the designer's in-game check/);
       expect(activity).toMatch(/\[operator\] closed as done without a pull request: landed in #9/);
-      expect(srv.store.journal.read({ type: 'operator_mcp.action' }).map((e) => e.data?.tool)).toEqual(['edit_item', 'reject_plan', 'approve_plan', 'close_as_done']);
+      expect(srv.store.journal.read({ type: 'operator_mcp.action' }).map((e) => e.data?.tool)).toEqual(['edit_item', 'reject_plan', 'approve_plan', 'set_hold', 'release_hold', 'close_as_done']);
       // A discard keeps the remote branch: its deletion is the user's tick on the board.
       expect(Object.keys(((await client.listTools()).tools.find((t) => t.name === 'discard_item')!.inputSchema as any).properties).sort()).toEqual(['id', 'reason']);
     } finally { await client.close(); await srv.engine.stop(); srv.server.close(); srv.store.close(); }

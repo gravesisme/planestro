@@ -280,8 +280,9 @@ in:
   `feedback.issue_repo`). Each takes the engine path the board's button does,
   and its Activity line says `[operator]`, not `[user]`.
 - Decisions, with `operator_mcp.allow_decisions: true` (a third opt-in, off by
-  default): `approve_plan` (notes, hold), `reject_plan`, `discard_item` and
-  `close_as_done`, each as the board makes it and recorded as `[operator]`.
+  default): `approve_plan` (notes, hold), `reject_plan`, `discard_item`,
+  `close_as_done`, `set_hold` and `release_hold`, each as the board makes it
+  and recorded as `[operator]`.
   Approving an epic-shaped plan as one item and deleting a remote branch on a
   discard stay on the board, and merges are always planestro's.
 - Submitting and moving, with `operator_mcp.allow_submit: true` (a fourth

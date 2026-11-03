@@ -51,6 +51,8 @@ export interface Engine {
   requestReviewChanges(id: string, note: string): Promise<void>;
   /** Let a held pull request (a review hold, or skip_merge) back into the merge pipeline; before the pull request exists, drop the hold. */
   releaseHold(id: string, note?: string): Promise<void>;
+  /** The user's Hold (#528): keep its PR out of the merge until the user releases it, with the reason on the item. */
+  holdItem(id: string, reason: string): Promise<void>;
   /** Finish an item without a pull request: the work landed some other way. User-only. */
   closeAsDone(id: string, reason?: string): Promise<void>;
   /** Send a plan that came back to the user to the orchestrator once more (#153). */

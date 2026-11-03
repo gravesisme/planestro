@@ -17,6 +17,10 @@
 
 ### Added
 
+- The operator MCP offers `set_hold` and `release_hold` with `operator_mcp.allow_decisions` (#528): the board's Hold and
+  Release hold, recorded as `[operator]`. A hold can go on in any status before the merge, a plan still in progress
+  included, so an auto-approved item's PR opens as a draft and waits for the user. Release hold also drops a hold before
+  planning ends, and says "is not held" for an item that isn't.
 - The operator MCP endpoint offers `submit_item` and `move_item` behind a new opt-in,
   `operator_mcp.allow_submit`: your own Claude Code or Codex session can queue an item, plan an
   epic's breakdown, park an item that has not started in the Icebox or bring one back, and reorder

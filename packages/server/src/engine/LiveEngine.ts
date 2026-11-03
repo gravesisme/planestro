@@ -43,6 +43,8 @@ const GIT_REFUSAL = /index\.lock|\.git\/worktrees|EPERM|Operation not permitted|
 const ASKS_COMMIT = /commit|\bstag(e|ing)\b/i;
 
 /** What `set_item_fields` may touch: the item's own wiring, never its lifecycle, sessions or history. */
+/** Where a hold can be put on or dropped before its PR merges (#528). */
+const PRE_MERGE_STATUSES: readonly string[] = ['NOT_YET_SUBMITTED', 'QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW'];
 const ORCHESTRATOR_FIELDS = ['parent', 'depends_on', 'base_branch_override', 'skip_merge', 'implementer', 'allow_model_fallback'] as const;
 
 /**
@@ -2463,15 +2465,29 @@ export class LiveEngine implements Engine {
     return now.paths.filter((p) => !ok.has(p));
   }
 
+  /**
+   * The user's Hold (#528): out of the merge queue with the reason, waiting on a person (#195), so the PR is drafted under
+   * `ci.draft_while_held` and only the user releases it. Any status before a merge, a plan still being written included:
+   * a hold put on before the PR opens is honoured when it does. One already held keeps its reason; this says so.
+   */
+  async holdItem(id: string, reason: string): Promise<void> {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    if (!reason?.trim()) throw new Error('not held: say why, the reason is shown on the item');
+    if (!PRE_MERGE_STATUSES.includes(fm.status)) throw new Error(`${id} is ${fm.status}; only an item not yet merged can be held`);
+    if (fm.skip_merge) throw new Error(`${id} is already held${heldReasonOf(fm) ? ` (${heldReasonOf(fm)})` : ''}; nothing was changed`);
+    this.store.mutateItem(id, this.holdOps(reason, 'user'), 'user', { commit: `${id}: hold` });
+    void this.tick();
+  }
+
   async releaseHold(id: string, note?: string): Promise<void> {
     const fm = this.store.requireItem(id).file.frontmatter;
-    // A hold put on at approval, or by the worker, before there is a pull request to let through: it is simply dropped (#97).
-    if (fm.status === 'IN_PROGRESS' && fm.skip_merge) {
+    if (!fm.review_hold && !fm.skip_merge) throw new Error(`${id} is not held`);
+    // A hold put on at approval, by the worker or by Hold (#528), before there is a pull request to let through: it is simply dropped (#97).
+    if (fm.status !== 'IN_REVIEW' && PRE_MERGE_STATUSES.includes(fm.status) && fm.skip_merge) {
       this.store.mutateItem(id, [{ unset: ['skip_merge'] }, { set: { op_data: { ...(fm.op_data ?? {}), hold_waived: true } } }, { activity: { actor: 'user', text: `hold dropped: its pull request will merge as usual${note?.trim() ? `: ${note.trim()}` : ''}` } }], 'user', { commit: `${id}: release hold` });
       return;
     }
     if (fm.status !== 'IN_REVIEW') throw new Error(`${id} is ${fm.status}; only an item in review can be released to merge`);
-    if (!fm.review_hold && !fm.skip_merge) throw new Error(`${id} is not held`);
     if (fm.awaiting && fm.awaiting !== 'review') throw new Error(`${id} is awaiting ${fm.awaiting}; answer that first`);
     const keep = fm.ci_result === 'green' && await this.greenStillCurrent(id).catch(() => false);
     // What was approved (#74, HH-214): the reviewed head's changed paths. A later commit outside them is held before it
