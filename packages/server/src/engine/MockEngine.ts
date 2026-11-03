@@ -46,7 +46,8 @@ export class MockEngine implements Engine {
   async reviewImage(): Promise<null> { return null; }
   async reviewDiff(): Promise<null> { return null; }
   async requestReviewChanges(): Promise<void> { throw new Error('no engine is running'); }
-  async releaseHold(id: string): Promise<void> { this.store.mutateItem(id, [{ unset: ['review_hold', 'skip_merge'] }], 'user', { commit: `${id}: release hold` }); }
+  async holdItem(id: string, reason: string): Promise<void> { this.store.mutateItem(id, [{ set: { skip_merge: true, hold_reason: reason.trim(), hold_waits_on: 'person' } }, { activity: { actor: 'user', text: `held out of the merge queue: ${reason.trim()}` } }], 'user', { commit: `${id}: hold` }); }
+  async releaseHold(id: string): Promise<void> { const fm = this.store.requireItem(id).file.frontmatter; if (!fm.review_hold && !fm.skip_merge) throw new Error(`${id} is not held`); this.store.mutateItem(id, [{ unset: ['review_hold', 'skip_merge'] }], 'user', { commit: `${id}: release hold` }); }
   async closeAsDone(id: string, reason?: string): Promise<void> {
     this.store.mutateItem(id, [{ transition: { to: 'FINISHED', actor: 'user' } }, { activity: { actor: 'user', text: `closed as done without a pull request${reason?.trim() ? `: ${reason.trim()}` : ''}` } }], 'user', { commit: `${id}: close as done` });
   }

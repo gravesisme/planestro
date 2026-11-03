@@ -146,7 +146,7 @@ describe('a hold stated in the plan (#97)', () => {
     expect(fmOf(store, id).skip_merge).toBeUndefined();
     expect(fmOf(store, id).hold_reason).toBeUndefined();
     expect(activityOf(store, id)).toContain('[user] hold dropped: its pull request will merge as usual: QA confirmed early');
-    await expect(engine.releaseHold(id)).rejects.toThrow(/only an item in review can be released/);
+    await expect(engine.releaseHold(id)).rejects.toThrow(/is not held/);
     open();
     await waitFor(() => fmOf(store, id).status === 'FINISHED');
     expect(activityOf(store, id)).toContain('the worker asked for a hold (until QA confirms); not held');
@@ -303,5 +303,49 @@ describe('report_done with a hold (#97)', () => {
     expect(fmOf(store, id).skip_merge).toBeUndefined();
     expect(fmOf(store, id).hold_reason).toBeUndefined();
     expect(activityOf(store, id)).not.toContain('held out of the merge queue');
+  });
+});
+
+describe('the user\'s Hold, set and released by Engine call (#528)', () => {
+  it('set before planning on an auto-approved item: its PR opens as a draft and stays out of the merge until released', async () => {
+    const { store, engine, world } = await setup({ drafts: true, delegate: true, plan: plans(PLAIN_PLAN), orchestrate: async (label, t) => {
+      if (label.includes('plan_review')) await t('approve_plan').handler({ id: 'TP-1' });
+    } });
+    const item = store.createItem({ title: 'Help: the forge page', description: 'Wait for the designer\'s in-game check.', extra: { auto_approve_plan: true } });
+    await engine.holdItem(item.id, "the designer's in-game check");
+    expect(fmOf(store, item.id)).toMatchObject({ skip_merge: true, hold_reason: "the designer's in-game check", hold_waits_on: 'person' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => fmOf(store, item.id).status === 'IN_REVIEW' && fmOf(store, item.id).op_data?.pr_draft === true);
+    const pr = fmOf(store, item.id).pr!;
+    expect(world.prs.get(pr)!.isDraft).toBe(true);
+    await sleep(300);
+    expect(fmOf(store, item.id)).toMatchObject({ status: 'IN_REVIEW', skip_merge: true });
+    expect(world.prs.get(pr)!.state).toBe('OPEN');
+    await engine.releaseHold(item.id, 'checked on device');
+    await waitFor(() => fmOf(store, item.id).status === 'FINISHED');
+    expect(activityOf(store, item.id)).toContain('approved for merge: checked on device');
+  });
+
+  it('refuses in words: no reason, already held, merged; releasing what is not held; and drops a hold while still planning', async () => {
+    let open!: () => void; const gate = new Promise<void>((r) => { open = r; });
+    const { store, engine } = await setup({ plan: async (o) => { await gate; return plans(PLAIN_PLAN)(o); } });
+    const item = store.createItem({ title: 'Cut 0.4.0', description: 'Bump the version.' });
+    await expect(engine.releaseHold(item.id)).rejects.toThrow(`${item.id} is not held`);
+    await expect(engine.holdItem(item.id, '  ')).rejects.toThrow(/say why/);
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => fmOf(store, item.id).status === 'PLAN_IN_PROGRESS');
+    await engine.holdItem(item.id, 'until QA confirms');
+    await expect(engine.holdItem(item.id, 'another reason')).rejects.toThrow(`${item.id} is already held (until QA confirms); nothing was changed`);
+    expect(fmOf(store, item.id).hold_reason).toBe('until QA confirms');
+    await engine.releaseHold(item.id, 'not needed after all');
+    expect(fmOf(store, item.id).skip_merge).toBeUndefined();
+    expect(activityOf(store, item.id)).toContain('hold dropped: its pull request will merge as usual: not needed after all');
+    open();
+    await waitFor(() => fmOf(store, item.id).status === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => fmOf(store, item.id).status === 'FINISHED');
+    await expect(engine.holdItem(item.id, 'too late')).rejects.toThrow(/is FINISHED; only an item not yet merged can be held/);
   });
 });

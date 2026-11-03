@@ -35,7 +35,7 @@ export const OPERATOR_WRITE_TOOLS = ['create_item', 'edit_item', 'mark_note'] as
 /** Listed only with `operator_mcp.allow_actions` (#365); off, they are unknown tools. */
 export const OPERATOR_ACTION_TOOLS = ['unblock_item', 'send_message', 'answer_question', 'answer_decision', 'decide_permission', 'sync_item', 'rerun_ci', 'file_note'] as const;
 /** Listed only with `operator_mcp.allow_decisions`: the board's decisions about an item's run, for a supervising session the user directs. */
-export const OPERATOR_DECISION_TOOLS = ['approve_plan', 'reject_plan', 'discard_item', 'close_as_done'] as const;
+export const OPERATOR_DECISION_TOOLS = ['approve_plan', 'reject_plan', 'discard_item', 'close_as_done', 'set_hold', 'release_hold'] as const;
 /** Listed only with `operator_mcp.allow_submit`: submit an item, move it in or out of the Icebox or along its column, as the board does. */
 export const OPERATOR_SUBMIT_TOOLS = ['submit_item', 'move_item'] as const;
 /** Every tool this endpoint can offer; operatorMcp.test.ts pins that a worker session gets none of them. */
@@ -45,7 +45,7 @@ export const OPERATOR_TOOLS = [...OPERATOR_READ_TOOLS, ...OPERATOR_WRITE_TOOLS, 
 const OPT_INS = [
   ['allow_writes', 'create_item, edit_item, mark_note'],
   ['allow_actions', 'unblock_item, send_message, answer_question, answer_decision, decide_permission, sync_item, rerun_ci, file_note'],
-  ['allow_decisions', 'approve_plan, reject_plan, discard_item, close_as_done'],
+  ['allow_decisions', 'approve_plan, reject_plan, discard_item, close_as_done, set_hold, release_hold'],
   ['allow_submit', 'submit_item, move_item'],
 ] as const;
 
@@ -134,7 +134,7 @@ export function operatorServer(store: DataStore, engine: Engine): McpServer {
   // Read per request (the server is made per request), so turning the key off in Settings takes effect at once.
   const cfg = store.config.operator_mcp;
   const { allow_writes: writes, allow_actions: actions, allow_decisions: decisions, allow_submit: submits } = cfg;
-  const offers = [writes && `create_item, which files a new item${submits ? '' : ' for the user to submit'}, edit_item and mark_note`, actions && 'item actions (unblock_item, send_message, answer_question, answer_decision, decide_permission, sync_item, rerun_ci, file_note) that act as the board does, recorded in Activity as [operator]', decisions && 'decisions (approve_plan, reject_plan, discard_item, close_as_done) as the board makes them', submits && 'submit_item and move_item (Icebox, backlog, order), on the user\'s word'].filter(Boolean).join(', and ');
+  const offers = [writes && `create_item, which files a new item${submits ? '' : ' for the user to submit'}, edit_item and mark_note`, actions && 'item actions (unblock_item, send_message, answer_question, answer_decision, decide_permission, sync_item, rerun_ci, file_note) that act as the board does, recorded in Activity as [operator]', decisions && 'decisions (approve_plan, reject_plan, discard_item, close_as_done, set_hold, release_hold) as the board makes them', submits && 'submit_item and move_item (Icebox, backlog, order), on the user\'s word'].filter(Boolean).join(', and ');
   const off = OPT_INS.filter(([key]) => !cfg[key]).map(([key, tools]) => `operator_mcp.${key} (${tools})`);
   // A session that wants what no tool offers must not reach for the board's HTTP routes or the item files: it would act as the user, unrecorded as [operator].
   const limits = `Change the backlog only through these tools: never through planestro's HTTP API or by editing its files.${off.length ? ` Off in this project's planestro.yml: ${off.join('; ')}. To do one of those, say which setting would offer it (Settings → Your own MCP clients), or leave it to the user on the board.` : ''}`;
@@ -204,7 +204,7 @@ const opError = (e: unknown) => ({ ...json({ error: (e as Error).message }), isE
 /** Edits and note links (`allow_writes`): file changes that start, stop or merge nothing. */
 function registerWrites(server: McpServer, store: DataStore): void {
   server.registerTool('edit_item', {
-    description: "Edit an item's planning fields and its Description or Notes, as the board's edit does. Nothing here starts, stops or merges work: status, holds, branch, PR, models and the Plan stay on the board. A null clears priority, release or parent.",
+    description: "Edit an item's planning fields and its Description or Notes, as the board's edit does. Nothing here starts, stops or merges work: status, branch, PR, models and the Plan stay on the board, and holds are set_hold / release_hold (with allow_decisions). A null clears priority, release or parent.",
     inputSchema: {
       id: z.string().describe('The item id, e.g. HH-143'),
       title: z.string().trim().min(1).optional(),
@@ -278,6 +278,16 @@ function registerDecisions(server: McpServer, store: DataStore, engine: Engine):
     inputSchema: { id, reason: z.string().optional().describe('Where the work landed') },
     annotations: { ...ACTS, destructiveHint: true },
   }, ({ id: itemId, reason }) => decide('close_as_done', itemId, { ...(reason ? { reason } : {}) }, () => engine.closeAsDone(itemId, reason)));
+  server.registerTool('set_hold', {
+    description: "Hold an item's PR out of the merge until the user releases it, as the board's Hold does (#528): any status before it merges, a plan still in progress included, so a hold put on early is honoured when the PR opens (as a draft). The reason is shown on the item. A hold that is already on is left as it is.",
+    inputSchema: { id, reason: z.string().trim().min(1).describe('What the PR waits for, e.g. "the designer\'s in-game check"') },
+    annotations: ACTS,
+  }, ({ id: itemId, reason }) => decide('set_hold', itemId, { reason }, () => engine.holdItem(itemId, reason)));
+  server.registerTool('release_hold', {
+    description: "Release an item's hold, as the board's Release hold does: in review its PR goes back through the merge pipeline (and merges once green); before review the hold is dropped. Releasing is the user's decision: call it only on their explicit word for this item, never on your own judgement.",
+    inputSchema: { id, note: z.string().optional().describe('The user\'s word, for Activity, e.g. "checked on device"') },
+    annotations: ACTS,
+  }, ({ id: itemId, note }) => decide('release_hold', itemId, { ...(note ? { note } : {}) }, () => engine.releaseHold(itemId, note)));
 }
 
 /**
