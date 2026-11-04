@@ -7,6 +7,57 @@ sessions in a throwaway worktree of a real project repo. Runner:
 are in `spikes/out/*.stdout` (gitignored). `packages/server/src/compat.ts`
 pins these versions so planestro can warn when the installed CLI drifts.
 
+## Re-validated 2026-11-04 against Claude Code 2.1.318 and SDK 0.3.312 (#541)
+
+Dependabot took the SDK 0.3.306 → 0.3.312 (#523); the installed CLI is 2.1.318, newer than the
+SDK's bundled 2.1.312, so the spike ran the installed one, as the engine does. Opus 5.5 as planner
+and implementer, in a throwaway `git init` repo, every step in the header's order plus
+`resume-park`. **Every assumption (a)–(n) passes again**, for about $1.40 of usage.
+
+| Step | Result |
+|---|---|
+| `plan` (a)(b) | PASS: `submit_plan` reached via `ToolSearch` in plan mode, `success`, 5 turns; plan mode still routes the allow-listed `submit_plan` through `canUseTool` (gotcha 10). |
+| `resume-impl` (c)(d)(j) | PASS: new process, `acceptEdits`, same id, `PELICAN-42` recalled, `AskUserQuestion` reached `canUseTool` and the deny parked it. |
+| `resume-answer` (d)(e) | PASS: `echo spike-ok` pre-approved, `uname -a` ran without the callback (gotcha 3), `report_done` landed. |
+| `resume-park` (e) | PASS: `node -e …` reached `canUseTool`, the deny parked it, no retry. "probe ran anyway: YES" is the same false positive as 2026-10-20 (the closing text quoted the command; the tool result was the deny). |
+| `kill` (f)(h) | PASS: the foreground `sleep 25` was refused and backgrounded (gotcha 8), `claude agents --json` found the pid, SIGTERM → `exited with code 143`. |
+| `resume-after-kill` (f) | PASS: a zero-turn `result` came first this time (the torn background task's notification), then the resumed turn named the sleep; the engine handles either. |
+| `sessions` (g) | PASS: transcript at the derived path; `getSessionInfo` and `listSessions({dir})` find it. |
+| `budget` (i) | PASS: `error_max_turns`, `error_max_budget_usd`; `query()` still throws after the error result (gotcha 1). |
+| `resume-quote` (k)(l)(m)(n) | PASS: the command hook's quote arrives (16,517 tokens, equal to the stream's window), the SDK's `SessionStart` callback still does not fire on a resume; declining in `UserPromptSubmit` made 0 requests; `total_cost_usd` is the running total ($0.1323 → $0.1635) with the transcript's `cost-state` as the baseline; a cap below the running total still ran 2 requests. Cache TTL 3600 s. |
+
+Gotcha 19's secret hook was not re-run: nothing in the range touches SDK hook callbacks' deny path.
+
+SDK 0.3.307–0.3.312 against what `LiveClaudePort` relies on (typings diffed: `agentSdkTypes.d.ts`
+and `core.d.ts` are identical; `sdk.d.ts` and `sdk-tools.d.ts` changed only where planestro does not read):
+
+- 0.3.312: auto-mode keys on the `Settings` type; `unanswered` on AskUserQuestion answer
+  annotations (behind the `ask_user_question_unanswered_v1` capability). planestro parks
+  AskUserQuestion with a deny and answers in the next message, so neither applies.
+- 0.3.311: `cacheCreationEphemeral5mInputTokens` / `…1hInputTokens` on `ModelUsage`; #345 reads the
+  token split from each response's `usage`, not `ModelUsage`, so nothing changes. Start-up work now
+  waits for the first request (up to ~10 s); minimum Node 18.14 (planestro needs 24).
+- 0.3.309: host `managedSettings` and `extractFromBunfs()` fixes; planestro uses neither.
+- 0.3.307: `wakeup_source` on scheduled wakeups; browser SDK `supportedDialogKinds`. Not used.
+
+Claude Code 2.1.307–2.1.318, the entries that touch headless/SDK sessions:
+
+- **2.1.314: a settings file excluded with `--setting-sources` still supplied auto-mode rules and
+  saved permission consents.** Fixed in planestro's favour: it starts sessions with
+  `settingSources: ['project']`, so a user-level consent no longer leaks into a worker's rules.
+- 2.1.311: `-p`/SDK transcripts saved out of order or kept retracted messages; fixed (the
+  `cost-state` baseline reads the transcript's last entry). 2.1.307: a turn could start without an
+  SDK MCP server's latest tools while a background task ran; fixed.
+- 2.1.317: `claude -p` exits 1 when a full disk loses its transcript or `~/.claude.json` writes, where it
+  exited 0. 2.1.311: `stream-json` escapes control and format characters as `\uXXXX`; parsed
+  values are unchanged.
+- **2.1.317: `onFailure: "block"` for SDK hook callbacks**, so a callback that throws blocks the
+  call instead of letting it run. Not in SDK 0.3.312's types yet (it tracks 2.1.312); worth taking
+  for `secretHook` at the next SDK bump, so the secret deny fails closed.
+- The rest is gateway, cloud/self-hosted runner, IDE, compaction and UI work that planestro's
+  sessions do not reach, and resumes that may now drop thinking from conversations begun on
+  2.1.286 or earlier (none of planestro's live sessions are that old).
+
 ## Taken 2026-10-21: Claude Code 2.1.306 and SDK 0.3.306 (#474)
 
 SDK 0.3.305 → 0.3.306 is a parity release: its changelog has only "Updated to parity with
