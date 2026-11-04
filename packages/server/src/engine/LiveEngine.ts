@@ -14,7 +14,7 @@ import { secretsNamedIn } from './secrets.ts';
 import { Orchestrator } from './orchestrator.ts';
 import { NeedsYouWatch, type Wait } from './needsYou.ts';
 import { auditSlotDue, runEfficiencyAudit } from './efficiencyAudit.ts';
-import { runnerStatusText, type RunnerStall } from './runners.ts';
+import { runnerStatusText, stallWords, type RunnerStall } from './runners.ts';
 import { HeavyLock, ciOnSharedHost, heavyAllowRules, took } from './heavyRuns.ts';
 import type { ReviewImage, ReviewDiff, UndoTurnPreview } from './Engine.ts';
 import { ReviewUndo } from './reviewUndo.ts';
@@ -43,6 +43,8 @@ const GIT_REFUSAL = /index\.lock|\.git\/worktrees|EPERM|Operation not permitted|
 const ASKS_COMMIT = /commit|\bstag(e|ing)\b/i;
 
 /** What `set_item_fields` may touch: the item's own wiring, never its lifecycle, sessions or history. */
+/** Where a hold can be put on or dropped before its PR merges (#528). */
+const PRE_MERGE_STATUSES: readonly string[] = ['NOT_YET_SUBMITTED', 'QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW'];
 const ORCHESTRATOR_FIELDS = ['parent', 'depends_on', 'base_branch_override', 'skip_merge', 'implementer', 'allow_model_fallback'] as const;
 
 /**
@@ -153,6 +155,7 @@ export class LiveEngine implements Engine {
       get orchestrator() { return orchestrator(); },
       emit,
       note: (level, message) => this.note(level, message),
+      log: (level, message) => this.opts.log?.(level, message),
       announce: (event, title, message) => this.announce(event, title, message),
       schedule: (fn, ms) => this.schedule(fn, ms),
       tick: () => this.tick(),
@@ -201,6 +204,7 @@ export class LiveEngine implements Engine {
     this.ciWatch = new CiWatch({
       store,
       ports,
+      get repo() { return repo(); },
       get github() { return github(); },
       ciWorkflow: this.ciWorkflow,
       get stopping() { return stopping(); },
@@ -274,6 +278,7 @@ export class LiveEngine implements Engine {
       busyWith: (id) => this.busyWith(id),
       phaseFor: (status) => this.phaseFor(status),
       queueTurn: (id, phase, prompt, extraAllowed, oneShotCommands, opts) => this.queueTurn(id, phase, prompt, extraAllowed, oneShotCommands, opts),
+      syncStaleRun: (id, by) => this.ciWatch.syncStaleRun(id, by),
       retryOp: (id, by, message) => this.retryOp(id, by, message),
       unblock: (id, message, by, opts) => this.unblock(id, message, by, opts),
       freshRefusal: (fm, message) => this.freshRefusal(fm, message),
@@ -383,7 +388,7 @@ export class LiveEngine implements Engine {
       worktreeDirt: (cwd) => this.worktreeDirt(cwd),
       makeTools: (id) => this.makeTools(id),
       recordTestRun: (id, cwd, run, source) => this.recordTestRun(id, cwd, run, source),
-      recordPark: (id, kind, what, asked) => this.recordPark(id, kind, what, asked),
+      recordPark: (id, kind, what, asked, shape) => this.recordPark(id, kind, what, asked, shape),
       permissionsDelegated: () => this.permissionsDelegated(),
       mayAskOrchestrator: (fm) => this.mayAskOrchestrator(fm),
       wakeOrchestrator: (type, item, data) => this.wakeOrchestrator(type, item, data),
@@ -998,10 +1003,13 @@ export class LiveEngine implements Engine {
     throw new Error(`unknown response kind ${String(payload.kind)}`);
   }
 
-  /** A park begins (#108): journaled with what was asked, its kind of command and who it went to. Returns its id. */
-  private recordPark(id: string, kind: 'permission' | 'question' | 'audition', what: string, asked: 'user' | 'orchestrator'): string {
+  /**
+   * A park begins (#108): journaled with what was asked, its kind of command and who it went to. Returns its id. `parked`
+   * is the command that parked when the caller knows it (`parkedShape`); else the request's first.
+   */
+  private recordPark(id: string, kind: 'permission' | 'question' | 'audition', what: string, asked: 'user' | 'orchestrator', parked?: string): string {
     const park = `park-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-    const shape = kind === 'permission' ? commandShape(what) : undefined;
+    const shape = kind === 'permission' ? parked ?? commandShape(what) : undefined;
     this.store.journal.append({ type: 'permission.parked', item: id, actor: 'engine', data: { park, kind, what: what.slice(0, 300), ...(shape ? { shape } : {}), asked } });
     return park;
   }
@@ -1360,7 +1368,7 @@ export class LiveEngine implements Engine {
   get runnerStallGatherMs(): number { return this.ciWatch.runnerStallGatherMs; }
   set runnerStallGatherMs(ms: number) { this.ciWatch.runnerStallGatherMs = ms; }
   /** Items whose CI waits on a runner label that looks stalled or offline (CiWatch.runnerStalls, #216). */
-  runnerStalls(): { label: string; items: string[]; since: string; woken: boolean; stalls: RunnerStall[] }[] { return this.ciWatch.runnerStalls(); }
+  runnerStalls(): { label: string; items: string[]; since: string; woken: boolean; stalls: RunnerStall[]; said: string }[] { return this.ciWatch.runnerStalls(); }
   /** A red CI run for a head (CiWatch.onCiRed). */
   private onCiRed(id: string, opId: string, headSha: string, logText: string | undefined, source: 'github' | 'local', canFix = true): Promise<void> { return this.ciWatch.onCiRed(id, opId, headSha, logText, source, canFix); }
   /** A known flake's one re-run per head (CiWatch.rerunIfFlaky). */
@@ -1422,6 +1430,8 @@ export class LiveEngine implements Engine {
   // ---- epics (#404, seam 5): planning, breakdown approval, the integration branch and epic PRs live in epics.ts ----
   /** Have an epic's planner propose its children (Epics.planEpic). */
   planEpic(id: string, why?: string): Promise<void> { return this.epics.planEpic(id, why); }
+  /** Submit an item as the user does on its page (Triage.submitAsUser). */
+  async submitItem(id: string, why: string): Promise<'queued' | 'planning'> { return this.triage.submitAsUser(id, why); }
   /** Create the approved children, open the epic and queue what can start (Epics.approveBreakdown). */
   approveBreakdown(id: string, edited?: BreakdownChild[], opts: { queue?: boolean } = {}): Promise<string[]> { return this.epics.approveBreakdown(id, edited, opts); }
   /** Children the user rendered from a list, added to an epic (Epics.addChildren). */
@@ -1699,6 +1709,9 @@ export class LiveEngine implements Engine {
    * run at a time, each batch after any CI job on a runner sharing this host (`heavy_runs.shared_labels`) has ended.
    * The waits are the lock and CI, never a person (invariant 2); a turn that is stopped stops waiting. With
    * `heavy_runs.enabled` off it is only a long run (#502): no lock, no CI wait, still one call of any length.
+   * AUTOMATION PAUSED holds each batch that has not started its command, in the same wait (#534): the lever is
+   * what a user pulls to keep Godot off the machine, and a running turn's next batch is new work. A command
+   * already running finishes; Resume lets the held batch go. A drain does not hold it: it finishes what runs.
    */
   private async runHeavy(id: string, commands: string[]): Promise<string> {
     const cfg = this.store.config.heavy_runs;
@@ -1731,10 +1744,21 @@ export class LiveEngine implements Engine {
       if (holder !== undefined) { const w = `waited ${took(Date.now() - t0)} for ${holder}'s heavy run`; out.push(w); say(w); }
       for (const [i, command] of commands.entries()) {
         const label = commands.length > 1 ? `batch ${i + 1}/${commands.length}: ` : '';
-        if (cfg.enabled && cfg.yield_to_ci && cfg.shared_labels.length) {
-          const w0 = Date.now(); let first: string[] | undefined; let unread = '';
-          for (;;) {
-            if (stopped()) return [...out, `Stopped: this turn was stopped while waiting for CI${label ? ` before ${label.slice(0, -2)}` : ''}.`].join('\n');
+        const yieldToCi = cfg.enabled && cfg.yield_to_ci && cfg.shared_labels.length > 0;
+        const w0 = Date.now(); let first: string[] | undefined; let unread = ''; let held: number | undefined;
+        for (;;) {
+          if (stopped()) {
+            const where = label ? ` before ${label.slice(0, -2)}` : '';
+            return [...out, `Stopped: this turn was stopped${held !== undefined ? ` while held for automation to resume${where}` : yieldToCi ? ` while waiting for CI${where}` : where || ' before the command started'}.`].join('\n');
+          }
+          if (this.guards.paused) {
+            if (held === undefined) { held = Date.now(); say(`${label}held while automation is paused`); }
+            await this.untilResumed(signal, cfg.poll_s * 1000);
+            continue;
+          }
+          if (held !== undefined) { const w = `${label}held ${took(Date.now() - held)} while automation was paused`; out.push(w); say(w); held = undefined; }
+          if (!yieldToCi) break;
+          {
             let busy: string[] = [];
             try { const r = await this.readRunners(cfg.poll_s * 1000); busy = r ? ciOnSharedHost(r.report, cfg.shared_labels) : []; if (!r) unread = 'the runners cannot be read here (no code_repo.github or no runner report), so nothing was waited for'; }
             catch (e) { unread = `the runners could not be read (${(e as Error).message.replace(/\s+/g, ' ').slice(0, 160)}), so nothing was waited for`; }
@@ -1742,9 +1766,9 @@ export class LiveEngine implements Engine {
             first ??= busy;
             await this.sleep(cfg.poll_s * 1000);
           }
-          if (first) { const w = `${label}waited ${took(Date.now() - w0)} for CI on ${cfg.shared_labels.join(', ')} (${first.join('; ')})`; out.push(w); say(w); }
-          else if (unread && i === 0) out.push(unread);
         }
+        if (first) { const w = `${label}waited ${took(Date.now() - w0)} for CI on ${cfg.shared_labels.join(', ')} (${first.join('; ')})`; out.push(w); say(w); }
+        else if (unread && i === 0) out.push(unread);
         const r0 = Date.now();
         const r = await this.ports.proc.run(command, { cwd, timeoutMs: cfg.timeout_min * 60_000, ...env, ...(signal ? { signal } : {}) });
         await this.recordTestRun(id, cwd, { command, ok: r.code === 0, ms: Date.now() - r0 }, 'run_heavy');
@@ -1755,6 +1779,21 @@ export class LiveEngine implements Engine {
       say(`ran ${commands.length === 1 ? `\`${commands[0].slice(0, 120)}\`` : `${commands.length} batches`} in ${took(Date.now() - t0)}`);
       return out.join('\n');
     } finally { release(); if (turn) { turn.heavy = (turn.heavy ?? 1) - 1; turn.lastOutputAt = Date.now(); } }
+  }
+
+  /**
+   * A wait while AUTOMATION PAUSED is set (#534): ends at the resume, at the signal (the turn was stopped), or after
+   * `pollMs`, whichever comes first, so the caller re-reads its own stop conditions. Holds no slot of its own.
+   */
+  private untilResumed(signal: AbortSignal | undefined, pollMs: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      let done = false;
+      const finish = () => { if (done) return; done = true; off(); signal?.removeEventListener('abort', finish); resolve(); };
+      const off = this.guards.onResume(finish);
+      if (signal?.aborted) { finish(); return; }
+      signal?.addEventListener('abort', finish, { once: true });
+      void this.sleep(pollMs).then(finish, finish);
+    });
   }
 
   // ---- loop until green (#171) ----
@@ -1903,7 +1942,7 @@ export class LiveEngine implements Engine {
       // running under a take-over blocked HH-136, by then in review with its PR, as agent_blocked).
       if (cur.taken_over) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `not blocked (${reason}), since you have this item: ${detail.replace(/\s+/g, ' ').slice(0, 300)}` } }], 'engine'); return; }
       // A stop for a person goes to the orchestrator first (triage); it resolves it or asks one plain question.
-      const triage = card ? { on: false, ops: [] as ItemOp[] } : stall ? { on: false, ops: [{ set: { op_data: { ...(cur.op_data ?? {}), runner_stall: this.ciWatch.stallMark(stall) } } }, { activity: { actor: 'app', text: `not triaged: runner ${stall.label} looks stalled or offline, and every item waiting on it is said in one signal; it waits for CI again by itself once a runner takes a job` } }] as ItemOp[] } : this.triage.triageOps(cur, reason);
+      const triage = card ? { on: false, ops: [] as ItemOp[] } : stall ? { on: false, ops: [{ set: { op_data: { ...(cur.op_data ?? {}), runner_stall: this.ciWatch.stallMark(stall) } } }, { activity: { actor: 'app', text: `not triaged: ${stallWords(stall)}, and every item waiting on it is said in one signal; it waits for CI again by itself once a runner takes a job` } }] as ItemOp[] } : this.triage.triageOps(cur, reason);
       // A card that was waiting for an answer is about a stop that no longer exists: this block replaces it (HH-162, dogfood p42).
       const { decision: staleCard, ...restData } = cur.awaiting_data ?? {};
       this.store.mutateItem(id, [
@@ -2130,10 +2169,20 @@ export class LiveEngine implements Engine {
     return false;
   }
 
-  /** `after_worktree_create`, one hook at a time within the local-job limit; a failure blocks the item. */
+  /**
+   * `after_worktree_create`, one hook at a time within the local-job limit; a failure blocks the item. A hook that has
+   * not started waits while AUTOMATION PAUSED is set (#534): an admission or a recreate_worktree already under way when
+   * the user paused would otherwise launch the project's importer (`godot --import`) over them. An engine stop ends the
+   * wait with nothing run; the op is left for the restart, which re-runs setup.
+   */
   private async runSetupHooks(id: string, dir: string, opId: string): Promise<boolean> {
     this.store.mutateItem(id, [{ set: { op: 'importing', op_started_at: this.now() } }], 'engine');
     for (const hook of this.store.config.hooks.after_worktree_create) {
+      if (this.guards.paused) {
+        this.store.mutateItem(id, [{ activity: { actor: 'app', text: `setup hook held while automation is paused: ${hook}` } }], 'engine');
+        while (this.guards.paused && !this.stopping) await this.untilResumed(undefined, 30_000);
+        if (this.stopping) return false;
+      }
       const r = await this.slots.withLocalJobSlot(() => this.ports.proc.run(hook, { cwd: dir, timeoutMs: 20 * 60_000 }));
       if (r.code !== 0) { this.store.journal.end(opId, id, 'failed', { hook, code: r.code }); this.block(id, 'hook_failed', `${hook} exited ${r.code}: ${r.stderr.slice(-400)}`); return false; }
       this.store.mutateItem(id, [{ activity: { actor: 'app', text: `hook ok: ${hook}` } }], 'engine');
@@ -2458,15 +2507,29 @@ export class LiveEngine implements Engine {
     return now.paths.filter((p) => !ok.has(p));
   }
 
+  /**
+   * The user's Hold (#528): out of the merge queue with the reason, waiting on a person (#195), so the PR is drafted under
+   * `ci.draft_while_held` and only the user releases it. Any status before a merge, a plan still being written included:
+   * a hold put on before the PR opens is honoured when it does. One already held keeps its reason; this says so.
+   */
+  async holdItem(id: string, reason: string): Promise<void> {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    if (!reason?.trim()) throw new Error('not held: say why, the reason is shown on the item');
+    if (!PRE_MERGE_STATUSES.includes(fm.status)) throw new Error(`${id} is ${fm.status}; only an item not yet merged can be held`);
+    if (fm.skip_merge) throw new Error(`${id} is already held${heldReasonOf(fm) ? ` (${heldReasonOf(fm)})` : ''}; nothing was changed`);
+    this.store.mutateItem(id, this.holdOps(reason, 'user'), 'user', { commit: `${id}: hold` });
+    void this.tick();
+  }
+
   async releaseHold(id: string, note?: string): Promise<void> {
     const fm = this.store.requireItem(id).file.frontmatter;
-    // A hold put on at approval, or by the worker, before there is a pull request to let through: it is simply dropped (#97).
-    if (fm.status === 'IN_PROGRESS' && fm.skip_merge) {
+    if (!fm.review_hold && !fm.skip_merge) throw new Error(`${id} is not held`);
+    // A hold put on at approval, by the worker or by Hold (#528), before there is a pull request to let through: it is simply dropped (#97).
+    if (fm.status !== 'IN_REVIEW' && PRE_MERGE_STATUSES.includes(fm.status) && fm.skip_merge) {
       this.store.mutateItem(id, [{ unset: ['skip_merge'] }, { set: { op_data: { ...(fm.op_data ?? {}), hold_waived: true } } }, { activity: { actor: 'user', text: `hold dropped: its pull request will merge as usual${note?.trim() ? `: ${note.trim()}` : ''}` } }], 'user', { commit: `${id}: release hold` });
       return;
     }
     if (fm.status !== 'IN_REVIEW') throw new Error(`${id} is ${fm.status}; only an item in review can be released to merge`);
-    if (!fm.review_hold && !fm.skip_merge) throw new Error(`${id} is not held`);
     if (fm.awaiting && fm.awaiting !== 'review') throw new Error(`${id} is awaiting ${fm.awaiting}; answer that first`);
     const keep = fm.ci_result === 'green' && await this.greenStillCurrent(id).catch(() => false);
     // What was approved (#74, HH-214): the reviewed head's changed paths. A later commit outside them is held before it

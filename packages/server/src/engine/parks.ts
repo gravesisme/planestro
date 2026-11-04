@@ -105,8 +105,10 @@ export function parkSummary(entries: JournalEntry[]): ParkSummary[] {
  * For a request parked now: the rule to offer once this item has parked on the same kind of command before
  * (this is at least the second time), unless the project already has it.
  */
-export function parkHint(entries: JournalEntry[], command: string, allow: string[]): { shape: string; parks: number; rule: string } | undefined {
-  const shape = commandShape(command);
+export function parkHint(entries: JournalEntry[], command: string, allow: string[], park?: string): { shape: string; parks: number; rule: string } | undefined {
+  // The kind of command this park was journaled under (the one that parked, not the line's first), else the first.
+  const journaled = park ? entries.find((e) => e.data?.park === park)?.data?.shape : undefined;
+  const shape = typeof journaled === 'string' ? journaled : commandShape(command);
   const rule = suggestedRule(shape);
   if (!shape || !rule || allow.map((r) => r.trim()).includes(rule)) return undefined;
   const parks = parksOf(entries).filter((r) => r.shape === shape).length;

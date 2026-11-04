@@ -86,11 +86,17 @@ A red epic whose failed log names files its base changed since it last synced, a
 `op_data.base_wait` waits for the base to move, merges it in and lets CI run once more (`driveBaseWaits`, #204).
 A red run whose failed log matches `ci.infra_patterns` (or a built-in: disk full, runner lost) is the runner's: re-run once
 under the same per-head `flake_rerun`, no fix turn, not counted; matched again it blocks `ci_infra`, naming the pattern (#219).
+A cancelled or infra-red run on a head whose base has moved since it synced (`origin/<base>` not its ancestor) is never re-run:
+the wait ends (`stale_base`, `op_data.ci_resync`, once per head) and the chain syncs it for a new head; `sync_with_base` takes
+such an item in review, blocked or waiting, and `rerun_ci` refuses it naming `sync_with_base` (#533, #532).
 A CI wait on a runner label that looks stalled or offline (`runners.ts`, read by the gh port's `runners`, cached 30 s; the
 orchestrator's `runner_status`, a worker's `runners_busy`) is said once per label: one banner and one `runner_stalled` wake for
 every item on it, never a triage each (`op_data.runner_stall`), and a runner taking a job again sends them back to CI (#216).
+A label is stalled when its runners are offline, or all busy with no job started or finished on it for `ci.timeout_min`
+(`LabelProgress`, in memory); a busy label whose jobs move is a queue, never a stall (#519).
 A worker's heavy local run goes through `run_heavy` (`heavy_runs`, #218; matching Bash is redirected to it): one at a time
 (`HeavyLock`, in memory), each batch after any CI job on a `shared_labels` runner has ended, read from that same report.
+A batch or setup hook not yet started waits while paused (#534), in the same wait, abortable by the turn; a drain does not hold it.
 run_heavy is offered even with `heavy_runs` off, then with no lock or CI wait: the one run of any length past the CLI's 10-minute
 foreground cap (#502); a Bash call that hit the cap is told so, and the orchestrator counts either as one foreground harness run.
 A held item (`skip_merge`) skips only the merge: its new commits are pushed and its

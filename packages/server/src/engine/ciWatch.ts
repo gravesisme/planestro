@@ -4,7 +4,7 @@ import type { Ports, TurnPhase, CiQueue, RunnerReport } from './ports.ts';
 import type { BaseSync } from './baseSync.ts';
 import { findWorkflow, infraPatternIn, prSkippedByPaths } from './ciFilters.ts';
 import { TRANSIENT } from './transient.ts';
-import { runnerStatusText, stallOf, recovered, type RunnerStall } from './runners.ts';
+import { runnerStatusText, stallOf, recovered, stallWords, LabelProgress, type Quiet, type RunnerStall } from './runners.ts';
 import { recordCiResult } from '../concurrency.ts';
 
 /**
@@ -21,6 +21,8 @@ import { recordCiResult } from '../concurrency.ts';
 export interface CiWatchContext {
   readonly store: DataStore;
   readonly ports: Pick<Ports, 'git' | 'gh'>;
+  /** The code repo's main checkout: where a head is checked against its base (#533). */
+  readonly repo: string;
   /** `owner/repo` of the code repo (throws when code_repo.github is not configured). */
   readonly github: string;
   /** The project's CI workflow, by name. */
@@ -46,8 +48,8 @@ export interface CiWatchContext {
   busyWith(id: string): string | undefined;
   queueTurn(id: string, phase: TurnPhase, prompt: string, extraAllowed: string[], oneShotCommands: string[], opts: { fresh?: true | 'auto' }): void;
   wakeOrchestrator(type: string, item?: string, data?: Record<string, unknown>): void;
-  /** A runner taking jobs again sends the items it blocked back to CI. */
-  retryOp(id: string, by: 'engine', message?: string): Promise<string>;
+  /** A runner taking jobs again sends the items it blocked back to CI; sync_with_base sends a stale run's item back to the pipeline (#533). */
+  retryOp(id: string, by: 'user' | 'orchestrator' | 'engine', message?: string): Promise<string>;
   /** The workflow's queue, read at most once a minute. */
   refreshCiQueue(): Promise<CiQueue | undefined>;
   /** The runners' state (#216), cached; `maxAgeMs` is how old a reading the caller accepts. */
@@ -77,6 +79,14 @@ const HEAD_PROPAGATION_GRACE_MS = 90_000;
 const SKIPPED_REFIRE_POLLS = 6;
 /** Polls in a row that the head's newest run stays cancelled before planestro re-runs it (about a minute at the start). */
 const CANCELLED_RERUN_POLLS = 6;
+
+/**
+ * `op_data.ci_resync` (#533, #532): a CI wait on a head whose run was cancelled or red on the infrastructure, ended because the
+ * base has moved past that head since it was synced. The wait returns `stale_base` and the merge pipeline syncs the item, so
+ * the new head gets a run of its own. `why` says what the run was, `by` who ended the wait (planestro, or sync_with_base).
+ */
+export type StaleResync = { sha: string; why: string; base: string; tip: string; by: 'app' | 'user' | 'orchestrator' };
+type CiVerdict = 'green' | 'red' | 'blocked' | 'moved' | 'timeout' | 'queue_timeout' | 'stopping' | 'taken_over' | 'skipped' | 'cancelled' | 'stale_base';
 
 export class CiWatch {
   constructor(private readonly ctx: CiWatchContext) {}
@@ -186,7 +196,7 @@ export class CiWatch {
    * spent, it blocks ci_infra naming the pattern, for the orchestrator. Returns the attempt to wait for, 'blocked', or
    * undefined when this red is not the infrastructure's.
    */
-  async rerunIfInfra(id: string, opId: string, headSha: string): Promise<number | 'blocked' | undefined> {
+  async rerunIfInfra(id: string, opId: string, headSha: string, opts: { resync?: boolean } = {}): Promise<number | 'blocked' | 'stale_base' | undefined> {
     const fm = this.ctx.store.requireItem(id).file.frontmatter;
     const ci = fm.op_data?.ci as { runId?: number; url?: string; attempt?: number } | undefined;
     if (!ci?.runId) return undefined;
@@ -195,6 +205,12 @@ export class CiWatch {
     const hit = infraPatternIn(log, this.ctx.store.config.ci.infra_patterns);
     if (!hit) return undefined;
     const named = `${hit.pattern}, ${hit.source}`;
+    // A base that moved past the head since it synced is a new head's job, not a re-run's (#533): a fix for the runner's
+    // trouble that landed there (a workflow change, say) is not in a re-run of the old merge commit.
+    if (opts.resync) {
+      const moved = await this.baseMovedPast(id, headSha);
+      if (moved) { this.markResync(id, { sha: headSha, why: `CI run ${ci.runId} for ${headSha.slice(0, 7)} failed on the infrastructure (${named})`, ...moved, by: 'app' }); return 'stale_base'; }
+    }
     let why = 'planestro already re-ran its failed jobs once for this head';
     if ((fm.op_data?.flake_rerun as { sha?: string } | undefined)?.sha !== headSha) {
       try {
@@ -327,7 +343,7 @@ export class CiWatch {
     const stall = await this.runnerStallFor(id);
     const fm = this.ctx.store.requireItem(id).file.frontmatter;
     const had = fm.op_data?.runner_stall as RunnerStall | undefined;
-    if (stall ? had?.label === stall.label && had.run_id === stall.run_id : !had) return;
+    if (stall ? had?.label === stall.label && had.run_id === stall.run_id && had.why === stall.why : !had) return;
     const { runner_stall: _was, ...rest } = fm.op_data ?? {};
     this.ctx.store.mutateItem(id, [{ set: { op_data: stall ? { ...rest, runner_stall: this.stallMark(stall) } : rest } }], 'engine');
   }
@@ -337,9 +353,18 @@ export class CiWatch {
   async runnerStallFor(id: string): Promise<RunnerStall | undefined> {
     const run = (this.ctx.store.getItem(id)?.file.frontmatter.op_data?.ci as { runId?: number } | undefined)?.runId;
     if (!run) return undefined;
-    const r = await this.ctx.readRunners(RUNNER_CHECK_MS).catch(() => undefined);
-    return r ? stallOf(r.report, run) : undefined;
+    const r = await this.readRunners();
+    return r ? stallOf(r.report, run, this.quiet()) : undefined;
   }
+  /** When a job last started or finished on each label (#519): every reading planestro's own checks take is watched. */
+  private progress = new LabelProgress();
+  private async readRunners(): Promise<{ report: RunnerReport; at: string } | undefined> {
+    const r = await this.ctx.readRunners(RUNNER_CHECK_MS).catch(() => undefined);
+    if (r) this.progress.observe(r.report, this.ciNow());
+    return r;
+  }
+  /** A label with every runner busy is a stall only once nothing has started or finished on it for longer than a job may run (ci.timeout_min). */
+  private quiet(): Quiet { const now = this.ciNow(); return { quietMin: (label) => this.progress.quietMin(label, now), windowMin: this.ctx.store.config.ci.timeout_min }; }
   /** The marker an item carries while it waits on a stalled label; one already woken for that label joins it without a wake of its own. */
   stallMark(stall: RunnerStall): RunnerStall & { at: string; woken?: boolean } {
     const woken = this.runnerStalls().some((g) => g.label === stall.label && g.woken);
@@ -349,7 +374,7 @@ export class CiWatch {
    * Items whose CI waits on a runner label that looks stalled or offline (#216): blocked ci_timeout on it, or still
    * polling with their run queued on it. One banner and one wake per label, never a triage per item.
    */
-  runnerStalls(): { label: string; items: string[]; since: string; woken: boolean; stalls: RunnerStall[] }[] {
+  runnerStalls(): { label: string; items: string[]; since: string; woken: boolean; stalls: RunnerStall[]; said: string }[] {
     const groups = new Map<string, { label: string; items: string[]; since: string; woken: boolean; stalls: RunnerStall[] }>();
     for (const i of this.ctx.store.listItems()) {
       const fm = i.file.frontmatter;
@@ -359,7 +384,7 @@ export class CiWatch {
       g.items.push(i.id); g.stalls.push(m); g.woken ||= Boolean(m.woken); if (m.at < g.since) g.since = m.at;
       groups.set(m.label, g);
     }
-    return [...groups.values()];
+    return [...groups.values()].map((g) => ({ ...g, said: stallWords(g.stalls[0]) }));
   }
   private drivingRunnerStalls = false;
   /**
@@ -372,9 +397,9 @@ export class CiWatch {
     if (!groups.length) return;
     this.drivingRunnerStalls = true;
     try {
-      const r = await this.ctx.readRunners(RUNNER_CHECK_MS).catch(() => undefined);
+      const r = await this.readRunners();
       for (const g of groups) {
-        if (r && recovered(r.report, g.stalls)) {
+        if (r && recovered(r.report, g.stalls, this.quiet())) {
           this.ctx.note('info', `runner ${g.label} is taking jobs again: ${g.items.join(', ')} wait for CI again`);
           for (const id of g.items) {
             const fm = this.ctx.store.requireItem(id).file.frontmatter;
@@ -387,11 +412,12 @@ export class CiWatch {
         const blocked = g.items.filter((id) => this.ctx.store.requireItem(id).file.frontmatter.blocked).length;
         if (g.woken || (g.items.length < 2 && !blocked) || Date.now() - Date.parse(g.since) < this.runnerStallGatherMs) continue;
         for (const id of g.items) { const fm = this.ctx.store.requireItem(id).file.frontmatter; this.ctx.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), runner_stall: { ...(fm.op_data?.runner_stall as object), woken: true } } } }], 'engine'); }
-        this.ctx.note('warn', `runner ${g.label} looks stalled or offline: ${g.items.join(', ')} are waiting on it`);
+        const said = g.said;
+        this.ctx.note('warn', `${said}: ${g.items.join(', ')} are waiting on it`);
         this.ctx.wakeOrchestrator('runner_stalled', undefined, {
-          runner: `${g.label} looks stalled or offline: ${g.items.join(', ')} ${g.items.length === 1 ? 'is' : 'are'} waiting on it (${blocked} blocked ci_timeout, ${g.items.length - blocked} still waiting for a runner)`,
+          runner: `${said}: ${g.items.join(', ')} ${g.items.length === 1 ? 'is' : 'are'} waiting on it (${blocked} blocked ci_timeout, ${g.items.length - blocked} still waiting for a runner)`,
           runners: r ? runnerStatusText(r.report, this.ctx.github, r.at) : '(could not read the runners)',
-          policy: 'One signal for every item waiting on this runner label, instead of a triage each. Do not re-run or retry them one by one: once a runner for it takes a job again, planestro sends the blocked ones back to waiting for CI by itself. Judge what the runner needs (a machine asleep or offline, a billing block, a full queue) from runner_status; if it needs a person, ask the user once (ask_user) for all of them.',
+          policy: 'One signal for every item waiting on this runner label, instead of a triage each. Do not re-run or retry them one by one: once a runner for it takes a job again, planestro sends the blocked ones back to waiting for CI by itself. Judge what the runner needs (a machine asleep or offline, a billing block, a job hung on a busy runner) from runner_status; if it needs a person, ask the user once (ask_user) for all of them.',
         });
       }
     } finally { this.drivingRunnerStalls = false; }
@@ -408,7 +434,7 @@ export class CiWatch {
    * Within HEAD_PROPAGATION_GRACE_MS the old sha is lag and we keep polling; anything else is
    * a real move. 'stopping' is the engine shutting down, which says nothing about CI.
    */
-  async waitForCi(id: string, branch: string, sha: string, pr: number, previousSha: string | null = null, minAttempt = 0): Promise<'green' | 'red' | 'blocked' | 'moved' | 'timeout' | 'queue_timeout' | 'stopping' | 'taken_over' | 'skipped' | 'cancelled'> {
+  async waitForCi(id: string, branch: string, sha: string, pr: number, previousSha: string | null = null, minAttempt = 0): Promise<CiVerdict> {
     this.ciWaits.add(id);
     try { return await this.pollCi(id, branch, sha, pr, previousSha, minAttempt); } finally { this.ciWaits.delete(id); }
   }
@@ -433,7 +459,7 @@ export class CiWatch {
     }
   }
 
-  private async pollCi(id: string, branch: string, sha: string, pr: number, previousSha: string | null, minAttempt: number): Promise<'green' | 'red' | 'blocked' | 'moved' | 'timeout' | 'queue_timeout' | 'stopping' | 'taken_over' | 'skipped' | 'cancelled'> {
+  private async pollCi(id: string, branch: string, sha: string, pr: number, previousSha: string | null, minAttempt: number): Promise<CiVerdict> {
     // The project's CI runs nothing for this change (its own path filters): there is nothing to wait for, and nothing to stand in for (HH-324).
     const notRun = await this.ciSkipsHead(id, sha);
     if (notRun) {
@@ -453,6 +479,8 @@ export class CiWatch {
     let need = minAttempt;
     while (true) {
       if (this.ctx.stopping) return 'stopping';
+      // sync_with_base ended this wait (#533): its run will not pass as it is, and the base has moved past it.
+      if ((this.ctx.store.getItem(id)?.file.frontmatter.op_data?.ci_resync as StaleResync | undefined)?.sha === sha) return 'stale_base';
       // Read on every poll, so a timeout changed in Settings reaches a wait already running (#173).
       const cfg = this.ctx.store.config.ci;
       // A re-run asked for by rerun_ci (#139) keeps its run id: only its new attempt is the verdict, whoever waits.
@@ -486,6 +514,10 @@ export class CiWatch {
       cancelledPolls = ci.state === 'cancelled' && !stale ? cancelledPolls + 1 : 0;
       if (cancelledPolls >= CANCELLED_RERUN_POLLS && ci.runId) {
         cancelledPolls = 0;
+        // The base moved past this head since it synced (#533, #532): a re-run reuses the old merge commit and workflow, so a
+        // fix for what cancelled it that landed there is not in it. The head is synced instead, and its new run is the one.
+        const moved = await this.baseMovedPast(id, sha);
+        if (moved) { this.markResync(id, { sha, why: `CI run ${ci.runId} for ${sha.slice(0, 7)} was cancelled`, ...moved, by: 'app' }); return 'stale_base'; }
         const cur = this.ctx.store.requireItem(id).file.frontmatter;
         // Its one re-run was cancelled too (or never started): nothing is coming, and the timeout is hours away (#174).
         if (cur.op_data?.ci_cancel_rerun === sha) return 'cancelled';
@@ -568,6 +600,8 @@ export class CiWatch {
     if (!red?.runId || !red.sha) return `not possible: ${id} has no red or cancelled CI run on record`;
     const view = await this.ctx.ports.gh.prView(this.ctx.github, fm.pr);
     if (view.headRefOid !== red.sha) return `not possible: the head moved to ${view.headRefOid.slice(0, 7)} after run ${red.runId} (${red.sha.slice(0, 7)}); the new head's own run is what counts`;
+    // A cancelled or infrastructure run on a head its base has moved past wants a new head, not a re-run (#532).
+    if (cancelled || fm.blocked_reason === 'ci_infra') { const moved = await this.baseMovedPast(id, red.sha); if (moved) return this.staleRerunRefusal(id, red.sha, moved); }
     const ci = await this.ctx.ports.gh.ciForSha(this.ctx.github, fm.branch, red.sha, this.ctx.ciWorkflow);
     const want = cancelled ? 'cancelled' : 'failure';
     if (ci.runId !== red.runId || ci.state !== want) return `not possible: run ${red.runId} is not the head's ${cancelled ? 'cancelled' : 'red'} run any more (it is ${ci.state}${ci.runId && ci.runId !== red.runId ? `, run ${ci.runId}` : ''})`;
@@ -599,6 +633,7 @@ export class CiWatch {
     const ci = await this.ctx.ports.gh.ciForSha(this.ctx.github, fm.branch, sha, this.ctx.ciWorkflow);
     if (ci.state === 'failure') return `not now: run ${ci.runId} for ${sha.slice(0, 7)} just failed and the CI wait reports it red within a poll; re-run it after that`;
     if (ci.state !== 'cancelled' || !ci.runId) return `not now: CI for ${sha.slice(0, 7)} is ${ci.state === 'pending' ? 'still running' : ci.state}; a CI wait that is still running is not red`;
+    const moved = await this.baseMovedPast(id, sha); if (moved) return this.staleRerunRefusal(id, sha, moved);
     const prev = fm.op_data?.ci_rerun as { sha?: string; attempt?: number } | undefined;
     const attempt = (ci.attempt ?? 1) + 1;
     if (prev?.sha === sha && (prev.attempt ?? 0) >= attempt) return `not now: run ${ci.runId} was already re-run (attempt ${prev.attempt}); its attempt has not shown up yet`;
@@ -609,6 +644,89 @@ export class CiWatch {
     catch (e) { setRerun(prev ?? null); return `not possible: run ${ci.runId} could not be re-run (${(e as Error).message.replace(/\s+/g, ' ').slice(0, 160)})`; }
     this.ctx.store.mutateItem(id, [{ activity: { actor: by, text: `re-ran cancelled CI run ${ci.runId} for ${sha.slice(0, 7)} (attempt ${attempt}) while planestro waited on it; waiting for that attempt` } }], by, { commit: `${id}: re-run CI` });
     return `re-running cancelled run ${ci.runId} (attempt ${attempt}); the CI wait already running counts only that attempt`;
+  }
+
+  /**
+   * Whether the item's base has moved past this head since it was synced (#533, #532): `origin/<base>`, fetched fresh, is not
+   * an ancestor of it. A re-run of the head's run is then no use: a pull_request run re-runs on its old merge commit with its
+   * old workflow, so a fix that has landed on the base since (often to the workflow itself) is not in it, and a green from it
+   * would be synced and run again before it merged anyway. Once per head (`ci_resync_from`): a head the pipeline came back to
+   * after a sync that found nothing to do is not sent round again. Undefined when it has not moved, or git cannot tell.
+   */
+  async baseMovedPast(id: string, sha: string): Promise<{ base: string; tip: string } | undefined> {
+    const item = this.ctx.store.getItem(id);
+    if (!item || item.file.frontmatter.op_data?.ci_resync_from === sha) return undefined;
+    const base = this.ctx.store.derived(item).base_branch;
+    if (!base) return undefined;
+    try {
+      await this.ctx.ports.git.fetch(this.ctx.repo);
+      if (await this.ctx.ports.git.isAncestor(this.ctx.repo, `origin/${base}`, sha)) return undefined;
+      return { base, tip: await this.ctx.ports.git.revParse(this.ctx.repo, `origin/${base}`) };
+    } catch { return undefined; }   // cannot tell: a re-run, as before
+  }
+
+  /** Persist why a CI wait ends for a sync (`op_data.ci_resync`, #533): the wait reads it on its next poll, and the merge pipeline says it. */
+  private markResync(id: string, r: StaleResync): void {
+    this.ctx.store.mutateItem(id, [{ set: { op_data: { ...(this.ctx.store.requireItem(id).file.frontmatter.op_data ?? {}), ci_resync: r } } }], 'engine');
+  }
+
+  private staleRerunRefusal(id: string, sha: string, moved: { base: string; tip: string }): string {
+    return `not possible: ${moved.base} has moved past ${sha.slice(0, 7)} since it was synced (it is at ${moved.tip.slice(0, 7)} now), and a re-run reuses that head's old merge commit and workflow, so nothing that landed on ${moved.base} since (a CI fix, say) is in it. Use sync_with_base instead: ${id} gets a new head on ${moved.base}, and that head's own run is the one that counts`;
+  }
+
+  /**
+   * What the head's run is, when it is one sync_with_base takes on for an item in review (#533): cancelled, red on the
+   * infrastructure, or planestro's own re-run of either still going. Read from GitHub for the head; undefined for anything else.
+   */
+  private async staleRunOf(id: string, branch: string, sha: string): Promise<string | undefined> {
+    const od = this.ctx.store.requireItem(id).file.frontmatter.op_data ?? {};
+    const ci = await this.ctx.ports.gh.ciForSha(this.ctx.github, branch, sha, this.ctx.ciWorkflow);
+    if (ci.state === 'cancelled') return `cancelled${ci.runId ? ` (run ${ci.runId})` : ''}`;
+    const flake = od.flake_rerun as { sha?: string; check?: string } | undefined;
+    if (ci.state === 'pending' && od.ci_cancel_rerun === sha) return `cancelled, and planestro's re-run of it${ci.runId ? ` (run ${ci.runId})` : ''} is still going`;
+    if (ci.state === 'pending' && flake?.sha === sha && flake.check?.startsWith('infrastructure')) return `red on the infrastructure, and planestro's re-run of its failed jobs${ci.runId ? ` (run ${ci.runId})` : ''} is still going`;
+    if (ci.state === 'failure' && ci.runId) {
+      const hit = infraPatternIn(await this.ctx.ports.gh.runFailedLog(this.ctx.github, ci.runId, 120), this.ctx.store.config.ci.infra_patterns);
+      if (hit) return `red on the infrastructure (run ${ci.runId}: ${hit.pattern}, ${hit.source})`;
+    }
+    return undefined;
+  }
+
+  /**
+   * sync_with_base on an item in review whose head's run is cancelled or red on the infrastructure (#533, HH-310): blocked
+   * ci_cancelled or ci_infra, or still in its CI wait on such a run. A fix for it that has landed on the base since (HH-678's
+   * workflow change) reaches only a new head, so the item goes back through the merge pipeline's sync: a blocked one re-enters it
+   * (retry_op), a wait ends at its next poll (`op_data.ci_resync`) and the pipeline syncs it. Never while a turn or another step
+   * runs. A head already on its base gets no new head from a sync: refused in words, pointing at a re-run. Returns what happened,
+   * or undefined when the head's run is neither (the caller answers as before).
+   */
+  async syncStaleRun(id: string, by: 'user' | 'orchestrator'): Promise<string | undefined> {
+    const item = this.ctx.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    const sha = fm.ci_head_sha;
+    if (fm.status !== 'IN_REVIEW' || !fm.pr || !fm.branch || !sha || fm.taken_over) return undefined;
+    let kind: string | undefined;
+    if (fm.blocked) {
+      kind = fm.blocked_reason === 'ci_cancelled' ? 'cancelled' : fm.blocked_reason === 'ci_infra' ? 'red on the infrastructure' : undefined;
+      if (!kind) return undefined;
+      if (fm.awaiting && fm.awaiting !== 'user') return `not now: ${id} is awaiting ${fm.awaiting.replace(/_/g, ' ')}; answer that first`;
+    } else {
+      if (fm.op !== 'awaiting_ci' || fm.awaiting || this.ctx.turns.has(id)) return undefined;
+      // A CI wait that is polling is not a step running (#174); anything else on the item is.
+      const busy = this.ctx.busyWith(id);
+      if (busy && !this.ciWaits.has(id)) return `not now: ${busy}`;
+      kind = await this.staleRunOf(id, fm.branch, sha);
+      if (!kind) return undefined;
+    }
+    const base = this.ctx.store.derived(item).base_branch ?? 'its base';
+    const moved = await this.baseMovedPast(id, sha);
+    if (!moved) return `not needed: ${id}'s head ${sha.slice(0, 7)} is already on origin/${base}, so a sync gives it no new head and its run (${kind}) would be the same. ${kind.startsWith('cancelled') ? 'Re-run CI (rerun_ci) once what cancelled it is fixed' : 'Fix the runner, then rerun_ci'}; a fix that lands on ${base} later is taken in by sync_with_base then`;
+    const why = `its run for ${sha.slice(0, 7)} was ${kind}, and ${moved.base} has moved past it to ${moved.tip.slice(0, 7)}`;
+    if (fm.blocked) return `in review, and ${why}: the merge pipeline syncs it for a new head and a run of its own: ${await this.ctx.retryOp(id, by)}`;
+    this.markResync(id, { sha, why: `CI for ${sha.slice(0, 7)} was ${kind}`, ...moved, by });
+    this.ctx.store.mutateItem(id, [{ activity: { actor: by, text: `sync with base: ending the CI wait on ${sha.slice(0, 7)} (${why}); the merge pipeline syncs it and CI runs on the new head` } }], by, { commit: `${id}: sync with base` });
+    this.ctx.poke();
+    return `ending the CI wait: ${why}. The merge pipeline syncs ${id} with ${moved.base} at the wait's next poll and pushes it, and CI runs on the new head; its Activity log says how it went`;
   }
 
   /** A CI verdict, remembered once per run attempt for the concurrency guard (#330); a red's log says whether a check was killed at its timeout. */

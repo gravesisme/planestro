@@ -34,6 +34,8 @@ export interface Engine {
   rejectPlan(id: string, message: string): Promise<void>;
   message(id: string, text: string): Promise<void>;
   respond(id: string, payload: Record<string, unknown>): Promise<void>;
+  /** Submit an item as the user does on its page (Triage.submitAsUser): a worker item is queued, an epic has its breakdown planned. Throws the refusal. */
+  submitItem(id: string, why: string): Promise<'queued' | 'planning'>;
   /** Have the planner propose an epic's children; `why` prefixes the Activity line (a "start" redirected here). */
   planEpic(id: string, why?: string): Promise<void>;
   /** Create the children (as the user edited them), open the epic and queue what can start. Returns the new ids. */
@@ -49,6 +51,8 @@ export interface Engine {
   requestReviewChanges(id: string, note: string): Promise<void>;
   /** Let a held pull request (a review hold, or skip_merge) back into the merge pipeline; before the pull request exists, drop the hold. */
   releaseHold(id: string, note?: string): Promise<void>;
+  /** The user's Hold (#528): keep its PR out of the merge until the user releases it, with the reason on the item. */
+  holdItem(id: string, reason: string): Promise<void>;
   /** Finish an item without a pull request: the work landed some other way. User-only. */
   closeAsDone(id: string, reason?: string): Promise<void>;
   /** Send a plan that came back to the user to the orchestrator once more (#153). */

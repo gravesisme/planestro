@@ -7,6 +7,7 @@ import { operatorMcpUrl } from '../routes/mcp.ts';
 import { listInstances } from '../instances.ts';
 import { makePolicy, allowedByRules, sdkRules, BASE_ALLOWED } from './policy.ts';
 import { permissionGrantRefusal } from './parks.ts';
+import { parkedShape } from './allowSuggest.ts';
 import { commandGrant, commandForms, matchesCommandGrant, type CommandGrant } from './sessions/nativeApproval.ts';
 import { hostNote, keptPathsNote, cwdNote } from './hostNote.ts';
 import { quietTransientFailure, patchRejected, PATCH_REJECTED_RETRY } from './transient.ts';
@@ -80,7 +81,7 @@ export interface TurnRunnerContext {
   makeTools(id: string): TurnTools;
   recordTestRun(id: string, cwd: string, run: { command: string; ok: boolean; ms: number }, source: 'bash'): Promise<void>;
   /** A permission or question park (#108), and who it goes to. */
-  recordPark(id: string, kind: 'permission' | 'question', what: string, asked: 'user' | 'orchestrator'): string;
+  recordPark(id: string, kind: 'permission' | 'question', what: string, asked: 'user' | 'orchestrator', shape?: string): string;
   permissionsDelegated(): boolean;
   mayAskOrchestrator(fm: { op_data?: Record<string, unknown> }): boolean;
   wakeOrchestrator(type: string, item?: string, data?: Record<string, unknown>): void;
@@ -194,6 +195,12 @@ export class TurnRunner {
       },
     });
     return `${brief}\n\n## Current item record (including notes, attachments, decisions and pending messages)\n\n${serializeItemFile(item.file)}`;
+  }
+
+  /** The command a Bash request parked on (`parkedShape`): the first one these rules do not allow on its own. Undefined for any other tool. */
+  private parkedOn(req: { tool: string; input: Record<string, unknown> }, allow: string[], cwd: string, phase: TurnPhase): string | undefined {
+    if (req.tool !== 'Bash') return undefined;
+    return parkedShape(String(req.input.command ?? ''), cwd, (command) => allowedByRules({ tool: 'Bash', input: { command } }, allow, cwd, { readOnly: phase === 'plan' }));
   }
 
   // ---- turns ----
@@ -401,7 +408,7 @@ export class TurnRunner {
               return 'allow';
             }
           }
-          const park = this.ctx.recordPark(id, 'permission', String(req.input.command ?? req.tool), this.ctx.permissionsDelegated() ? 'orchestrator' : 'user');
+          const park = this.ctx.recordPark(id, 'permission', String(req.input.command ?? req.tool), this.ctx.permissionsDelegated() ? 'orchestrator' : 'user', this.parkedOn(req, [...BASE_ALLOWED[phase], ...this.ctx.store.permissionRules().allow], cwd, phase));
           this.ctx.store.mutateItem(id, [{ set: { awaiting: 'permission', awaiting_data: { tool: req.tool, input: req.input, grantable: !permissionGrantRefusal(req), requested_at: this.ctx.now(), park } } }, { activity: { actor: 'app', text: 'Runner permission request recorded; turn ended for a decision' } }], 'engine', { commit: `${id}: awaiting permission` });
         }, permissionMode: phase === 'plan' ? 'plan' : 'acceptEdits', prompt, resume: resumeId, images,
         ...(known?.total_usd !== undefined ? { resumeTotalUsd: known.total_usd } : {}),
@@ -447,7 +454,7 @@ export class TurnRunner {
           const ask = this.ctx.permissionsDelegated() && this.ctx.mayAskOrchestrator(this.ctx.store.requireItem(id).file.frontmatter);
           // The safety valve tripped: say so on the card, or the stream of requests reaching the user is a mystery (#95).
           const tripped = !ask && this.ctx.permissionsDelegated();
-          const park = this.ctx.recordPark(id, 'permission', req.tool === 'Bash' ? String(req.input.command ?? '') : req.tool, ask ? 'orchestrator' : 'user');
+          const park = this.ctx.recordPark(id, 'permission', req.tool === 'Bash' ? String(req.input.command ?? '') : req.tool, ask ? 'orchestrator' : 'user', this.parkedOn(req, [...BASE_ALLOWED[phase], ...this.ctx.store.permissionRules().allow, ...extraAllowed], cwd, phase));
           this.ctx.store.mutateItem(id, [{ set: { awaiting: ask ? 'orchestrator' : 'permission', awaiting_data: { ...(ask ? { kind: 'permission' } : {}), ...(tripped ? { escalated: 'orchestrator_denials' } : {}), tool: req.tool, input: req.input, requested_at: this.ctx.now(), park } } }, { activity: { actor: 'app', text: `parked: permission for ${req.tool} ${String(req.input.command ?? req.input.file_path ?? '').slice(0, 80)}${ask ? ' (asking the orchestrator)' : tripped ? ` (to you: the orchestrator denied its last ${MAX_ORCHESTRATOR_DENIALS} requests)` : ''}` } }], 'engine', { commit: `${id}: awaiting permission` });
           if (ask) this.ctx.wakeOrchestrator('permission_request', id);
           return { action: 'park' };

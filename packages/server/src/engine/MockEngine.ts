@@ -23,6 +23,14 @@ export class MockEngine implements Engine {
   async message(id: string, text: string): Promise<void> { this.store.mutateItem(id, [{ activity: { actor: 'user', text: `message (no engine): ${text}` } }], 'user'); }
   async respond(): Promise<void> { throw new Error('no engine is running'); }
   async planEpic(): Promise<void> { throw new Error('no engine is running'); }
+  /** Without an engine a worker item can still be queued; an epic's breakdown needs a planner. */
+  async submitItem(id: string, why: string): Promise<'queued' | 'planning'> {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    if (fm.status !== 'NOT_YET_SUBMITTED') throw new Error(`${id} is ${fm.status}; only an item that is not submitted yet can be submitted`);
+    if (fm.kind === 'epic') throw new Error('no engine is running');
+    this.store.mutateItem(id, [{ transition: { to: 'QUEUED', actor: 'user' } }, { activity: { actor: 'app', text: `queued for planning: ${why}` } }], 'user', { commit: `${id}: queued` });
+    return 'queued';
+  }
   /** Without an engine only the bookkeeping half exists: a kind that never started planning (no checkout to judge) changes; anything else needs the engine. */
   async convertKind(id: string, to: 'item' | 'epic', by: 'user' | 'orchestrator' = 'user', why?: string): Promise<string> {
     const item = this.store.requireItem(id); const fm = item.file.frontmatter;
@@ -38,7 +46,8 @@ export class MockEngine implements Engine {
   async reviewImage(): Promise<null> { return null; }
   async reviewDiff(): Promise<null> { return null; }
   async requestReviewChanges(): Promise<void> { throw new Error('no engine is running'); }
-  async releaseHold(id: string): Promise<void> { this.store.mutateItem(id, [{ unset: ['review_hold', 'skip_merge'] }], 'user', { commit: `${id}: release hold` }); }
+  async holdItem(id: string, reason: string): Promise<void> { this.store.mutateItem(id, [{ set: { skip_merge: true, hold_reason: reason.trim(), hold_waits_on: 'person' } }, { activity: { actor: 'user', text: `held out of the merge queue: ${reason.trim()}` } }], 'user', { commit: `${id}: hold` }); }
+  async releaseHold(id: string): Promise<void> { const fm = this.store.requireItem(id).file.frontmatter; if (!fm.review_hold && !fm.skip_merge) throw new Error(`${id} is not held`); this.store.mutateItem(id, [{ unset: ['review_hold', 'skip_merge'] }], 'user', { commit: `${id}: release hold` }); }
   async closeAsDone(id: string, reason?: string): Promise<void> {
     this.store.mutateItem(id, [{ transition: { to: 'FINISHED', actor: 'user' } }, { activity: { actor: 'user', text: `closed as done without a pull request${reason?.trim() ? `: ${reason.trim()}` : ''}` } }], 'user', { commit: `${id}: close as done` });
   }

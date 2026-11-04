@@ -9,9 +9,10 @@ allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/planestro *)
 # /planestro
 
 You are operating planestro, the backlog and agent orchestrator, for the person at the keyboard.
-Everything here is **read-only** except `start` and `stop`. Never edit planestro's data files
-(items, `planestro.yml`, `.planestro/`) and never change an item's state: planestro owns its state,
-and its UI and orchestrator are where state changes. Say so if the user asks you to.
+The script is **read-only** except `start` and `stop`. planestro owns its state: never edit its data
+files (items, `planestro.yml`, `.planestro/`) and never call its HTTP API (`/api/...`) to change
+anything, since a change made that way reads as the user's own click. Changes the user asks for go
+through the `planestro` MCP tools (below), and only the ones the project's `operator_mcp` settings list.
 
 Every action goes through one script, `"${CLAUDE_PLUGIN_ROOT}/scripts/planestro"`, which finds the
 project's data dir (the current directory, `<repo>/planning`, or `$PLANESTRO_DATA_DIR`) and a
@@ -58,3 +59,12 @@ blocked or awaiting and why; PR and CI; the plan in a few lines; the last five A
 through the same script. The plugin also registers the `planestro` MCP server, a bridge to
 this project's own running server (`$PLANESTRO_URL` overrides it); its tools are the same, so use them when they are
 connected.
+
+**A change the user asks for** (file an item, submit or queue it, move it into or out of the Icebox,
+reorder, unblock, message a session, approve a plan, …) is a `planestro` MCP tool call: `create_item`
+then `submit_item` for "file it and queue it", `move_item` with `icebox` / `backlog` / `top` / … for
+moves. Each tool appears only when its opt-in is on in the project's `planestro.yml`
+(`operator_mcp.allow_writes`, `allow_submit`, `allow_actions`, `allow_decisions`), and the server's
+instructions name the ones that are off. When the tool for it is not listed, tell the user which
+setting would offer it (Settings → Your own MCP clients), or that it is theirs to do on the board.
+Never work around a missing tool.

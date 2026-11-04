@@ -8,7 +8,7 @@ import { makeFixture } from './helpers.ts';
 import { startServer } from '../src/server.ts';
 import { MockEngine } from '../src/engine/MockEngine.ts';
 import { DataStore } from '../src/store/DataStore.ts';
-import { OPERATOR_TOOLS, OPERATOR_READ_TOOLS, OPERATOR_WRITE_TOOLS, OPERATOR_DECISION_TOOLS, operatorMcpUrl } from '../src/routes/mcp.ts';
+import { OPERATOR_TOOLS, OPERATOR_READ_TOOLS, OPERATOR_WRITE_TOOLS, OPERATOR_DECISION_TOOLS, OPERATOR_SUBMIT_TOOLS, operatorMcpUrl } from '../src/routes/mcp.ts';
 import { instancePath } from '../src/instances.ts';
 
 // What the Agent SDK is handed for a worker or orchestrator turn: the MCP servers, and the tools of
@@ -122,7 +122,7 @@ describe('the operator MCP endpoint (#175, step 2)', () => {
       // Acting on items never grants the decisions: those need operator_mcp.allow_decisions.
       for (const t of OPERATOR_DECISION_TOOLS) expect(await names()).not.toContain(t);
       srv.store.updateConfig((d) => { d.setIn(['operator_mcp', 'allow_decisions'], true); });
-      expect(await names()).toEqual([...OPERATOR_TOOLS].sort());
+      expect(await names()).toEqual(OPERATOR_TOOLS.filter((t) => !(OPERATOR_SUBMIT_TOOLS as readonly string[]).includes(t)).sort());
 
       const item = srv.store.createItem({ title: 'Cave map', description: 'old' });
       const edited = text(await client.callTool({ name: 'edit_item', arguments: { id: item.id, priority: 'high', notes: 'Keep the torches.', description: 'new' } }));
@@ -143,13 +143,74 @@ describe('the operator MCP endpoint (#175, step 2)', () => {
       expect(text(await client.callTool({ name: 'reject_plan', arguments: { id: item.id, message: 'Split the torches out.' } })).item.status).toBe('PLAN_IN_PROGRESS');
       srv.store.mutateItem(item.id, [{ set: { status: 'PLAN_READY' } }], 'engine');
       expect(text(await client.callTool({ name: 'approve_plan', arguments: { id: item.id, notes: 'Go.' } })).item.status).toBe('IN_PROGRESS');
+      // #528: the board's Hold and Release hold, on the user's word.
+      const notHeld = await client.callTool({ name: 'release_hold', arguments: { id: item.id } }) as any;
+      expect(notHeld.isError).toBe(true);
+      expect(notHeld.content[0].text).toContain(`${item.id} is not held`);
+      expect((await client.callTool({ name: 'set_hold', arguments: { id: item.id, reason: '' } })).isError).toBe(true);
+      await client.callTool({ name: 'set_hold', arguments: { id: item.id, reason: "the designer's in-game check" } });
+      expect(srv.store.requireItem(item.id).file.frontmatter).toMatchObject({ skip_merge: true, hold_reason: "the designer's in-game check", hold_waits_on: 'person' });
+      await client.callTool({ name: 'release_hold', arguments: { id: item.id, note: 'checked on device' } });
+      expect(srv.store.requireItem(item.id).file.frontmatter.skip_merge).toBeUndefined();
       expect(text(await client.callTool({ name: 'close_as_done', arguments: { id: item.id, reason: 'landed in #9' } })).item.status).toBe('FINISHED');
       const activity = srv.store.requireItem(item.id).file.sections.find((s) => s.title === 'Activity')!.body;
       expect(activity).toMatch(/\[operator\] approval notes: Go\./);
+      expect(activity).toMatch(/\[operator\] held out of the merge queue: the designer's in-game check/);
       expect(activity).toMatch(/\[operator\] closed as done without a pull request: landed in #9/);
-      expect(srv.store.journal.read({ type: 'operator_mcp.action' }).map((e) => e.data?.tool)).toEqual(['edit_item', 'reject_plan', 'approve_plan', 'close_as_done']);
+      expect(srv.store.journal.read({ type: 'operator_mcp.action' }).map((e) => e.data?.tool)).toEqual(['edit_item', 'reject_plan', 'approve_plan', 'set_hold', 'release_hold', 'close_as_done']);
       // A discard keeps the remote branch: its deletion is the user's tick on the board.
       expect(Object.keys(((await client.listTools()).tools.find((t) => t.name === 'discard_item')!.inputSchema as any).properties).sort()).toEqual(['id', 'reason']);
+    } finally { await client.close(); await srv.engine.stop(); srv.server.close(); srv.store.close(); }
+  });
+
+  it('submit_item and move_item, behind operator_mcp.allow_submit: file it, queue it, park it, as the board does, recorded as [operator]', async () => {
+    const { dataDir } = makeFixture();
+    const port = await freePort();
+    const srv = await startServer({ dataDir, port, log: () => {}, engineFactory: (s, em) => new MockEngine(s, em) });
+    const client = new Client({ name: 'test', version: '1' });
+    try {
+      srv.store.updateConfig((d) => { d.setIn(['operator_mcp', 'allow_writes'], true); });
+      await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`)));
+      const names = async () => (await client.listTools()).tools.map((t) => t.name);
+      // Filing never grants starting: submit and move need their own opt-in, and the instructions name it while it is off.
+      for (const t of OPERATOR_SUBMIT_TOOLS) expect(await names()).not.toContain(t);
+      expect(client.getInstructions()).toMatch(/never through planestro's HTTP API/);
+      expect(client.getInstructions()).toMatch(/operator_mcp\.allow_submit \(submit_item, move_item\)/);
+      srv.store.updateConfig((d) => { d.setIn(['operator_mcp', 'allow_submit'], true); });
+      for (const t of OPERATOR_SUBMIT_TOOLS) expect(await names()).toContain(t);
+
+      // "File it and queue it": create_item, then submit_item.
+      const made = text(await client.callTool({ name: 'create_item', arguments: { title: 'Clip editor' } }));
+      const queued = text(await client.callTool({ name: 'submit_item', arguments: { id: made.id } }));
+      expect(queued).toMatchObject({ said: `${made.id} is queued for planning`, item: { status: 'QUEUED' } });
+      expect((await client.callTool({ name: 'submit_item', arguments: { id: made.id } })).isError).toBe(true);
+
+      // Waiting on an unmerged dependency is refused, as on the board.
+      const dep = srv.store.createItem({ title: 'Renderer' });
+      const waits = srv.store.createItem({ title: 'Exporter', depends_on: [dep.id] });
+      const refused = await client.callTool({ name: 'submit_item', arguments: { id: waits.id } });
+      expect(refused.isError).toBe(true);
+      expect(text(refused).error).toMatch(/not all merged yet/);
+
+      // Into the Icebox and back; a submit from there says what to do first.
+      expect(text(await client.callTool({ name: 'move_item', arguments: { id: made.id, to: 'icebox' } })).item.status).toBe('ICEBOX');
+      expect(text(await client.callTool({ name: 'submit_item', arguments: { id: made.id } })).error).toMatch(/move_item it to backlog first/);
+      expect(text(await client.callTool({ name: 'move_item', arguments: { id: made.id, to: 'backlog' } })).item.status).toBe('NOT_YET_SUBMITTED');
+      expect((await client.callTool({ name: 'move_item', arguments: { id: made.id, to: 'backlog' } })).isError).toBe(true);
+      // Order within a column; before/after need an item beside it.
+      expect((await client.callTool({ name: 'move_item', arguments: { id: made.id, to: 'before' } })).isError).toBe(true);
+      expect(text(await client.callTool({ name: 'move_item', arguments: { id: made.id, to: 'before', ref: dep.id } })).said).toMatch(/moved before/);
+
+      // Started work leaves only through a discard.
+      srv.store.mutateItem(dep.id, [{ set: { status: 'IN_PROGRESS' } }], 'engine');
+      expect(text(await client.callTool({ name: 'move_item', arguments: { id: dep.id, to: 'icebox' } })).error).toMatch(/discard_item/);
+      expect(srv.store.requireItem(dep.id).file.frontmatter.status).toBe('IN_PROGRESS');
+
+      const activity = srv.store.requireItem(made.id).file.sections.find((s) => s.title === 'Activity')!.body;
+      expect(activity).toMatch(/\[operator\] status NOT_YET_SUBMITTED → QUEUED/);
+      expect(activity).toMatch(/\[operator\] status QUEUED → ICEBOX/);
+      expect(activity).not.toMatch(/\[user\]/);
+      expect(srv.store.journal.read({ type: 'operator_mcp.action' }).map((e) => [e.data?.tool, e.data?.to])).toEqual([['submit_item', undefined], ['move_item', 'icebox'], ['move_item', 'backlog'], ['move_item', 'before']]);
     } finally { await client.close(); await srv.engine.stop(); srv.server.close(); srv.store.close(); }
   });
 

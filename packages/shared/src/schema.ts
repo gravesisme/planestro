@@ -76,7 +76,7 @@ export const OPERATIONAL_KEYS = [
   'merge_order', 'skip_merge', 'hold_reason', 'hold_waits_on', 'review_hold', 'review_handoff', 'loop_state', 'delivered', 'validated_by', 'parts', 'blocked', 'blocked_reason', 'cost_usd', 'turns', 'agent_turns', 'tokens',
   'imported_from', 'dates_estimated', 'scheduled_from', 'created_by',
 ] as const;
-export const DERIVED_KEYS = ['base_branch', 'lane', 'external', 'children', 'deps_satisfied', 'needs_you'] as const;
+export const DERIVED_KEYS = ['base_branch', 'lane', 'external', 'children', 'deps_satisfied', 'waits_on', 'needs_you'] as const;
 /** Canonical frontmatter key order; unknown keys follow, alphabetically. */
 export const ITEM_KEY_ORDER: readonly string[] = [...AUTHORITATIVE_KEYS, ...OPERATIONAL_KEYS];
 
@@ -605,7 +605,7 @@ export const Config = z.object({
    * opt-in so filing follow-ups never grants acting on items. `allow_permissions` lets those actions allow a parked permission
    * request once; off, they may only deny one.
    */
-  operator_mcp: z.object({ allow_writes: z.boolean().default(false), allow_actions: z.boolean().default(false), allow_permissions: z.boolean().default(false), allow_decisions: z.boolean().default(false) }).default({ allow_writes: false, allow_actions: false, allow_permissions: false, allow_decisions: false }),
+  operator_mcp: z.object({ allow_writes: z.boolean().default(false), allow_actions: z.boolean().default(false), allow_permissions: z.boolean().default(false), allow_decisions: z.boolean().default(false), allow_submit: z.boolean().default(false) }).default({ allow_writes: false, allow_actions: false, allow_permissions: false, allow_decisions: false, allow_submit: false }),
   feedback: z.object({ issue_repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, 'owner/repo').optional() }).default({}),
   /** Importing the project's GitHub issues as items (#231): with none selected, every open issue with this label is imported. */
   issues: z.object({ import_label: z.string().min(1).optional() }).default({}),

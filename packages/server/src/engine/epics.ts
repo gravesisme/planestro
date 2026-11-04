@@ -177,18 +177,33 @@ export class Epics {
     this.ctx.note('info', `${id}: epic open on ${branch}`);
   }
 
-  /** The integration branch of an epic that is already IN_PROGRESS (a planned epic gets there by approval, not by openEpic). */
+  /**
+   * The integration branch of an epic that is already IN_PROGRESS (a planned epic gets there by approval, not by openEpic).
+   * While the epic's own dependencies are not merged it is not cut (#525): a branch cut now would lack them. The wait is
+   * kept in `op_data.branch_deferred`; its children inherit the dependencies, and the first one admitted cuts it (admit).
+   */
   async ensureEpicBranch(id: string): Promise<void> {
     const item = this.ctx.store.requireItem(id);
     const fm = item.file.frontmatter;
-    const base = this.ctx.store.derived(item).base_branch!;
+    const d = this.ctx.store.derived(item);
     const branch = fm.branch ?? `feature/${slugify(fm.title)}`;
+    if (d.waits_on.length) {
+      if (fm.op_data?.branch_deferred) return;
+      this.ctx.store.mutateItem(id, [
+        { set: { branch, op_data: { ...(fm.op_data ?? {}), branch_deferred: { waits_on: d.waits_on } } } },
+        { activity: { actor: 'app', text: `integration branch ${branch} not cut yet: ${id} waits on ${d.waits_on.join(', ')}; its children wait with it, and the branch is cut from the base once they are merged` } },
+      ], 'engine', { commit: `${id}: defer the integration branch` });
+      return;
+    }
+    const base = d.base_branch!;
     await this.ctx.ports.git.fetch(this.ctx.repo);
     const exists = !!(await this.ctx.ports.git.remoteBranchSha(this.ctx.repo, branch));
     // A retry (#439) finds it already there: only a branch this step opened is said.
-    if (exists && fm.branch === branch) return;
+    const { branch_deferred: deferred, ...rest } = fm.op_data ?? {};
+    const undefer = deferred ? [{ set: { op_data: rest } }] : [];
+    if (exists && fm.branch === branch && !deferred) return;
     if (!exists) await this.ctx.ports.git.pushRef(this.ctx.repo, `origin/${base}`, branch);
-    this.ctx.store.mutateItem(id, [{ set: { branch } }, { activity: { actor: 'app', text: exists ? `integration branch ${branch} is on the remote` : `opened integration branch ${branch} from origin/${base}` } }], 'engine', { commit: `${id}: open epic` });
+    this.ctx.store.mutateItem(id, [...undefer, { set: { branch } }, { activity: { actor: 'app', text: exists ? `integration branch ${branch} is on the remote` : `opened integration branch ${branch} from origin/${base}` } }], 'engine', { commit: `${id}: open epic` });
     this.ctx.note('info', `${id}: epic open on ${branch}`);
   }
 

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseItemFile, type JournalEntry } from '@planestro/shared';
-import { classOf, formatSuggestReport, knownBlocker, mergeRulings, precedents, restoreHeredocs, rulingsFromActivity, rulingsFromJournal, runsFromJournal, suggestAllowRules, worktreeFinder, type Ruling, type Run } from '../src/engine/allowSuggest.ts';
+import { classOf, formatSuggestReport, parkedShape, knownBlocker, mergeRulings, precedents, restoreHeredocs, rulingsFromActivity, rulingsFromJournal, runsFromJournal, suggestAllowRules, worktreeFinder, type Ruling, type Run } from '../src/engine/allowSuggest.ts';
 
 const WT = '/repo/.claude/worktrees/hh-1-x';
 let n = 0;
@@ -205,5 +205,21 @@ describe('redirects, drift and precedent (#203)', () => {
     expect(precedents(past, 'pkill -f b', WT).map((x) => x.reason)).toEqual(['leave it', 'not yours']);
     expect(precedents(past, 'pkill -f b', WT, 1)).toHaveLength(1);
     expect(precedents(past, 'make', WT)).toEqual([]);
+  });
+});
+
+describe('the command a park is counted under', () => {
+  const wt = '/repo/.claude/worktrees/HH-1';
+  // grep, sed -n and git diff are allowed; awk, python3 -c and godot are not (HH's kind of lines)
+  const allowed = (t: string) => /^(grep|sed -n|git diff|cd|head|tail|python3 tools\/)/.test(t);
+  it('is the first command the rules do not allow, not the first word on the line', () => {
+    expect(parkedShape(`grep -n '"tools/' f.json | awk -F: '$1>112' | head -30`, wt, allowed)).toBe('awk');
+    expect(parkedShape(`git diff --stat; python3 -c "import json"`, wt, allowed)).toBe('python3');
+    expect(parkedShape('python3 tools/build.py && godot --headless --path . --script tools/check.gd', wt, allowed)).toBe('godot');
+    expect(parkedShape('cd assets && sips -Z 64 a.png', wt, allowed)).toBe('sips');
+  });
+  it('is the first command when every one passes alone (the line parked as a whole)', () => {
+    expect(parkedShape('grep x f > /etc/out', wt, () => true)).toBe('grep');
+    expect(parkedShape('npx tsx a.ts', wt, () => false)).toBe('npx tsx');
   });
 });

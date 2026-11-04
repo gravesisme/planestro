@@ -74,6 +74,11 @@ export interface BaseSyncContext {
   busyWith(id: string): string | undefined;
   phaseFor(status: Status): TurnPhase | null;
   queueTurn(id: string, phase: TurnPhase, prompt: string, extraAllowed: string[], oneShotCommands: string[], opts: { fresh?: true | 'auto'; opener?: boolean }): void;
+  /**
+   * An item in review whose head's run is cancelled or red on the infrastructure, on a head its base has moved past, goes back
+   * through the merge pipeline's sync for a new head (#533: CiWatch.syncStaleRun); undefined when its run is neither.
+   */
+  syncStaleRun(id: string, by: 'user' | 'orchestrator'): Promise<string | undefined>;
   /** An item in review re-enters the merge pipeline (retry_op); a stopped one is unblocked after a sync. */
   retryOp(id: string, by: 'user' | 'orchestrator' | 'engine', message?: string): Promise<string>;
   unblock(id: string, message: string | undefined, by: 'user' | 'orchestrator' | 'engine', opts: { fresh?: boolean }): Promise<void>;
@@ -195,10 +200,16 @@ export class BaseSync {
     const d = this.ctx.store.derived(item);
     const epic = fm.kind === 'epic';
     if (this.ctx.guards.paused || this.ctx.guards.draining || this.ctx.stopping) return `not now: automation is ${this.ctx.guards.paused ? 'paused' : 'stopping'}; nothing was synced`;
+    // A head whose run is cancelled or the infrastructure's needs a new head once its base has moved (#533, HH-310): a re-run
+    // reuses the old merge commit and workflow. Taken on in review, blocked or still in its CI wait, for a worker or an epic.
+    if (fm.status === 'IN_REVIEW' && (epic || d.flavor === 'worker') && !opts.unblock?.message?.trim()) {
+      const stale = await this.ctx.syncStaleRun(id, by);
+      if (stale) return stale;
+    }
     // A pull request is synced by the merge pipeline (HH-532): a stopped one re-enters it, so a sync conflict goes to the
     // held-rebase continuation from there, instead of a refusal that pointed the orchestrator back at the same loop.
     if (!epic && d.flavor === 'worker' && fm.status === 'IN_REVIEW') {
-      if (!fm.blocked) return `not needed: ${id} is in review, and the merge pipeline rebases its pull request onto its base before it merges; a conflict there goes to its session as planestro's held rebase`;
+      if (!fm.blocked) return `not needed: ${id} is in review, and the merge pipeline rebases its pull request onto its base before it merges; a conflict there goes to its session as planestro's held rebase (a head whose CI run was cancelled or red on the infrastructure is synced this way once its base has moved)`;
       // A message on any other stop is the session's next instruction (#486): re-entering the pipeline only put it in
       // Activity, and HH-610's fix for a red run was lost while CI ran the failing code again. The pipeline syncs after it.
       const message = opts.unblock?.message?.trim();

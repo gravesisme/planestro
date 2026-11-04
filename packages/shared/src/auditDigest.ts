@@ -116,7 +116,7 @@ function parkLines(entries: JournalEntry[], top: number): string[] {
     s.n += 1; s.items.add(e.item); shapes.set(shape, s);
   }
   const rows = [...shapes].sort((a, b) => b[1].n - a[1].n).slice(0, top);
-  return rows.length ? ['', '## Permission parks by command', ...rows.map(([shape, s]) => `- \`${shape}\`: ${s.n} parks on ${s.items.size} items`)] : [];
+  return rows.length ? ['', '## Permission parks by the command that parked', ...rows.map(([shape, s]) => `- \`${shape}\`: ${s.n} parks on ${s.items.size} items`)] : [];
 }
 
 /** The journal types the digest reads. */

@@ -51,7 +51,7 @@ export interface ItemView {
   merged_since_cut?: string[];
   /** Set on a done or iceboxed item in /api/state: no Plan, Activity text or `delivered`, and only its newest Activity. `useFullItem` loads the rest. */
   summary?: true;
-  derived: { lane: 'board' | 'icebox' | 'done'; needs_you: boolean; external: boolean; flavor: 'worker' | 'epic' | 'external'; base_branch?: string; base_branch_error?: string; deps_satisfied: boolean; children: string[] };
+  derived: { lane: 'board' | 'icebox' | 'done'; needs_you: boolean; external: boolean; flavor: 'worker' | 'epic' | 'external'; base_branch?: string; base_branch_error?: string; deps_satisfied: boolean; waits_on?: string[]; children: string[] };
 }
 export interface ReviewImage { path: string; change: 'added' | 'modified' | 'deleted'; bytes?: number; width?: number; height?: number; kind?: 'image' | 'audio' | 'model' | 'text' }
 /** One changed file's unified diff against the base (#233). */
@@ -101,7 +101,7 @@ export interface State {
   permissions?: { machine_path: string; machine_exists: boolean; machine_error?: string; rules: SourcedRule[] };
   items: ItemView[]; prompts: PromptView[]; releases?: ReleaseView[]; schedules?: ScheduleView[]; invalid: { path: string; error: string }[];
   update: { channel: string; running: string; checked_at: string; state: string; detail: string; target?: string } | null;
-  engine: { mode: string; modes?: EngineModes; paused: boolean; paused_by?: 'user' | 'disk'; provider_guards?: Record<string, UsageGuardState>; disk_guard?: { free_gib: number; path: string; tripped_at: string }; ci_queue?: { queued: number; running: number }; runner_stalls?: { label: string; items: string[]; since: string }[]; sessions: SessionView[]; slots?: SlotsView; restart?: { draining: boolean; by?: 'user' | 'update'; idle: boolean; running: string[] } };
+  engine: { mode: string; modes?: EngineModes; paused: boolean; paused_by?: 'user' | 'disk'; provider_guards?: Record<string, UsageGuardState>; disk_guard?: { free_gib: number; path: string; tripped_at: string }; ci_queue?: { queued: number; running: number }; runner_stalls?: { label: string; items: string[]; since: string; said?: string }[]; sessions: SessionView[]; slots?: SlotsView; restart?: { draining: boolean; by?: 'user' | 'update'; idle: boolean; running: string[] } };
   git: { dirty: string[]; branch: string; head?: string; ahead?: number };
   statuses: Status[];
 }

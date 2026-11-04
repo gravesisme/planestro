@@ -49,7 +49,7 @@ export interface SchedulerContext {
   /** Stops for the orchestrator to triage, and a scheduled item submitted as the user (#247). */
   readonly triage: Pick<Triage, 'driveTriage' | 'submitAsUser'>;
   /** Epics: reopened, driven, and opened when admission starts a child of one not yet submitted. */
-  readonly epics: Pick<Epics, 'reopenEpics' | 'driveEpics' | 'openEpic'>;
+  readonly epics: Pick<Epics, 'reopenEpics' | 'driveEpics' | 'openEpic' | 'ensureEpicBranch'>;
   readonly mergePipeline: Pick<MergePipeline, 'driveInReview' | 'driveHeld'>;
   readonly baseSync: Pick<BaseSync, 'driveBaseWaits'>;
   readonly ciWatch: Pick<CiWatch, 'driveRunnerStalls' | 'driveReviewStalls'>;
@@ -187,6 +187,8 @@ export class Scheduler {
         if (!parent) continue;
         if (parent.file.frontmatter.status === 'NOT_YET_SUBMITTED') { this.ctx.runJob(fm.parent, () => this.ctx.epics.openEpic(fm.parent!)); continue; }
         if (parent.file.frontmatter.status !== 'IN_PROGRESS') continue;
+        // Its epic's branch waited for the epic's dependencies (#525); this child's deps include them, so they are merged now.
+        if (parent.file.frontmatter.op_data?.branch_deferred) { if (!this.ctx.jobs.has(fm.parent)) this.ctx.runJob(fm.parent, () => this.ctx.epics.ensureEpicBranch(fm.parent!)); continue; }
         d = this.ctx.store.derived(item);
       }
       if (!d.base_branch) continue;
