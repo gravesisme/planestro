@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 — 2026-11-04
 
 ### Fixed
 
@@ -27,6 +27,13 @@
 - A heavy-run pattern, deny, redirect or allow rule can meet a flag anywhere in a command: a ` * ` between words stands
   for any words, so `./tools/run_checks.sh * --repeat` sends `./tools/run_checks.sh mine_cart --repeat 20` to
   `run_heavy`, where a pattern used to meet only a command's start (#517).
+- A busy runner whose jobs move is a queue, not a stall (#519): a label is stalled only when its runners are offline,
+  or all busy with no job started or finished on it for `ci.timeout_min`. Two online, busy Macs draining a queue no
+  longer raise the "stalled or offline" banner or wake the orchestrator; the banner, Activity, block reason and wake
+  say which it is.
+- The New release dialog opens instead of crashing the page with React #185 ("Maximum update depth exceeded") (#524).
+- A park is counted under the command that parked, not the first word on its line (#512): the efficiency audit, the
+  Console's park counts and the "allow rule" hint read `grep … | awk …` as the awk that parked, not as grep.
 
 ### Added
 
@@ -40,6 +47,11 @@
   a column, each as the board does it and recorded as `[operator]`. While an opt-in is off, the
   endpoint's instructions name it, so a session says which setting would offer a tool instead of
   calling planestro's HTTP API, where its change would read as yours.
+
+### Changed
+
+- Dependencies: the Agent SDK 0.3.306 → 0.3.312, the MCP SDK 1.32.2, hono 4.13.14, react-router 8.5.1, zustand 5.0.16,
+  vite 8.3.5 and dev tooling (#523); `npm audit fix` for body-parser, qs, fast-uri and ip-address under the MCP SDK (#531).
 
 ## 1.1.0 — 2026-10-28
 
