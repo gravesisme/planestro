@@ -1,9 +1,22 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 — 2026-11-04
 
 ### Fixed
 
+- AUTOMATION PAUSED holds a running turn's heavy runs (#534): a `run_heavy` batch that has not started its command,
+  whether it waits on the heavy-run lock, on CI or comes after the batch before it, waits until Resume and says
+  `heavy run: held while automation is paused` once, where it used to start the moment its wait ended (HH-682 launched
+  Godot over a paused board). A command already running finishes, a stopped turn stops waiting, and a worktree's setup
+  hook not yet started waits the same way. Each pause and resume is one stamped line in serve.log naming its source:
+  the user, the disk guard or a provider's usage guard.
+- A CI run that was cancelled, or red on the infrastructure, on a head whose base has moved since it synced gets a new
+  head, not a re-run (#533, #532): a re-run of a pull_request run reuses the old merge commit and workflow, so a fix that
+  landed on the base (HH-678's checkout fix for HH-310) never reached it, and planestro's own re-run burned 40 more minutes.
+  The CI wait ends and the merge pipeline syncs the item (a worker branch rebases and is pushed with a lease, an epic's
+  integration branch merges its base), so the new head runs the fixed workflow. On a base that has not moved, the re-run
+  once then `ci_cancelled` stands. **Sync with base** (`sync_with_base`) now takes such an item in review, blocked
+  `ci_cancelled` / `ci_infra` or still in its CI wait, and `rerun_ci` refuses it in words, naming `sync_with_base`.
 - An epic's children wait for the epic's own dependencies (#525): approving a breakdown early queues them, but neither
   cuts `feature/<slug>` nor starts a child until what the epic depends on has merged. The branch is then cut from a base
   that contains it, and the board's "waits on" names the inherited dependency.
@@ -14,6 +27,13 @@
 - A heavy-run pattern, deny, redirect or allow rule can meet a flag anywhere in a command: a ` * ` between words stands
   for any words, so `./tools/run_checks.sh * --repeat` sends `./tools/run_checks.sh mine_cart --repeat 20` to
   `run_heavy`, where a pattern used to meet only a command's start (#517).
+- A busy runner whose jobs move is a queue, not a stall (#519): a label is stalled only when its runners are offline,
+  or all busy with no job started or finished on it for `ci.timeout_min`. Two online, busy Macs draining a queue no
+  longer raise the "stalled or offline" banner or wake the orchestrator; the banner, Activity, block reason and wake
+  say which it is.
+- The New release dialog opens instead of crashing the page with React #185 ("Maximum update depth exceeded") (#524).
+- A park is counted under the command that parked, not the first word on its line (#512): the efficiency audit, the
+  Console's park counts and the "allow rule" hint read `grep … | awk …` as the awk that parked, not as grep.
 
 ### Added
 
@@ -27,6 +47,11 @@
   a column, each as the board does it and recorded as `[operator]`. While an opt-in is off, the
   endpoint's instructions name it, so a session says which setting would offer a tool instead of
   calling planestro's HTTP API, where its change would read as yours.
+
+### Changed
+
+- Dependencies: the Agent SDK 0.3.306 → 0.3.312, the MCP SDK 1.32.2, hono 4.13.14, react-router 8.5.1, zustand 5.0.16,
+  vite 8.3.5 and dev tooling (#523); `npm audit fix` for body-parser, qs, fast-uri and ip-address under the MCP SDK (#531).
 
 ## 1.1.0 — 2026-10-28
 

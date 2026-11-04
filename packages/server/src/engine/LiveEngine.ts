@@ -155,6 +155,7 @@ export class LiveEngine implements Engine {
       get orchestrator() { return orchestrator(); },
       emit,
       note: (level, message) => this.note(level, message),
+      log: (level, message) => this.opts.log?.(level, message),
       announce: (event, title, message) => this.announce(event, title, message),
       schedule: (fn, ms) => this.schedule(fn, ms),
       tick: () => this.tick(),
@@ -203,6 +204,7 @@ export class LiveEngine implements Engine {
     this.ciWatch = new CiWatch({
       store,
       ports,
+      get repo() { return repo(); },
       get github() { return github(); },
       ciWorkflow: this.ciWorkflow,
       get stopping() { return stopping(); },
@@ -276,6 +278,7 @@ export class LiveEngine implements Engine {
       busyWith: (id) => this.busyWith(id),
       phaseFor: (status) => this.phaseFor(status),
       queueTurn: (id, phase, prompt, extraAllowed, oneShotCommands, opts) => this.queueTurn(id, phase, prompt, extraAllowed, oneShotCommands, opts),
+      syncStaleRun: (id, by) => this.ciWatch.syncStaleRun(id, by),
       retryOp: (id, by, message) => this.retryOp(id, by, message),
       unblock: (id, message, by, opts) => this.unblock(id, message, by, opts),
       freshRefusal: (fm, message) => this.freshRefusal(fm, message),
@@ -1706,6 +1709,9 @@ export class LiveEngine implements Engine {
    * run at a time, each batch after any CI job on a runner sharing this host (`heavy_runs.shared_labels`) has ended.
    * The waits are the lock and CI, never a person (invariant 2); a turn that is stopped stops waiting. With
    * `heavy_runs.enabled` off it is only a long run (#502): no lock, no CI wait, still one call of any length.
+   * AUTOMATION PAUSED holds each batch that has not started its command, in the same wait (#534): the lever is
+   * what a user pulls to keep Godot off the machine, and a running turn's next batch is new work. A command
+   * already running finishes; Resume lets the held batch go. A drain does not hold it: it finishes what runs.
    */
   private async runHeavy(id: string, commands: string[]): Promise<string> {
     const cfg = this.store.config.heavy_runs;
@@ -1738,10 +1744,21 @@ export class LiveEngine implements Engine {
       if (holder !== undefined) { const w = `waited ${took(Date.now() - t0)} for ${holder}'s heavy run`; out.push(w); say(w); }
       for (const [i, command] of commands.entries()) {
         const label = commands.length > 1 ? `batch ${i + 1}/${commands.length}: ` : '';
-        if (cfg.enabled && cfg.yield_to_ci && cfg.shared_labels.length) {
-          const w0 = Date.now(); let first: string[] | undefined; let unread = '';
-          for (;;) {
-            if (stopped()) return [...out, `Stopped: this turn was stopped while waiting for CI${label ? ` before ${label.slice(0, -2)}` : ''}.`].join('\n');
+        const yieldToCi = cfg.enabled && cfg.yield_to_ci && cfg.shared_labels.length > 0;
+        const w0 = Date.now(); let first: string[] | undefined; let unread = ''; let held: number | undefined;
+        for (;;) {
+          if (stopped()) {
+            const where = label ? ` before ${label.slice(0, -2)}` : '';
+            return [...out, `Stopped: this turn was stopped${held !== undefined ? ` while held for automation to resume${where}` : yieldToCi ? ` while waiting for CI${where}` : where || ' before the command started'}.`].join('\n');
+          }
+          if (this.guards.paused) {
+            if (held === undefined) { held = Date.now(); say(`${label}held while automation is paused`); }
+            await this.untilResumed(signal, cfg.poll_s * 1000);
+            continue;
+          }
+          if (held !== undefined) { const w = `${label}held ${took(Date.now() - held)} while automation was paused`; out.push(w); say(w); held = undefined; }
+          if (!yieldToCi) break;
+          {
             let busy: string[] = [];
             try { const r = await this.readRunners(cfg.poll_s * 1000); busy = r ? ciOnSharedHost(r.report, cfg.shared_labels) : []; if (!r) unread = 'the runners cannot be read here (no code_repo.github or no runner report), so nothing was waited for'; }
             catch (e) { unread = `the runners could not be read (${(e as Error).message.replace(/\s+/g, ' ').slice(0, 160)}), so nothing was waited for`; }
@@ -1749,9 +1766,9 @@ export class LiveEngine implements Engine {
             first ??= busy;
             await this.sleep(cfg.poll_s * 1000);
           }
-          if (first) { const w = `${label}waited ${took(Date.now() - w0)} for CI on ${cfg.shared_labels.join(', ')} (${first.join('; ')})`; out.push(w); say(w); }
-          else if (unread && i === 0) out.push(unread);
         }
+        if (first) { const w = `${label}waited ${took(Date.now() - w0)} for CI on ${cfg.shared_labels.join(', ')} (${first.join('; ')})`; out.push(w); say(w); }
+        else if (unread && i === 0) out.push(unread);
         const r0 = Date.now();
         const r = await this.ports.proc.run(command, { cwd, timeoutMs: cfg.timeout_min * 60_000, ...env, ...(signal ? { signal } : {}) });
         await this.recordTestRun(id, cwd, { command, ok: r.code === 0, ms: Date.now() - r0 }, 'run_heavy');
@@ -1762,6 +1779,21 @@ export class LiveEngine implements Engine {
       say(`ran ${commands.length === 1 ? `\`${commands[0].slice(0, 120)}\`` : `${commands.length} batches`} in ${took(Date.now() - t0)}`);
       return out.join('\n');
     } finally { release(); if (turn) { turn.heavy = (turn.heavy ?? 1) - 1; turn.lastOutputAt = Date.now(); } }
+  }
+
+  /**
+   * A wait while AUTOMATION PAUSED is set (#534): ends at the resume, at the signal (the turn was stopped), or after
+   * `pollMs`, whichever comes first, so the caller re-reads its own stop conditions. Holds no slot of its own.
+   */
+  private untilResumed(signal: AbortSignal | undefined, pollMs: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      let done = false;
+      const finish = () => { if (done) return; done = true; off(); signal?.removeEventListener('abort', finish); resolve(); };
+      const off = this.guards.onResume(finish);
+      if (signal?.aborted) { finish(); return; }
+      signal?.addEventListener('abort', finish, { once: true });
+      void this.sleep(pollMs).then(finish, finish);
+    });
   }
 
   // ---- loop until green (#171) ----
@@ -2137,10 +2169,20 @@ export class LiveEngine implements Engine {
     return false;
   }
 
-  /** `after_worktree_create`, one hook at a time within the local-job limit; a failure blocks the item. */
+  /**
+   * `after_worktree_create`, one hook at a time within the local-job limit; a failure blocks the item. A hook that has
+   * not started waits while AUTOMATION PAUSED is set (#534): an admission or a recreate_worktree already under way when
+   * the user paused would otherwise launch the project's importer (`godot --import`) over them. An engine stop ends the
+   * wait with nothing run; the op is left for the restart, which re-runs setup.
+   */
   private async runSetupHooks(id: string, dir: string, opId: string): Promise<boolean> {
     this.store.mutateItem(id, [{ set: { op: 'importing', op_started_at: this.now() } }], 'engine');
     for (const hook of this.store.config.hooks.after_worktree_create) {
+      if (this.guards.paused) {
+        this.store.mutateItem(id, [{ activity: { actor: 'app', text: `setup hook held while automation is paused: ${hook}` } }], 'engine');
+        while (this.guards.paused && !this.stopping) await this.untilResumed(undefined, 30_000);
+        if (this.stopping) return false;
+      }
       const r = await this.slots.withLocalJobSlot(() => this.ports.proc.run(hook, { cwd: dir, timeoutMs: 20 * 60_000 }));
       if (r.code !== 0) { this.store.journal.end(opId, id, 'failed', { hook, code: r.code }); this.block(id, 'hook_failed', `${hook} exited ${r.code}: ${r.stderr.slice(-400)}`); return false; }
       this.store.mutateItem(id, [{ activity: { actor: 'app', text: `hook ok: ${hook}` } }], 'engine');
