@@ -296,6 +296,12 @@ waited for, and how long, is in its answer and the item's Activity. A Bash call 
 patterns or the allow rules permit and nothing the deny rules refuse. Waiting on the lock or on
 CI is not waiting on a person: a turn that is stopped stops waiting.
 
+While automation is paused (by you or the disk guard), a batch that has not started its command
+waits in the same loop until Resume, `enabled` or not, and says `heavy run: held while automation is
+paused` once (#534); a command already running finishes. A setup hook (`after_worktree_create`) that
+has not started waits the same way. A drain (Prepare to restart) does not hold them: it finishes what
+runs. A provider's usage guard does not either: it stops that provider's new turns, not a turn's run.
+
 `run_heavy` is offered to every implementing worker, `enabled` or not (#502): a Claude worker's
 foreground Bash call is capped at 10 minutes, and a run longer than that (a browser or e2e harness,
 a long suite) goes through `run_heavy` as one call of any length, up to `timeout_min` a batch. With

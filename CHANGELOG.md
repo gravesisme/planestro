@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- AUTOMATION PAUSED holds a running turn's heavy runs (#534): a `run_heavy` batch that has not started its command,
+  whether it waits on the heavy-run lock, on CI or comes after the batch before it, waits until Resume and says
+  `heavy run: held while automation is paused` once, where it used to start the moment its wait ended (HH-682 launched
+  Godot over a paused board). A command already running finishes, a stopped turn stops waiting, and a worktree's setup
+  hook not yet started waits the same way. Each pause and resume is one stamped line in serve.log naming its source:
+  the user, the disk guard or a provider's usage guard.
 - An epic's children wait for the epic's own dependencies (#525): approving a breakdown early queues them, but neither
   cuts `feature/<slug>` nor starts a child until what the epic depends on has merged. The branch is then cut from a base
   that contains it, and the board's "waits on" names the inherited dependency.
