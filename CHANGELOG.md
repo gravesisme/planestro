@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- AUTOMATION PAUSED holds a running turn's heavy runs (#534): a `run_heavy` batch that has not started its command,
+  whether it waits on the heavy-run lock, on CI or comes after the batch before it, waits until Resume and says
+  `heavy run: held while automation is paused` once, where it used to start the moment its wait ended (HH-682 launched
+  Godot over a paused board). A command already running finishes, a stopped turn stops waiting, and a worktree's setup
+  hook not yet started waits the same way. Each pause and resume is one stamped line in serve.log naming its source:
+  the user, the disk guard or a provider's usage guard.
 - A CI run that was cancelled, or red on the infrastructure, on a head whose base has moved since it synced gets a new
   head, not a re-run (#533, #532): a re-run of a pull_request run reuses the old merge commit and workflow, so a fix that
   landed on the base (HH-678's checkout fix for HH-310) never reached it, and planestro's own re-run burned 40 more minutes.

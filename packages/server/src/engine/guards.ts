@@ -24,6 +24,8 @@ export interface GuardsContext {
   readonly orchestrator: Pick<Orchestrator, 'kick' | 'busy'>;
   emit(e: ServerEvent): void;
   note(level: 'info' | 'warn' | 'error', message: string): void;
+  /** The server's log (serve.log): each pause and resume is written there once, with its time and source (#534). */
+  log?(level: 'info' | 'warn' | 'error', message: string): void;
   announce(event: 'on_usage_pause', title: string, message: string): void;
   /** The engine's timer, whose callback notes a throw rather than ending the process. Returns a cancel. */
   schedule(fn: () => void, ms: number): () => void;
@@ -47,14 +49,26 @@ export class Guards {
 
   get paused(): boolean { return this._paused; }
 
+  /** Called once at the next resume (#534: a held heavy run or setup hook goes on then); returns the unsubscribe. */
+  private readonly resumeListeners = new Set<() => void>();
+  onResume(fn: () => void): () => void { this.resumeListeners.add(fn); return () => { this.resumeListeners.delete(fn); }; }
+
   /** The lever by hand. A manual pause is the user's: the usage guard never resumes it. */
   pause(): void { this.setPaused(true, 'user'); this.ctx.note('warn', 'AUTOMATION PAUSED — running steps finish, nothing new starts'); }
   /** Global automation control is independent of provider usage guards. */
-  resume(message = 'automation resumed'): void { this.setPaused(false); this.ctx.note('info', message); this.ctx.orchestrator.kick(); void this.ctx.tick(); }
+  resume(message = 'automation resumed', by: 'user' | 'disk' = 'user'): void { this.setPaused(false, by); this.ctx.note('info', message); this.ctx.orchestrator.kick(); void this.ctx.tick(); }
   private setPaused(paused: boolean, by?: 'user' | 'disk', guard?: UsageGuardState, disk?: { free_gib: number; path: string; tripped_at: string }): void {
+    const was = this._paused;
     this._paused = paused;
     this.ctx.store.updateLocal({ engine: { ...this.ctx.store.local.engine, paused, paused_by: paused ? by : undefined, disk_guard: paused ? disk : undefined } });
     this.ctx.emit({ type: 'engine.paused', paused, ...(paused && by ? { by } : {}) });
+    if (was !== paused) this.serveLog(paused ? 'warn' : 'info', `automation ${paused ? 'paused' : 'resumed'} by ${by === 'disk' ? 'the disk guard' : 'the user'}${disk ? ` (${disk.free_gib} GiB free on ${disk.path})` : ''}`);
+    if (!paused) this.wakeResumeListeners();
+  }
+  private wakeResumeListeners(): void { for (const fn of [...this.resumeListeners]) { this.resumeListeners.delete(fn); try { fn(); } catch { /* a listener must not stop the resume */ } } }
+  /** One serve.log line per transition, stamped: the log itself carries no times (#534). */
+  private serveLog(level: 'info' | 'warn', message: string): void {
+    try { this.ctx.log?.(level, `${new Date(Date.now()).toISOString()} ${message}`); } catch { /* a log must not stop the lever */ }
   }
 
   // ---- usage guard: pause before a subscription window runs out, resume once it resets ----
@@ -68,6 +82,7 @@ export class Guards {
     const guard: UsageGuardState = { window: r.window, status: r.status, ...(r.utilization !== undefined ? { utilization: r.utilization } : {}), ...(r.resetsAt ? { resets_at: r.resetsAt } : {}), tripped_at: new Date(Date.now()).toISOString(), ...(resumeAt ? { resume_at: resumeAt } : {}) };
     this.ctx.store.updateLocal({ engine: { ...this.ctx.store.local.engine, provider_guards: { ...this.ctx.store.local.engine.provider_guards, [runner]: guard }, provider_guard_last: { ...this.ctx.store.local.engine.provider_guard_last, [runner]: guard } } });
     this.ctx.store.journal.append({ type: 'usage.guard_tripped', actor: 'engine', data: { provider: runner, ...guard, threshold: cfg.threshold } });
+    this.serveLog('warn', `${runner} paused by the usage guard (${usageWindowLabel(r.window)} window${usagePercent(r.utilization) ? ` at ${usagePercent(r.utilization)}` : ''}${resumeAt ? `, resumes at ${resumeAt}` : ''})`);
     this.ctx.note('warn', `${runner} USAGE GUARD: ${usageWindowLabel(r.window)} window ${usagePercent(r.utilization) ? `at ${usagePercent(r.utilization)}` : r.status === 'rejected' ? 'is exhausted' : 'sent a usage warning'} — ${runner} paused ${resumeAt ? `until ${localClock(resumeAt)}` : r.resetsAt ? `(the window resets at ${localClock(r.resetsAt)}; resume by hand)` : 'until you resume it'}; running turns finish, nothing new starts`);
     this.ctx.announce('on_usage_pause', `${runner} paused for usage`, `${runner} paused: the ${usageWindowLabel(r.window)} usage window ${usagePercent(r.utilization) ? `is at ${usagePercent(r.utilization)}` : 'is near its limit'}`);
     this.armGuardResume();
@@ -88,7 +103,7 @@ export class Guards {
     const gib = Math.round((low.free / 2 ** 30) * 10) / 10;
     const e = this.ctx.store.local.engine;
     if (this._paused && e.paused_by === 'disk') {
-      if (gib >= cfg.resume_free_gib) { this.ctx.store.journal.append({ type: 'disk.guard_resumed', actor: 'engine', data: { free_gib: gib, path: low.path } }); this.resume(`automation resumed: ${gib} GiB free again on ${low.path}`); }
+      if (gib >= cfg.resume_free_gib) { this.ctx.store.journal.append({ type: 'disk.guard_resumed', actor: 'engine', data: { free_gib: gib, path: low.path } }); this.resume(`automation resumed: ${gib} GiB free again on ${low.path}`, 'disk'); }
       return;
     }
     if (this._paused || gib >= cfg.min_free_gib) return;
@@ -114,8 +129,9 @@ export class Guards {
     const due = Object.values(this.ctx.store.local.engine.provider_guards ?? {}).flatMap((g) => g.resume_at && Number.isFinite(Date.parse(g.resume_at)) ? [Date.parse(g.resume_at)] : []);
     return due.length ? Math.min(...due) : undefined;
   }
-  retryProvider(runner: string): void {
+  retryProvider(runner: string, by: 'user' | 'usage guard' = 'user'): void {
     const { [runner]: _guard, ...guards } = this.ctx.store.local.engine.provider_guards ?? {};
+    if (_guard) this.serveLog('info', `${runner} resumed by ${by === 'user' ? 'the user' : 'the usage guard (its window reset)'}`);
     this.ctx.store.updateLocal({ engine: { ...this.ctx.store.local.engine, provider_guards: guards } });
     for (const item of this.ctx.store.listItems()) {
       const fm = item.file.frontmatter;
@@ -130,7 +146,7 @@ export class Guards {
   guardResume(): void {
     if (this.ctx.stopping || !this.ctx.store.config.usage_guard.auto_resume) return;
     for (const [runner, guard] of Object.entries(this.ctx.store.local.engine.provider_guards ?? {}))
-      if (guard.resume_at && Date.parse(guard.resume_at) <= Date.now()) this.retryProvider(runner);
+      if (guard.resume_at && Date.parse(guard.resume_at) <= Date.now()) this.retryProvider(runner, 'usage guard');
     this.armGuardResume();
   }
 
@@ -232,8 +248,9 @@ export class Guards {
     return until.toISOString();
   }
 
-  /** At stop: the resume timers are cancelled. */
+  /** At stop: the resume timers are cancelled, and what waits for a resume wakes to see the engine stopping. */
   stop(): void {
+    this.wakeResumeListeners();
     this.cancelGuardResume?.(); this.cancelGuardResume = undefined;
     this.cancelModelResume?.(); this.cancelModelResume = undefined;
   }

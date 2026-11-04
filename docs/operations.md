@@ -56,8 +56,11 @@ home screen it opens full-screen.
 
 **PAUSE AUTOMATION** (persisted in `planestro.local.yml`): whatever is running finishes its
 current safe operation; nothing is admitted, no merge job starts, the orchestrator does not
-wake. Use it before doing anything by hand in the code repository that planestro is also
-working in.
+wake. A running turn's `run_heavy` batch or a setup hook that has not started its command waits
+until Resume (#534), so a pause keeps Godot, GPU captures and exports off the machine. Each pause
+and resume, by you or the disk guard (and each provider usage-guard trip and release), is one
+stamped line in `serve.log` naming its source. Use it before doing anything by hand in the code
+repository that planestro is also working in.
 
 ## Restarting safely
 

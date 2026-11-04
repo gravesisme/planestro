@@ -96,6 +96,7 @@ A label is stalled when its runners are offline, or all busy with no job started
 (`LabelProgress`, in memory); a busy label whose jobs move is a queue, never a stall (#519).
 A worker's heavy local run goes through `run_heavy` (`heavy_runs`, #218; matching Bash is redirected to it): one at a time
 (`HeavyLock`, in memory), each batch after any CI job on a `shared_labels` runner has ended, read from that same report.
+A batch or setup hook not yet started waits while paused (#534), in the same wait, abortable by the turn; a drain does not hold it.
 run_heavy is offered even with `heavy_runs` off, then with no lock or CI wait: the one run of any length past the CLI's 10-minute
 foreground cap (#502); a Bash call that hit the cap is told so, and the orchestrator counts either as one foreground harness run.
 A held item (`skip_merge`) skips only the merge: its new commits are pushed and its
