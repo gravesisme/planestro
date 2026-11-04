@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- A CI run that was cancelled, or red on the infrastructure, on a head whose base has moved since it synced gets a new
+  head, not a re-run (#533, #532): a re-run of a pull_request run reuses the old merge commit and workflow, so a fix that
+  landed on the base (HH-678's checkout fix for HH-310) never reached it, and planestro's own re-run burned 40 more minutes.
+  The CI wait ends and the merge pipeline syncs the item (a worker branch rebases and is pushed with a lease, an epic's
+  integration branch merges its base), so the new head runs the fixed workflow. On a base that has not moved, the re-run
+  once then `ci_cancelled` stands. **Sync with base** (`sync_with_base`) now takes such an item in review, blocked
+  `ci_cancelled` / `ci_infra` or still in its CI wait, and `rerun_ci` refuses it in words, naming `sync_with_base`.
 - An epic's children wait for the epic's own dependencies (#525): approving a breakdown early queues them, but neither
   cuts `feature/<slug>` nor starts a child until what the epic depends on has merged. The branch is then cut from a base
   that contains it, and the board's "waits on" names the inherited dependency.

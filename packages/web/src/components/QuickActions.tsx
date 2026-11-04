@@ -22,6 +22,14 @@ export const SYNC_HINT = 'Bring the branch up to date with its base between turn
  */
 export function canSyncWithBase(item: ItemView, live: boolean): boolean {
   const fm = item.frontmatter;
+  // In review only for a head whose run was cancelled or red on the infrastructure (#533): once its base has moved, a
+  // sync gives it a new head and a run of its own, where a re-run would reuse the old merge commit and workflow.
+  if (fm.status === 'IN_REVIEW' && !item.derived.external && !live && !fm.taken_over) {
+    const od = fm.op_data ?? {};
+    const infraRerun = (od.flake_rerun as { sha?: string; check?: string } | undefined);
+    return fm.blocked ? ['ci_cancelled', 'ci_infra'].includes(fm.blocked_reason ?? '')
+      : fm.op === 'awaiting_ci' && !!fm.ci_head_sha && (od.ci_cancel_rerun === fm.ci_head_sha || (infraRerun?.sha === fm.ci_head_sha && !!infraRerun.check?.startsWith('infrastructure')));
+  }
   return fm.kind !== 'epic' && !item.derived.external && ['PLAN_IN_PROGRESS', 'IN_PROGRESS'].includes(fm.status) && !!fm.worktree && !fm.op && !live && (!fm.awaiting || fm.awaiting === 'user');
 }
 

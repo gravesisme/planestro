@@ -6,7 +6,7 @@ import type { Guards } from './guards.ts';
 import type { CleanupReconcile } from './cleanupReconcile.ts';
 import type { ReviewUndo } from './reviewUndo.ts';
 import { syncFailed, type BaseSync } from './baseSync.ts';
-import type { CiWatch } from './ciWatch.ts';
+import type { CiWatch, StaleResync } from './ciWatch.ts';
 import { stallWords, type RunnerStall } from './runners.ts';
 import { TRANSIENT } from './transient.ts';
 import { HELD_POLL_MS } from './heldPoll.ts';
@@ -448,12 +448,16 @@ export class MergePipeline {
     };
     let verdict = await wait((fm.op_data?.ci_replaced as string | null | undefined) ?? null);
     // A red on the infrastructure (#219) or on a known flake is re-run once, for this same head, before anything else happens to it.
+    // On a head the base has moved past, the infrastructure's red is synced for a new head instead (#533): `stale_base`.
     if (verdict === 'red') {
-      const infra = await this.ctx.ciWatch.rerunIfInfra(id, opId, headSha);
+      const infra = await this.ctx.ciWatch.rerunIfInfra(id, opId, headSha, { resync: true });
       if (infra === 'blocked') return;
-      if (infra) {
+      if (infra === 'stale_base') verdict = infra;
+      else if (infra) {
         verdict = await wait(null, infra);
-        if (verdict === 'red' && await this.ctx.ciWatch.rerunIfInfra(id, opId, headSha) === 'blocked') return;
+        const again = verdict === 'red' ? await this.ctx.ciWatch.rerunIfInfra(id, opId, headSha, { resync: true }) : undefined;
+        if (again === 'blocked') return;
+        if (again === 'stale_base') verdict = again;
       } else if (canFix) {
         const attempt = await this.ctx.ciWatch.rerunIfFlaky(id, headSha);
         if (attempt) verdict = await wait(null, attempt);
@@ -461,6 +465,24 @@ export class MergePipeline {
     }
     // Read after the wait, not before it: a setting changed in the meantime is the one that applies (#173).
     const cfg = this.ctx.store.config.ci;
+    if (verdict === 'stale_base') {
+      // Cancelled or red on the infrastructure, on a head its base has moved past since it synced (#533, #532): a re-run would
+      // reuse the old merge commit and workflow, so a fix that landed on the base is not in it. Back through the chain's sync
+      // instead (a worker branch rebases and is pushed with a lease, an integration branch merges its base), so the new head
+      // gets a run of its own. Once per head (`ci_resync_from`): a sync that finds nothing to do brings it back to a re-run.
+      const cur = this.ctx.store.requireItem(id).file.frontmatter;
+      const r = cur.op_data?.ci_resync as StaleResync | undefined;
+      const { ci_resync: _r, ci_replaced: _p, ...od } = cur.op_data ?? {};
+      const base = r?.base ?? this.ctx.store.derived(item).base_branch ?? 'its base';
+      this.ctx.store.mutateItem(id, [
+        { unset: ['op', 'op_started_at'] },
+        { set: { ci_result: 'pending', op_data: { ...od, ci_resync_from: headSha } } },
+        { activity: { actor: 'app', text: `${r?.why ?? `CI for ${headSha.slice(0, 7)} will not pass as it is`}, and ${base} has moved past it since it was synced${r?.tip ? ` (to ${r.tip.slice(0, 7)})` : ''}: a re-run would reuse its old merge commit and workflow, so it is synced with ${base} instead, and CI runs on the new head` } },
+      ], 'engine', { commit: `${id}: sync for a new CI run` });
+      this.ctx.store.journal.end(opId, id, 'aborted', { reason: 'stale_base', head: headSha, ...(r ? { base_sha: r.tip, by: r.by } : {}) });
+      await this.mergeJob(id);
+      return;
+    }
     if (verdict === 'moved') { this.ctx.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { ci_result: 'pending' } }], 'engine'); this.ctx.store.journal.end(opId, id, 'aborted', { reason: 'head_moved' }); void this.ctx.tick(); return; }
     // The engine is stopping, which says nothing about CI: leave `op: awaiting_ci` on the item, and the next start re-enters the pipeline.
     if (verdict === 'stopping') { this.ctx.store.journal.end(opId, id, 'aborted', { reason: 'engine_stopping' }); return; }
@@ -470,9 +492,10 @@ export class MergePipeline {
       // Still cancelled after its one re-run: nothing else is coming for this head, so it stops now rather than at ci.timeout_min (#174).
       const cur = this.ctx.store.requireItem(id).file.frontmatter;
       const run = cur.op_data?.ci as { runId?: number; url?: string } | undefined;
+      const base = this.ctx.store.derived(item).base_branch ?? 'its base';
       this.ctx.store.mutateItem(id, [{ set: { op_data: { ...(cur.op_data ?? {}), last_cancelled: { runId: run?.runId, sha: headSha, ...(run?.url ? { url: run.url } : {}) } } } }], 'engine');
       this.ctx.store.journal.end(opId, id, 'aborted', { reason: 'ci_cancelled', run: run?.runId });
-      this.ctx.block(id, 'ci_cancelled', `CI run ${run?.runId ?? '?'} for ${headSha.slice(0, 7)} was cancelled again after planestro re-ran it once${run?.url ? ` (${run.url})` : ''}; no other run is coming for this head. Re-run CI once what cancelled it is fixed (a job time limit, a concurrency group), or push a new head`);
+      this.ctx.block(id, 'ci_cancelled', `CI run ${run?.runId ?? '?'} for ${headSha.slice(0, 7)} was cancelled again after planestro re-ran it once${run?.url ? ` (${run.url})` : ''}; no other run is coming for this head. Re-run CI once what cancelled it is fixed (a job time limit, a concurrency group, a runner going away); a fix that lands on ${base} (a workflow change) needs a new head instead, since a re-run reuses this head's merge commit and workflow: sync_with_base then`);
       return;
     }
     // A timeout on a runner that looks stalled or offline is the runner's, said once for every item on it (#216), not triaged item by item.
