@@ -204,6 +204,7 @@ export class LiveEngine implements Engine {
     this.ciWatch = new CiWatch({
       store,
       ports,
+      get repo() { return repo(); },
       get github() { return github(); },
       ciWorkflow: this.ciWorkflow,
       get stopping() { return stopping(); },
@@ -277,6 +278,7 @@ export class LiveEngine implements Engine {
       busyWith: (id) => this.busyWith(id),
       phaseFor: (status) => this.phaseFor(status),
       queueTurn: (id, phase, prompt, extraAllowed, oneShotCommands, opts) => this.queueTurn(id, phase, prompt, extraAllowed, oneShotCommands, opts),
+      syncStaleRun: (id, by) => this.ciWatch.syncStaleRun(id, by),
       retryOp: (id, by, message) => this.retryOp(id, by, message),
       unblock: (id, message, by, opts) => this.unblock(id, message, by, opts),
       freshRefusal: (fm, message) => this.freshRefusal(fm, message),
