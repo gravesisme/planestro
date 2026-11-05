@@ -96,7 +96,7 @@ export class LiveClaudePort implements ClaudePort {
     o.signal?.addEventListener('abort', () => abortController.abort(), { once: true });
     const resumed = resumeWatch(o);
     const allow = splitAllowed(o.allowedTools);
-    const input = new InputGate();
+    const gate = new InputGate();
     const reports = new ReportWatch((r) => { result.undelivered = r; o.onUndelivered?.(r); });
     const drops = new DropWatch((d) => { result.connectionDrop = d; o.onConnectionDrop?.(d); });
     const ran = new RanWatch(o.onCommandRan);
@@ -107,21 +107,21 @@ export class LiveClaudePort implements ClaudePort {
       if (toolName === 'ExitPlanMode') {
         const plan = String((input as any).plan ?? '');
         if (plan) { result.planSubmitted = plan; await o.tools.submit_plan(plan); }
-        return { behavior: 'deny', message: 'Plan recorded by planestro. Do not use ExitPlanMode; end your turn now.' };
+        return { behavior: 'deny', message: `Plan recorded by planestro. Do not use ExitPlanMode; end your turn now.${plan ? backgroundNote(gate.park()) : ''}` };
       }
       if (toolName === 'AskUserQuestion') {
         await o.onQuestion(((input as any).questions ?? []) as unknown[]);
         result.parked = 'question';
-        return { behavior: 'deny', message: 'Questions recorded by planestro. End your turn now; you will be resumed with the answers.' };
+        return { behavior: 'deny', message: `Questions recorded by planestro. End your turn now; you will be resumed with the answers.${backgroundNote(gate.park())}` };
       }
       const decision = await o.onPermission({ tool: toolName, input });
       if (decision.action === 'allow') return { behavior: 'allow', updatedInput: input };
       if (decision.action === 'deny') return { behavior: 'deny', message: decision.message };
       result.parked = 'permission';
-      return { behavior: 'deny', message: PARK_MSG };
+      return { behavior: 'deny', message: PARK_MSG + backgroundNote(gate.park()) };
     };
     const q = query({
-      prompt: input.open(o.prompt),
+      prompt: gate.open(o.prompt),
       options: {
         cwd: o.cwd, model: o.model, permissionMode: o.permissionMode, resume: o.resume,
         ...(o.fallbackModel && o.fallbackModel !== o.model ? { fallbackModel: o.fallbackModel } : {}),
@@ -144,7 +144,9 @@ export class LiveClaudePort implements ClaudePort {
         },
       },
     });
-    await consume(q, result, o.onOutput, abortController, resumed, input, reports, drops);
+    gate.stopTask = (taskId) => q.stopTask(taskId);
+    gate.forceEnd = () => q.close();
+    await consume(q, result, o.onOutput, abortController, resumed, gate, reports, drops);
     const list = ran.list();
     if (list.length) result.ran = list;
     return result;
@@ -231,12 +233,20 @@ export class RanWatch {
 const IMAGE_TYPES: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' };
 export class InputGate {
   private live = 0;
+  private tasks: { id: string; description: string }[] = [];
   private between = false;
+  private parked = false;
   private grace?: NodeJS.Timeout;
+  private backstop?: NodeJS.Timeout;
   private release!: () => void;
   private readonly ended = new Promise<void>((r) => { this.release = r; });
   closed = false;
-  constructor(private readonly graceMs = 30_000) {}
+  /** The turn was ended on purpose after a park (#543): what the stream does as the query closes is not a failure. */
+  forced = false;
+  /** Stops one background task (`Query.stopTask`) and ends the query outright (`Query.close`): set once the query exists. */
+  stopTask?: (taskId: string) => Promise<unknown>;
+  forceEnd?: () => void;
+  constructor(private readonly graceMs = 30_000, private readonly stopMs = 15_000) {}
 
   /** `images` (absolute paths) ride in the first message as image content (#288): the model sees them without a Read. */
   async *open(prompt: string, images: string[] = []): AsyncGenerator<any> {
@@ -245,15 +255,30 @@ export class InputGate {
     await this.ended;
   }
 
+  /**
+   * The turn has parked (a permission, a question, a plan handed in): planestro resumes it later with the answer, so
+   * this run is over at its `result` (#543). A background job it started (a dev server) never ends by itself, and with
+   * one live the CLI stays up even with its input closed: the turn stayed "running", the decision queued behind it
+   * and a `--watch` drain waited on it for good. So at that `result` its live tasks are stopped, and the query is
+   * closed if the stream has still not ended `stopMs` later. Returns what is running now, for the session to be told.
+   */
+  park(): string[] {
+    this.parked = true;
+    return this.tasks.map((t) => t.description);
+  }
+
   /** Feed one SDK message. */
   see(m: any): void {
     if (this.closed) return;
     if (m?.type === 'system' && m.subtype === 'background_tasks_changed' && Array.isArray(m.tasks)) {
-      this.live = m.tasks.filter((t: any) => !t?.ambient).length;
-      if (this.live === 0 && this.between) this.arm();
+      this.tasks = m.tasks.filter((t: any) => !t?.ambient).map((t: any) => ({ id: String(t?.task_id ?? ''), description: String(t?.description ?? t?.task_type ?? 'a background task') }));
+      this.live = this.tasks.length;
+      if (this.live === 0 && this.between) { if (this.parked) this.close(); else this.arm(); }
     } else if (m?.type === 'result') {
       this.between = true;
-      if (this.live === 0) this.close(); else this.disarm();
+      if (this.live === 0) this.close();
+      else if (this.parked) this.stopLive();
+      else this.disarm();
     } else if (m?.type === 'assistant' || (m?.type === 'system' && m.subtype === 'init')) { this.between = false; this.disarm(); }
   }
 
@@ -261,11 +286,26 @@ export class InputGate {
     if (this.closed) return;
     this.closed = true;
     this.disarm();
+    if (this.backstop) clearTimeout(this.backstop);
     this.release();
+  }
+
+  private stopLive(): void {
+    this.disarm();
+    for (const t of this.tasks) if (t.id) void Promise.resolve(this.stopTask?.(t.id)).catch(() => undefined);
+    if (this.backstop) return;
+    this.backstop = setTimeout(() => { if (this.closed) return; this.forced = true; this.close(); this.forceEnd?.(); }, this.stopMs);
+    this.backstop.unref?.();
   }
 
   private arm(): void { this.disarm(); this.grace = setTimeout(() => this.close(), this.graceMs); this.grace.unref?.(); }
   private disarm(): void { if (this.grace) clearTimeout(this.grace); this.grace = undefined; }
+}
+
+/** What a parked session is told about the background jobs it leaves running (#543): they do not outlive the turn. */
+export function backgroundNote(running: string[]): string {
+  if (!running.length) return '';
+  return ` Your background ${running.length === 1 ? 'job' : 'jobs'} (${running.map((d) => d.slice(0, 80)).join('; ')}) will be stopped when this turn ends and will not be running when you are resumed: start ${running.length === 1 ? 'it' : 'them'} again then, or put the server, the command that needs it and the server's stop in one script so a single approval covers all three.`;
 }
 
 const REPORTS: Record<string, UndeliveredReport['tool']> = { mcp__planestro__submit_plan: 'submit_plan', mcp__planestro__submit_breakdown: 'submit_breakdown', mcp__planestro__report_done: 'report_done', mcp__planestro__report_blocked: 'report_blocked', ExitPlanMode: 'submit_plan' };
@@ -657,7 +697,8 @@ async function consume(q: AsyncIterable<unknown>, result: TurnResult, onOutput: 
     }
   } catch (e) {
     const msg = String((e as Error).message ?? e);
-    if (abortController.signal.aborted || /exited with code 143/.test(msg)) { result.subtype = 'killed'; result.isError = false; }
+    if (input?.forced && sawResult) { /* a parked turn planestro ended on purpose (#543): its result stands */ }
+    else if (abortController.signal.aborted || /exited with code 143/.test(msg)) { result.subtype = 'killed'; result.isError = false; }
     else if (sawResult && result.isError) { result.error = result.error ?? msg; }   // the SDK throws after an error result
     else { result.subtype = 'error_during_execution'; result.isError = true; result.error = msg; }
     if (isUsageLimitText(msg, USAGE_PREFIXES)) usage.message = usage.message ?? msg.trim().slice(0, 300);

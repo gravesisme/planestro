@@ -228,7 +228,17 @@ a live worker) would have matched it.
    as a stream (`InputGate`) and ends it at a `result` only when the level
    signal `background_tasks_changed` lists no non-ambient task, or 30 s after
    the last one ended with no follow-up turn; a CLI that never sends that
-   signal ends where it always did. Still treat planestro tool results as
+   signal ends where it always did. **A turn that parked is over at its
+   `result` regardless (#543):** with a live background Bash (a dev server)
+   the CLI stays up even after its stdin is closed (validated on CLI 2.1.318:
+   a `sleep` in the background held the stream open until killed), so
+   waiting on it froze the turn, the decision queued behind it, and a
+   `--watch` drain waited for good. At a parked result `InputGate` calls
+   `Query.stopTask` for each live task (the CLI answers `task_updated`
+   `killed`, `task_notification` `stopped`, an empty
+   `background_tasks_changed`, no follow-up turn) and ends the input once none
+   is left, or `Query.close()`s it 15 s later; the park's message tells the
+   session its jobs will not be running when it resumes. Still treat planestro tool results as
    fallible (a crash, a kill): the port records such calls
    (`noteToolFailures`, `TurnResult.toolFailures`) and the session's last
    report call that never reached its handler with its arguments

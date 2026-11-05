@@ -13,6 +13,8 @@ import type { CiWatch } from './ciWatch.ts';
 import type { TurnRunner, RunningTurn } from './turnRunner.ts';
 import type { TurnQueue } from './turnQueue.ts';
 
+/** How long a turn may say nothing while a drain waits on it, when `concurrency.turn_quiet_min` is off (#543). */
+export const DRAIN_QUIET_MIN = 20;
 const ACTIVE_FOR_SLOTS: Status[] = ['PLAN_IN_PROGRESS', 'IN_PROGRESS'];
 
 /**
@@ -107,11 +109,11 @@ export class Scheduler {
   }
   private async tickOnce(): Promise<void> {
     if (this.ctx.stopping) return;
+    // Before the drain and pause checks: a paused engine's running turns still finish, or hang, and a drain waits on them (#543).
+    this.driveQuietTurns();
     // Before the pause check: while automation is paused the orchestrator is not woken, so nothing may sit in triage.
     if (this.ctx.guards.draining) return;
     try { this.ctx.triage.driveTriage(); } catch (e) { this.ctx.note('error', `triage: ${(e as Error).message}`); }
-    // Before the pause check too: a paused engine's running turns still finish, or hang.
-    this.driveQuietTurns();
     // A backstop for the guard's timer (a machine that slept through it): resume once the reset has passed.
     const due = this.ctx.guards.guardResumeDue();
     if (due !== undefined && due <= Date.now()) { this.ctx.guards.guardResume(); return; }
@@ -240,11 +242,14 @@ export class Scheduler {
    * whose run_heavy is running is not quiet (#502): planestro itself holds that call.
    */
   private driveQuietTurns(): void {
-    const min = this.ctx.store.config.concurrency.turn_quiet_min;
+    const set = this.ctx.store.config.concurrency.turn_quiet_min;
+    // A drain waits for what runs to finish, so a wedged turn held a `--watch` restart for good (#543): under one, a
+    // turn quiet for DRAIN_QUIET_MIN is stopped even with the watchdog off, and resumes from persisted state after.
+    const min = set || (this.ctx.guards.draining ? DRAIN_QUIET_MIN : 0);
     if (!min) return;
     for (const [id, t] of this.ctx.turns) {
       if (t.waiting || t.heavy || t.abort.signal.aborted || t.lastOutputAt === undefined || Date.now() - t.lastOutputAt < min * 60_000) continue;
-      const why = `no output for ${min} min (concurrency.turn_quiet_min)`;
+      const why = set ? `no output for ${min} min (concurrency.turn_quiet_min)` : `no output for ${min} min while planestro waited to restart`;
       this.quietStopped.set(id, why); this.stoppedFor.set(id, why);
       t.abort.abort();
     }
