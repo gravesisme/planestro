@@ -269,6 +269,8 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   Beside them stand planestro's own built-in readers (`BASE_ALLOWED`, after every deny): what only reads, every path it
   names in the worktree or a scratch folder. That covers Read/Grep/Glob there (symlinks followed, the main checkout still
   asks) and a `sed` or `awk` whose script only prints (`filterAt`: no `w`/`e`/`r`, no `system`/`getline`/`|`/`print >`) (#503).
+  `git checkout <ref> -- <paths>` alone is allowed when git shows nothing uncommitted at or under any path, all inside
+  the worktree (`restoreFromRef`, #537): the restore lands as a new commit; a dirty path or a bare `checkout --` parks.
 - Semantic git commits only (`HH-143: approve plan`), scoped to the paths the
   mutation touched; telemetry is checkpointed (`planestro: checkpoint <ts>`).
 - Releases (`releases/<version>.md`) are a second file type beside items: status
