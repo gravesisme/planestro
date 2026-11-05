@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DataStore } from '../src/store/DataStore.ts';
 import { LiveEngine } from '../src/engine/LiveEngine.ts';
+import { DRAIN_QUIET_MIN } from '../src/engine/scheduler.ts';
 import { FakeWorld, DryRunGitPort, DryRunGhPort, DryRunProcPort, DryRunClaudePort } from '../src/engine/dryrun-ports.ts';
 import type { Ports, TurnOptions, TurnResult, UndeliveredReport, ConnectionDrop } from '../src/engine/ports.ts';
 import type { ServerEvent } from '@planestro/shared';
@@ -45,6 +46,30 @@ describe('LiveEngine lifecycle (dry-run ports)', () => {
     await waitFor(() => store.getItem(item.id)!.file.frontmatter.blocked_reason === 'turn_quiet', 6000);
     expect(activityOf(store, item.id)).toMatch(/turn stopped: no output for 0\.002 min \(concurrency\.turn_quiet_min\)/);
     expect(engine.sessions()).toEqual([]);   // its slot is free
+  });
+
+  it('a drain does not wait for good on a quiet turn: one silent for DRAIN_QUIET_MIN is stopped with the watchdog off (#543)', async () => {
+    const hung = () => ({
+      runTurn: (o: TurnOptions) => new Promise<TurnResult>((resolve) => {
+        o.signal?.addEventListener('abort', () => resolve({ subtype: 'killed', isError: false, costUsd: 0, numTurns: 0, text: '' }), { once: true });
+      }),
+    });
+    const { store, engine } = await setup({ claude: hung as any });
+    const item = store.createItem({ title: 'Wedged', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => (engine as any).turns.has(item.id));
+    const turn = (engine as any).turns.get(item.id);
+    turn.lastOutputAt = Date.now() - (DRAIN_QUIET_MIN - 1) * 60_000;
+    engine.drain('update');
+    await (engine as any).tick();
+    expect(turn.abort.signal.aborted).toBe(false);         // quiet, but not for long enough
+    turn.lastOutputAt = Date.now() - (DRAIN_QUIET_MIN + 1) * 60_000;
+    await (engine as any).tick();
+    await waitFor(() => store.getItem(item.id)!.file.frontmatter.blocked_reason === 'turn_quiet', 6000);
+    expect(activityOf(store, item.id)).toMatch(new RegExp(`no output for ${DRAIN_QUIET_MIN} min while planestro waited to restart`));
+    expect(engine.restartReadiness().idle).toBe(true);
+    await engine.stop();
   });
 
   it('a turn waiting for a session slot stops waiting when it is stopped (Discard, take over, shutdown)', async () => {
