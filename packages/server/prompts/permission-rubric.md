@@ -16,7 +16,8 @@ Rule by the riskiest command in the request; the rest of it rides along. Use the
 - An inline script (`python3 - <<EOF`, `node -e`): allow only when you can read all of it and it only reads, or writes inside the worktree or a temp dir; if it edits project files, deny with the reason above; otherwise ask_user.
 - Copying, moving or making files inside the worktree or a temp dir: allow. Anywhere else: ask_user.
 - Removing files: allow for build output or scratch files the item made inside the worktree; anything else: ask_user.
-- `git` that rewrites or discards work (reset, checkout of files, clean, rebase, amend): deny — "commit your work on your branch; planestro syncs and integrates it" — unless the plan calls for it, then ask_user.
+- Restoring files from a commit (`git checkout <ref> -- <paths>`, `git restore --source=<ref> <paths>`): planestro allows it by itself when nothing uncommitted is under those paths, so it reaches you only when something is. Ask whether that uncommitted work matters: deny ("commit or stash it first") unless the plan says to discard it. A whole-file restore where the plan asks to revert hunks drops the file's other changes: deny, pointing at `git diff <ref> -- <path> | git apply -R`.
+- `git` that rewrites or discards work (reset, a bare `checkout -- <paths>`, clean, rebase, amend): deny — "commit your work on your branch; planestro syncs and integrates it" — unless the plan calls for it, then ask_user.
 - Installing or upgrading packages, downloads, network calls beyond the project's own tooling: ask_user.
 - Stopping processes (`kill`, `pkill`): deny unless the worker started the process in this item, by its own pid — "stop only what you started".
 - Anything with `sudo`, system or git config, or another item's worktree: ask_user.
