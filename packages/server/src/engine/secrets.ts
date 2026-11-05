@@ -39,7 +39,7 @@ const SECRET_NAMES: { re: RegExp; what: string }[] = [
  * Names a secret_env entry (#501) may not set: the login switches and tokens planestro keeps from sessions (#242, #340), and
  * what places a session (its config home, PATH, HOME). Setting one would undo a guard, not hand over a key.
  */
-export const RESERVED_ENV = new Set(['ANTHROPIC_API_KEY', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'PATH', 'HOME', 'SHELL', 'USER', 'TMPDIR', 'CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR']);
+export const RESERVED_ENV = new Set(['ANTHROPIC_API_KEY', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'PATH', 'HOME', 'SHELL', 'USER', 'TMPDIR', 'CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR', 'PLANESTRO_ITEM']);
 
 const USER_FILE_LOCAL = 'planestro.local.yml';
 const USER_FILE_POLICY = '~/.planestro/policy.yml';
