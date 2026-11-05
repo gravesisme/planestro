@@ -231,6 +231,8 @@ export class RanWatch {
  * last one has ended and no follow-up turn began within `graceMs`. A CLI that reports no tasks ends where it always did.
  */
 const IMAGE_TYPES: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' };
+/** One entry of `background_tasks_changed`'s list, as far as the gate reads it. */
+type BackgroundTask = { task_id?: string; task_type?: string; description?: string; ambient?: boolean } | null | undefined;
 export class InputGate {
   private live = 0;
   private tasks: { id: string; description: string }[] = [];
@@ -271,7 +273,7 @@ export class InputGate {
   see(m: any): void {
     if (this.closed) return;
     if (m?.type === 'system' && m.subtype === 'background_tasks_changed' && Array.isArray(m.tasks)) {
-      this.tasks = m.tasks.filter((t: any) => !t?.ambient).map((t: any) => ({ id: String(t?.task_id ?? ''), description: String(t?.description ?? t?.task_type ?? 'a background task') }));
+      this.tasks = (m.tasks as BackgroundTask[]).filter((t) => !t?.ambient).map((t) => ({ id: String(t?.task_id ?? ''), description: String(t?.description ?? t?.task_type ?? 'a background task') }));
       this.live = this.tasks.length;
       if (this.live === 0 && this.between) { if (this.parked) this.close(); else this.arm(); }
     } else if (m?.type === 'result') {
