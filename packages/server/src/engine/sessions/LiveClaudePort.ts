@@ -11,6 +11,7 @@ import { gitDenial } from '../gitDenials.ts';
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] });
 import { workerTools } from './workerTools.ts';
 import { LONG_RUN_NOTE, PLANESTRO_TOOL_TIMEOUT_MS } from '../heavyRuns.ts';
+import { itemEnv } from './itemEnv.ts';
 /**
  * A worker's shell goes back to its worktree after every command (#96): without this a `cd` carries
  * over to the next call, and neither the policy nor the orchestrator can say where a command runs.
@@ -136,7 +137,8 @@ export class LiveClaudePort implements ClaudePort {
         additionalDirectories: o.extraDirs, maxBudgetUsd: o.maxBudgetUsd, abortController,
         ...(this.claudeBin ? { pathToClaudeCodeExecutable: this.claudeBin } : {}),
         // secret_env's values (#501) on top of the login's environment; PINNED last, and the engine refuses the names planestro keeps.
-        env: { ...claudeEnv(process.env, o.account), ...o.env, ...PINNED },
+        // PLANESTRO_ITEM (#544): a project's own tooling can tell a planestro worker's command from CI's or a person's.
+        env: { ...claudeEnv(process.env, o.account), ...o.env, ...itemEnv(o.itemId), ...PINNED },
         canUseTool: async (toolName, input, { toolUseID }) => {
           const res = await decide(toolName, input);
           if (res.behavior !== 'allow') ran.refused(toolUseID);

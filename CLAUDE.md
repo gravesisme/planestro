@@ -252,6 +252,8 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   planner's or the orchestrator's). Values never reach a prompt, the journal, Activity or an item file; output is redacted. A
   refused read names the variables the session has; a plan naming a secret file is warned about at hand-in (`secretsNamedIn`).
   `planestro.local.yml` and `~/.planestro/policy.yml` are themselves on the list, so no ruling lets a worker sanction itself.
+  Every worker session and its `run_heavy` commands also get `PLANESTRO_ITEM` (#544), never a secret: a project's own
+  scripts can tell a planestro worker from CI or a person.
 - Allow rules are suggested from the ruling history, never applied (`allowSuggest.ts`, #169: `planestro
   permissions suggest`, `GET /permissions/suggest`, the Console). Rulings come from Activity
   (`permission allow (reason): Bash(…)`) and, whole, from `permission.answered` (`tool`, `command`,

@@ -1728,7 +1728,7 @@ export class LiveEngine implements Engine {
       if (!allowedByRules({ tool: 'Bash', input: { command } }, [...BASE_ALLOWED.implement, ...rules.allow, ...heavyAllowRules(this.store.config)], cwd)) return `Rejected: run_heavy runs only commands your allow rules or the project's heavy_runs.patterns permit, and \`${command.slice(0, 200)}\` is neither. Nothing was run.`;
     }
     // The command sees what the worker's own commands would (#228), by its runner.
-    const env = workerCommandEnv(this.store.config.models.find((m) => m.id === fm.implementer)?.runner ?? 'claude', this.store.config, secrets);
+    const env = workerCommandEnv(this.store.config.models.find((m) => m.id === fm.implementer)?.runner ?? 'claude', this.store.config, secrets, id);
     const signal = this.turns.get(id)?.abort.signal;
     const stopped = () => signal?.aborted || this.stopping || this.store.requireItem(id).file.frontmatter.taken_over;
     const say = (text: string) => this.store.mutateItem(id, [{ activity: { actor: 'app', text: `heavy run: ${text}` } }], 'engine');
