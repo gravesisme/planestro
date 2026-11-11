@@ -8,7 +8,7 @@ import { LiveEngine } from '../src/engine/LiveEngine.ts';
 import { FakeWorld, DryRunGitPort, DryRunGhPort, DryRunProcPort, DryRunClaudePort } from '../src/engine/dryrun-ports.ts';
 import type { Ports, TurnOptions, TurnResult } from '../src/engine/ports.ts';
 import { parseDotenv, resolveSecretEnv, redactSecretEnv } from '../src/engine/secretEnv.ts';
-import { secretDenial, secretsNamedIn } from '../src/engine/secrets.ts';
+import { secretDenial, secretsNamedIn, RESERVED_ENV } from '../src/engine/secrets.ts';
 import { makePolicy } from '../src/engine/policy.ts';
 import { secretHook } from '../src/engine/sessions/LiveClaudePort.ts';
 import { codexEnv, secretEnvArgs } from '../src/engine/sessions/CodexAppServerPort.ts';
@@ -72,6 +72,15 @@ describe('secret_env: a value from a secret file, never the file (#501)', () => 
     expect(workerCommandEnv('claude', config, { K: 'v' })).toEqual({ env: { K: 'v' } });
     expect(workerCommandEnv('claude', config)).toEqual({});
     expect(workerCommandEnv('codex', config, { K: 'v' })).toMatchObject({ env: { K: 'v' }, cleanEnv: true });
+  });
+
+  it('PLANESTRO_ITEM names the item to every worker session and heavy run, and secret_env may not take it (#544)', () => {
+    const config = { codex_env_passthrough: [] } as never;
+    expect(workerCommandEnv('claude', config, {}, 'X-7')).toEqual({ env: { PLANESTRO_ITEM: 'X-7' } });
+    expect(workerCommandEnv('claude', config, { K: 'v' }, 'X-7')).toEqual({ env: { K: 'v', PLANESTRO_ITEM: 'X-7' } });
+    expect(workerCommandEnv('codex', config, {}, 'X-7')).toMatchObject({ env: { PLANESTRO_ITEM: 'X-7' }, cleanEnv: true });
+    expect(secretEnvArgs({})).toEqual([]);     // not a secret: Codex is not told to keep default-excluded names for it
+    expect(RESERVED_ENV.has('PLANESTRO_ITEM')).toBe(true);
   });
 
   it('is hand-edited only: in the local schema, on no Settings row', () => {

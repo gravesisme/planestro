@@ -14,6 +14,7 @@ import { commandGrant } from './nativeApproval.ts';
 import { projectSkills, skillIndex, readSkillTool } from './projectSkills.ts';
 import { IMAGE_TOOL_NOTE } from './imageToolNote.ts';
 import { APPLY_PATCH_NOTE } from './patchNote.ts';
+import { itemEnv } from './itemEnv.ts';
 
 export const CODEX_TOOL_CONTRACT = 'app-server-v1';
 const REPORTS = new Set(['submit_plan', 'submit_breakdown', 'report_done', 'report_blocked']);
@@ -101,8 +102,8 @@ export class Connection {
   readonly closed: Promise<void>;
   handler: (message: Rpc) => void = () => {};
   stderr = '';
-  constructor(bin: string, home: string, cwd: string, passthrough: readonly string[] = [], secrets: Record<string, string> = {}) {
-    this.child = spawn(bin, ['app-server', '--stdio', '-c', 'mcp_servers={}', '-c', 'features.apps=false', '-c', 'features.multi_agent=false', '-c', 'features.plugins=false', '-c', 'features.skill_mcp_dependency_install=false', '-c', 'features.skip_host_skill_discovery=true', ...secretEnvArgs(secrets)], { cwd, env: codexEnv(passthrough, home, secrets), stdio: 'pipe' });
+  constructor(bin: string, home: string, cwd: string, passthrough: readonly string[] = [], secrets: Record<string, string> = {}, extra: Record<string, string> = {}) {
+    this.child = spawn(bin, ['app-server', '--stdio', '-c', 'mcp_servers={}', '-c', 'features.apps=false', '-c', 'features.multi_agent=false', '-c', 'features.plugins=false', '-c', 'features.skill_mcp_dependency_install=false', '-c', 'features.skip_host_skill_discovery=true', ...secretEnvArgs(secrets)], { cwd, env: { ...codexEnv(passthrough, home, secrets), ...extra }, stdio: 'pipe' });
     // Deliberately keep stdin open. It carries replies until the turn and tool work are over.
     createInterface({ input: this.child.stdout }).on('line', (line) => {
       let m: Rpc; try { m = JSON.parse(line); } catch { return; }
@@ -173,7 +174,7 @@ export class CodexAppServerPort implements AgentPort {
     const images = !readOnly && (o as TurnOptions).nativeImages === true;
     const at = this.homeFor(o);
     const home = isolatedCodexHome(at.home, this.inheritAuth, at.authFrom);
-    const rpc = new Connection(this.bin, home, home, this.passthrough(), worker ? (o as TurnOptions).env : undefined);
+    const rpc = new Connection(this.bin, home, home, this.passthrough(), worker ? (o as TurnOptions).env : undefined, worker ? itemEnv((o as TurnOptions).itemId) : {});
     let scope: ScopedTools | undefined, thread: string | undefined, turn: string | undefined;
     let finish!: () => void;
     const ended = new Promise<void>((r) => { finish = r; });

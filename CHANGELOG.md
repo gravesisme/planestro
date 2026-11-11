@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.3.0 — 2026-11-11
+
+### Fixed
+
+- A parked turn ends even with a background job running (#543): a worker that started a server in the background and
+  then parked on a permission stayed `busy` with nothing running, so the orchestrator's allow, a supervisor message and
+  a `--watch` drain all queued behind it until a restart (HH-671, twice). Once a turn parks, planestro stops its live
+  background tasks and ends its input, closing the session 15 s later if it has not ended. The session is told its jobs
+  will be stopped and to bundle server, command and stop in one script. Under a drain, a turn quiet for 20 minutes is
+  stopped as `turn_quiet` even with `concurrency.turn_quiet_min` off. Claude workers only.
+
+### Added
+
+- A committed whole-file restore runs without a park (#537): `git checkout <ref> -- <paths>` in an implement or fix turn
+  is allowed when every path is inside the worktree and git shows nothing changed, staged or untracked at or under any of
+  them; the restore then lands as an ordinary new commit. A dirty path, a bare `git checkout -- <paths>`, a path outside,
+  a glob or a chained command parks as before, and the orchestrator's rubric still denies a whole-file restore where the
+  plan asks for hunk reverts.
+- `PLANESTRO_ITEM` in every worker session's environment and its `run_heavy` commands (#544), so a project's own scripts
+  can tell a planestro worker from CI or a person (HH's `run_checks.sh` uses it to refuse a worker the whole suite).
+  `secret_env` cannot set it.
+
+### Changed
+
+- Re-validated against Claude Code 2.1.318 / Agent SDK 0.3.312 (#541): every SDK assumption passes; the startup
+  "Claude Code changed" warning is gone.
+- `minimatch` is overridden to `^11.0.1` for GHSA-g3hv-75wg-m249 (#546). Development dependencies only (eslint).
+
 ## 1.2.0 — 2026-11-04
 
 ### Fixed

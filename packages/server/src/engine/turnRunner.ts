@@ -1,3 +1,5 @@
+import { resolve, sep } from 'node:path';
+import { restoreFromRef } from './gitDenials.ts';
 import { randomUUID } from 'node:crypto';
 import { mcpServersNamed, runnerTurnSettings, chooseTurnPath, MIN_TURN_USD, WARM_SHARE, type ResumeEstimate, type SessionContext, type Part, serializeItemFile, modelCapabilities, getSection, isoLocal, canPlan, resolveTurnModel, fallbackChain, unavailableEntry, holdShapeOf, usageTurnData, USAGE_TURN, type UsageStage, type UsageRole, type ModelDef, guardKey, unavailableView, sameSessionStore, DEFAULT_ACCOUNT, type Account, type ServerEvent, type Status } from '@planestro/shared';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
@@ -198,6 +200,29 @@ export class TurnRunner {
   }
 
   /** The command a Bash request parked on (`parkedShape`): the first one these rules do not allow on its own. Undefined for any other tool. */
+  /**
+   * `git checkout <ref> -- <paths>` (#537) is allowed without a park when it can lose nothing: every path inside the
+   * worktree and nothing uncommitted (changed, staged or untracked) at or under any of them, read from git as asked.
+   * The restore then lands as a new commit the diff review sees. Anything else (a bare `checkout -- <paths>` discard,
+   * a dirty path, a path outside) parks as before. Says what it allowed, else undefined.
+   */
+  private async restoreGrant(command: string, cwd: string): Promise<string | undefined> {
+    const r = restoreFromRef(command);
+    if (!r) return undefined;
+    const rel: string[] = [];
+    for (const p of r.paths) {
+      const abs = resolve(cwd, p);
+      if (abs !== cwd && !abs.startsWith(cwd + sep)) return undefined;
+      rel.push(abs === cwd ? '' : abs.slice(cwd.length + 1));
+    }
+    const dirty = await this.ctx.ports.git.dirtyDetail(cwd).catch(() => undefined);
+    if (!dirty) return undefined;
+    const changed = [...dirty.tracked.flatMap((l) => l.split(' -> ')), ...dirty.untracked].map((f) => f.replace(/^"|"$/g, '').replace(/\/$/, ''));
+    const under = (f: string, p: string) => p === '' || f === p || f.startsWith(p.replace(/\/$/, '') + '/');
+    if (changed.some((f) => rel.some((p) => under(f, p)))) return undefined;
+    return `git checkout ${r.ref} -- ${r.paths.join(' ')} (restores committed files; nothing uncommitted under those paths)`;
+  }
+
   private parkedOn(req: { tool: string; input: Record<string, unknown> }, allow: string[], cwd: string, phase: TurnPhase): string | undefined {
     if (req.tool !== 'Bash') return undefined;
     return parkedShape(String(req.input.command ?? ''), cwd, (command) => allowedByRules({ tool: 'Bash', input: { command } }, allow, cwd, { readOnly: phase === 'plan' }));
@@ -451,6 +476,8 @@ export class TurnRunner {
           if (why) { this.ctx.store.mutateItem(id, [{ activity: { actor: 'app', text: `denied ${req.tool}: ${why}` } }], 'engine'); return { action: 'deny', message: `Not allowed: ${why}` }; }
           if (req.tool === 'Bash' && oneShot.delete(String(req.input.command ?? '').trim())) { this.ctx.store.mutateItem(id, [{ activity: { actor: 'app', text: 'one-shot approval consumed' } }], 'engine'); return { action: 'allow' }; }
           if (allowedByRules(req, [...BASE_ALLOWED[phase], ...this.ctx.store.permissionRules().allow, ...extraAllowed], cwd, { readOnly: phase === 'plan' })) return { action: 'allow' };
+          const restored = req.tool === 'Bash' && phase !== 'plan' ? await this.restoreGrant(String(req.input.command ?? ''), cwd) : undefined;
+          if (restored) { this.ctx.store.mutateItem(id, [{ activity: { actor: 'app', text: `allowed: ${restored}` } }], 'engine'); return { action: 'allow' }; }
           const ask = this.ctx.permissionsDelegated() && this.ctx.mayAskOrchestrator(this.ctx.store.requireItem(id).file.frontmatter);
           // The safety valve tripped: say so on the card, or the stream of requests reaching the user is a mystery (#95).
           const tripped = !ask && this.ctx.permissionsDelegated();

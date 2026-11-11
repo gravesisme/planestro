@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DataStore } from '../src/store/DataStore.ts';
 import { LiveEngine } from '../src/engine/LiveEngine.ts';
+import { DRAIN_QUIET_MIN } from '../src/engine/scheduler.ts';
 import { FakeWorld, DryRunGitPort, DryRunGhPort, DryRunProcPort, DryRunClaudePort } from '../src/engine/dryrun-ports.ts';
 import type { Ports, TurnOptions, TurnResult, UndeliveredReport, ConnectionDrop } from '../src/engine/ports.ts';
 import type { ServerEvent } from '@planestro/shared';
@@ -45,6 +46,30 @@ describe('LiveEngine lifecycle (dry-run ports)', () => {
     await waitFor(() => store.getItem(item.id)!.file.frontmatter.blocked_reason === 'turn_quiet', 6000);
     expect(activityOf(store, item.id)).toMatch(/turn stopped: no output for 0\.002 min \(concurrency\.turn_quiet_min\)/);
     expect(engine.sessions()).toEqual([]);   // its slot is free
+  });
+
+  it('a drain does not wait for good on a quiet turn: one silent for DRAIN_QUIET_MIN is stopped with the watchdog off (#543)', async () => {
+    const hung = () => ({
+      runTurn: (o: TurnOptions) => new Promise<TurnResult>((resolve) => {
+        o.signal?.addEventListener('abort', () => resolve({ subtype: 'killed', isError: false, costUsd: 0, numTurns: 0, text: '' }), { once: true });
+      }),
+    });
+    const { store, engine } = await setup({ claude: hung as any });
+    const item = store.createItem({ title: 'Wedged', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => (engine as any).turns.has(item.id));
+    const turn = (engine as any).turns.get(item.id);
+    turn.lastOutputAt = Date.now() - (DRAIN_QUIET_MIN - 1) * 60_000;
+    engine.drain('update');
+    await (engine as any).tick();
+    expect(turn.abort.signal.aborted).toBe(false);         // quiet, but not for long enough
+    turn.lastOutputAt = Date.now() - (DRAIN_QUIET_MIN + 1) * 60_000;
+    await (engine as any).tick();
+    await waitFor(() => store.getItem(item.id)!.file.frontmatter.blocked_reason === 'turn_quiet', 6000);
+    expect(activityOf(store, item.id)).toMatch(new RegExp(`no output for ${DRAIN_QUIET_MIN} min while planestro waited to restart`));
+    expect(engine.restartReadiness().idle).toBe(true);
+    await engine.stop();
   });
 
   it('a turn waiting for a session slot stops waiting when it is stopped (Discard, take over, shutdown)', async () => {
@@ -311,6 +336,54 @@ describe('LiveEngine lifecycle (dry-run ports)', () => {
     await waitFor(() => status(store, item.id) === 'PLAN_READY' && store.getItem(item.id)!.file.frontmatter.turns === 2);
     expect(store.getItem(item.id)!.file.frontmatter.cost_usd).toBeCloseTo(0.2);
     expect(store.getItem(item.id)!.file.frontmatter.turns).toBe(2);
+  });
+
+  it('git checkout <ref> -- <paths> is allowed when nothing uncommitted is under them, else it parks (#537)', async () => {
+    const actions: Record<string, string> = {};
+    let world!: FakeWorld;
+    const restorer = () => ({
+      async runTurn(o: TurnOptions): Promise<TurnResult> {
+        if (o.phase === 'plan') { await o.tools.submit_plan('# p'); return { sessionId: 's', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', planSubmitted: '# p' }; }
+        const ask = async (command: string) => { actions[command] = (await o.onPermission({ tool: 'Bash', input: { command } })).action; };
+        await ask('git checkout 7267b8651 -- tools/a_check.gd autoload/Collection.gd');
+        await ask('git checkout HEAD~1 -- tools');
+        world.regenerated.set(o.cwd, ['tools/a_check.gd']);
+        world.untracked.set(o.cwd, ['scenes/new.tscn']);
+        await ask('git checkout 7267b8651 -- tools/a_check.gd');        // uncommitted work there
+        await ask('git checkout 7267b8651 -- tools');                  // ...and under a directory
+        await ask('git checkout 7267b8651 -- scenes/new.tscn');        // an untracked file would be overwritten
+        await ask('git checkout 7267b8651 -- autoload/Collection.gd'); // clean: still fine
+        await ask('git checkout -- autoload/Collection.gd');           // a bare discard
+        await ask('git checkout 7267b8651 -- ../other/file.gd');       // outside the worktree
+        await ask('git checkout 7267b8651 -- tools/*.gd');             // a glob
+        await ask('git checkout 7267b8651 -- a.gd && rm -rf build');    // more than the restore
+        await o.tools.report_done('did it');
+        return { sessionId: 's', subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', done: 'did it' };
+      },
+    });
+    const made = await setup({ claude: restorer });
+    world = made.world;
+    const { store, engine } = made;
+    const item = store.createItem({ title: 'R', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    await engine.approvePlan(item.id);
+    await waitFor(() => Object.keys(actions).length === 10);
+    expect(actions).toEqual({
+      'git checkout 7267b8651 -- tools/a_check.gd autoload/Collection.gd': 'allow',
+      'git checkout HEAD~1 -- tools': 'allow',
+      'git checkout 7267b8651 -- tools/a_check.gd': 'park',
+      'git checkout 7267b8651 -- tools': 'park',
+      'git checkout 7267b8651 -- scenes/new.tscn': 'park',
+      'git checkout 7267b8651 -- autoload/Collection.gd': 'allow',
+      'git checkout -- autoload/Collection.gd': 'park',
+      'git checkout 7267b8651 -- ../other/file.gd': 'park',
+      'git checkout 7267b8651 -- tools/*.gd': 'park',
+      'git checkout 7267b8651 -- a.gd && rm -rf build': 'park',
+    });
+    expect(activityOf(store, item.id)).toMatch(/allowed: git checkout 7267b8651 -- tools\/a_check\.gd autoload\/Collection\.gd \(restores committed files/);
+    await engine.stop();
   });
 
   it('a permission prompt parks; "allow" resumes with the exact rule; policy denies pushes outright', async () => {

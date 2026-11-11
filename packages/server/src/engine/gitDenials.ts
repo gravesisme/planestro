@@ -79,3 +79,22 @@ function gitArgs(words: string[]): { config: string[]; sub: string; rest: string
   }
   return i < words.length ? { config, sub: words[i], rest: words.slice(i + 1) } : null;
 }
+
+/**
+ * `git checkout <ref> -- <paths…>` alone (#537): files restored from a commit, which lands as an ordinary new commit
+ * the diff review sees. The ref and paths as written, when the command is exactly that and nothing else (one command,
+ * no redirection, every word a literal, no glob, `--` present so a path is never read as a branch); else null.
+ * Whether the paths may be restored (nothing uncommitted under them) is the caller's to check against the worktree.
+ */
+export function restoreFromRef(command: string): { ref: string; paths: string[] } | null {
+  const items = readShell(command);
+  if (!items || items.length !== 1 || items[0].kind !== 'command') return null;
+  const it = items[0];
+  if (it.redirects.length || it.assigns.length || it.background) return null;
+  const words = it.words.map((w) => literal(w));
+  if (words.some((w) => w === null)) return null;
+  const [git, sub, ref, dashes, ...paths] = words as string[];
+  if (git !== 'git' || sub !== 'checkout' || dashes !== '--' || !ref || ref.startsWith('-') || !paths.length) return null;
+  if (paths.some((p) => !p || p.startsWith('-') || /[*?[\]]/.test(p) || p.startsWith(':'))) return null;
+  return { ref, paths };
+}

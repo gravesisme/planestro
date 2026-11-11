@@ -3,7 +3,7 @@ import { emptySplit } from '@planestro/shared';
 import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { noteUsage, classifyUsage, rateLimitSnapshot, type UsageSignals, noteToolFailures, InputGate, ReportWatch, DropWatch, noteContext, noteTokens, type TokensSeen, resumeQuoteOf, settleCost, lastCostState, resumeWatch, type ContextSeen } from '../src/engine/sessions/LiveClaudePort.ts';
+import { backgroundNote, noteUsage, classifyUsage, rateLimitSnapshot, type UsageSignals, noteToolFailures, InputGate, ReportWatch, DropWatch, noteContext, noteTokens, type TokensSeen, resumeQuoteOf, settleCost, lastCostState, resumeWatch, type ContextSeen } from '../src/engine/sessions/LiveClaudePort.ts';
 import type { TurnResult, UndeliveredReport } from '../src/engine/ports.ts';
 
 const result = (over: Partial<TurnResult> = {}): TurnResult => ({ subtype: 'success', isError: false, costUsd: 0, numTurns: 1, text: '', ...over });
@@ -217,6 +217,53 @@ describe('the prompt stays open while background work runs (#167)', () => {
     expect(h.closed).toBe(false);
     expect((await end2).done).toBe(true);
     await end;
+  });
+});
+
+describe('a parked turn ends even with a background job running (#543)', () => {
+  const server = { type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'b1', task_type: 'local_bash', description: 'python3 -m http.server 8765' }] };
+  const none = { type: 'system', subtype: 'background_tasks_changed', tasks: [] };
+  const drain = async (g: InputGate) => { const it = g.open('hi'); await it.next(); return it.next(); };
+
+  it('stops the live tasks at the parked result and ends once they are gone', async () => {
+    const g = new InputGate(30_000, 60_000); const end = drain(g);
+    const stopped: string[] = []; g.stopTask = async (id) => { stopped.push(id); };
+    g.see(server);
+    expect(g.park()).toEqual(['python3 -m http.server 8765']);
+    g.see({ type: 'result' });
+    expect(stopped).toEqual(['b1']);
+    expect(g.closed).toBe(false);
+    g.see(none);                       // the stop landed: no grace wait for a follow-up turn, the turn is over
+    expect(g.closed).toBe(true);
+    expect((await end).done).toBe(true);
+    expect(g.forced).toBe(false);
+  });
+
+  it('closes the query when the stream has not ended after the stop', async () => {
+    const g = new InputGate(30_000, 5); const end = drain(g);
+    let closed = 0; g.stopTask = async () => { throw new Error('no such task'); }; g.forceEnd = () => { closed++; };
+    g.see(server); g.park(); g.see({ type: 'result' });
+    expect((await end).done).toBe(true);
+    expect(g.forced).toBe(true);
+    expect(closed).toBe(1);
+  });
+
+  it('a turn that did not park still waits on its background task, as before', () => {
+    const g = new InputGate(); void drain(g);
+    let asked = 0; g.stopTask = async () => { asked++; };
+    g.see(server); g.see({ type: 'result' });
+    expect(asked).toBe(0);
+    expect(g.closed).toBe(false);
+    g.close();
+  });
+
+  it('a park with no background task ends at the result, and the session is told only when one runs', async () => {
+    const g = new InputGate(); const end = drain(g);
+    expect(g.park()).toEqual([]);
+    g.see({ type: 'result' });
+    expect((await end).done).toBe(true);
+    expect(backgroundNote([])).toBe('');
+    expect(backgroundNote(['python3 -m http.server 8765'])).toMatch(/background job \(python3 -m http\.server 8765\) will be stopped when this turn ends.*one script/);
   });
 });
 

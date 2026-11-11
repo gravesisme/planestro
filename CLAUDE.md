@@ -252,6 +252,8 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   planner's or the orchestrator's). Values never reach a prompt, the journal, Activity or an item file; output is redacted. A
   refused read names the variables the session has; a plan naming a secret file is warned about at hand-in (`secretsNamedIn`).
   `planestro.local.yml` and `~/.planestro/policy.yml` are themselves on the list, so no ruling lets a worker sanction itself.
+  Every worker session and its `run_heavy` commands also get `PLANESTRO_ITEM` (#544), never a secret: a project's own
+  scripts can tell a planestro worker from CI or a person.
 - Allow rules are suggested from the ruling history, never applied (`allowSuggest.ts`, #169: `planestro
   permissions suggest`, `GET /permissions/suggest`, the Console). Rulings come from Activity
   (`permission allow (reason): Bash(…)`) and, whole, from `permission.answered` (`tool`, `command`,
@@ -267,6 +269,8 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   Beside them stand planestro's own built-in readers (`BASE_ALLOWED`, after every deny): what only reads, every path it
   names in the worktree or a scratch folder. That covers Read/Grep/Glob there (symlinks followed, the main checkout still
   asks) and a `sed` or `awk` whose script only prints (`filterAt`: no `w`/`e`/`r`, no `system`/`getline`/`|`/`print >`) (#503).
+  `git checkout <ref> -- <paths>` alone is allowed when git shows nothing uncommitted at or under any path, all inside
+  the worktree (`restoreFromRef`, #537): the restore lands as a new commit; a dirty path or a bare `checkout --` parks.
 - Semantic git commits only (`HH-143: approve plan`), scoped to the paths the
   mutation touched; telemetry is checkpointed (`planestro: checkpoint <ts>`).
 - Releases (`releases/<version>.md`) are a second file type beside items: status

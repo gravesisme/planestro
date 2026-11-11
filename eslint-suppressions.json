@@ -31,7 +31,7 @@
   },
   "packages/server/src/engine/sessions/LiveClaudePort.ts": {
     "@typescript-eslint/no-explicit-any": {
-      "count": 29
+      "count": 28
     }
   },
   "packages/server/src/engine/sessions/LiveCodexPort.ts": {
