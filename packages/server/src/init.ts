@@ -35,11 +35,11 @@ export function layoutRefusal(layout: string | undefined): string | null {
 // Only the chosen provider's models are written (the other provider's CLI may not even be installed); Settings → Models
 // adds the other one (it offers the Codex preset), and a mixed fleet is set up there.
 const CLAUDE_ROWS = `  # Model ids age: when a newer Claude model ships, change claude_model here or in Settings → Models.
-  # Opus 5.5 plans and implements everything by default. Fable 5.1 is for the hardest plans (an epic's
+  # Opus 5.5 plans and implements everything by default. Fable 5.2 is for the hardest plans (an epic's
   # breakdown, a cross-system mechanic): pick it as the planner on those items.
   # fallback: while a model is out of usage, items that allow it (and the orchestrator, if allowed) run on this one instead.
   - { id: opus-5-5, label: Opus 5.5, claude_model: claude-opus-5-5 }
-  - { id: fable-5-1, label: Fable 5.1, claude_model: claude-fable-5-1, fallback: opus-5-5 }
+  - { id: fable-5-2, label: Fable 5.2, claude_model: claude-fable-5-2, fallback: opus-5-5 }
   # Codex too: Settings → Models → Add Codex GPT-6 Astra preset.
 `;
 const CODEX_ROWS = `  # Codex GPT-6 Astra plans, implements and orchestrates. Claude models can be added in Settings → Models.
