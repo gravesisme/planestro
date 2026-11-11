@@ -83,7 +83,7 @@ describe('--provider picks who plans, implements and orchestrates (#333)', () =>
     expect(codex.models.map((m) => m.id)).toEqual(['codex-gpt-6-astra']);   // no Claude rows for a machine with no Claude
     initDataDir({ dataDir: join(root, 'claude-planning'), codeRepo: repo, register: false });
     expect(runnersInUse(readConfig(join(root, 'claude-planning')), [])).toEqual(['claude']);
-    expect(readConfig(join(root, 'claude-planning')).models.map((m) => m.id)).toEqual(['opus-5-5', 'fable-5-1']);
+    expect(readConfig(join(root, 'claude-planning')).models.map((m) => m.id)).toEqual(['opus-5-5', 'fable-5-2']);
   });
 
   it('refuses anything but claude or codex', () => {
