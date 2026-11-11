@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.1 — 2026-11-11
+
+### Changed
+
+- A new project's Fable row is Fable 5.2 (`fable-5-2`, `claude-fable-5-2`), still falling back to Opus 5.5. `planestro init`
+  wrote Fable 5.1, which costs more ($10 / $50 per million tokens against 5.2's $8 / $40). An existing project keeps its
+  rows: to move one, change its Fable row's Claude model in Settings → Models (keeping the row's id keeps every item that
+  names it valid).
+
 ## 1.3.0 — 2026-11-11
 
 ### Fixed

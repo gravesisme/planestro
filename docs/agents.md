@@ -31,7 +31,7 @@ The orchestrator can use either provider. Explicit switching in both directions 
 ```yaml
 models:
   - { id: opus-5-5, label: Opus 5.5, claude_model: claude-opus-5-5, description: "Code, tests and docs. Cannot generate images." }
-  - { id: fable-5-1, label: Fable 5.1, claude_model: claude-fable-5-1, fallback: opus-5-5 }
+  - { id: fable-5-2, label: Fable 5.2, claude_model: claude-fable-5-2, fallback: opus-5-5 }
   - { id: codex-art, label: Codex Art, runner: codex, hold_for_review: true,
       description: "All raster art: icons, sprites, illustrations. Does not write code." }
 ```
