@@ -184,7 +184,7 @@ export const SETTINGS: readonly SettingDef[] = [
     detail: ["Three denials on one item and the rest come to you. planestro's hard rules (no pushes, no pull requests, no protected branches, no force flags) apply before anyone is asked."] }),
 
   // ---- Workers & permissions
-  C({ key: 'hooks.after_worktree_create', runs: true, tab: 'workers', group: 'Worktrees', label: 'Setup commands', summary: 'Run in each new worktree before planning. A failure blocks the item as hook_failed.', control: 'list', mono: true, placeholder: 'npm ci',
+  C({ key: 'hooks.after_worktree_create', runs: true, tab: 'workers', group: 'Worktrees', label: 'Setup commands', summary: 'Run in each new worktree before planning. A failed command runs once more, then blocks the item as hook_failed.', control: 'list', mono: true, placeholder: 'npm ci',
     detail: ['Install dependencies, import assets. Not re-run when an item that went to the icebox is queued again and reuses its worktree.'] }),
   C({ key: 'worktrees.byproducts', tab: 'workers', group: 'Worktrees', label: 'Files that are never work', summary: "Untracked files your tools regenerate (Godot's *.import). Clean-tree checks ignore them; cleanup moves them aside.", control: 'list', mono: true, placeholder: '*.import',
     detail: ['No clean-tree check counts them (after a turn, before a sync, finish from worktree, recreate, close as done), engine commits leave them out, and cleanup moves them to .displaced/ before removing the worktree.', 'A pattern without / matches the file name at any depth; one with / matches the path from the worktree root.'] }),
