@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#14161a" />
+    <meta name="theme-color" content="#1c1f25" />
     <title>planestro</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <!-- added to a phone's home screen it opens without browser chrome, like an app -->
@@ -12,7 +12,9 @@
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="planestro" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <!-- "default": the page starts below the iOS status bar, which iOS paints from theme-color (the top
+         bar's --panel). "black-translucent" drew the top bar under it, inside iOS 26's edge blur (#558). -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   </head>
   <body>
     <div id="root"></div>
