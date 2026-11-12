@@ -12,9 +12,14 @@
 //
 // The endpoint is stateless streamable HTTP with JSON responses: each JSON-RPC line from stdin is one POST, and its
 // answer one line on stdout. A notification gets 202 and no answer.
+//
+// Files put on an item (`create_item` / `attach_file` `attachments`, #555) are named by a path on THIS machine, where the
+// session runs; the server may be on another (PLANESTRO_URL). So the bridge reads each named regular file itself and sends
+// its bytes as base64 `data`: the server checks type, size and contents as it does for any file. A path it does not read
+// (a symlink, a relative path, no such file) goes on as it was, for the server to refuse in its own words.
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { closeSync, constants, fstatSync, openSync, readFileSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
@@ -37,10 +42,37 @@ export function target(env = process.env, cwd = projectDir) {
   return { url: `${String(rec.url).replace(/\/+$/, '')}/mcp`, data };
 }
 
+/** Tools whose `attachments` name local files. */
+const ATTACHING = new Set(['create_item', 'attach_file']);
+/** Never read more than this for one file: the server's own limits are far below it. */
+const READ_CAP = 64 * 1024 * 1024;
+
+/** One attachment with a readable local path, as `{data, name}`; anything else unchanged. */
+function inlineOne(a) {
+  if (!a || typeof a !== 'object' || typeof a.path !== 'string' || a.data !== undefined) return a;
+  if (!isAbsolute(a.path) || a.path.split(/[/\\]/).includes('..')) return a;
+  let fd;
+  try { fd = openSync(a.path, constants.O_RDONLY | constants.O_NOFOLLOW | (constants.O_NONBLOCK ?? 0)); } catch { return a; }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile() || st.size > READ_CAP) return a;
+    const { path, ...rest } = a;
+    return { ...rest, name: a.name ?? basename(path), data: readFileSync(fd).toString('base64') };
+  } catch { return a; } finally { closeSync(fd); }
+}
+
+/** A tools/call that attaches files, with each local file's bytes in place of its path. */
+export function inlineAttachments(msg) {
+  const args = msg?.params?.arguments;
+  if (msg?.method !== 'tools/call' || !ATTACHING.has(msg.params?.name) || !Array.isArray(args?.attachments)) return msg;
+  return { ...msg, params: { ...msg.params, arguments: { ...args, attachments: args.attachments.map(inlineOne) } } };
+}
+
 const out = (msg) => process.stdout.write(`${JSON.stringify(msg)}\n`);
 
 /** One JSON-RPC message, answered from the server; with no server, initialize still succeeds so the session says why. */
-async function forward(msg) {
+async function forward(raw) {
+  const msg = inlineAttachments(raw);
   const t = target();
   if (!t.url) {
     if (msg.id === undefined) return;
