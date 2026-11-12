@@ -79,6 +79,10 @@ The serial merge chain only syncs and merges; no CI wait ever runs inside it. A 
 that is not green yet leaves the chain (`op: awaiting_ci`), is polled beside it
 (`watchCi`) and comes back once green, so one item's CI never delays another's merge.
 Releasing a hold keeps a green run whose head is unchanged and still on the base tip.
+While a same-base sibling waits for CI on a head synced onto the base tip and would merge on green, an item whose sync would
+push a new head waits for it (`op_data.sibling_ci`, said in Activity; no step, promise or slot held) and goes once that sibling
+merged or left the wait (red, held, blocked, taken over); only an item not in CI waits, on one that is, so no two wait on each other.
+A green run the base moved past is said in Activity (`green run for <sha> discarded`) (#560).
 A red head the session changed nothing for is re-run once (`onSameRedRun`), then blocks `ci_red_parked`:
 nothing waits on a run that is not coming, and an item in review that nothing moves for `ci.stall_wake_min`
 wakes the orchestrator once (`review_stalled`, #201).
