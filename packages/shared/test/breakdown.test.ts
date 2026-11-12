@@ -20,6 +20,10 @@ describe('epic breakdowns', () => {
     expect(validateBreakdown([child({ depends_on: [0] })], models, cats)).toMatch(/depends on itself/);
     expect(validateBreakdown([child({ depends_on: [1] }), child({ depends_on: [2] }), child({ depends_on: [0] })], models, cats)).toMatch(/cycle/);
     expect(validateBreakdown(Array.from({ length: 25 }, () => child()), models, cats)).toMatch(/too large/);
+    expect(validateBreakdown(Array.from({ length: 24 }, () => child()), models, cats)).toBeNull();
+    // #559: the cap is the project's epics.max_children
+    expect(validateBreakdown(Array.from({ length: 31 }, () => child()), models, cats, 40)).toBeNull();
+    expect(validateBreakdown(Array.from({ length: 4 }, () => child()), models, cats, 3)).toBe('a breakdown of 4 children is too large to review; group the work into at most 3 (epics.max_children)');
     expect(validateBreakdown([child({ planner: 'opus-5', hold_for_review: true })], models, cats)).toBeNull();
     expect(validateBreakdown([child({ planner: 'codex-art' })], models, cats)).toMatch(/planner "codex-art", which is not a model that can plan: opus-5/);
     expect(validateBreakdown([child({ planner: 'nobody' })], models, cats)).toMatch(/not a model that can plan/);
