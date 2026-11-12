@@ -131,6 +131,8 @@ export const SETTINGS: readonly SettingDef[] = [
   C({ key: 'orchestrator.budget_tokens_per_fresh_wake', tab: 'orchestrator', group: 'Model', label: 'Tokens per fresh wake', summary: 'Higher allowance for new conversations, including provider switches.', control: 'number', unit: 'tokens', min: 1 }),
   C({ key: 'budget_tokens_per_item', tab: 'budgets', group: 'Per item', label: 'Tokens (Codex)', summary: 'Uncached tokens per item for those runners.', control: 'number', unit: 'tokens', min: 1,
     detail: ['Blocks as token_budget. A live art turn measured 20–35k; the default leaves room for a dozen revisions. An item\'s own budget_tokens replaces it.'] }),
+  C({ key: 'epics.max_children', tab: 'budgets', group: 'Epics', label: 'Children in one breakdown', summary: "The most child items an epic's planner may propose at once. It is told the limit up front; a longer list goes back to it.", control: 'number', unit: 'children', min: 1,
+    detail: ['The limit protects whoever reviews the breakdown: every child is read and approved in one list. Too low, and a large epic\'s planner merges unrelated work into one child to fit, which makes that child bigger and its review coarser.', 'Also checked when you approve an edited list.'] }),
   C({ key: 'concurrency.max_sessions', tab: 'budgets', group: 'Running at once', label: 'Items worked on at once', summary: 'A slot is taken only while something is actually running for an item: a turn, an engine step, a git operation.', control: 'number', min: 1,
     detail: ['Never by an epic, and never by an item that is only waiting on you or on CI.'] }),
   C({ key: 'concurrency.max_local_jobs', tab: 'budgets', group: 'Running at once', label: 'Local jobs at once', summary: 'Setup hooks and local check commands running at the same time.', control: 'number', min: 1 }),
@@ -184,7 +186,7 @@ export const SETTINGS: readonly SettingDef[] = [
     detail: ["Three denials on one item and the rest come to you. planestro's hard rules (no pushes, no pull requests, no protected branches, no force flags) apply before anyone is asked."] }),
 
   // ---- Workers & permissions
-  C({ key: 'hooks.after_worktree_create', runs: true, tab: 'workers', group: 'Worktrees', label: 'Setup commands', summary: 'Run in each new worktree before planning. A failure blocks the item as hook_failed.', control: 'list', mono: true, placeholder: 'npm ci',
+  C({ key: 'hooks.after_worktree_create', runs: true, tab: 'workers', group: 'Worktrees', label: 'Setup commands', summary: 'Run in each new worktree before planning. A failed command runs once more, then blocks the item as hook_failed.', control: 'list', mono: true, placeholder: 'npm ci',
     detail: ['Install dependencies, import assets. Not re-run when an item that went to the icebox is queued again and reuses its worktree.'] }),
   C({ key: 'worktrees.byproducts', tab: 'workers', group: 'Worktrees', label: 'Files that are never work', summary: "Untracked files your tools regenerate (Godot's *.import). Clean-tree checks ignore them; cleanup moves them aside.", control: 'list', mono: true, placeholder: '*.import',
     detail: ['No clean-tree check counts them (after a turn, before a sync, finish from worktree, recreate, close as done), engine commits leave them out, and cleanup moves them to .displaced/ before removing the worktree.', 'A pattern without / matches the file name at any depth; one with / matches the path from the worktree root.'] }),

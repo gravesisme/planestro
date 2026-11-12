@@ -301,11 +301,11 @@ html { -webkit-text-size-adjust: 100%; }
   .prompts .section h2 .muted { flex: 1 1 100%; min-width: 0; font-weight: 400; text-transform: none; letter-spacing: 0; overflow-wrap: anywhere; } .prompts .section .row select { flex: 1 1 100%; }
 
 }
-/* Installed apps have no retracting browser bars. Use the full screen height through
-   the root chain: WebKit can subtract safe areas from newer viewport units here.
-   https://bugs.webkit.org/show_bug.cgi?id=254868 */
+/* Installed apps have no retracting browser bars: fill the web view through the root chain
+   (html, body, #root at 100% above), not dvh, which WebKit can shrink by the safe areas here
+   (https://bugs.webkit.org/show_bug.cgi?id=254868). Nor 100vh: the page starts below the status
+   bar (status-bar-style "default", #558), and vh can still count it, pushing the tab bar off. */
 @media (max-width: 840px) and (display-mode: standalone), (max-width: 840px) and (display-mode: fullscreen) {
-  html { height: 100vh; }
   .app { height: 100%; }
 }
 /* a phone on its side has no height to spare for a pinned strip */

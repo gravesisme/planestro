@@ -26,7 +26,7 @@ export function BreakdownPanel({ item, mode = 'proposal', onClose }: { item: Ite
   // entries from a list wait on each other by their own numbers: shift them past what is already here
   const append = (more: BreakdownChild[]) => { setChildren((cs) => [...cs, ...more.map((c) => ({ ...c, depends_on: (c.depends_on ?? []).map((d) => d + cs.length) }))]); setFromList(false); };
   const models = state.config.models.filter((m) => !m.external);
-  const problem = validateBreakdown(children, state.config.models, state.config.categories);
+  const problem = validateBreakdown(children, state.config.models, state.config.categories, state.config.epics.max_children);
   const patch = (i: number, p: Partial<BreakdownChild>) => setChildren((cs) => cs.map((c, k) => k === i ? { ...c, ...p } : c));
   const remove = (i: number) => setChildren((cs) => cs.filter((_c, k) => k !== i).map((c) => ({ ...c, depends_on: (c.depends_on ?? []).filter((d) => d !== i).map((d) => d > i ? d - 1 : d) })));
   const runnerOf = (id: string) => models.find((m) => m.id === id)?.runner ?? 'claude';
