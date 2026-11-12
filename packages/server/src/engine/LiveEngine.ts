@@ -1574,7 +1574,7 @@ export class LiveEngine implements Engine {
           return handIn(plan, { reason: `its planner handed in a breakdown of ${list.length} child items instead of one plan`, source: 'breakdown', children: proposed });
         }
         if (cur.status === 'PLAN_READY' && getSection(s.requireItem(id).file, 'Plan').trim() === demoteH1(plan).trim() && JSON.stringify(cur.awaiting_data?.children) === JSON.stringify(children)) return 'Breakdown already recorded by planestro. End your turn now.';
-        const problem = validateBreakdown(children, s.config.models, s.config.categories);
+        const problem = validateBreakdown(children, s.config.models, s.config.categories, s.config.epics.max_children);
         if (problem) { s.mutateItem(id, [{ activity: { actor: 'app', text: `breakdown rejected back to the planner: ${problem}` } }], 'engine'); return `Rejected: ${problem}. Fix that and call submit_breakdown again.`; }
         const ops: ItemOp[] = [{ section: 'Plan', body: plan }];
         if (cur.blocked && cur.blocked_reason === 'no_plan') ops.push({ unset: ['blocked', 'blocked_reason', 'triage'] });
@@ -2170,22 +2170,36 @@ export class LiveEngine implements Engine {
   }
 
   /**
-   * `after_worktree_create`, one hook at a time within the local-job limit; a failure blocks the item. A hook that has
+   * `after_worktree_create`, one hook at a time within the local-job limit (`concurrency.max_local_jobs`, 1 by default:
+   * setup hooks of a project's worktrees never overlap, nor overlap its local checks). A hook that has
    * not started waits while AUTOMATION PAUSED is set (#534): an admission or a recreate_worktree already under way when
    * the user paused would otherwise launch the project's importer (`godot --import`) over them. An engine stop ends the
    * wait with nothing run; the op is left for the restart, which re-runs setup.
+   * A failed hook runs once more before it blocks `hook_failed` (#561): a fresh worktree's first setup can lose a race
+   * with another process on the machine (an importer reading a file still being written) and pass on a second run.
+   * The second run queues behind any local job already waiting and is said in Activity with the first exit; a hook
+   * that timed out or could not be started (`setupHookRetries`) is not run again.
    */
   private async runSetupHooks(id: string, dir: string, opId: string): Promise<boolean> {
     this.store.mutateItem(id, [{ set: { op: 'importing', op_started_at: this.now() } }], 'engine');
     for (const hook of this.store.config.hooks.after_worktree_create) {
-      if (this.guards.paused) {
-        this.store.mutateItem(id, [{ activity: { actor: 'app', text: `setup hook held while automation is paused: ${hook}` } }], 'engine');
-        while (this.guards.paused && !this.stopping) await this.untilResumed(undefined, 30_000);
+      for (let attempt = 1; ; attempt++) {
+        if (this.guards.paused) {
+          this.store.mutateItem(id, [{ activity: { actor: 'app', text: `setup hook held while automation is paused: ${hook}` } }], 'engine');
+          while (this.guards.paused && !this.stopping) await this.untilResumed(undefined, 30_000);
+        }
         if (this.stopping) return false;
+        const r = await this.slots.withLocalJobSlot(() => this.ports.proc.run(hook, { cwd: dir, timeoutMs: 20 * 60_000 }));
+        if (r.code === 0) { this.store.mutateItem(id, [{ activity: { actor: 'app', text: `hook ok: ${hook}${attempt > 1 ? ' (on its second run)' : ''}` } }], 'engine'); break; }
+        const tail = (r.stderr.trim() ? r.stderr : r.stdout).slice(-400);
+        if (attempt === 1 && setupHookRetries(r.code)) {
+          this.store.mutateItem(id, [{ activity: { actor: 'app', text: `setup hook failed: ${hook} exited ${r.code}: ${tail.trim()}; running it once more before blocking (a fresh worktree's first setup can lose a race with another process on this machine)` } }], 'engine');
+          continue;
+        }
+        this.store.journal.end(opId, id, 'failed', { hook, code: r.code, runs: attempt });
+        this.block(id, 'hook_failed', `${hook} exited ${r.code}${attempt > 1 ? ' (again, on its second run)' : ''}: ${tail}`);
+        return false;
       }
-      const r = await this.slots.withLocalJobSlot(() => this.ports.proc.run(hook, { cwd: dir, timeoutMs: 20 * 60_000 }));
-      if (r.code !== 0) { this.store.journal.end(opId, id, 'failed', { hook, code: r.code }); this.block(id, 'hook_failed', `${hook} exited ${r.code}: ${r.stderr.slice(-400)}`); return false; }
-      this.store.mutateItem(id, [{ activity: { actor: 'app', text: `hook ok: ${hook}` } }], 'engine');
     }
     return true;
   }
@@ -2915,4 +2929,13 @@ export class LiveEngine implements Engine {
     this.log.push(e); if (this.log.length > 500) this.log.shift();
     this.emit(e);
   }
+}
+
+/**
+ * Whether a failed setup hook is run once more (#561): any non-zero exit but a timeout or a stop (124, `LiveProcPort`'s
+ * own), a command that could not be found or run (127, 126). Those would only fail the same way, the first after up to
+ * 20 minutes. Which failures are races is not knowable from here in general, so no project pattern is needed to get one.
+ */
+export function setupHookRetries(code: number): boolean {
+  return code !== 0 && code !== 124 && code !== 126 && code !== 127;
 }

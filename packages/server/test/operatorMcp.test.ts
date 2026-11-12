@@ -84,7 +84,7 @@ describe('the operator MCP endpoint (#175, step 2)', () => {
       expect(tools.map((t) => t.name).sort()).toEqual([...OPERATOR_READ_TOOLS, ...OPERATOR_WRITE_TOOLS].sort());
       expect(tools.find((t) => t.name === 'create_item')!.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false });
       // It takes nothing that would start or change work: no status, no parent, no submit.
-      expect(Object.keys((tools.find((t) => t.name === 'create_item')!.inputSchema as any).properties).sort()).toEqual(['category', 'description', 'kind', 'priority', 'title']);
+      expect(Object.keys((tools.find((t) => t.name === 'create_item')!.inputSchema as any).properties).sort()).toEqual(['attachments', 'category', 'description', 'kind', 'priority', 'title']);
 
       const made = text(await client.callTool({ name: 'create_item', arguments: { title: 'Follow-up: tidy the cave map', description: 'Seen while reviewing TP-1.', priority: 'low' } }));
       const item = srv.store.getItem(made.id)!;

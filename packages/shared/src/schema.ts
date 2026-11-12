@@ -570,7 +570,9 @@ export const Config = z.object({
     auto_submit: z.boolean().default(true),
     /** The cap on a one-shot session that resolves a merge conflict on an epic's integration branch (#71). 0: no such session, the epic blocks as sync_conflict. */
     conflict_budget_usd: z.number().min(0).default(10),
-  }).default({ auto_submit: true, conflict_budget_usd: 10 }),
+    /** The most children one breakdown may propose (#559): more is rejected back to the planner, who is told the limit up front. */
+    max_children: z.number().int().min(1).default(24),
+  }).default({ auto_submit: true, conflict_budget_usd: 10, max_children: 24 }),
   /** Pause automation before a subscription usage window runs out (see docs/configuration.md, Usage guard). */
   usage_guard: z.object({
     enabled: z.boolean().default(true),
