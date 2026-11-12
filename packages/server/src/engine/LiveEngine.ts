@@ -1574,7 +1574,7 @@ export class LiveEngine implements Engine {
           return handIn(plan, { reason: `its planner handed in a breakdown of ${list.length} child items instead of one plan`, source: 'breakdown', children: proposed });
         }
         if (cur.status === 'PLAN_READY' && getSection(s.requireItem(id).file, 'Plan').trim() === demoteH1(plan).trim() && JSON.stringify(cur.awaiting_data?.children) === JSON.stringify(children)) return 'Breakdown already recorded by planestro. End your turn now.';
-        const problem = validateBreakdown(children, s.config.models, s.config.categories);
+        const problem = validateBreakdown(children, s.config.models, s.config.categories, s.config.epics.max_children);
         if (problem) { s.mutateItem(id, [{ activity: { actor: 'app', text: `breakdown rejected back to the planner: ${problem}` } }], 'engine'); return `Rejected: ${problem}. Fix that and call submit_breakdown again.`; }
         const ops: ItemOp[] = [{ section: 'Plan', body: plan }];
         if (cur.blocked && cur.blocked_reason === 'no_plan') ops.push({ unset: ['blocked', 'blocked_reason', 'triage'] });
