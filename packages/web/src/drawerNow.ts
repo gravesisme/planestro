@@ -78,6 +78,8 @@ export function nowOf(item: ItemView, state: State | null | undefined, now = new
   }
   if (fm.op) return { tone: 'idle', text: [OP_SAYS[fm.op] ?? `${words(fm.op)}…`, since(fm.op_started_at, now)].filter(Boolean).join(' · ') };
   if (fm.skip_merge) return { tone: 'held', text: `held: ${heldReasonOf(fm) ?? 'out of the merge queue'}${fm.status === 'IN_REVIEW' ? ` · CI ${fm.ci_result ?? 'pending'}` : ''}` };
+  const sibling = fm.status === 'IN_REVIEW' ? fm.op_data?.sibling_ci as { on?: string; head?: string } | undefined : undefined;
+  if (sibling?.on) return { tone: 'wait', text: `waiting on ${sibling.on}'s CI: it merges first (same base)`, title: 'Its merge would move the base under this PR, so this one syncs and runs CI after it (#560).' };
   if (fm.resume_after) return { tone: 'wait', text: `resumes after ${waitsFor(fm.resume_after)} merge`, title: fm.resume_after.message };
   switch (fm.status) {
     case 'IN_REVIEW': return fm.ci_result === 'red' ? { tone: 'blocked', text: 'CI red' } : fm.ci_result === 'green' ? { tone: 'ci', text: 'CI green · waiting to merge' } : { tone: 'ci', text: `in review · CI ${fm.ci_result ?? 'not started'}` };

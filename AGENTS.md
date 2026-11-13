@@ -79,6 +79,10 @@ The serial merge chain only syncs and merges; no CI wait ever runs inside it. A 
 that is not green yet leaves the chain (`op: awaiting_ci`), is polled beside it
 (`watchCi`) and comes back once green, so one item's CI never delays another's merge.
 Releasing a hold keeps a green run whose head is unchanged and still on the base tip.
+While a same-base sibling waits for CI on a head synced onto the base tip and would merge on green, an item whose sync would
+push a new head waits for it (`op_data.sibling_ci`, said in Activity; no step, promise or slot held) and goes once that sibling
+merged or left the wait (red, held, blocked, taken over); only an item not in CI waits, on one that is, so no two wait on each other.
+A green run the base moved past is said in Activity (`green run for <sha> discarded`) (#560).
 A red head the session changed nothing for is re-run once (`onSameRedRun`), then blocks `ci_red_parked`:
 nothing waits on a run that is not coming, and an item in review that nothing moves for `ci.stall_wake_min`
 wakes the orchestrator once (`review_stalled`, #201).
@@ -97,6 +101,8 @@ A label is stalled when its runners are offline, or all busy with no job started
 A worker's heavy local run goes through `run_heavy` (`heavy_runs`, #218; matching Bash is redirected to it): one at a time
 (`HeavyLock`, in memory), each batch after any CI job on a `shared_labels` runner has ended, read from that same report.
 A batch or setup hook not yet started waits while paused (#534), in the same wait, abortable by the turn; a drain does not hold it.
+Setup hooks of all worktrees share `concurrency.max_local_jobs` (1 by default: never two at once); a failed one runs once more,
+queued again and said in Activity, before it blocks `hook_failed`, unless it timed out or could not start (`setupHookRetries`, #561).
 run_heavy is offered even with `heavy_runs` off, then with no lock or CI wait: the one run of any length past the CLI's 10-minute
 foreground cap (#502); a Bash call that hit the cap is told so, and the orchestrator counts either as one foreground harness run.
 A held item (`skip_merge`) skips only the merge: its new commits are pushed and its

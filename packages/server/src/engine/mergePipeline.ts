@@ -70,6 +70,15 @@ export interface MergePipelineContext {
   withLocalJobSlot<T>(fn: () => Promise<T>): Promise<T>;
 }
 
+/** The order the merge queue takes items in: merge_order, then rank, then the oldest PR. */
+function byMergeOrder(a: { file: { frontmatter: ItemFrontmatter } }, b: { file: { frontmatter: ItemFrontmatter } }): number {
+  const fa = a.file.frontmatter, fb = b.file.frontmatter;
+  return (fa.merge_order ?? Infinity) - (fb.merge_order ?? Infinity) || (fa.rank ?? Infinity) - (fb.rank ?? Infinity) || (fa.pr_created_at ?? '').localeCompare(fb.pr_created_at ?? '');
+}
+
+/** `op_data.sibling_ci` (#560): the same-base sibling whose CI run this item waits on before it syncs, and the head that run is for. */
+export interface SiblingWait { on: string; head: string; base: string; tip: string; since: string }
+
 /** Held polls (one a minute) a new head's preview deployment is looked for before planestro stops asking. */
 const PREVIEW_TRIES = 10;
 /** Looks (5 s apart) at a just-pushed PR's head before it is marked ready anyway. */
@@ -93,10 +102,7 @@ export class MergePipeline {
       const flavor = this.ctx.store.derived(item).flavor;
       if (flavor === 'external' && (fm.merge_policy ?? 'watch') === 'watch') return false; // watched: driveExternal observes it
       return true;
-    }).sort((a, b) => {
-      const fa = a.file.frontmatter, fb = b.file.frontmatter;
-      return (fa.merge_order ?? Infinity) - (fb.merge_order ?? Infinity) || (fa.rank ?? Infinity) - (fb.rank ?? Infinity) || (fa.pr_created_at ?? '').localeCompare(fb.pr_created_at ?? '');
-    });
+    }).sort(byMergeOrder);
     // mergeChain keeps the syncs and merges strictly serial, in this order; CI waits run beside it.
     for (const item of candidates) this.ctx.runJob(item.id, () => item.file.frontmatter.op === 'awaiting_ci' ? this.watchCi(item.id) : this.mergeJob(item.id));
   }
@@ -252,6 +258,9 @@ export class MergePipeline {
     // Never merge over a message still queued for the session (HH-263): the designer's ruling "ship the Crawler" sat in
     // the queue through a 14-minute CI wait, then the PR merged without it. It goes to the session now; the PR comes back after.
     if (canFix && this.ctx.deliverQueued(id, 'before its pull request merges')) return;
+    // A same-base sibling's run on the base tip comes first (#560): a sync and run here now would be thrown away when it merges.
+    if (!hold && await this.waitsOnSibling(id, base)) return;
+    item = this.ctx.store.requireItem(id); fm = item.file.frontmatter;
     if (!fm.worktree) {
       // epics and app-policy external items have no session worktree: make a temporary one from the remote branch
       const dir = join(this.ctx.store.worktreesRoot(), `merge-${id.toLowerCase()}`);
@@ -312,6 +321,11 @@ export class MergePipeline {
       headSha = localHead;
       synced = `already on ${base}@${baseSha.slice(0, 7)}; no sync needed, reusing CI for ${headSha.slice(0, 7)}`;
     } else {
+      // A green run the base has moved past is spent: said, so the cost of a sibling landing first is visible (#560).
+      if (behind > 0 && expected && expected === localHead && (fm.op_data?.ci_green === expected || (fm.ci_result === 'green' && fm.ci_head_sha === expected))) {
+        const by = this.ctx.store.listItems().find((o) => o.id !== id && (o.file.frontmatter.validated_by?.merge ?? o.file.frontmatter.op_data?.merge_commit) === baseSha)?.id;
+        this.ctx.store.mutateItem(id, [{ activity: { actor: 'app', text: `green run for ${expected.slice(0, 7)} discarded: ${base} moved to ${baseSha.slice(0, 7)}${by ? ` (${by} merged)` : ''}` } }], 'engine');
+      }
       // A worker's conflict is left stopped for its session (HH-532), unless that session already could not resolve it at this
       // same base tip and nobody has said since how it should go: then it is a person's, and asking again would only loop.
       const declined = canFix && !integration && (fm.op_data?.rebase_declined as { base_sha?: string } | undefined)?.base_sha === baseSha && !String(fm.op_data?.rebase_hint ?? '').trim();
@@ -394,7 +408,7 @@ export class MergePipeline {
       const seen = cur.op_data?.ci_disagree as { sha?: string; count?: number } | undefined;
       const disagree = !pushed && !readied && cur.op_data?.ci_green === headSha ? (seen?.sha === headSha ? seen.count ?? 0 : 0) + 1 : 0;
       if (disagree >= 2) { this.ctx.store.journal.end(opId, id, 'aborted', { reason: 'ci_disagree', head: headSha }); this.ctx.block(id, 'ci_disagree', `watchCi saw CI green for ${headSha.slice(0, 7)} but the merge step did not, ${disagree} times; check the PR's head and its run, then unblock`); return; }
-      this.ctx.store.mutateItem(id, [{ set: { op: 'awaiting_ci', op_started_at: this.ctx.now(), ci_head_sha: headSha, ci_result: 'pending', op_data: { ...(cur.op_data ?? {}), ci_replaced: pushed ? expected : null, ...(disagree ? { ci_disagree: { sha: headSha, count: disagree } } : {}) } } }, { activity: { actor: 'app', text: `${synced}; waiting for CI outside the merge queue` } }], 'engine');
+      this.ctx.store.mutateItem(id, [{ set: { op: 'awaiting_ci', op_started_at: this.ctx.now(), ci_head_sha: headSha, ci_result: 'pending', op_data: { ...(cur.op_data ?? {}), ci_replaced: pushed ? expected : null, ci_synced: { head: headSha, base: baseSha }, ...(disagree ? { ci_disagree: { sha: headSha, count: disagree } } : {}) } } }, { activity: { actor: 'app', text: `${synced}; waiting for CI outside the merge queue` } }], 'engine');
       this.ctx.store.journal.end(opId, id, 'ok', { awaiting_ci: headSha });
       this.ctx.queueFollowUp(id, () => this.watchCi(id));
       return;
@@ -402,6 +416,92 @@ export class MergePipeline {
     this.ctx.store.mutateItem(id, [{ set: { ci_head_sha: headSha, ci_result: 'green' } }, { activity: { actor: 'app', text: `${synced}; CI is green for it` } }], 'engine');
     if (this.parkIfHeld(id, opId)) return;
     await this.merge(id, opId, base, headSha, baseSha);
+  }
+
+  /**
+   * Whether this item waits for a same-base sibling's CI before it syncs (#560). Five held PRs of one epic, released together,
+   * each rebased, pushed and ran CI; whenever one merged, the others' runs (green or not) were for a base that had moved, and
+   * they ran again: about N² runs on one runner. So while a sibling is waiting for CI on a head synced onto the current base
+   * tip, and would merge on green (not held, blocked, red, taken over or in review), an item whose own sync would push a new
+   * head waits instead, with no step, promise or slot held: the chain looks again on each tick, from the store and local refs
+   * (no fetch), and lets it go once that sibling merged or left the wait. Only an item not itself waiting for CI ever waits,
+   * on one that is, so no two items wait on each other. A head already on the tip and pushed still goes on: it costs no run.
+   * `op_data.sibling_ci` says which item it waits on, for the board and Activity; it is never what decides.
+   */
+  private async waitsOnSibling(id: string, base: string): Promise<boolean> {
+    const item = this.ctx.store.requireItem(id);
+    const fm = item.file.frontmatter;
+    const was = fm.op_data?.sibling_ci as SiblingWait | undefined;
+    let on: { id: string; head: string } | undefined;
+    let tip: string | null = null;
+    const inCi = this.siblingsInCi(id, base);
+    if (inCi.length) {
+      tip = await this.ctx.ports.git.revParse(this.ctx.repo, `origin/${base}`).catch(() => null);
+      if (tip && await this.wouldSync(fm, base, tip)) {
+        for (const s of inCi) if (await this.syncedOnto(s, tip)) { on = s; break; }
+      }
+    }
+    if (on && tip) {
+      if (was?.on !== on.id || was.head !== on.head || was.tip !== tip) {
+        const wait: SiblingWait = { on: on.id, head: on.head, base, tip, since: this.ctx.now() };
+        this.ctx.store.mutateItem(id, [
+          { set: { op_data: { ...(fm.op_data ?? {}), sibling_ci: wait } } },
+          { activity: { actor: 'app', text: `waiting on ${on.id}: its CI for ${on.head.slice(0, 7)} on ${base}@${tip.slice(0, 7)} runs first, and its merge would move ${base} under this PR, so no sync or CI run here until it merges or leaves the queue` } },
+        ], 'engine');
+      }
+      return true;
+    }
+    if (was) {
+      const { sibling_ci: _w, ...od } = this.ctx.store.requireItem(id).file.frontmatter.op_data ?? {};
+      this.ctx.store.mutateItem(id, [{ set: { op_data: od } }, { activity: { actor: 'app', text: `no longer waiting on ${was.on}: it ${this.siblingLeft(was)}; syncing with ${base}` } }], 'engine');
+    }
+    return false;
+  }
+
+  /** Same-base items waiting for CI that would merge on green, in merge order. */
+  private siblingsInCi(id: string, base: string): { id: string; head: string; synced?: { head?: string; base?: string } }[] {
+    return this.ctx.store.listItems().filter((o) => {
+      const f = o.file.frontmatter;
+      if (o.id === id || f.status !== 'IN_REVIEW' || f.op !== 'awaiting_ci' || !f.ci_head_sha || f.ci_result === 'red') return false;
+      if (f.blocked || f.awaiting || f.triage || f.skip_merge || f.review_hold || f.taken_over || f.op_data?.pending_turn) return false;
+      const d = this.ctx.store.derived(o);
+      if (d.flavor === 'external' && (f.merge_policy ?? 'watch') === 'watch') return false;
+      return d.base_branch === base;
+    }).sort(byMergeOrder).map((o) => ({ id: o.id, head: o.file.frontmatter.ci_head_sha!, synced: o.file.frontmatter.op_data?.ci_synced as { head?: string; base?: string } | undefined }));
+  }
+
+  /** A sibling's head is on the tip: recorded by its own sync for that head, else read from git. */
+  private async syncedOnto(s: { head: string; synced?: { head?: string; base?: string } }, tip: string): Promise<boolean> {
+    if (s.synced?.head === s.head) return s.synced.base === tip;
+    return this.ctx.ports.git.isAncestor(this.ctx.repo, tip, s.head).catch(() => false);
+  }
+
+  /** Whether the chain's sync would push a new head (and so start a run): unpushed commits, or a branch behind the tip. From local refs. */
+  private async wouldSync(fm: ItemFrontmatter, base: string, tip: string): Promise<boolean> {
+    if (!fm.branch) return false;
+    const remote = await this.ctx.ports.git.revParse(this.ctx.repo, `origin/${fm.branch}`).catch(() => null);
+    if (!remote) return false;
+    if (!fm.worktree) return !(await this.ctx.ports.git.isAncestor(this.ctx.repo, tip, remote).catch(() => true));
+    const cwd = this.ctx.absWorktree(fm.worktree);
+    const local = await this.ctx.ports.git.revParse(cwd, 'HEAD').catch(() => null);
+    if (!local) return false;
+    if (local !== remote) return true;
+    return (await this.ctx.ports.git.aheadBehind(cwd, `origin/${base}`, 'HEAD').catch(() => ({ behind: 0 }))).behind > 0;
+  }
+
+  /** What became of the sibling an item waited on, in words. */
+  private siblingLeft(w: SiblingWait): string {
+    const s = this.ctx.store.getItem(w.on)?.file.frontmatter;
+    if (!s) return 'is gone';
+    if (s.status === 'MERGED' || s.status === 'FINISHED') return 'merged';
+    if (s.status !== 'IN_REVIEW') return `left review (${s.status})`;
+    if (s.ci_result === 'red' || (s.op_data?.last_red as { sha?: string } | undefined)?.sha === w.head) return `went red on ${w.head.slice(0, 7)}`;
+    if (s.taken_over) return 'was taken over';
+    if (s.blocked) return `is blocked (${s.blocked_reason ?? 'no reason'})`;
+    if (s.skip_merge) return 'is held';
+    if (s.awaiting) return `waits on ${s.awaiting}`;
+    if (s.ci_head_sha !== w.head) return `moved on from ${w.head.slice(0, 7)}`;
+    return 'left the CI wait';
   }
 
   /**

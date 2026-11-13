@@ -44,7 +44,7 @@ and brings you only a plain decision card. See [Needs-you triage](concepts.md#ne
 
 | Reason | Meaning | Do |
 |---|---|---|
-| `hook_failed` | An `after_worktree_create` command exited non-zero. | Fix the hook or the environment; unblock re-runs setup. |
+| `hook_failed` | An `after_worktree_create` command exited non-zero, and again when planestro ran it once more (it does, unless it timed out or could not be started). | Fix the hook or the environment; unblock re-runs setup. |
 | `worktree_missing` | The item's worktree no longer exists. Nothing is recreated automatically: local commits could be lost. | Restore it, or close / re-create the item. |
 | `worktree_taken` | The path planestro would use already holds a worktree on a different branch. | Move it aside or remove it. |
 | `sync_conflict` | Syncing with the base conflicted and there is no session to hand the conflict to (an epic branch, an external item), or the session could not resolve the rebase planestro held for it (it blocked, left conflict markers, edited other files, or the result failed planestro's checks); the branch is back where it was. | Resolve by hand in the directory named in the log, then unblock; or retry with a message saying how the conflict should go, and the session gets it again with that guidance. A retry without one blocks again while the base is unchanged. |
