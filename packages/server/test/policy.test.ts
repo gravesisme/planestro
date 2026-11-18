@@ -215,3 +215,18 @@ describe('the first reading judges the whole command (#109)', () => {
     expect(p.deny(bash('npm run build && npm publish --access public'))).toMatch(/denied by planestro policy \(npm publish\)/);
   });
 });
+
+describe('python reading a script from an empty stdin (#570)', () => {
+  const policy = makePolicy(Config.parse({ schema_version: 2, tool_version: '0.1.0', project: { name: 'T', id_prefix: 'T' }, code_repo: { path: '..', default_branch: 'trunk' }, models: [{ id: 'm', label: 'M', claude_model: 'x' }], defaults: { planner: 'm', implementer: 'm', category: 'C' }, categories: ['C'] }), 'trunk', '/w');
+  const deny = (c: string) => policy.deny(bash(c));
+  it('is refused up front, with what to do instead', () => {
+    for (const c of ['python3 - 2>/dev/null; true', 'cd scripts/systems && python3 - 2>/dev/null; true', 'cd scripts/ui && python3 - 2>/dev/null; grep -n x HUD.gd', 'python3 -', 'python - ', 'python3.12 -I - 2>&1', '/usr/bin/python3 - > out.txt', 'X=1 python3 -']) {
+      expect(deny(c), c).toMatch(/gives it none, so it runs nothing/);
+    }
+  });
+  it('leaves python that is given a script alone', () => {
+    for (const c of ["python3 - <<'EOF'\nprint('hi')\nEOF", "python3 - <<<'print(1)'", 'python3 - < tmp/a.py', 'cat tmp/a.py | python3 -', 'python3 tmp/a.py', 'python3 -c "print(1)"', 'python3 -m json.tool - ', 'python3 -I tmp/a.py -', 'echo python3 -']) {
+      expect(deny(c), c).toBeNull();
+    }
+  });
+});
