@@ -35,6 +35,7 @@ Route every child to the implementer whose description fits it. Work that needs 
 - For an art child, name the exact output path(s), the pixel size, the format, and the look it must match (point at existing assets in the repository). Say how the art will be used, so the artist can judge it.
 - For a code child that consumes art, name the path(s) it should expect, and what to do in tests if the file is a placeholder.
 - Prefer the fewest children that keep those rules. Do not create a child for something one of the others would naturally do.
+- Propose at most {{max_children}} children: a person reviews the whole list at once, and planestro rejects a longer one. Plan to that limit from the start; if the epic needs more, say in the plan what a follow-up epic should take, rather than merging unrelated work into one child to fit.
 - Categories available: {{categories}}.
 
 ## Hand it in
@@ -43,4 +44,4 @@ Call `submit_breakdown` once with:
 - `plan`: the epic-level plan in markdown — the approach, the seams between children, the order things land, the risks.
 - `children`: the list, each `{ "title", "description", "implementer", "category", "depends_on": [indexes] }`, plus optionally `"planner"` (a planning-capable model id to plan that child; the default is this epic's planner) and `"hold_for_review": true` for a child whose pull request should wait for the user's review before merging. Say a hold with this flag, not in the title.
 
-planestro checks the list (known implementers and categories, real indexes, no cycles). If it answers with a rejection, fix exactly what it names and call `submit_breakdown` again. Then end your turn. Do not use `submit_plan` or `ExitPlanMode` for an epic.
+planestro checks the list (at most {{max_children}} children, known implementers and categories, real indexes, no cycles). If it answers with a rejection, fix exactly what it names and call `submit_breakdown` again. Then end your turn. Do not use `submit_plan` or `ExitPlanMode` for an epic.

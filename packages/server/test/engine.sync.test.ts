@@ -745,4 +745,15 @@ describe('the conflict prompt and the worker rules agree (HH-532)', () => {
     store = await DataStore.open(dataDir);
     expect(readFileSync(path, 'utf8')).toBe(edited);
   });
+
+  it("#559: a data dir's untouched copy of the plan-epic prompt from before the child cap is brought up to the one that names it", async () => {
+    const { dataDir } = makeFixture();
+    const path = join(dataDir, 'prompts', 'plan-epic.md');
+    const now = readFileSync(new URL('../prompts/plan-epic.md', import.meta.url), 'utf8');
+    const before = now.replace(/^- Propose at most \{\{max_children\}\} children.*\n/m, '').replace('(at most {{max_children}} children, known', '(known');
+    expect(before).not.toContain('max_children');
+    writeFileSync(path, before);
+    store = await DataStore.open(dataDir);
+    expect(readFileSync(path, 'utf8')).toContain('Propose at most {{max_children}} children');
+  });
 });

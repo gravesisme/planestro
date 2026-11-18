@@ -227,6 +227,28 @@ describe('mixed runners (dry-run ports)', () => {
     expect(store.derived(store.getItem(epic.id)!).children).toEqual(created);
   });
 
+  it('#559: the planner is told epics.max_children up front, and a longer list goes back to it or is refused at approval', async () => {
+    let prompt = ''; let tooMany = '';
+    const long = (n: number) => Array.from({ length: n }, (_x, i) => ({ title: `Part ${i}`, description: 'a description that is long enough', implementer: 'opus-5' }));
+    const planner = (world: FakeWorld) => ({
+      inner: new DryRunClaudePort(world),
+      async runTurn(o: any): Promise<TurnResult> {
+        if (/## Break this epic down/.test(o.prompt) && !prompt) { prompt = o.prompt; tooMany = await o.tools.submit_breakdown('p', long(5)); }
+        return this.inner.runTurn(o);
+      },
+    });
+    const { store, engine } = await setup({ claude: planner, config: (y) => `${y}\nepics:\n  max_children: 4\n` });
+    const epic = store.createItem({ title: 'Tide chart view', description: 'A chart of the day\'s tide with its own icon and header art.', kind: 'epic', category: 'Game' });
+    await engine.start();
+    await engine.planEpic(epic.id);
+    await waitFor(() => fmOf(store, epic.id).awaiting === 'breakdown_approval');
+    expect(prompt).toContain('Propose at most 4 children');
+    expect(prompt).toContain('(at most 4 children, known implementers');
+    expect(tooMany).toMatch(/^Rejected: a breakdown of 5 children is too large to review; group the work into at most 4 \(epics\.max_children\)/);
+    expect(fmOf(store, epic.id).awaiting_data!.children as unknown[]).toHaveLength(4);  // the dry run's own list fits
+    await expect(engine.approveBreakdown(epic.id, long(5))).rejects.toThrow(/at most 4/);
+  });
+
   it('THE DEMO: one epic, planned once — Codex art, reviewed by eye, blocks Claude logic, which is told what was delivered — lands as one PR', async () => {
     const turns: { item: string; runner: string; phase: string; prompt: string }[] = [];
     const spy = (runner: string, make: (w: FakeWorld) => any) => (world: FakeWorld) => { const inner = make(world); return { async runTurn(o: any): Promise<TurnResult> { turns.push({ item: o.itemId, runner, phase: o.phase, prompt: o.prompt }); return inner.runTurn(o); }, runCustomTurn: inner.runCustomTurn?.bind(inner) }; };

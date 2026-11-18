@@ -24,7 +24,7 @@ export const BLOCK_HELP: Record<string, { meaning: string; todo: string }> = {
   rate_limited: { meaning: "The agent hit a usage or rate limit.", todo: "Wait, then unblock. Lower `concurrency.runner_limits` if it recurs." },
   session_lost: { meaning: "The conversation could not be resumed (its transcript is gone).", todo: "Unblock: the stored id was dropped, so the retry starts a fresh conversation with the full prompt." },
   spawn_error: { meaning: "The agent CLI could not be started.", todo: "Install it, or set its path in Settings → This machine." },
-  hook_failed: { meaning: "An `after_worktree_create` command exited non-zero.", todo: "Fix the hook or the environment; unblock re-runs setup." },
+  hook_failed: { meaning: "An `after_worktree_create` command exited non-zero, and again when planestro ran it once more (it does, unless it timed out or could not be started).", todo: "Fix the hook or the environment; unblock re-runs setup." },
   worktree_missing: { meaning: "The item's worktree no longer exists. Nothing is recreated automatically: local commits could be lost.", todo: "Restore it, or close / re-create the item." },
   worktree_taken: { meaning: "The path planestro would use already holds a worktree on a different branch.", todo: "Move it aside or remove it." },
   sync_conflict: { meaning: "Syncing with the base conflicted and nothing could resolve it: an external item has no session, and on an epic's branch the one-shot conflict session (epics.conflict_budget_usd) could not, or is turned off. The log says why.", todo: "Resolve by hand in the directory named in the log, then unblock; or, for an epic, let the orchestrator retry it with resolve_epic_conflict and a hint." },

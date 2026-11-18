@@ -74,6 +74,8 @@ export function App() {
   const unreadNotes = unreadNoteCount(notes, notesSeen);
   return (
     <div className="app">
+      {/* iOS 26+ blurs the top of an installed app unless a fixed box with a background sits on its top edge (#558) */}
+      <div className="edge-strip" aria-hidden="true" />
       {updateReady && <button className="banner warn" style={{ border: 0, borderRadius: 0, textAlign: 'left' }} onClick={() => location.reload()}>planestro was updated — click to reload (held back so nothing you were typing is lost)</button>}
       <header className="topbar">
         <Link className="brand" to="/" title={`${state?.config.project.name ?? 'planestro'} · Board`}><img className="logo" src="/favicon.svg" alt="" width={22} height={22} /> <span className="wordmark">planestro</span> <span className="project">{state?.config.project.name ?? '…'}</span>

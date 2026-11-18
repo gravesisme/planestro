@@ -80,7 +80,7 @@ export class Epics {
       await this.ctx.ports.git.fetch(this.ctx.repo);
       if (!(await this.ctx.ports.git.worktreeList(this.ctx.repo)).some((w) => w.path === dir && !w.prunable)) await this.ctx.ports.git.worktreeAddDetached(this.ctx.repo, dir, `origin/${base}`);
       this.ctx.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }], 'engine');
-      await this.ctx.runTurnFor(id, 'plan', this.ctx.store.renderPrompt('plan-epic', this.ctx.store.requireItem(id), { implementers: this.ctx.implementersList(), categories: this.ctx.store.config.categories.join(', ') }), [], [], { opener: true });
+      await this.ctx.runTurnFor(id, 'plan', this.ctx.store.renderPrompt('plan-epic', this.ctx.store.requireItem(id), { implementers: this.ctx.implementersList(), categories: this.ctx.store.config.categories.join(', '), max_children: this.ctx.store.config.epics.max_children }), [], [], { opener: true });
     };
   }
 
@@ -130,7 +130,7 @@ export class Epics {
   /** The user's children for an epic, validated as a breakdown is; returns their ids in the order given. */
   private createChildren(id: string, children: BreakdownChild[]): string[] {
     const fm = this.ctx.store.requireItem(id).file.frontmatter;
-    const problem = validateBreakdown(children, this.ctx.store.config.models, this.ctx.store.config.categories);
+    const problem = validateBreakdown(children, this.ctx.store.config.models, this.ctx.store.config.categories, this.ctx.store.config.epics.max_children);
     if (problem) throw new Error(problem);
     // dependencies first, so every depends_on can name an item that already exists
     const ids = new Map<number, string>();

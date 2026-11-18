@@ -103,12 +103,14 @@ const EDIT_COMMIT_DELAY_MS = 30_000;
  * prompt name. refreshRetiredPrompts brings a data dir's untouched copy of one up to the shipped prompt.
  * rebase-conflict: told the worker to fetch and rebase itself, against its own rules and a sandbox with no network (HH-532).
  * worker-system, worker-system-codex, orchestrator-system: had no rule for fenced outside text (#340).
+ * plan-epic: did not tell the planner the most children a breakdown may have, so a large epic was rejected and regrouped (#559).
  */
 const RETIRED_PROMPT_BODIES: Record<string, string[]> = {
   'rebase-conflict': ['3b868d163e28783dd271e700b8e135f6b6a603b4c2d808aec39efa8c384f2eb2'],
   'worker-system': ['048e94005de0dc03b4ac45200cce36e00aad028f8f68ef496c17237c86b029f6', 'a5ccba8e13276e686568da7250c6cefb83997c9c5bfd2865e2fa1654241780f0'],
   'worker-system-codex': ['29460426202cf6779271e00b5dd643bfd519dea91b16d2650905f800ed1c3579'],
   'orchestrator-system': ['ffb60234562377fb687a2e44bb7f3ff21ccd3225f6a4ea1b344581b05c9fba2e'],
+  'plan-epic': ['63b2eade51eb163f02b19acc6d421a86766b6ab894fc6484b0f062edbe1181ba', 'd720239184284e8c5e0a92c39629dde8213af7426e0d13e56f7031b7b7e993cd', 'f40c40bdca6dd17e4f01995d2f05af11fabaedad10f6dccd66c0027ef1a8728e'],
 };
 
 export class DataStore {

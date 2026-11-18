@@ -265,6 +265,8 @@ export function makePolicy(config: Config, baseBranch: string, worktree: string,
       // Every command the shell would run (#109), heredoc bodies aside: split on the first line alone, a denied
       // command on a second line or after a single `&` was never looked at. Unread, every line and every `&` split.
       const items = readShell(cmd);
+      const idle = items && stdinlessPython(items);
+      if (idle) return idle;
       const segments = items ? items.flatMap((it) => (it.kind === 'command' ? [it.text.replace(HEREDOC, '')] : [])) : cmd.split(/\n|&&|\|\||;|\||&/);
       for (const seg of segments) {
         // A prefix must not hide a denied command: judge the segment and what it actually runs.
@@ -284,6 +286,25 @@ export function makePolicy(config: Config, baseBranch: string, worktree: string,
       return null;
     },
   };
+}
+
+/**
+ * `python3 -` with nothing on its stdin (#570: `python3 - 2>/dev/null; true`, parked on HH-780, -791, -796 and -800). A
+ * session's shell has no stdin, so it runs nothing; it could never be read, so it was always denied, each time for a park
+ * and an orchestrator wake. With a heredoc, a here-string, a `<` file or a pipe into it, it is a script like any other.
+ */
+function stdinlessPython(items: Item[]): string | null {
+  for (const it of items) {
+    if (it.kind !== 'command' || it.joined === '|' || it.joined === '|&') continue;
+    const words = it.words.map(literal);
+    if (!words[0] || !/^(?:.*\/)?python(?:\d+(?:\.\d+)?)?$/.test(words[0])) continue;
+    // The script is the first argument that is not a flag: `-` reads it from stdin, `-c` and `-m` name it themselves.
+    const script = words.slice(1).find((w) => w === null || w === '-' || !w.startsWith('-') || /^-[a-zA-Z]*[cm]/.test(w));
+    if (script !== '-') continue;
+    if (it.redirects.some((r) => !r.write)) continue;
+    return '`python3 -` reads its script from stdin and this command gives it none, so it runs nothing: leave it out. To run a script, save it in the worktree or under /tmp with the Write tool and run it by path.';
+  }
+  return null;
 }
 
 /** Where scratch files may go besides the worktree. */

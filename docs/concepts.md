@@ -154,6 +154,9 @@ planned at once, an item is queued. It is committed as `HH-198: convert to epic`
   once they have all merged, planestro rebases its branch onto the base (a conflict goes to the
   session, as in any sync) and resumes the session with the message. The orchestrator can do
   the same from triage (`resume_after`). **Stop waiting** makes it a plain block again.
+  An epic's child that needs what the epic's own base now has is parked by the orchestrator on
+  the epic's sync (`epic_synced`): it resumes once the epic's pushed branch holds that base's tip,
+  and comes back if the epic's sync stops (#571).
 - **Sync with base** (an item action, and the orchestrator's `sync_with_base`) — brings a worker
   branch up to date with its base between turns, for when something it needs has merged since
   its worktree was cut (the session cannot use what its branch does not have). It rebases onto

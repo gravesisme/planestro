@@ -263,13 +263,21 @@ in:
 - `list_notes`: the orchestrator's notes about planestro (the Console's
   Planestro feedback) and what became of each; `open` for the ones nothing
   was done with.
-- `create_item`, `edit_item` and `mark_note`: with `operator_mcp.allow_writes:
+- `create_item`, `edit_item`, `attach_file` and `mark_note`: with `operator_mcp.allow_writes:
   true` in `planestro.yml` (off by default). `create_item` files a new item
-  (title, description, kind, category, priority) to Not yet submitted, marked
+  (title, description, kind, category, priority, attachments) to Not yet submitted, marked
   `created_by: operator_mcp`; `edit_item` changes an item's title, category,
-  priority, release, epic, dependencies, Description or Notes; `mark_note`
-  records the issues a note became, or handled with none. None of them starts,
-  holds or merges work.
+  priority, release, epic, dependencies, Description or Notes; `attach_file`
+  puts files on an existing item; `mark_note` records the issues a note became,
+  or handled with none. None of them starts, holds or merges work.
+  `attachments` (#555) is up to 8 `{path, name?}` (or `{data, name}`, base64):
+  PNG, JPEG, WebP, GIF or PDF, checked by name and contents, within
+  `attachments.image_max_bytes` (pictures) or `managed_max_bytes`; never a
+  symlink or a path with `..`. Each is copied into the item's attachments, so it
+  shows on the item page and its planner and worker see it. The plugin's bridge
+  reads a path on the session's machine and sends the bytes, so it works against
+  a server elsewhere; the server reads a `path` itself only for a request from
+  its own machine.
 - Item actions, with `operator_mcp.allow_actions: true` (a separate opt-in,
   off by default, so filing items never grants acting on them): `unblock_item` (id, message, fresh),
   `send_message`, `answer_question` (each question to its answer),

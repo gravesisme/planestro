@@ -50,7 +50,7 @@ export function WaitingPanel({ item }: { item: ItemView }) {
   return (
     <div className="approval">
       <h2 style={{ margin: '0 0 8px' }}>Waiting to resume</h2>
-      <p className="small" style={{ marginTop: 0 }}>Resumes when {wait.items.map((id, n) => { const s = items.find((i) => i.id === id)?.frontmatter.status; return <span key={id}>{n ? ', ' : ''}<Link to={`/items/${id}`}>{id}</Link>{s ? ` (${s.replace(/_/g, ' ')})` : ''}</span>; })} {(wait.prs ?? []).map((n, k) => <span key={n}>{wait.items.length || k ? ', ' : ''}PR #{n}</span>)} {wait.items.length + (wait.prs?.length ?? 0) === 1 ? 'has' : 'have'} merged, with:</p>
+      <p className="small" style={{ marginTop: 0 }}>Resumes when {wait.items.map((id, n) => { const s = items.find((i) => i.id === id)?.frontmatter.status; return <span key={id}>{n ? ', ' : ''}<Link to={`/items/${id}`}>{id}</Link>{s ? ` (${s.replace(/_/g, ' ')})` : ''}</span>; })} {(wait.prs ?? []).map((n, k) => <span key={n}>{wait.items.length || k ? ', ' : ''}PR #{n}</span>)} {wait.items.length + (wait.prs?.length ?? 0) === 0 ? '' : `${wait.items.length + (wait.prs?.length ?? 0) === 1 ? 'has' : 'have'} merged`}{wait.base_synced && <span>{wait.items.length + (wait.prs?.length ?? 0) ? ', and ' : ''}<Link to={`/items/${wait.base_synced.epic}`}>{wait.base_synced.epic}</Link>'s branch has taken in {wait.base_synced.base}</span>}, with:</p>
       <p className="blocked-said">{wait.message}</p>
       <div className="row"><ActionButton working="Stopping…" onAct={() => { if (confirm(`Stop waiting? ${item.id} becomes blocked for you again.`)) return act(() => api.cancelResumeAfter(item.id)); }}>Stop waiting</ActionButton><span className="small muted">since {wait.since.slice(0, 16).replace('T', ' ')}</span></div>
     </div>

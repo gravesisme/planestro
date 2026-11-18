@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { execFileSync, spawn } from 'node:child_process';
 import { createServer } from 'node:net';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { OPERATOR_READ_TOOLS } from '../src/routes/mcp.ts';
@@ -73,6 +73,26 @@ describe('the Claude Code plugin (#175)', () => {
       expect(none.result.instructions).toMatch(/planestro has not been started for .*planning/);
       expect(empty.result.tools).toEqual([]);
     } finally { await srv.engine.stop(); srv.server.close(); srv.store.close(); }
+  });
+
+  it('the bridge sends a local file\'s bytes for an attachment, so a server elsewhere never needs the path (#555)', async () => {
+    const { inlineAttachments } = await import(join(PLUGIN, 'scripts', 'mcp-proxy.mjs'));
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'planestro-555-')));
+    writeFileSync(join(dir, 'shot.png'), 'png bytes');
+    symlinkSync(join(dir, 'shot.png'), join(dir, 'link.png'));
+    const call = (name: string, attachments: unknown[]) => ({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name, arguments: { title: 'Bug', attachments } } });
+    const sent = inlineAttachments(call('create_item', [{ path: join(dir, 'shot.png') }, { path: join(dir, 'shot.png'), name: 'seam.png' }]));
+    expect(sent.params.arguments.attachments).toEqual([
+      { name: 'shot.png', data: Buffer.from('png bytes').toString('base64') },
+      { name: 'seam.png', data: Buffer.from('png bytes').toString('base64') },
+    ]);
+    expect(inlineAttachments(call('attach_file', [{ path: join(dir, 'shot.png') }])).params.arguments.attachments[0]).toHaveProperty('data');
+    // What it does not read goes on as it was, for the server to refuse in its own words.
+    const kept = [{ path: join(dir, 'link.png') }, { path: 'shot.png' }, { path: `${dir}/../x/shot.png` }, { path: join(dir, 'missing.png') }];
+    expect(inlineAttachments(call('create_item', kept)).params.arguments.attachments).toEqual(kept);
+    // Other tools and messages pass untouched.
+    const other = call('edit_item', [{ path: join(dir, 'shot.png') }]);
+    expect(inlineAttachments(other)).toBe(other);
   });
 
   it('its script is executable and finds the data dir from the repo, a subdirectory or a linked worktree', () => {

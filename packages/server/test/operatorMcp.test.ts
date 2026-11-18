@@ -84,7 +84,7 @@ describe('the operator MCP endpoint (#175, step 2)', () => {
       expect(tools.map((t) => t.name).sort()).toEqual([...OPERATOR_READ_TOOLS, ...OPERATOR_WRITE_TOOLS].sort());
       expect(tools.find((t) => t.name === 'create_item')!.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false });
       // It takes nothing that would start or change work: no status, no parent, no submit.
-      expect(Object.keys((tools.find((t) => t.name === 'create_item')!.inputSchema as any).properties).sort()).toEqual(['category', 'description', 'kind', 'priority', 'title']);
+      expect(Object.keys((tools.find((t) => t.name === 'create_item')!.inputSchema as any).properties).sort()).toEqual(['attachments', 'category', 'description', 'kind', 'priority', 'title']);
 
       const made = text(await client.callTool({ name: 'create_item', arguments: { title: 'Follow-up: tidy the cave map', description: 'Seen while reviewing TP-1.', priority: 'low' } }));
       const item = srv.store.getItem(made.id)!;
@@ -160,6 +160,42 @@ describe('the operator MCP endpoint (#175, step 2)', () => {
       expect(srv.store.journal.read({ type: 'operator_mcp.action' }).map((e) => e.data?.tool)).toEqual(['edit_item', 'reject_plan', 'approve_plan', 'set_hold', 'release_hold', 'close_as_done']);
       // A discard keeps the remote branch: its deletion is the user's tick on the board.
       expect(Object.keys(((await client.listTools()).tools.find((t) => t.name === 'discard_item')!.inputSchema as any).properties).sort()).toEqual(['id', 'reason']);
+    } finally { await client.close(); await srv.engine.stop(); srv.server.close(); srv.store.close(); }
+  });
+
+  it('approve_plan takes the MCP budget the user approved, and says so when a paid plan is approved without one (#568)', async () => {
+    const { dataDir } = makeFixture();
+    const port = await freePort();
+    const srv = await startServer({ dataDir, port, log: () => {}, engineFactory: (s, em) => new MockEngine(s, em) });
+    const client = new Client({ name: 'test', version: '1' });
+    try {
+      srv.store.updateConfig((d) => {
+        for (const k of ['allow_writes', 'allow_actions', 'allow_decisions']) d.setIn(['operator_mcp', k], true);
+        d.addIn(['models'], d.createNode({ id: 'sfx', label: 'Sound worker', runner: 'claude', claude_model: 'x', mcp: ['sounds'], user_approves_plans: true }));
+      });
+      await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`)));
+      const ready = (title: string, implementer?: string) => {
+        const it = srv.store.createItem({ title, description: 'd' });
+        srv.store.mutateItem(it.id, [{ set: { status: 'PLAN_READY', ...(implementer ? { implementer } : {}) } }, { section: 'Plan', body: 'Make the takes.\n\nMCP budget: 40' }], 'engine');
+        return it.id;
+      };
+      // HH-727: "including the 40-call ElevenLabs budget" in the notes set nothing, and the worker's first call was refused.
+      const a = ready('Rift ambience', 'sfx');
+      const said = text(await client.callTool({ name: 'approve_plan', arguments: { id: a, notes: 'Go, including the 40-call budget.' } }));
+      expect(said.item.status).toBe('IN_PROGRESS');
+      expect(said.said).toMatch(/approved with no MCP budget: Sound worker's calls to sounds are refused .*its plan states 40/);
+      expect(srv.store.requireItem(a).file.frontmatter.mcp_budget).toBeUndefined();
+
+      const b = ready('Rift stingers', 'sfx');
+      const set = text(await client.callTool({ name: 'approve_plan', arguments: { id: b, mcp_budget: 40 } }));
+      expect(set.said).toBeUndefined();
+      expect(srv.store.requireItem(b).file.frontmatter.mcp_budget).toBe(40);
+      expect(srv.store.journal.read({ type: 'operator_mcp.action' }).at(-1)!.data).toMatchObject({ tool: 'approve_plan', mcp_budget: 40 });
+
+      // An implementer with no paid tools is approved as before, with nothing said.
+      const c = ready('Cave map');
+      expect(text(await client.callTool({ name: 'approve_plan', arguments: { id: c } })).said).toBeUndefined();
+      expect((await client.callTool({ name: 'approve_plan', arguments: { id: ready('Bad'), mcp_budget: -1 } })).isError).toBe(true);
     } finally { await client.close(); await srv.engine.stop(); srv.server.close(); srv.store.close(); }
   });
 

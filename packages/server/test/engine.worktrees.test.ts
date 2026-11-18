@@ -559,6 +559,52 @@ describe('resume when other items merge (p14)', () => {
     expect(activityOf(store, art)).toContain('it was waiting for PR #470, closed without merging');
   });
 
+  it("waits for its epic's branch to take in the epic's base, on the refs, and comes back if that sync stops (#571, HH-828)", async () => {
+    const { store, engine, world, art, prompts } = await parked();
+    const scheduler = (engine as any).scheduler;
+    expect(await engine.resumeAfter(art, [], 'x', 'orchestrator', [], { baseSynced: true })).toMatch(/not a child of an epic with a branch/);
+    const epic = store.createItem({ title: 'Rift Engine', description: 'x', kind: 'epic' });
+    store.mutateItem(epic.id, [{ set: { status: 'IN_PROGRESS', branch: 'feature/rift-engine' } }], 'engine');
+    store.mutateItem(art, [{ set: { parent: epic.id } }], 'engine');
+    const tip = 'd'.repeat(40);
+    world.remoteBranches.set('trunk', tip);
+    world.unreachable.add(tip);                                       // the epic's branch does not have trunk's tip yet
+    const said = await engine.resumeAfter(art, [], 'HH-811 is in your base now: carry on.', 'orchestrator', [], { baseSynced: true });
+    expect(said).toContain(`parked: ${art} resumes once ${epic.id}'s sync with trunk is pushed (origin/feature/rift-engine holding ddddddd)`);
+    expect(said).toContain(`${epic.id} is not syncing now`);
+    expect(store.getItem(art)!.file.frontmatter.resume_after).toMatchObject({ items: [], base_synced: { epic: epic.id, base: 'trunk', sha: tip } });
+    expect(store.derived(store.getItem(art)!).needs_you).toBe(false);
+    expect(activityOf(store, art)).toContain(`waits for ${epic.id}'s sync with trunk, then resumes with: HH-811`);
+    await sleep(200);
+    expect(prompts).toHaveLength(0);
+    // While the epic's sync runs nothing is read; once it has pushed, the refs say so and the child resumes, rebased.
+    store.mutateItem(epic.id, [{ set: { op: 'syncing_base' } }], 'engine');
+    world.unreachable.delete(tip); scheduler.baseSyncs.clear(); engine.poke();
+    await sleep(200);
+    expect(prompts).toHaveLength(0);
+    store.mutateItem(epic.id, [{ unset: ['op'] }], 'engine'); engine.poke();
+    await waitFor(() => prompts.length === 1);
+    expect(prompts[0].prompt).toContain(`origin/trunk (ddddddd, into ${epic.id}'s branch) has merged. Your branch was rebased onto origin/feature/rift-engine`);
+    expect(prompts[0].prompt).toContain('HH-811 is in your base now: carry on.');
+    expect(activityOf(store, art)).toContain(`${epic.id}'s sync with trunk is done; resuming`);
+  });
+
+  it("an epic whose sync stopped is not coming: the child comes back with its message kept, and a blocked epic is refused up front (#571)", async () => {
+    const { store, engine, world, flag, art } = await parked();
+    const epic = store.createItem({ title: 'Rift Engine', description: 'x', kind: 'epic' });
+    store.mutateItem(epic.id, [{ set: { status: 'IN_PROGRESS', branch: 'feature/rift-engine' } }], 'engine');
+    store.mutateItem(art, [{ set: { parent: epic.id } }], 'engine');
+    const tip = 'd'.repeat(40);
+    world.remoteBranches.set('trunk', tip); world.unreachable.add(tip);
+    expect(await engine.resumeAfter(art, [flag], 'Again.', 'orchestrator', [], { baseSynced: true })).toContain(`resumes once ${flag}, ${epic.id}'s sync with trunk are done`);
+    store.mutateItem(flag, [{ set: { status: 'MERGED' } }], 'engine');
+    store.mutateItem(epic.id, [{ set: { blocked: true, blocked_reason: 'sync_conflict' } }], 'engine'); engine.poke();
+    await waitFor(() => store.getItem(art)!.file.frontmatter.blocked_reason === 'waited_on_gone');
+    expect(store.getItem(art)!.file.frontmatter.resume_after).toBeUndefined();
+    expect(activityOf(store, art)).toContain(`it was waiting for ${epic.id}'s sync with trunk, which stopped: ${epic.id} is blocked (sync_conflict); its message was: Again.`);
+    expect(await engine.resumeAfter(art, [], 'x', 'orchestrator', [], { baseSynced: true })).toMatch(/is blocked \(sync_conflict\), so its sync is not coming/);
+  });
+
   it('a rebase conflict on resume goes to a fix turn, and the message follows once the rebase is finished', async () => {
     const { store, engine, flag, art, prompts } = await parked({ conflict: true });
     await engine.resumeAfter(art, [flag], 'Now wire the flag in.');

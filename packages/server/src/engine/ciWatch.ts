@@ -109,6 +109,8 @@ export class CiWatch {
       const fm = item.file.frontmatter;
       if (fm.status !== 'IN_REVIEW' || fm.kind === 'epic' || fm.blocked || fm.awaiting || fm.triage || fm.taken_over || fm.skip_merge || fm.resume_after) continue;
       if (this.ctx.store.derived(item).flavor === 'external' || fm.op === 'running_local_checks') continue;
+      // Waiting on a sibling's CI (#560): the chain looks at it each tick, and lets it go once that sibling is done.
+      if (fm.op_data?.sibling_ci) continue;
       // Driven: a session, a step other than a CI wait, or a wait that has not polled yet or last saw its run queued or running.
       const seen = this.ciSeen.get(item.id);
       const waiting = this.ciWaits.has(item.id);

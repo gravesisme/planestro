@@ -15,13 +15,17 @@ export interface BreakdownChild {
   hold_for_review?: boolean;
 }
 
+/** The most children one breakdown may have unless the project says otherwise (`epics.max_children`, #559). */
+export const DEFAULT_MAX_CHILDREN = 24;
+
 /**
  * Whether a proposed breakdown can be turned into items. Code decides this, not the planner and not
  * the user: a rejection goes straight back to the planner with the reason. Returns the first problem.
+ * `maxChildren` is the project's `epics.max_children`: the most children a person is asked to review at once.
  */
-export function validateBreakdown(children: unknown, models: readonly ModelRef[], categories: readonly string[]): string | null {
+export function validateBreakdown(children: unknown, models: readonly ModelRef[], categories: readonly string[], maxChildren: number = DEFAULT_MAX_CHILDREN): string | null {
   if (!Array.isArray(children) || children.length === 0) return 'a breakdown needs at least one child';
-  if (children.length > 24) return `a breakdown of ${children.length} children is too large to review; group the work into at most 24`;
+  if (children.length > maxChildren) return `a breakdown of ${children.length} children is too large to review; group the work into at most ${maxChildren} (epics.max_children)`;
   const ids = new Set(models.map((m) => m.id));
   for (const [i, c] of (children as Partial<BreakdownChild>[]).entries()) {
     const at = `child ${i} ("${String(c?.title ?? '').slice(0, 40)}")`;
