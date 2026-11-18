@@ -308,6 +308,17 @@ html { -webkit-text-size-adjust: 100%; }
 @media (max-width: 840px) and (display-mode: standalone), (max-width: 840px) and (display-mode: fullscreen) {
   .app { height: 100%; }
 }
+/* iOS 26 and later draw a blur over the top of an installed app (about 40pt past the status bar), at rest, and no meta
+   tag turns it off: status-bar-style "default" did not (#558). WebKit leaves it out, filling the status bar with a
+   colour instead, when the box it finds 4px under the middle of the top edge is position fixed or sticky, nearly as
+   wide as the page and has a background. The phone top bar is a flex child, so this strip stands in for it: it lies
+   over the bar's top edge, takes no taps, and its background is clipped to text it does not have, so it paints nothing. */
+.edge-strip { display: none; }
+@supports (-webkit-touch-callout: none) {
+  @media (display-mode: standalone), (display-mode: fullscreen) {
+    .edge-strip { display: block; position: fixed; inset: 0 0 auto; z-index: 13; height: max(env(safe-area-inset-top, 0px), 11px); background: var(--panel); -webkit-background-clip: text; background-clip: text; pointer-events: none; }
+  }
+}
 /* a phone on its side has no height to spare for a pinned strip */
 @media (max-width: 840px) and (max-height: 500px) { .pipeline { position: static; } }
 
