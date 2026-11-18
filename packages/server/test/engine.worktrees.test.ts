@@ -560,7 +560,7 @@ describe('resume when other items merge (p14)', () => {
   });
 
   it("waits for its epic's branch to take in the epic's base, on the refs, and comes back if that sync stops (#571, HH-828)", async () => {
-    const { store, engine, world, flag, art, prompts } = await parked();
+    const { store, engine, world, art, prompts } = await parked();
     const scheduler = (engine as any).scheduler;
     expect(await engine.resumeAfter(art, [], 'x', 'orchestrator', [], { baseSynced: true })).toMatch(/not a child of an epic with a branch/);
     const epic = store.createItem({ title: 'Rift Engine', description: 'x', kind: 'epic' });
