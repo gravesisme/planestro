@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.3.2 — 2026-11-18
+
+### Fixed
+
+- One CI run per pull request when several are ready on the same base (#560): five held PRs of one epic, released
+  together, each ran CI, and every merge moved the base under the others, so each green run was thrown away and run
+  again. An item whose sync would push a new head now waits while a same-base sibling's run is the one that will merge
+  (said in Activity, nothing held), and goes once that sibling merged or left the wait. A green run the base moved past
+  is said in Activity too.
+- A failed setup hook runs once more before it blocks `hook_failed` (#561): a fresh worktree's first hook can lose a
+  race on the machine (HH's `godot --headless --import` exiting 128 on a NUL read) and pass on a second run. A hook that
+  timed out or could not start is not re-run.
+- The installed iPhone app's top bar is no longer blurred on iOS 26 (#558). **If you added planestro to your Home Screen
+  before this release, remove the icon and add it again**: an old icon keeps the old status-bar mode and shows a gap
+  under the tab bar.
+- Approving a plan through the operator MCP can set its MCP call budget (#568): `approve_plan` takes `mcp_budget`, as
+  the board's approval does. A budget named only in the notes set nothing, so the worker's first paid call was refused
+  and the item blocked for a second decision. A paid plan approved without a budget now says so in the answer, with the
+  number the plan states.
+- `python3 -` with nothing on its stdin is refused at once (#570), with what to do instead. A worker's shell has no
+  stdin, so the command runs nothing; it used to park, and cost an orchestrator wake, every time.
+
+### Added
+
+- `epics.max_children` (default 24; Settings → Budgets & limits → Epics) replaces the hard-coded cap on an epic's
+  breakdown (#559), and the planner is told the limit before it plans, so a large epic is planned to it the first time
+  instead of rejected and regrouped.
+- The operator MCP attaches screenshots (#555): `create_item` takes `attachments`, and `attach_file` adds files to an
+  existing item (PNG, JPEG, WebP, GIF or PDF; with `operator_mcp.allow_writes`). The planner and the worker see them.
+- An epic's child can wait for the epic to take in its own base (#571): the orchestrator's `resume_after` takes
+  `epic_synced`. The child resumes, rebased, once the epic's pushed branch holds that base, and comes back to the
+  orchestrator if the epic's sync stops, so a mechanical wait no longer lands on your list.
+
 ## 1.3.1 — 2026-11-11
 
 ### Changed
