@@ -30,7 +30,9 @@ const ACTIVE_FOR_SLOTS: Status[] = ['PLAN_IN_PROGRESS', 'IN_PROGRESS'];
  */
 export interface SchedulerContext {
   readonly store: DataStore;
-  readonly ports: Pick<Ports, 'gh'>;
+  readonly ports: Pick<Ports, 'gh' | 'git'>;
+  /** The code repo's checkout: where a waited-on base sync is read from the refs (#571). */
+  readonly repo: string;
   /** `owner/repo` of the code repo (throws when code_repo.github is not configured). */
   readonly github: string;
   /** The project's CI workflow, by name: whose queue admission reads. */
@@ -302,7 +304,7 @@ export class Scheduler {
    * block, question or triage it had is answered by the park, so it no longer needs anyone; the tick
    * resumes it when they have all merged. Items already merged need no wait: it resumes now.
    */
-  async resumeAfter(id: string, items: string[], message: string, by: 'user' | 'orchestrator' = 'user', prs: number[] = []): Promise<string> {
+  async resumeAfter(id: string, items: string[], message: string, by: 'user' | 'orchestrator' = 'user', prs: number[] = [], { baseSynced = false }: { baseSynced?: boolean } = {}): Promise<string> {
     const item = this.ctx.store.requireItem(id);
     const fm = item.file.frontmatter;
     if (!this.ctx.phaseFor(fm.status) || this.ctx.store.derived(item).flavor !== 'worker') return `not possible: ${id} is ${fm.status}; only a worker item planning or in progress can wait to resume`;
@@ -310,7 +312,7 @@ export class Scheduler {
     const busy = this.ctx.busyWith(id); if (busy) return `not now: ${busy}`;
     const ids = [...new Set(items.map((x) => x.trim()).filter(Boolean))];
     const nums = [...new Set(prs.filter((n) => Number.isInteger(n) && n > 0))];
-    if ((!ids.length && !nums.length) || !message.trim()) return 'not recorded: name at least one item or pull request to wait for, and the message to resume with';
+    if ((!ids.length && !nums.length && !baseSynced) || !message.trim()) return 'not recorded: name at least one item or pull request to wait for, and the message to resume with';
     const missing = ids.filter((x) => x === id || !this.ctx.store.getItem(x));
     if (missing.length) return `not recorded: ${missing.join(', ')} ${missing.includes(id) ? '(an item cannot wait for itself) ' : ''}is not an item to wait for`;
     // A pull request by number (#136, HH-298): one a person opened, which no item stands for. It must exist and still be open.
@@ -320,13 +322,31 @@ export class Scheduler {
       if (!pr) return `not recorded: there is no pull request #${n} in ${this.ctx.github}`;
       if (pr.state === 'CLOSED') return `not recorded: PR #${n} was closed without merging`;
     }
-    const what = waitsFor({ items: ids, prs: nums });
+    // Its epic's branch taking in the epic's own base (#571, HH-828): the tip of that base as it stands now is what to wait for.
+    let base: NonNullable<NonNullable<typeof fm.resume_after>['base_synced']> | undefined;
+    if (baseSynced) {
+      const epic = fm.parent ? this.ctx.store.getItem(fm.parent) : undefined;
+      if (!epic?.file.frontmatter.branch) return `not recorded: ${id} is not a child of an epic with a branch, so there is no epic sync to wait for; its own branch is synced with sync_with_base`;
+      const efm = epic.file.frontmatter;
+      if (efm.blocked) return `not recorded: ${epic.id} is blocked (${efm.blocked_reason ?? 'no reason given'}), so its sync is not coming; resolve that first`;
+      const epicBase = this.ctx.store.derived(epic).base_branch;
+      if (!epicBase) return `not recorded: ${epic.id} has no base branch to sync with`;
+      await this.ctx.ports.git.fetch(this.ctx.repo);
+      const sha = await this.ctx.ports.git.revParse(this.ctx.repo, `origin/${epicBase}`);
+      base = { epic: epic.id, base: epicBase, sha };
+    }
+    const what = waitsFor({ items: ids, prs: nums, ...(base ? { base_synced: base } : {}) });
     this.ctx.store.mutateItem(id, [
       { unset: ['blocked', 'blocked_reason', 'awaiting', 'awaiting_data', 'triage'] },
-      { set: { resume_after: { items: ids, ...(nums.length ? { prs: nums } : {}), message: message.trim(), since: this.ctx.now() } } },
-      { activity: { actor: by, text: `waits for ${what} to merge, then resumes with: ${message.trim()}` } },
+      { set: { resume_after: { items: ids, ...(nums.length ? { prs: nums } : {}), ...(base ? { base_synced: base } : {}), message: message.trim(), since: this.ctx.now() } } },
+      { activity: { actor: by, text: `waits for ${what}${base ? '' : ' to merge'}, then resumes with: ${message.trim()}` } },
     ], by, { commit: `${id}: resume after ${what}` });
     void this.tick();
+    if (base) {
+      const epic = this.ctx.store.requireItem(base.epic);
+      const live = Boolean(epic.file.frontmatter.op) || this.ctx.jobs.has(base.epic) || this.ctx.turns.has(base.epic);
+      return `parked: ${id} resumes once ${what} ${ids.length + nums.length ? 'are done' : `is pushed (origin/${epic.file.frontmatter.branch} holding ${base.sha.slice(0, 7)})`}, rebased onto it first.${live ? '' : ` ${base.epic} is not syncing now: if its branch does not have ${base.base} yet, start it with sync_with_base on ${base.epic}.`}`;
+    }
     return `parked: ${id} resumes when ${what} ${ids.length + nums.length === 1 ? 'has' : 'have'} merged`;
   }
 
@@ -349,6 +369,22 @@ export class Scheduler {
     return this.waitedPrs.get(n)?.state;
   }
 
+  private baseSyncs = new Map<string, { sha: string; done: boolean; at: number; reading?: boolean }>();
+  /**
+   * Whether the epic's pushed branch holds the base tip a child waits for (#571): read from the refs off the tick, at most
+   * once every 15 s per waiting item and not while the epic's sync is still running; undefined until first read.
+   */
+  private baseSyncDone(id: string, wait: { epic: string; sha: string }, branch: string): boolean | undefined {
+    const cur = this.baseSyncs.get(id);
+    const known = cur?.sha === wait.sha ? cur : undefined;
+    if (!known?.reading && !known?.done && Date.now() - (known?.at ?? 0) > 15_000) {
+      this.baseSyncs.set(id, { sha: wait.sha, done: false, at: known?.at ?? 0, reading: true });
+      void this.ctx.ports.git.isAncestor(this.ctx.repo, wait.sha, `origin/${branch}`).then((done) => { this.baseSyncs.set(id, { sha: wait.sha, done, at: Date.now() }); if (done) this.poke(); },
+        () => { this.baseSyncs.set(id, { sha: wait.sha, done: false, at: Date.now() }); });
+    }
+    return this.baseSyncs.get(id)?.done;
+  }
+
   private driveResumeAfter(): void {
     for (const item of this.ctx.store.listItems()) {
       const fm = item.file.frontmatter;
@@ -363,9 +399,22 @@ export class Scheduler {
       const closed = prs.filter((_, i) => states[i] === 'CLOSED');
       if (closed.length) { this.ctx.store.mutateItem(item.id, [{ unset: ['resume_after'] }], 'engine'); this.ctx.block(item.id, 'waited_on_gone', `it was waiting for ${closed.map((n) => `PR #${n}`).join(', ')}, closed without merging; its message was: ${wait.message}`); continue; }
       if (!states.every((x) => x === 'MERGED')) continue;
+      // Its epic's base sync (#571): done on positive evidence only, the pushed epic branch holding the base tip it waited for.
+      const sync = wait.base_synced;
+      if (sync) {
+        const epic = this.ctx.store.getItem(sync.epic);
+        const efm = epic?.file.frontmatter;
+        const stop = (why: string) => { this.baseSyncs.delete(item.id); this.ctx.store.mutateItem(item.id, [{ unset: ['resume_after'] }], 'engine'); this.ctx.block(item.id, 'waited_on_gone', `it was waiting for ${sync.epic}'s sync with ${sync.base}, ${why}; its message was: ${wait.message}`); };
+        if (!efm?.branch) { stop(`and ${sync.epic} ${epic ? 'has no branch any more' : 'no longer exists'}`); continue; }
+        if (efm.blocked) { stop(`which stopped: ${sync.epic} is blocked (${efm.blocked_reason ?? 'no reason given'})`); continue; }
+        if (efm.op || this.ctx.jobs.has(sync.epic) || this.ctx.turns.has(sync.epic)) continue;
+        if (!this.baseSyncDone(item.id, sync, efm.branch)) continue;
+        this.baseSyncs.delete(item.id);
+      }
       const what = waitsFor(wait);
-      this.ctx.store.mutateItem(item.id, [{ unset: ['resume_after'] }, { activity: { actor: 'app', text: `${what} merged; resuming` } }], 'engine', { commit: `${item.id}: resume after ${what}` });
-      this.ctx.runJob(item.id, () => this.ctx.turnQueue.resumeWaited(item.id, [...wait.items, ...prs.map((n) => `PR #${n}`)], wait.message));
+      const had = [...wait.items, ...prs.map((n) => `PR #${n}`), ...(sync ? [`origin/${sync.base} (${sync.sha.slice(0, 7)}, into ${sync.epic}'s branch)`] : [])];
+      this.ctx.store.mutateItem(item.id, [{ unset: ['resume_after'] }, { activity: { actor: 'app', text: sync ? `${what} ${had.length === 1 ? 'is' : 'are'} done; resuming` : `${what} merged; resuming` } }], 'engine', { commit: `${item.id}: resume after ${what}` });
+      this.ctx.runJob(item.id, () => this.ctx.turnQueue.resumeWaited(item.id, had, wait.message));
     }
   }
 
