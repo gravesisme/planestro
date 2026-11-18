@@ -83,8 +83,8 @@ describe('the operator MCP endpoint (#175, step 2)', () => {
       // Filing follow-ups never grants acting on items: those need operator_mcp.allow_actions (#365).
       expect(tools.map((t) => t.name).sort()).toEqual([...OPERATOR_READ_TOOLS, ...OPERATOR_WRITE_TOOLS].sort());
       expect(tools.find((t) => t.name === 'create_item')!.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false });
-      // It takes nothing that would start or change work: no status, no parent, no submit.
-      expect(Object.keys((tools.find((t) => t.name === 'create_item')!.inputSchema as any).properties).sort()).toEqual(['attachments', 'category', 'description', 'kind', 'priority', 'title']);
+      // It takes nothing that would start or change work: no status, no parent, no submit; a model is refused without operator_mcp.allow_models (#577).
+      expect(Object.keys((tools.find((t) => t.name === 'create_item')!.inputSchema as any).properties).sort()).toEqual(['attachments', 'category', 'description', 'implementer', 'kind', 'planner', 'priority', 'title']);
 
       const made = text(await client.callTool({ name: 'create_item', arguments: { title: 'Follow-up: tidy the cave map', description: 'Seen while reviewing TP-1.', priority: 'low' } }));
       const item = srv.store.getItem(made.id)!;
@@ -132,7 +132,12 @@ describe('the operator MCP endpoint (#175, step 2)', () => {
       expect(file.sections.find((s) => s.title === 'Description')!.body).toBe('new');
       expect((await client.callTool({ name: 'edit_item', arguments: { id: item.id, category: 'Nope' } })).isError).toBe(true);
       // Nothing that starts, holds or merges work is editable here.
-      expect(Object.keys(((await client.listTools()).tools.find((t) => t.name === 'edit_item')!.inputSchema as any).properties).sort()).toEqual(['category', 'depends_on', 'description', 'id', 'notes', 'parent', 'priority', 'release', 'title']);
+      expect(Object.keys(((await client.listTools()).tools.find((t) => t.name === 'edit_item')!.inputSchema as any).properties).sort()).toEqual(['category', 'depends_on', 'description', 'id', 'implementer', 'notes', 'parent', 'planner', 'priority', 'release', 'title']);
+      // Models are listed so a call naming one is refused in words, never dropped: operator_mcp.allow_models is off (#577).
+      const noModel = await client.callTool({ name: 'edit_item', arguments: { id: item.id, implementer: 'fable-5', title: 'Renamed' } });
+      expect(noModel.isError).toBe(true);
+      expect(text(noModel).error).toMatch(/operator_mcp\.allow_models; it is off \(Settings → project → "Your own MCP clients" → "May set an item's models"\)/);
+      expect(srv.store.requireItem(item.id).file.frontmatter).toMatchObject({ implementer: 'opus-5', title: 'Cave map' });
 
       const note = srv.store.journal.append({ type: 'orchestrator.planestro_note', actor: 'orchestrator', data: { text: 'A tool was missing.' } });
       expect(text(await client.callTool({ name: 'list_notes', arguments: { open: true } }))).toEqual([expect.objectContaining({ ts: note.ts, text: 'A tool was missing.', issues: [], handled: false })]);
@@ -196,6 +201,49 @@ describe('the operator MCP endpoint (#175, step 2)', () => {
       const c = ready('Cave map');
       expect(text(await client.callTool({ name: 'approve_plan', arguments: { id: c } })).said).toBeUndefined();
       expect((await client.callTool({ name: 'approve_plan', arguments: { id: ready('Bad'), mcp_budget: -1 } })).isError).toBe(true);
+    } finally { await client.close(); await srv.engine.stop(); srv.server.close(); srv.store.close(); }
+  });
+
+  it("an item's planner and implementer, behind operator_mcp.allow_models: set as the board's picker does, recorded as [operator] (#577)", async () => {
+    const { dataDir } = makeFixture();
+    const port = await freePort();
+    const srv = await startServer({ dataDir, port, log: () => {}, engineFactory: (s, em) => new MockEngine(s, em) });
+    const client = new Client({ name: 'test', version: '1' });
+    try {
+      srv.store.updateConfig((d) => { d.setIn(['operator_mcp', 'allow_writes'], true); });
+      await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`)));
+      // Off: the instructions name the opt-in, and a new item is not filed on the default model instead.
+      expect(client.getInstructions()).toMatch(/operator_mcp\.allow_models \(an item's planner and implementer/);
+      const before = srv.store.listItems().length;
+      const refused = await client.callTool({ name: 'create_item', arguments: { title: 'Art pass', implementer: 'fable-5' } });
+      expect(refused.isError).toBe(true);
+      expect(text(refused).error).toMatch(/operator_mcp\.allow_models; it is off/);
+      expect(srv.store.listItems().length).toBe(before);
+
+      srv.store.updateConfig((d) => { d.setIn(['operator_mcp', 'allow_models'], true); });
+      const made = text(await client.callTool({ name: 'create_item', arguments: { title: 'Art pass', implementer: 'fable-5' } }));
+      expect(srv.store.requireItem(made.id).file.frontmatter).toMatchObject({ planner: 'fable-5', implementer: 'fable-5', status: 'NOT_YET_SUBMITTED' });
+      expect((await client.callTool({ name: 'create_item', arguments: { title: 'Nope', implementer: 'gpt-9' } })).isError).toBe(true);
+
+      const item = srv.store.createItem({ title: 'Cave map' });
+      expect(srv.store.requireItem(item.id).file.frontmatter.implementer).toBe('opus-5');
+      text(await client.callTool({ name: 'edit_item', arguments: { id: item.id, implementer: 'fable-5', priority: 'high' } }));
+      const file = srv.store.requireItem(item.id).file;
+      expect(file.frontmatter).toMatchObject({ implementer: 'fable-5', priority: 'high' });
+      expect(file.sections.find((s) => s.title === 'Activity')!.body).toMatch(/\[operator\] model changed: implementer → fable-5/);
+      expect(srv.store.journal.read({ type: 'operator_mcp.action' }).at(-1)?.data).toMatchObject({ tool: 'edit_item', fields: ['implementer', 'priority'] });
+      // A model the project does not define is refused and changes nothing; the same model again is no change.
+      const unknown = await client.callTool({ name: 'edit_item', arguments: { id: item.id, implementer: 'gpt-9', title: 'Renamed' } });
+      expect(unknown.isError).toBe(true);
+      expect(text(unknown).error).toMatch(/gpt-9 cannot serve as implementer/);
+      expect(srv.store.requireItem(item.id).file.frontmatter.title).toBe('Cave map');
+      // Refused while something runs on the item, as on the board.
+      srv.store.mutateItem(item.id, [{ set: { op: 'syncing_base' } }], 'engine');
+      const busy = await client.callTool({ name: 'edit_item', arguments: { id: item.id, implementer: 'opus-5' } });
+      expect(text(busy).error).toMatch(/cannot switch yet/);
+      // Turning it off applies to the next call.
+      srv.store.updateConfig((d) => { d.setIn(['operator_mcp', 'allow_models'], false); });
+      expect((await client.callTool({ name: 'edit_item', arguments: { id: made.id, planner: 'opus-5' } })).isError).toBe(true);
     } finally { await client.close(); await srv.engine.stop(); srv.server.close(); srv.store.close(); }
   });
 

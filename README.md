@@ -270,6 +270,10 @@ in:
   priority, release, epic, dependencies, Description or Notes; `attach_file`
   puts files on an existing item; `mark_note` records the issues a note became,
   or handled with none. None of them starts, holds or merges work.
+  With `operator_mcp.allow_models: true` (its own opt-in, off by default),
+  `create_item` and `edit_item` also take `planner` and `implementer`: a model
+  the project defines, changed as the item's model picker does. Off, a call
+  naming one is refused and says where the setting is.
   `attachments` (#555) is up to 8 `{path, name?}` (or `{data, name}`, base64):
   PNG, JPEG, WebP, GIF or PDF, checked by name and contents, within
   `attachments.image_max_bytes` (pictures) or `managed_max_bytes`; never a

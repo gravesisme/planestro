@@ -605,9 +605,9 @@ export const Config = z.object({
    * The operator MCP endpoint (`/mcp`, #175): `allow_writes` lists `create_item`, which files to NOT_YET_SUBMITTED only (#232);
    * `allow_actions` lists the item actions a supervising session needs (#365: unblock, message, answer, sync, re-run CI), a separate
    * opt-in so filing follow-ups never grants acting on items. `allow_permissions` lets those actions allow a parked permission
-   * request once; off, they may only deny one.
+   * request once; off, they may only deny one. `allow_models` lets `create_item` / `edit_item` set an item's planner and implementer (#577).
    */
-  operator_mcp: z.object({ allow_writes: z.boolean().default(false), allow_actions: z.boolean().default(false), allow_permissions: z.boolean().default(false), allow_decisions: z.boolean().default(false), allow_submit: z.boolean().default(false) }).default({ allow_writes: false, allow_actions: false, allow_permissions: false, allow_decisions: false, allow_submit: false }),
+  operator_mcp: z.object({ allow_writes: z.boolean().default(false), allow_actions: z.boolean().default(false), allow_permissions: z.boolean().default(false), allow_decisions: z.boolean().default(false), allow_submit: z.boolean().default(false), allow_models: z.boolean().default(false) }).default({ allow_writes: false, allow_actions: false, allow_permissions: false, allow_decisions: false, allow_submit: false, allow_models: false }),
   feedback: z.object({ issue_repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/, 'owner/repo').optional() }).default({}),
   /** Importing the project's GitHub issues as items (#231): with none selected, every open issue with this label is imported. */
   issues: z.object({ import_label: z.string().min(1).optional() }).default({}),

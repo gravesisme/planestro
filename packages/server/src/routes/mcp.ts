@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
-import { STATUSES, PRIORITIES, KINDS, decisionOf, laneOf, findModel, getSection, mcpBudgetOf } from '@planestro/shared';
+import { STATUSES, PRIORITIES, KINDS, decisionOf, laneOf, findModel, canPlan, getSection, mcpBudgetOf } from '@planestro/shared';
 import { actingAs, type DataStore, type StoredItem, type ItemOp } from '../store/DataStore.ts';
 import { notesWithLinks, fileNote, markNotes } from '../engine/feedback.ts';
 import type { GhPort } from '../engine/ports.ts';
@@ -10,6 +10,7 @@ import type { Engine } from '../engine/Engine.ts';
 import { TOOL_VERSION } from '../config.ts';
 import { listInstances, readInstance, pgidOf, uptime, type Instance } from '../instances.ts';
 import { itemView } from './views.ts';
+import { itemModelSwitchOps } from '../providerSwitch.ts';
 import { allowedHosts, hostnameOf, fromThisMachine } from '../guard.ts';
 import { McpAttachments, readMcpAttachments, type McpAttachmentInput } from './mcpAttachments.ts';
 
@@ -23,7 +24,8 @@ import { McpAttachments, readMcpAttachments, type McpAttachmentInput } from './m
 // discards stay on the board unless `operator_mcp.allow_decisions`, a third opt-in, offers them too (approve or send back
 // a plan, discard, close as done). Submitting an item and moving it in or out of the Icebox or along its column is a fourth,
 // `operator_mcp.allow_submit`: the developer's own session at the keyboard does what they ask without going around the
-// endpoint to the board's HTTP routes, where it would read as `[user]`. Item edits and the feedback notes ride the first two. It is a different thing from
+// endpoint to the board's HTTP routes, where it would read as `[user]`. Item edits and the feedback notes ride the first two; an item's planner and
+// implementer are a fifth, `operator_mcp.allow_models` (#577), on `create_item` and `edit_item`. It is a different thing from
 // the in-process `planestro` server each worker and the orchestrator get (submit_plan, report_done,
 // …), and must never reach them: workers never touch planning state (invariant 1). They run with
 // strictMcpConfig (Claude) or --ignore-user-config (Codex), so a user-scope registration is not
@@ -48,7 +50,21 @@ const OPT_INS = [
   ['allow_actions', 'unblock_item, send_message, answer_question, answer_decision, decide_permission, sync_item, rerun_ci, file_note'],
   ['allow_decisions', 'approve_plan, reject_plan, discard_item, close_as_done, set_hold, release_hold'],
   ['allow_submit', 'submit_item, move_item'],
+  ['allow_models', "an item's planner and implementer, on create_item and edit_item"],
 ] as const;
+
+/** Where the opt-ins are, said in every refusal that names one (#577): a session relays it to a user who is away from the board. */
+const SETTINGS_PLACE = 'Settings → project → "Your own MCP clients"';
+const MODELS_OFF = `setting an item's planner or implementer needs operator_mcp.allow_models; it is off (${SETTINGS_PLACE} → "May set an item's models"), so nothing was changed: the user sets it on the board, or turns that on`;
+
+/** A model named for a role must be a row the project defines, and a planner one that can plan: the board's own check. */
+function requireModels(store: DataStore, fields: { planner?: string; implementer?: string }): void {
+  for (const [role, ref] of Object.entries(fields)) {
+    if (ref === undefined) continue;
+    const m = findModel(store.config, ref);
+    if (!m || (role === 'planner' && !canPlan(m))) throw new Error(`Model ${ref} cannot serve as ${role} (${store.config.models.map((x) => x.id).join(', ')})`);
+  }
+}
 
 /** Whether a URL is some planestro server's operator endpoint: `/mcp` on a host and port a recorded instance serves, or any loopback `/mcp` on a known port. */
 export function operatorMcpUrl(url: string, instances: (Pick<Instance, 'port'> & Partial<Pick<Instance, 'host' | 'url'>>)[] = [], aliases: readonly string[] = []): boolean {
@@ -138,6 +154,8 @@ export function operatorServer(store: DataStore, engine: Engine, caller: Operato
   // Read per request (the server is made per request), so turning the key off in Settings takes effect at once.
   const cfg = store.config.operator_mcp;
   const { allow_writes: writes, allow_actions: actions, allow_decisions: decisions, allow_submit: submits } = cfg;
+  const models = cfg.allow_models;
+  const modelField = (role: 'planner' | 'implementer') => z.string().trim().min(1).optional().describe(models ? `The model that ${role === 'planner' ? 'plans' : 'implements'} it, on the user's word: one of ${store.config.models.filter((m) => role === 'implementer' || canPlan(m)).map((m) => m.id).join(', ')}; omitted, ${store.config.defaults[role]}` : 'Refused: operator_mcp.allow_models is off, so models are set on the board');
   const offers = [writes && `create_item, which files a new item${submits ? '' : ' for the user to submit'} (screenshots attached), edit_item, attach_file and mark_note`, actions && 'item actions (unblock_item, send_message, answer_question, answer_decision, decide_permission, sync_item, rerun_ci, file_note) that act as the board does, recorded in Activity as [operator]', decisions && 'decisions (approve_plan, reject_plan, discard_item, close_as_done, set_hold, release_hold) as the board makes them', submits && 'submit_item and move_item (Icebox, backlog, order), on the user\'s word'].filter(Boolean).join(', and ');
   const off = OPT_INS.filter(([key]) => !cfg[key]).map(([key, tools]) => `operator_mcp.${key} (${tools})`);
   // A session that wants what no tool offers must not reach for the board's HTTP routes or the item files: it would act as the user, unrecorded as [operator].
@@ -182,15 +200,20 @@ export function operatorServer(store: DataStore, engine: Engine, caller: Operato
       kind: z.enum(KINDS).optional().describe('item (default), or epic for work that breaks into several items'),
       category: z.string().optional().describe(`One of the project's categories (${store.config.categories.join(', ')}); omitted, ${store.config.defaults.category}`),
       priority: z.enum(PRIORITIES).optional().describe('high, medium or low; omitted, unset'),
+      planner: modelField('planner'),
+      implementer: modelField('implementer'),
       attachments: McpAttachments.optional(),
     },
     annotations: FILES,
-  }, async ({ title, description, kind, category, priority, attachments }) => {
+  }, async ({ title, description, kind, category, priority, planner, implementer, attachments }) => {
     try {
+      // Checked before anything is filed: a refused model files no item on the default one.
+      if ((planner !== undefined || implementer !== undefined) && !store.config.operator_mcp.allow_models) throw new Error(MODELS_OFF);
+      requireModels(store, { planner, implementer });
       // Every file checked and read first (#555): a refused screenshot files no item without it.
       const files = readMcpAttachments(attachments, { local: Boolean(caller.local), limits: store.config.attachments });
       // Never the user's word (#73): `created_by` says where it came from, and the actor is not the user.
-      const item = store.createItem({ title, ...(description ? { description } : {}), ...(kind ? { kind } : {}), ...(category ? { category } : {}), ...(priority ? { priority } : {}), extra: { created_by: 'operator_mcp' }, created_line: 'created through the operator MCP' }, 'engine');
+      const item = store.createItem({ title, ...(description ? { description } : {}), ...(kind ? { kind } : {}), ...(category ? { category } : {}), ...(priority ? { priority } : {}), ...(planner ? { planner } : {}), ...(implementer ? { implementer } : {}), extra: { created_by: 'operator_mcp' }, created_line: 'created through the operator MCP' }, 'engine');
       const attached = await attachAll(store, item.id, files);
       return json({ ...itemSummary(store, store.requireItem(item.id)), ...(attached.length ? { attachments: attached } : {}) });
     } catch (e) { return { ...json({ error: (e as Error).message }), isError: true }; }
@@ -200,7 +223,7 @@ export function operatorServer(store: DataStore, engine: Engine, caller: Operato
     inputSchema: { open: z.boolean().optional().describe('true: only notes not yet filed or handled') },
     annotations: READ_ONLY,
   }, async ({ open }) => json(notesWithLinks(store).filter((n) => !open || !(n.links.handled || n.links.issues.length)).map((n) => ({ ts: n.ts, ...(n.item ? { item: n.item } : {}), text: n.data?.text, ...n.links }))));
-  if (writes) registerWrites(server, store, caller);
+  if (writes) registerWrites(server, store, engine, caller, modelField);
   if (actions) registerItemActions(server, store, engine as ActingEngine);
   if (decisions) registerDecisions(server, store, engine);
   if (submits) registerSubmit(server, store, engine);
@@ -218,9 +241,10 @@ async function attachAll(store: DataStore, id: string, files: { name: string; da
 }
 
 /** Edits and note links (`allow_writes`): file changes that start, stop or merge nothing. */
-function registerWrites(server: McpServer, store: DataStore, caller: OperatorCaller): void {
+function registerWrites(server: McpServer, store: DataStore, engine: Engine, caller: OperatorCaller, modelField: (role: 'planner' | 'implementer') => z.ZodOptional<z.ZodString>): void {
+  const models = store.config.operator_mcp.allow_models;
   server.registerTool('edit_item', {
-    description: "Edit an item's planning fields and its Description or Notes, as the board's edit does. Nothing here starts, stops or merges work: status, branch, PR, models and the Plan stay on the board, and holds are set_hold / release_hold (with allow_decisions). A null clears priority, release or parent.",
+    description: `Edit an item's planning fields and its Description or Notes, as the board's edit does. Nothing here starts, stops or merges work: status, branch, PR${models ? '' : ', models'} and the Plan stay on the board, and holds are set_hold / release_hold (with allow_decisions). A null clears priority, release or parent.${models ? " `planner` / `implementer` change the item's model as the board's picker does, only on the user's word: refused while a turn or engine step runs on it, and a session already under way carries on from a fresh brief." : ' Setting planner or implementer needs operator_mcp.allow_models, which is off.'}`,
     inputSchema: {
       id: z.string().describe('The item id, e.g. HH-143'),
       title: z.string().trim().min(1).optional(),
@@ -229,23 +253,30 @@ function registerWrites(server: McpServer, store: DataStore, caller: OperatorCal
       release: z.string().min(1).nullable().optional().describe('A release version, or null to clear'),
       parent: z.string().nullable().optional().describe('The epic it belongs to, or null to take it out'),
       depends_on: z.array(z.string()).optional().describe('Item ids it waits on (replaces the list)'),
+      planner: modelField('planner'),
+      implementer: modelField('implementer'),
       description: z.string().optional().describe('The new Description, whole, in Markdown'),
       notes: z.string().optional().describe('The new Notes, whole, in Markdown'),
     },
     annotations: FILES,
-  }, async ({ id, description, notes, ...fields }) => {
+  }, async ({ id, description, notes, planner, implementer, ...fields }) => {
     try {
       const cur = store.requireItem(id);
+      // Read per call, like allow_permissions: off, the refusal names the setting and where it is (#577).
+      if ((planner !== undefined || implementer !== undefined) && !store.config.operator_mcp.allow_models) throw new Error(MODELS_OFF);
+      // The board's own validator (a live turn, a model that cannot plan, the fresh-brief handoff); its Activity line says who.
+      const modelOps = itemModelSwitchOps(store, engine, id, { planner, implementer }).map((op): ItemOp => ('activity' in op && op.activity ? { activity: { ...op.activity, actor: 'operator' } } : op));
+      const modelFields = modelOps.length ? [planner !== undefined && 'planner', implementer !== undefined && 'implementer'].filter((k): k is string => Boolean(k)) : [];
       const set: Record<string, unknown> = {}; const unset: string[] = [];
       for (const [k, v] of Object.entries(fields)) { if (v === null) unset.push(k); else if (v !== undefined) set[k] = v; }
       if (set.category && !store.config.categories.includes(set.category as string)) throw new Error(`unknown category ${set.category}`);
       if (set.release) store.requireRelease(set.release as string);
       if (set.parent && store.requireItem(set.parent as string).file.frontmatter.kind !== 'epic') throw new Error(`${set.parent} is not an epic`);
       for (const d of (set.depends_on as string[] | undefined) ?? []) if (!store.getItem(d)) throw new Error(`no item ${d}`);
-      const ops: ItemOp[] = [...(Object.keys(set).length ? [{ set }] : []), ...(unset.length ? [{ unset }] : []), ...(description !== undefined ? [{ section: 'Description', body: description }] : []), ...(notes !== undefined ? [{ section: 'Notes', body: notes }] : [])];
+      const ops: ItemOp[] = [...modelOps, ...(Object.keys(set).length ? [{ set }] : []), ...(unset.length ? [{ unset }] : []), ...(description !== undefined ? [{ section: 'Description', body: description }] : []), ...(notes !== undefined ? [{ section: 'Notes', body: notes }] : [])];
       if (!ops.length) return json(itemSummary(store, cur));
       const edited = await actingAs('operator', async () => store.editItem(id, ops));
-      store.journal.append({ type: 'operator_mcp.action', item: id, actor: 'operator', data: { tool: 'edit_item', fields: [...Object.keys(set), ...unset, ...(description !== undefined ? ['Description'] : []), ...(notes !== undefined ? ['Notes'] : [])] } });
+      store.journal.append({ type: 'operator_mcp.action', item: id, actor: 'operator', data: { tool: 'edit_item', fields: [...modelFields, ...Object.keys(set), ...unset, ...(description !== undefined ? ['Description'] : []), ...(notes !== undefined ? ['Notes'] : [])] } });
       return json(itemSummary(store, edited));
     } catch (e) { return opError(e); }
   });
@@ -428,7 +459,7 @@ function registerItemActions(server: McpServer, store: DataStore, engine: Acting
     annotations: ACTS,
   }, ({ id: itemId, decision, reason }) => act('decide_permission', itemId, { decision, ...(reason ? { reason } : {}) }, async () => {
     // Read per call, like allow_writes: turning it off applies at once.
-    if (decision === 'allow' && !store.config.operator_mcp.allow_permissions) throw new Error('allowing a permission request needs operator_mcp.allow_permissions; it is off, so allow it on the board, or deny it');
+    if (decision === 'allow' && !store.config.operator_mcp.allow_permissions) throw new Error(`allowing a permission request needs operator_mcp.allow_permissions; it is off (${SETTINGS_PLACE} → "May allow a permission request once"), so the user allows it on the board or turns that on; from here, deny with a reason is the only other path`);
     await engine.respond(itemId, { kind: 'permission', decision, ...(reason ? { reason } : {}) });
   }));
   server.registerTool('sync_item', {
