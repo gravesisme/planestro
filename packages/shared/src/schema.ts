@@ -170,7 +170,7 @@ export const ItemFrontmatter = z.object({
    * the engine resumes it.
    */
   // `prs` (#136): pull requests someone opened by hand, by number; it resumes once every item and every PR has merged.
-  resume_after: z.object({ items: z.array(z.string()).default([]), prs: z.array(z.number().int().positive()).optional(), message: z.string(), since: ts }).passthrough().optional(),
+  resume_after: z.object({ items: z.array(z.string()).default([]), prs: z.array(z.number().int().positive()).optional(), base_synced: z.object({ epic: z.string(), base: z.string(), sha: z.string() }).optional(), message: z.string(), since: ts }).passthrough().optional(),
   /**
    * A person is finishing this item by hand (dogfood p28): nothing automatic drives it (no turns, no
    * orchestrator, no stall or triage, no merge) until they hand it back. Its status is left as it

@@ -197,7 +197,10 @@ export function depsSatisfied(fm: DepsOf, lookup: DepsLookup): boolean {
 
 export const ACTIVE_STATUSES: readonly Status[] = ['PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW', 'MERGED'];
 
-/** What a parked item waits for, in words: its items and pull requests (#136), e.g. "HH-272, PR #468". */
-export function waitsFor(r: { items: readonly string[]; prs?: readonly number[] }): string {
-  return [...r.items, ...(r.prs ?? []).map((n) => `PR #${n}`)].join(', ');
+/**
+ * What a parked item waits for, in words: its items and pull requests (#136), e.g. "HH-272, PR #468", and its epic's
+ * branch taking in the epic's own base (#571), e.g. "HH-725's sync with develop".
+ */
+export function waitsFor(r: { items: readonly string[]; prs?: readonly number[]; base_synced?: { epic: string; base: string } }): string {
+  return [...r.items, ...(r.prs ?? []).map((n) => `PR #${n}`), ...(r.base_synced ? [`${r.base_synced.epic}'s sync with ${r.base_synced.base}`] : [])].join(', ');
 }

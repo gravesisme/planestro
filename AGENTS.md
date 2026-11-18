@@ -75,6 +75,8 @@ A worker's rebase conflict is never the worker's integration step (HH-532): plan
 (`op_data.rebase_continue`), the session edits only the conflicted files, and planestro continues the rebase, checks it
 (finished, clean, contains `origin/<base>`) and pushes it, or aborts it back to the old head and blocks `sync_conflict`;
 the same conflict at the same base tip is not handed to that session again without guidance (`rebase_declined`).
+An epic's child may wait on the epic's own sync (`resume_after.base_synced`, the orchestrator's `epic_synced`, #571): it resumes,
+rebased, once `origin/<epic branch>` holds the base tip recorded when it parked, and is handed back if the epic blocks.
 The serial merge chain only syncs and merges; no CI wait ever runs inside it. A head
 that is not green yet leaves the chain (`op: awaiting_ci`), is polled beside it
 (`watchCi`) and comes back once green, so one item's CI never delays another's merge.

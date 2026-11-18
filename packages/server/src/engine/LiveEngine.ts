@@ -321,6 +321,7 @@ export class LiveEngine implements Engine {
     this.scheduler = new Scheduler({
       store,
       ports,
+      get repo() { return repo(); },
       get github() { return github(); },
       ciWorkflow: this.ciWorkflow,
       get stopping() { return stopping(); },
@@ -445,7 +446,7 @@ export class LiveEngine implements Engine {
       rerunCi: (id) => this.rerunCi(id, 'orchestrator'),
       unskipMerge: (id) => this.orchestratorUnskips(id),
       busyWith: (id) => this.busyWith(id),
-      resumeAfter: (id, items, message, prs) => this.resumeAfter(id, items, message, 'orchestrator', prs ?? []),
+      resumeAfter: (id, items, message, prs, baseSynced) => this.resumeAfter(id, items, message, 'orchestrator', prs ?? [], { baseSynced: baseSynced === true }),
       finishFromWorktree: (id) => this.finishFromWorktree(id, 'orchestrator'),
       ciWorkflow: this.ciWorkflow,
       runnerStatus: () => this.runnerStatus(),
@@ -563,8 +564,8 @@ export class LiveEngine implements Engine {
   /** When the queue was last read (Scheduler.ciQueueAt); tests reset it to read again. */
   private get ciQueueAt(): number { return this.scheduler.ciQueueAt; }
   private set ciQueueAt(at: number) { this.scheduler.ciQueueAt = at; }
-  /** Park an item until other items or pull requests merge (Scheduler.resumeAfter). */
-  resumeAfter(id: string, items: string[], message: string, by: 'user' | 'orchestrator' = 'user', prs: number[] = []): Promise<string> { return this.scheduler.resumeAfter(id, items, message, by, prs); }
+  /** Park an item until other items or pull requests merge, or its epic's branch has taken in the epic's base (Scheduler.resumeAfter). */
+  resumeAfter(id: string, items: string[], message: string, by: 'user' | 'orchestrator' = 'user', prs: number[] = [], opts: { baseSynced?: boolean } = {}): Promise<string> { return this.scheduler.resumeAfter(id, items, message, by, prs, opts); }
   /** Stop waiting without resuming (Scheduler.cancelResumeAfter). */
   cancelResumeAfter(id: string): void { this.scheduler.cancelResumeAfter(id); }
   /** Waited-on pull requests' last known states (Scheduler.waitedPrs). */
