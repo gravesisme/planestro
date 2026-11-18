@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
-import { STATUSES, PRIORITIES, KINDS, decisionOf, laneOf } from '@planestro/shared';
+import { STATUSES, PRIORITIES, KINDS, decisionOf, laneOf, findModel, getSection, mcpBudgetOf } from '@planestro/shared';
 import { actingAs, type DataStore, type StoredItem, type ItemOp } from '../store/DataStore.ts';
 import { notesWithLinks, fileNote, markNotes } from '../engine/feedback.ts';
 import type { GhPort } from '../engine/ports.ts';
@@ -272,6 +272,19 @@ function registerWrites(server: McpServer, store: DataStore, caller: OperatorCal
 }
 
 /**
+ * An approval that left a paid implementer with no MCP budget (#568, HH-727): its first call would be refused and the item
+ * blocked, so the answer says so, with the number the plan states, while the operator can still set it.
+ */
+function unbudgeted(store: DataStore, itemId: string): string | undefined {
+  const item = store.requireItem(itemId);
+  const fm = item.file.frontmatter;
+  const impl = findModel(store.config, fm.implementer);
+  if (!impl?.user_approves_plans || !impl.mcp.length || fm.mcp_budget !== undefined) return undefined;
+  const stated = mcpBudgetOf(getSection(item.file, 'Plan'));
+  return `approved with no MCP budget: ${impl.label}'s calls to ${impl.mcp.join(', ')} are refused until the user sets one (mcp_budget on the item${stated !== undefined ? `; its plan states ${stated}` : ''}). It is set on the item's page, or by passing mcp_budget to approve_plan: tell the user.`;
+}
+
+/**
  * The board's decisions about an item's run (`allow_decisions`), each through the engine call its route makes, written to
  * Activity as `[operator]`. What the board keeps to a person's tick stays there: an epic's plan approved as one item, the
  * remote branch's deletion on a discard.
@@ -287,10 +300,13 @@ function registerDecisions(server: McpServer, store: DataStore, engine: Engine):
     } catch (e) { return opError(e); }
   };
   server.registerTool('approve_plan', {
-    description: "Approve an item's plan (PLAN_READY), as the board's Approve does: implementation starts. `notes` go to the implementer; `hold` keeps its PR out of the merge until the user releases it. A plan that reads as an epic is refused: approving it as one item stays on the board.",
-    inputSchema: { id, notes: z.string().optional().describe('Approval notes for the implementer'), hold: z.string().trim().min(1).optional().describe('Why its PR must wait for the user') },
+    description: "Approve an item's plan (PLAN_READY), as the board's Approve does: implementation starts. `notes` go to the implementer; `hold` keeps its PR out of the merge until the user releases it; `mcp_budget` sets the item's MCP call budget (calls per MCP server), as the board's approval does: pass the number the user approved, never one of your own (a budget named only in `notes` sets nothing, and the worker's first paid call is refused). A plan that reads as an epic is refused: approving it as one item stays on the board.",
+    inputSchema: { id, notes: z.string().optional().describe('Approval notes for the implementer'), hold: z.string().trim().min(1).optional().describe('Why its PR must wait for the user'), mcp_budget: z.number().int().nonnegative().optional().describe("The MCP call budget the user approved for this item (calls per MCP server), e.g. 40 for 'including the 40-call budget'") },
     annotations: ACTS,
-  }, ({ id: itemId, notes, hold }) => decide('approve_plan', itemId, { ...(notes ? { notes } : {}), ...(hold ? { hold } : {}) }, () => engine.approvePlan(itemId, notes, 'user', { ...(hold ? { hold } : {}) })));
+  }, ({ id: itemId, notes, hold, mcp_budget }) => decide('approve_plan', itemId, { ...(notes ? { notes } : {}), ...(hold ? { hold } : {}), ...(mcp_budget !== undefined ? { mcp_budget } : {}) }, async () => {
+    await engine.approvePlan(itemId, notes, 'user', { ...(hold ? { hold } : {}), ...(mcp_budget !== undefined ? { mcpBudget: mcp_budget } : {}) });
+    return unbudgeted(store, itemId);
+  }));
   server.registerTool('reject_plan', {
     description: "Send an item's plan back to its planner with what to change, as the board's Request changes does.",
     inputSchema: { id, message: z.string().trim().min(1).describe('What the planner should change') },
