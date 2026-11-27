@@ -1,5 +1,5 @@
 import { getSection, fenceExternal, timeoutKilledIn } from '@planestro/shared';
-import type { DataStore } from '../store/DataStore.ts';
+import type { DataStore, StoredItem } from '../store/DataStore.ts';
 import type { Ports, TurnPhase, CiQueue, RunnerReport } from './ports.ts';
 import type { BaseSync } from './baseSync.ts';
 import { findWorkflow, infraPatternIn, prSkippedByPaths } from './ciFilters.ts';
@@ -33,6 +33,8 @@ export interface CiWatchContext {
   readonly turns: ReadonlyMap<string, unknown>;
   readonly jobs: ReadonlyMap<string, unknown>;
   readonly followUps: ReadonlyMap<string, unknown>;
+  /** Why the item's saved instruction has not started (TurnQueue.pendingTurnWait): one that starts by itself is something coming (#580). */
+  pendingTurnWait(id: string): { why: string; lifts: boolean } | undefined;
   /** The workflow's queue repository-wide, as admission control last read it (#170). */
   readonly ciQueue: CiQueue | undefined;
   /** An epic's red that is likely its base's waits for the base (#204). */
@@ -107,17 +109,9 @@ export class CiWatch {
     const looked = new Set<string>();
     for (const item of this.ctx.store.listItems()) {
       const fm = item.file.frontmatter;
-      if (fm.status !== 'IN_REVIEW' || fm.kind === 'epic' || fm.blocked || fm.awaiting || fm.triage || fm.taken_over || fm.skip_merge || fm.resume_after) continue;
-      if (this.ctx.store.derived(item).flavor === 'external' || fm.op === 'running_local_checks') continue;
-      // Waiting on a sibling's CI (#560): the chain looks at it each tick, and lets it go once that sibling is done.
-      if (fm.op_data?.sibling_ci) continue;
-      // Driven: a session, a step other than a CI wait, or a wait that has not polled yet or last saw its run queued or running.
-      const seen = this.ciSeen.get(item.id);
-      const waiting = this.ciWaits.has(item.id);
-      const driven = this.ctx.turns.has(item.id) || this.ctx.followUps.has(item.id) || (this.ctx.jobs.has(item.id) && !waiting)
-        || (waiting && (!seen || seen.state === 'pending')) || (seen?.state === 'pending' && now - seen.at < 2 * 60_000);
+      if (!this.reviewStallCandidate(item)) continue;
       looked.add(item.id);
-      if (driven) { this.reviewIdleSince.delete(item.id); continue; }
+      if (this.reviewDriver(item.id, now)) { this.reviewIdleSince.delete(item.id); continue; }
       // Undriven across ticks, not between two steps (a restart clears an op a tick before its job starts again).
       const since = this.reviewIdleSince.get(item.id) ?? now;
       this.reviewIdleSince.set(item.id, since);
@@ -132,10 +126,69 @@ export class CiWatch {
       this.ctx.note('warn', `${item.id}: in review with nothing moving it for ${idleMin} min; waking the orchestrator`);
       this.ctx.wakeOrchestrator('review_stalled', item.id, {
         idle_min: idleMin, ci_result: fm.ci_result ?? 'none', ...(run?.url ? { run: run.url } : {}), head: fm.ci_head_sha ?? '', last_activity: last.text,
-        note: 'Nothing is driving this item: no CI run is queued or running, no session turn, no stop. Read its Activity and CI, then act (rerun_ci, retry_op, message_session, unblock_item) or ask the user.',
+        note: this.reviewStallNote(item.id),
       });
     }
     for (const id of this.reviewIdleSince.keys()) if (!looked.has(id)) this.reviewIdleSince.delete(id);
+  }
+
+  /** An item the review watchdog looks at: a worker's pull request in review that no stop, hold, person or wait accounts for. */
+  private reviewStallCandidate(item: StoredItem): boolean {
+    const fm = item.file.frontmatter;
+    if (fm.status !== 'IN_REVIEW' || fm.kind === 'epic' || fm.blocked || fm.awaiting || fm.triage || fm.taken_over || fm.skip_merge || fm.resume_after) return false;
+    if (this.ctx.store.derived(item).flavor === 'external' || fm.op === 'running_local_checks') return false;
+    // Waiting on a sibling's CI (#560): the chain looks at it each tick, and lets it go once that sibling is done.
+    return !fm.op_data?.sibling_ci;
+  }
+
+  /**
+   * What is driving an item in review, in words, or undefined when nothing is: a session, a step other than a CI wait, a wait
+   * that has not polled yet or last saw its run queued or running, or a turn saved for its session that starts by itself (#580:
+   * one held back by a usage pause is not a stall, and no tool of the orchestrator's starts it sooner).
+   */
+  private reviewDriver(id: string, now = Date.now()): string | undefined {
+    if (this.ctx.turns.has(id)) return 'its session is in a turn';
+    const seen = this.ciSeen.get(id);
+    const waiting = this.ciWaits.has(id);
+    if (this.ctx.followUps.has(id) || (this.ctx.jobs.has(id) && !waiting)) return 'a step is running on it';
+    if ((waiting && (!seen || seen.state === 'pending')) || (seen?.state === 'pending' && now - seen.at < 2 * 60_000)) return 'its CI run is queued or running';
+    const saved = this.ctx.pendingTurnWait(id);
+    return saved?.lifts ? `a turn is saved for its session and starts by itself (${saved.why})` : undefined;
+  }
+
+  /**
+   * What a `review_stalled` wake says can be done, for the item as it is (#580). The item is not blocked, so unblock_item,
+   * retry_op and sync_with_base refuse it: the wake named them, and HH-835 and HH-844's orchestrator went through all three
+   * before it found the one that takes such an item. Only tools that do are named, each with what it needs.
+   */
+  private reviewStallNote(id: string): string {
+    const fm = this.ctx.store.requireItem(id).file.frontmatter;
+    const od = fm.op_data ?? {};
+    const saved = this.ctx.pendingTurnWait(id);
+    const held = od.rebase_continue as { conflicts?: string[]; base?: string } | undefined;
+    const red = (od.last_red ?? od.last_cancelled) as { runId?: number; sha?: string } | undefined;
+    const lines = ['Nothing is driving this item: no CI run is queued or running, no session turn is running or about to start, and it has no stop. Read its Activity and CI first.'];
+    if (saved) lines.push(`A turn is saved for its session and will not start as things are: ${saved.why}. That is what to put right (set_item_fields for a model), or the user's to hear of.`);
+    lines.push('It is not blocked, so unblock_item, retry_op and sync_with_base refuse it. What takes it as it is:');
+    lines.push(`- message_session: ${saved ? 'your message joins that saved turn' : 'nothing is live on it, so your message starts its session\'s turn now (the tool\'s answer says whether it started or was saved behind a pause)'}. Say what the session should do${held ? `: a rebase onto origin/${held.base ?? 'its base'} is left stopped at a conflict in ${(held.conflicts ?? []).join(', ') || 'its files'}, so say how those files should go (it edits only them; planestro continues the rebase, checks it and pushes it)` : fm.ci_result === 'red' ? ': CI is red, so say what failed and what to fix (it commits; planestro pushes it and CI runs again)' : ''}.`);
+    if (red?.runId && red.sha && red.sha === fm.ci_head_sha) lines.push(`- rerun_ci: run ${red.runId} for this head is on record as ${od.last_red ? 'red' : 'cancelled'}; for a flake, or a run that was cancelled, never for a failure the change caused.`);
+    lines.push('- mark_blocked with the reason, or ask_user_decision, when it is the user\'s to decide.');
+    return lines.join('\n');
+  }
+
+  /**
+   * Whether a `review_stalled` wake still holds when the orchestrator reads it (#580): a wake waits in its queue while the
+   * orchestrator is busy or its own provider is paused, and HH-835's and HH-844's were read as their fix turns started.
+   * Returns what the item is doing now when it is no longer a stall, undefined when it still is.
+   */
+  reviewStallOver(id: string): string | undefined {
+    const item = this.ctx.store.getItem(id);
+    if (!item) return 'the item is gone';
+    const fm = item.file.frontmatter;
+    if (fm.status !== 'IN_REVIEW') return `it is ${fm.status} now`;
+    if (fm.blocked) return `it is blocked now (${fm.blocked_reason}), which has its own triage`;
+    if (!this.reviewStallCandidate(item)) return fm.taken_over ? 'the user has taken it over' : fm.skip_merge ? 'it is held out of the merge queue now' : fm.awaiting ? `it is awaiting ${fm.awaiting} now` : 'it is waiting on something planestro knows of';
+    return this.reviewDriver(id);
   }
 
   /**
