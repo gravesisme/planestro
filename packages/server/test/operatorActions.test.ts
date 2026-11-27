@@ -192,6 +192,15 @@ describe('operator MCP: question cards, card actions and auditions (#577)', () =
       expect(text(await c.callTool({ name: 'answer_question_card', arguments: { question: loose.id, answer: 'Green', close: true } })).error).toMatch(/already resolved/);
       expect(text(await c.callTool({ name: 'answer_question_card', arguments: { question: 'Q-99', answer: 'x' } })).error).toMatch(/unknown question Q-99/);
       expect((await c.callTool({ name: 'answer_question_card', arguments: { question: item.id, answer: 'x' } })).isError).toBe(true);
+      // With no orchestrator to read a reply, nothing is posted: the refusal names close.
+      const third = store.askQuestion({ headline: 'Which font?', summary: 'Serif or sans.' });
+      Object.defineProperty(orch, 'enabled', { get: () => false, configurable: true });
+      try {
+        const unread = await c.callTool({ name: 'answer_question_card', arguments: { question: third.id, answer: 'Serif' } });
+        expect(text(unread).error).toMatch(/the orchestrator is not available with this engine, so nobody would read the answer: pass close: true/);
+        expect(parseThread(store.requireQuestion(third.id).file)).toEqual([]);
+        expect(wakes.length).toBe(1);
+      } finally { delete orch.enabled; }
     } finally { orch.wake = wake; }
   });
 
@@ -222,15 +231,22 @@ describe('operator MCP: question cards, card actions and auditions (#577)', () =
 
     // On, read on the next call: the card's own action, with its wiring, performed by planestro as the tap performs it.
     store.updateConfig((d) => { d.setIn(['operator_mcp', 'allow_card_actions'], true); });
-    const picked = await c.callTool({ name: 'answer_decision', arguments: { id: item.id, choice: 'Ship, file the art', text: '812 A' } });
+    // The user's word is part of the record: without it the pick is refused, nothing is filed and the card stands.
+    const wordless = await c.callTool({ name: 'answer_decision', arguments: { id: item.id, choice: 'Ship, file the art', text: 'ship it' } });
+    expect(text(wordless).error).toMatch(/carries an action \(create_item\), taken from here only on the user's word: give what they said in `word`\. Nothing was done and the card stands/);
+    expect(store.listItems().map((i) => i.file.frontmatter.title)).not.toContain('Art follow-up');
+    expect(decisionOf(fmOf(store, item.id))).toBeTruthy();
+    expect(actions(store, item.id)).toEqual([]);
+    const picked = await c.callTool({ name: 'answer_decision', arguments: { id: item.id, choice: 'Ship, file the art', word: '812 A' } });
     expect(picked.isError, JSON.stringify(picked)).toBeFalsy();
     const made = store.listItems().find((i) => i.file.frontmatter.title === 'Art follow-up')!;
     expect(made.file.frontmatter).toMatchObject({ status: 'NOT_YET_SUBMITTED', depends_on: [item.id] });
     expect(decisionOf(fmOf(store, item.id))).toBeUndefined();
-    expect(activityOf(store, item.id)).toMatch(new RegExp(`\\[operator\\] decided: Ship it\\? → Ship, file the art — 812 A \\(done for you: created ${made.id} \\("Art follow-up"\\), not submitted yet\\)`));
+    expect(activityOf(store, item.id)).toMatch(new RegExp(`\\[operator\\] decided: Ship it\\? → Ship, file the art \\(done for you: created ${made.id} \\("Art follow-up"\\), not submitted yet\\)`));
     expect(activityOf(store, item.id)).not.toMatch(/\[user\] decided/);
     expect(activityOf(store, made.id)).toMatch(/\[operator\] created by your answer on/);
-    expect(actions(store, item.id)).toEqual([{ tool: 'answer_decision', choice: 'Ship, file the art', text: '812 A', action: 'create_item' }]);
+    expect(activityOf(store, item.id)).toMatch(/\[operator\] "Ship, file the art" \(create_item\) picked on the user's word: 812 A/);
+    expect(actions(store, item.id)).toEqual([{ tool: 'answer_decision', choice: 'Ship, file the art', action: 'create_item', word: '812 A' }]);
     expect(store.journal.read({ type: 'orchestrator.decision_answered', item: item.id }).at(-1)!.data).toMatchObject({ action: 'create_item' });
   });
 
@@ -244,12 +260,13 @@ describe('operator MCP: question cards, card actions and auditions (#577)', () =
     card(store, item.id, [
       { label: 'Start the follow-up', action: { tool: 'submit_item', args: { id: other.id } } },
       { label: 'Drop it', action: { tool: 'discard_item', args: { id: doomed.id, reason: 'not wanted' } } },
+      { label: 'Re-run CI', action: { tool: 'rerun_ci', args: { id: doomed.id } } },
       { label: 'Drop it and its branch', action: { tool: 'discard_item', args: { id: doomed.id, reason: 'not wanted', delete_branch: true } } },
     ]);
     // The backlog moved since the card was filed: the tap refuses (actionRefusal), from here as on the board, and the card stands.
     store.mutateItem(other.id, [{ set: { status: 'ICEBOX' } }], 'engine');
     const c = await connect(store, engine);
-    const stale = await c.callTool({ name: 'answer_decision', arguments: { id: item.id, choice: 'Start the follow-up' } });
+    const stale = await c.callTool({ name: 'answer_decision', arguments: { id: item.id, choice: 'Start the follow-up', word: 'start it' } });
     expect(text(stale).error).toMatch(/cannot be carried out any more: .* is ICEBOX; only an item that is not submitted yet can be submitted/);
     expect(fmOf(store, other.id).status).toBe('ICEBOX');
     expect(decisionOf(fmOf(store, item.id))).toBeTruthy();
@@ -257,11 +274,15 @@ describe('operator MCP: question cards, card actions and auditions (#577)', () =
     expect(text(discard).error).toMatch(/carries discard_item, which also needs operator_mcp\.allow_decisions; it is off \(Settings → Project → "Your own MCP clients" → "May make decisions on items"\)/);
     store.updateConfig((d) => { d.setIn(['operator_mcp', 'allow_decisions'], true); });
     expect(text(await c.callTool({ name: 'answer_decision', arguments: { id: item.id, choice: 'Drop it and its branch' } })).error).toMatch(/deletes a remote branch, which stays the user's tick on the board/);
+    // Another kind of action passes this endpoint's gate and meets the tap's own answer: there is no run to re-run.
+    const rerun = await c.callTool({ name: 'answer_decision', arguments: { id: item.id, choice: 'Re-run CI', word: 're-run it' } });
+    expect(text(rerun).error).toMatch(/^"Re-run CI" cannot be carried out any more: /);
+    expect(text(rerun).error).not.toMatch(/operator_mcp/);
     expect(fmOf(store, doomed.id).status).toBe('QUEUED');
     expect(actions(store, item.id)).toEqual([]);
     // The submit, once nothing refuses it: the item is queued as its page's Submit queues it.
     store.mutateItem(other.id, [{ set: { status: 'NOT_YET_SUBMITTED' } }], 'engine');
-    const ok = await c.callTool({ name: 'answer_decision', arguments: { id: item.id, choice: 'Start the follow-up', text: 'go' } });
+    const ok = await c.callTool({ name: 'answer_decision', arguments: { id: item.id, choice: 'Start the follow-up', word: 'go' } });
     expect(ok.isError, JSON.stringify(ok)).toBeFalsy();
     expect(fmOf(store, other.id).status).not.toBe('NOT_YET_SUBMITTED');
     expect(activityOf(store, item.id)).toMatch(new RegExp(`\\[operator\\] decided: .*done for you: ${other.id} is queued for planning`));

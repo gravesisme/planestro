@@ -508,10 +508,10 @@ function registerItemActions(server: McpServer, store: DataStore, engine: Acting
   });
   const cardActions = store.config.operator_mcp.allow_card_actions;
   server.registerTool('answer_decision', {
-    description: `Answer the decision card an item waits on: one of its option labels, your own words where it allows them, or both, as the board's card does. ${cardActions ? "An option that carries an action (filing or submitting an item, a re-run) is the user's own tap: pick it only on their explicit word for this card, put their words in `text`, and planestro performs the action exactly as their tap would, with the same refusals. One that discards or closes an item also needs allow_decisions, and one that deletes a remote branch stays on the board." : "An option that carries an action (filing or submitting an item, a discard) is the user's to pick on the board: picking it here needs operator_mcp.allow_card_actions, which is off."}`,
-    inputSchema: { id, choice: z.string().optional().describe('The label of the option picked, exactly'), text: z.string().optional().describe("Your answer in words; with an option that carries an action, the user's words") },
+    description: `Answer the decision card an item waits on: one of its option labels, your own words where it allows them, or both, as the board's card does. ${cardActions ? "An option that carries an action (filing or submitting an item, a re-run) is the user's own tap: pick it only on their explicit word for this card and give that word in `word` (required with such an option: without it the pick is refused and the card stands; it is recorded in Activity, and is not part of the answer), and planestro performs the action exactly as their tap would, with the same refusals. One that discards or closes an item also needs allow_decisions, and one that deletes a remote branch stays on the board." : "An option that carries an action (filing or submitting an item, a discard) is the user's to pick on the board: picking it here needs operator_mcp.allow_card_actions, which is off."}`,
+    inputSchema: { id, choice: z.string().optional().describe('The label of the option picked, exactly'), text: z.string().optional().describe('Your answer in words'), word: z.string().trim().min(1).optional().describe('With an option that carries an action, required: what the user said, for Activity, e.g. "812 A". Not sent as part of the answer') },
     annotations: ACTS,
-  }, ({ id: itemId, choice, text }) => {
+  }, ({ id: itemId, choice, text, word }) => {
     const args: Record<string, unknown> = { ...(choice ? { choice } : {}), ...(text ? { text } : {}) };
     return act('answer_decision', itemId, args, async () => {
       if (!engine.answerDecision) throw new Error('decisions need the live engine');
@@ -519,9 +519,14 @@ function registerItemActions(server: McpServer, store: DataStore, engine: Acting
       const option = decisionOf(store.requireItem(itemId).file.frontmatter)?.options.find((o) => o.label === choice?.trim());
       const refusal = option?.action ? cardActionRefusal(store, option.label, option.action) : null;
       if (refusal) throw new Error(refusal);
+      // Whose word it was is part of the record (#577). Its own field: `text` joins the answer the orchestrator and the session read.
+      if (option?.action && !word) throw new Error(`"${option.label}" carries an action (${option.action.tool}), taken from here only on the user's word: give what they said in \`word\`. Nothing was done and the card stands`);
       // The board's own tap: actionRefusal is asked again there, and a refusal leaves the card as it was.
       await engine.answerDecision(itemId, { choice, text });
-      if (option?.action) args.action = option.action.tool;
+      if (option?.action) {
+        args.action = option.action.tool; args.word = word;
+        store.mutateItem(itemId, [{ activity: { actor: 'user', text: `"${option.label}" (${option.action.tool}) picked on the user's word: ${word!.slice(0, 400)}` } }], 'user');
+      }
     });
   });
   server.registerTool('answer_audition', {

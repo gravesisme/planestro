@@ -298,7 +298,7 @@ in:
   A card option that carries an action (file an item, submit one) and an
   audition's picks are the user's own taps: `answer_decision` and
   `answer_audition` take them only with `operator_mcp.allow_card_actions: true`
-  (its own opt-in, off by default), for a session relaying the user's word.
+  (its own opt-in, off by default), for a session relaying the user's word, which each requires in `word`.
   planestro then performs the card's action exactly as the tap would, with the
   tap's refusals. Off, the refusal says where the setting is.
 - Decisions, with `operator_mcp.allow_decisions: true` (a third opt-in, off by
