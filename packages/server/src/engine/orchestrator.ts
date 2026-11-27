@@ -8,6 +8,7 @@ import { modelCapabilities, clampTitle, NOTE_TITLE_MAX, runnerTurnSettings, type
 import { parkHint, permissionGrantRefusal } from './parks.ts';
 import { precedents, rulingsFromJournal, worktreeFinder, worstOf } from './allowSuggest.ts';
 import { hostNote, keptPathsNote, longRunNote } from './hostNote.ts';
+import { heavyRouteNote, type HeavyVerdict } from './heavyRuns.ts';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import { DRY_RUN_SESSION_PREFIX } from './ports.ts';
 import type { Ports, CustomToolDef, TurnResult } from './ports.ts';
@@ -90,7 +91,7 @@ const HANDS_OFF = new Set([
   'skip_merge', 'unskip_merge', 'message_session', 'submit_item', 'mark_blocked', 'approve_plan', 'amend_plan', 'request_plan_changes',
   'hand_plan_to_user', 'decide_permission', 'hand_off_files', 'unblock_item', 'answer_question', 'set_item_fields', 'recreate_worktree',
   'retry_op', 'retry_at_reset', 'ask_user_decision', 'withdraw_decision', 'finish_from_worktree', 'resume_after', 'set_merge_order', 'set_queue_order',
-  'sync_with_base', 'convert_item', 'resolve_epic_conflict', 'commit_paths', 'rerun_ci',
+  'sync_with_base', 'convert_item', 'resolve_epic_conflict', 'commit_paths', 'rerun_ci', 'return_to_backlog',
 ]);
 
 export interface OrchestratorHooks {
@@ -107,6 +108,8 @@ export interface OrchestratorHooks {
   holdMerge(id: string, reason: string): string;
   /** Make an item an epic or back while nothing has run for implementation (LiveEngine.convertKind). Returns what happened, or why not. */
   convertKind(id: string, to: 'item' | 'epic', why: string): Promise<string>;
+  /** Undo a submit: back to Not yet submitted while no pull request exists (LiveEngine.returnToBacklog). Returns what happened, or why not. */
+  returnToBacklog(id: string, why: string): Promise<string>;
   /** Have an epic's planner propose its children (Epics.planEpic). */
   planEpic(id: string, why?: string): Promise<void>;
   /** Why planestro could not do this for the user, or null (Triage.actionRefusal): a card option's action, or the chat's create_item. */
@@ -123,6 +126,8 @@ export interface OrchestratorHooks {
   handPlanToUser(id: string, reason: string): void;
   /** A wake that carried this item's plan review is over, however it ended. */
   planReviewEnded(id: string): void;
+  /** What the worker's run_heavy would make of this Bash command as it stands (#583); undefined when the tool is not this session's (a planner, no worktree). */
+  heavyVerdict?(id: string, command: string): HeavyVerdict | undefined;
   /** Whether workers' permission requests come to the orchestrator before the user. */
   permissionsDelegated(): boolean;
   /** Decide a worker's parked permission request: allow it once, deny it with a reason, or leave it to the user. */
@@ -703,9 +708,17 @@ export class Orchestrator {
       (refusal ? undefined : nativeApprovalGuidance(data.tool)) ?? 'planestro has already refused the things no worker may do (git push, gh pr, touching protected branches, force flags, rm -rf of / or ~).',
       ...choices,
       'Judge the command, not the worker\'s description of it. If you decide nothing, it goes to the user.',
+      data.tool === 'Bash' ? this.heavyRoute(what, fm) : '',
       data.tool === 'Bash' ? this.earlierRulings(what, fm) : '',
       this.rulingRubric(),
     ].filter(Boolean).join('\n');
+  }
+
+  /** Whether run_heavy would take this command (#583, HH-941: a denial pointed a worker at run_heavy, which refused it too). Left out when it cannot be judged. */
+  private heavyRoute(command: string, fm: { worktree?: string }): string {
+    const id = (fm as { id?: string }).id;
+    if (!id || !command.trim()) return '';
+    try { const v = this.hooks.heavyVerdict?.(id, command); return v ? heavyRouteNote(v) : ''; } catch { return ''; }
   }
 
   /** The project's ruling rubric (#203), a partial the project may edit; a copy that does not render is left out. */
@@ -744,6 +757,7 @@ export class Orchestrator {
       '- commit_paths — the work is in the worktree but not committed (a dirty tree at a budget stop, a commit the session was approved to make and never made): name the files that belong to the change and give the commit message; planestro commits them with no session turn and no cost. Generated files and byproducts do not belong. Then finish_from_worktree (retry_op in review).',
       '- sync_with_base, or unblock_item with sync_first: true — something the item needs has merged since its worktree was cut (a dependency, a fix on its base): planestro rebases its branch before the session resumes, since the session cannot use what its branch does not have. A conflict goes to the session.',
       '- answer_question — the worker asked something the brief, plan, notes or project rules already answer.',
+      '- return_to_backlog — the item was submitted by mistake or too early (the user, or a hold\'s reason, says "back to the backlog", "not ready"): it goes back to Not yet submitted with its turn stopped and its plan kept in Notes. Not mark_blocked, which leaves it on the user\'s list, and not a hold, which only keeps a pull request from merging. With a pull request open it is refused: that is a discard, the user\'s call.',
       `- unblock_item to audition — ${AUDITION_POLICY}`,
       '- finish_from_worktree — the work is committed on a clean worktree ahead of its base but the item stopped before its pull request (over budget after committing, a size gate, a commit made for a runner that could not): open the pull request from there.',
       '- retry_op — a transient failure: a GitHub 5xx, an SSH or network hiccup, a timeout. Not for anything that failed the same way twice.',
@@ -828,6 +842,7 @@ export class Orchestrator {
           return `planning the breakdown of epic ${id} (it is not queued: the user approves the children it proposes)`;
         } catch (e) { return `refused: ${(e as Error).message}. Nothing was submitted.`; }
       } },
+      { name: 'return_to_backlog', description: 'Send an item that was submitted too early back to Not yet submitted: the undo of a submit, for when the user (or whoever submitted it) says it is not ready ("back to the backlog", "submitted too early"). It takes a queued item and work that has started with no pull request yet (planning, a plan waiting for approval, in progress with nothing pushed). Its live turn is stopped, and what was queued for the session, its question or card, a block and a hold are dropped; the plan is kept in Notes for its next planner, and its worktree, branch and conversation are left as they are for the next submit. Nothing is deleted and nothing is started: submitting it again stays the user\'s. An epic goes back only while its breakdown is being planned. Refused in words once a pull request exists or its branch is pushed: dropping that work is a discard, which is the user\'s (offer it on a card). A hold does not do this: it only keeps a pull request from merging.', schema: { ...idArg, reason: z.string().describe('Why, in a sentence: it goes in the Activity log') }, handler: async (a) => { const said = await this.hooks.returnToBacklog(String(a.id), String(a.reason)); this.hooks.poke(); return said; } },
       { name: 'mark_blocked', description: 'Block an item for the user with a reason. Refused while a step runs (a CI wait, a turn): a block then could not be cleared.', schema: { ...idArg, reason: z.string() }, handler: async (a) => { const busy = this.hooks.busyWith(String(a.id)); if (busy) return `refused: ${busy}. To reach its session, use message_session: it is delivered when this step ends.`; const { decision: stale, ...rest } = store.requireItem(String(a.id)).file.frontmatter.awaiting_data ?? {}; store.mutateItem(String(a.id), [{ set: { blocked: true, blocked_reason: 'orchestrator', awaiting: 'user' } }, { unset: ['triage'] }, ...(stale ? [(Object.keys(rest).length ? { set: { awaiting_data: rest } } : { unset: ['awaiting_data'] }) as ItemOp] : []), { activity: { actor: 'orchestrator', text: `blocked for the user: ${a.reason}${stale ? ' (the decision card it had is withdrawn: this block replaces it)' : ''}` } }], 'orchestrator', { commit: `${a.id}: blocked (orchestrator)` }); return 'blocked'; } },
       { name: 'approve_plan', description: 'Approve a PLAN_READY item (only allowed when the item opted into auto-approval and config permits). Refused for a plan that reads as an epic breakdown (the packet says THIS IS AN EPIC): convert it with convert_item instead. With `hold`, its pull request stays out of the merge queue until the user releases it; a plan that states a merge hold (the packet says so) is held whether or not you pass it. Before the implement turn starts, planestro brings its branch up to date with its base (as sync_with_base; nothing happens if it is already on the base tip, and a conflict goes to the session first); sync_first: false skips that.', schema: { ...idArg, notes: z.string().optional(), hold: z.string().optional().describe('What the pull request waits for before it may merge ("until HH-12 has merged"). Only when it must wait.'), sync_first: z.boolean().optional().describe('Sync the branch with its base before implementation starts (default true)') }, handler: async (a) => {
         if (!this.hooks.planDelegated(String(a.id))) return 'not permitted: the user approves this plan (add review notes with annotate_item instead)';

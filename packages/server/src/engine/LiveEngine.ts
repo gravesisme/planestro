@@ -1,11 +1,11 @@
 import { closesLine } from './issueImport.ts';
 import { itemModelSwitchOps } from '../providerSwitch.ts';
 import { join, relative, isAbsolute, extname, basename, matchesGlob } from 'node:path';
-import { DEBUG_MARKER, debugMarkerRefusal, Audition, AuditionPicks, auditionPicksProblem, auditionPickLines, auditionNote, auditionComplete, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, fallbackChain, unavailableEntry, validateBreakdown, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type Decision, type ServerEvent, type Status, type RateLimitSnapshot, demoteH1, loopGreen, loopLine, loopTallyProblem, testRunShape, TEST_RUN, type HostLoad, type ModelDef, resolveAccount, guardKey, localClock, unavailableView, DEFAULT_ACCOUNT, type Account } from '@planestro/shared';
+import { DEBUG_MARKER, debugMarkerRefusal, Audition, AuditionPicks, auditionPicksProblem, auditionPickLines, auditionNote, auditionComplete, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, fallbackChain, unavailableEntry, validateBreakdown, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, decisionOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type Decision, type ServerEvent, type Status, type RateLimitSnapshot, demoteH1, loopGreen, loopLine, loopTallyProblem, testRunShape, TEST_RUN, type HostLoad, type ModelDef, resolveAccount, guardKey, localClock, unavailableView, DEFAULT_ACCOUNT, type Account } from '@planestro/shared';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type CiQueue, type RunnerReport, type AccountCredentials } from './ports.ts';
-import { makePolicy, ruleFor, allowedByRules, BASE_ALLOWED } from './policy.ts';
+import { makePolicy, ruleFor } from './policy.ts';
 import { answeredCommand, commandShape, rulingText, parkedRefusal, permissionGrantRefusal } from './parks.ts';
 import { commandGrant, commandForms } from './sessions/nativeApproval.ts';
 import { workerCommandEnv } from './sessions/commandEnv.ts';
@@ -15,7 +15,7 @@ import { Orchestrator } from './orchestrator.ts';
 import { NeedsYouWatch, type Wait } from './needsYou.ts';
 import { auditSlotDue, runEfficiencyAudit } from './efficiencyAudit.ts';
 import { runnerStatusText, stallWords, type RunnerStall } from './runners.ts';
-import { HeavyLock, ciOnSharedHost, heavyAllowRules, took } from './heavyRuns.ts';
+import { HeavyLock, ciOnSharedHost, heavyVerdict, heavyRejection, took, type HeavyVerdict } from './heavyRuns.ts';
 import type { ReviewImage, ReviewDiff, UndoTurnPreview } from './Engine.ts';
 import { ReviewUndo } from './reviewUndo.ts';
 import { WorkerTools, ATTACH_PER_CALL } from './workerTools.ts';
@@ -425,6 +425,7 @@ export class LiveEngine implements Engine {
       approvePlan: (id, notes, hold, syncFirst) => this.approvePlan(id, notes, 'orchestrator', { hold, syncFirst }),
       holdMerge: (id, reason) => this.orchestratorHolds(id, reason),
       convertKind: (id, to, why) => this.convertKind(id, to, 'orchestrator', why).catch((e) => (e as Error).message),
+      returnToBacklog: (id, why) => this.returnToBacklog(id, { by: 'orchestrator', why }).catch((e) => `refused: ${(e as Error).message}. Nothing was changed.`),
       planEpic: (id, why) => this.epics.planEpic(id, why),
       actionRefusal: (action) => this.triage.actionRefusal(action),
       submitForUser: (id, why) => this.triage.submitAsUser(id, why),
@@ -434,6 +435,8 @@ export class LiveEngine implements Engine {
       handPlanToUser: (id, reason) => this.handPlanToUser(id, `the orchestrator left it to you: ${reason}`),
       planReviewEnded: (id) => this.handPlanToUser(id, 'the orchestrator reviewed it without deciding'),
       permissionsDelegated: () => this.permissionsDelegated(),
+      // run_heavy is an implementing worker's tool: a planner's request gets no line about it (#583).
+      heavyVerdict: (id, command) => (this.store.requireItem(id).file.frontmatter.status === 'PLAN_IN_PROGRESS' ? undefined : this.heavyJudge(id, Object.keys(this.store.local.secret_env ?? {}))?.(command)),
       decidePermission: (id, request, decision, reason) => this.orchestratorDecidesPermission(id, request, decision, reason),
       permissionReviewEnded: (id) => this.handPermissionToUser(id, 'the orchestrator looked at it without deciding'),
       handOff: (from, to, paths, note) => this.handOff(from, to, paths, note, 'orchestrator'),
@@ -1725,6 +1728,18 @@ export class LiveEngine implements Engine {
     return write;
   }
   /**
+   * How run_heavy judges a command for this item (#583): its policy without the heavy redirects, and `heavyVerdict`.
+   * run_heavy's own call and the orchestrator's permission wake both go through here. Undefined: no worktree to run in.
+   */
+  private heavyJudge(id: string, secretNames: string[]): ((command: string) => HeavyVerdict) | undefined {
+    const item = this.store.requireItem(id); const fm = item.file.frontmatter;
+    if (!fm.worktree) return undefined;
+    const cwd = this.absWorktree(fm.worktree);
+    const rules = this.store.permissionRules();
+    const policy = makePolicy(this.store.config, this.store.derived(item).base_branch!, cwd, { env: secretNames }, rules);
+    return (command) => heavyVerdict(command, { config: this.store.config, policy, allow: rules.allow, cwd });
+  }
+  /**
    * A worker's heavy local run: what its rules (or the project's heavy patterns) let it run, in its worktree, one heavy
    * run at a time, each batch after any CI job on a runner sharing this host (`heavy_runs.shared_labels`) has ended.
    * The waits are the lock and CI, never a person (invariant 2); a turn that is stopped stops waiting. With
@@ -1738,14 +1753,12 @@ export class LiveEngine implements Engine {
     const item = this.store.requireItem(id); const fm = item.file.frontmatter;
     if (!fm.worktree) return 'Rejected: this item has no worktree to run in.';
     const cwd = this.absWorktree(fm.worktree);
-    const rules = this.store.permissionRules();
     // What secret_env hands the worker's session reaches its heavy runs (#501); what they print comes back redacted.
     const secrets = this.turnRunner.secretEnv(id);
-    const policy = makePolicy(this.store.config, this.store.derived(item).base_branch!, cwd, { env: Object.keys(secrets ?? {}) }, rules);
+    const judge = this.heavyJudge(id, Object.keys(secrets ?? {}))!;
     for (const command of commands) {
-      const why = policy.deny({ tool: 'Bash', input: { command } });
-      if (why) return `Rejected: ${why} Nothing was run.`;
-      if (!allowedByRules({ tool: 'Bash', input: { command } }, [...BASE_ALLOWED.implement, ...rules.allow, ...heavyAllowRules(this.store.config)], cwd)) return `Rejected: run_heavy runs only commands your allow rules or the project's heavy_runs.patterns permit, and \`${command.slice(0, 200)}\` is neither. Nothing was run.`;
+      const refused = heavyRejection(command, judge(command));
+      if (refused) return refused;
     }
     // The command sees what the worker's own commands would (#228), by its runner.
     const env = workerCommandEnv(this.store.config.models.find((m) => m.id === fm.implementer)?.runner ?? 'claude', this.store.config, secrets, id);
@@ -2716,6 +2729,110 @@ export class LiveEngine implements Engine {
     } finally { this.jobs.delete(id); release(); void this.tick(); }
   }
 
+  // ---- back to the backlog (#584) ----
+  /**
+   * Why this item cannot go back to Not yet submitted, or null: what returnToBacklog would throw before it reads the
+   * remote. It takes what has no pull request yet (queued, planning, a plan waiting, in progress; and the Icebox, for the
+   * user); past that the way out is Discard, and the refusal says so.
+   */
+  returnToBacklogRefusal(id: string, by: 'user' | 'orchestrator' = 'user'): string | null {
+    const item = this.store.getItem(id);
+    if (!item) return `there is no item ${id}`;
+    const fm = item.file.frontmatter; const d = this.store.derived(item);
+    const discard = 'Dropping it is a discard (Discard on its page, discard_item), which closes the pull request and says what becomes of the branch';
+    if (fm.status === 'NOT_YET_SUBMITTED') return `${id} is already Not yet submitted`;
+    if (by !== 'user' && fm.taken_over) return `${id} is the user's (taken over by hand): they move it`;
+    if (fm.pr) return `${id} has pull request #${fm.pr}, so it is past the point where a submit is undone. ${discard}`;
+    if (fm.status === 'IN_REVIEW') return `${id} is in review, so it is past the point where a submit is undone. ${discard}`;
+    if (fm.status === 'MERGED' || fm.status === 'FINISHED') return `${id} is ${fm.status}: its work has landed, and nothing of it goes back to Not yet submitted${fm.status === 'FINISHED' ? ' (the user reopens a finished item on its page)' : ''}`;
+    if (d.flavor === 'epic' && fm.status === 'IN_PROGRESS') return `${id} is an epic whose breakdown was approved: its children${fm.branch ? ` and its integration branch ${fm.branch}` : ''} exist. Send its children back, or discard them; the epic waits on them`;
+    if (d.flavor === 'external') return `${id} is implemented outside planestro: nothing of planestro's runs for it, and the user moves it on the board`;
+    if (!findTransition(fm.status, 'NOT_YET_SUBMITTED', by, d.flavor)) return `${id} is ${fm.status === 'ICEBOX' ? 'in the Icebox' : fm.status}: ${by === 'user' ? 'it does not go back to Not yet submitted from there' : 'bringing it back from there is the user\'s move'}`;
+    if (this.jobs.has(id) && !this.turns.has(id)) return `${id} has a step running (${fm.op?.replace(/_/g, ' ') ?? 'an engine step'}); move it back when that ends`;
+    return null;
+  }
+
+  /**
+   * Back to Not yet submitted (#584): a submit undone after work started. HH-947 was submitted too early and began
+   * planning within the second; nothing took it back, a hold only kept its pull request from merging, and the one way
+   * out was a discard. This stops the live turn (and waits for it), drops what was queued for the session, a block,
+   * a card and a hold, and returns the item to the backlog. Nothing is deleted (invariant 7): the worktree, the branch
+   * and the conversation stay, so a later submit picks them up (startItem), and the plan goes to Notes, where its next
+   * planner reads it. Work in progress goes back only while nothing of it is on the remote; with a pull request, or a
+   * pushed branch, it is a discard. An epic goes back while its breakdown is planned; a child stays its epic's child.
+   * It starts nothing (#73), so the orchestrator may do it too. Returns what happened; throws before anything is changed.
+   */
+  async returnToBacklog(id: string, opts: { by?: 'user' | 'orchestrator'; why?: string } = {}): Promise<string> {
+    const by = opts.by ?? 'user';
+    let refusal = this.returnToBacklogRefusal(id, by);
+    if (refusal) throw new Error(refusal);
+    const brief = (e: unknown) => (e as Error).message.replace(/\s+/g, ' ').slice(0, 200);
+    {
+      // Work in progress is an undo only while it is all here: a branch on the remote is work that was handed over.
+      const fm = this.store.requireItem(id).file.frontmatter;
+      if (fm.status === 'IN_PROGRESS' && fm.branch) {
+        const branch = fm.branch;
+        const remote = await this.ports.git.remoteBranchSha(this.repo, branch).catch((e) => { throw new Error(`${id} stays where it is: whether its branch ${branch} is on the remote could not be read (${brief(e)}), and pushed work does not go back to Not yet submitted. Try again, or discard it`); });
+        if (remote) throw new Error(`${id}'s branch ${branch} is on the remote (tip ${remote.slice(0, 7)}): its work was pushed, so it is past the point where a submit is undone. Dropping it is a discard (Discard on its page, discard_item), which says what becomes of the branch`);
+        refusal = this.returnToBacklogRefusal(id, by);
+        if (refusal) throw new Error(refusal);
+      }
+    }
+    const stopWhy = `${by === 'user' ? 'you' : 'the orchestrator'} moved this item back to Not yet submitted`;
+    const stopped: string[] = [];
+    // A live turn is stopped and waited for, as a discard does: the item is not moved under a running session.
+    if (this.turns.has(id)) {
+      const { ops, said } = this.stopSessionWork(id, stopWhy);
+      stopped.push(...said);
+      if (ops.length || said.length) this.store.mutateItem(id, [...ops, { activity: { actor: 'app', text: `going back to Not yet submitted: stopped ${said.join(', ')}` } }], 'engine');
+      await this.jobs.get(id)?.catch(() => undefined);
+      refusal = this.returnToBacklogRefusal(id, by);
+      if (refusal) throw new Error(refusal);
+    }
+    let release!: () => void;
+    this.jobs.set(id, new Promise<void>((r) => { release = r; }));
+    try {
+      const item = this.store.requireItem(id); const fm = item.file.frontmatter;
+      const from = fm.status;
+      const { ops, said } = this.stopSessionWork(id, stopWhy);
+      const dropped = said.filter((x) => !stopped.includes(x));
+      if (fm.blocked) dropped.push(`its block (${fm.blocked_reason ?? 'blocked'})`);
+      if (fm.awaiting === 'user') dropped.push(decisionOf(fm) ? 'its decision card' : 'its wait on you');
+      if (from === 'PLAN_READY') dropped.push(fm.kind === 'epic' ? 'its breakdown\'s wait for approval' : `its plan's wait for approval${fm.awaiting === 'orchestrator' ? ' (the orchestrator\'s review)' : ''}`);
+      const held = heldReasonOf(fm);
+      const epic = fm.kind === 'epic';
+      const carried = this.planForNotes(id,
+        `### ${epic ? 'Breakdown proposed' : 'Plan written'} before this went back to the backlog (${this.now().slice(0, 10)})`,
+        epic ? 'Its planner proposed this before the epic went back to Not yet submitted; it was not approved. Start the breakdown from it: check it against the code as it is now, keep what holds, and hand in the whole breakdown.'
+          : `Its planner wrote this before the item went back to Not yet submitted${fm.plan_approved_at && from === 'IN_PROGRESS' ? '; it had been approved, and implementation had started in the worktree' : '; it was not approved'}. Start from it: check it against the code as it is now, keep what holds, and hand in the whole plan.`);
+      const notes = getSection(item.file, 'Notes').trim();
+      const kept: string[] = [];
+      if (fm.worktree) {
+        // Said, never judged: whatever the worktree holds stays in it.
+        const dirt = await this.worktreeDirt(this.absWorktree(fm.worktree)).then((w) => w.dirty.length + w.byproducts.length).catch(() => undefined);
+        kept.push(`its worktree ${fm.worktree}${fm.branch && !epic ? ` and branch ${fm.branch}` : ''} ${fm.branch && !epic ? 'are' : 'is'} kept as ${fm.branch && !epic ? 'they are' : 'it is'}${dirt ? ` (${dirt} uncommitted file${dirt === 1 ? '' : 's'} in it)` : ''}: nothing was deleted, and submitting the item again picks ${fm.branch && !epic ? 'them' : 'it'} up`);
+      }
+      if (fm.session_id || Object.keys(fm.agent_sessions ?? {}).length) kept.push('its conversation is kept');
+      if (carried) kept.push(`the ${epic ? 'breakdown' : 'plan'} is kept in Notes, where its next planner reads it`);
+      if (held || fm.skip_merge) kept.push(`its hold is dropped${held ? ` (${held})` : ''}: an item that is not submitted has no pull request to hold`);
+      if (fm.parent) kept.push(`it is still a child of epic ${fm.parent}, which waits on it`);
+      const why = opts.why?.trim();
+      this.store.mutateItem(id, [
+        ...ops,
+        { transition: { to: 'NOT_YET_SUBMITTED', actor: by } },
+        // What the transition does not clear: a stop is over with the work it stopped, and the next plan is approved anew.
+        { unset: ['blocked', 'blocked_reason', 'resume_after', 'plan_revisions', 'plan_approved_at'] },
+        ...(carried ? [{ section: 'Notes', body: notes ? `${notes}\n\n${carried}` : carried } as ItemOp, { section: 'Plan', body: '' } as ItemOp] : []),
+        { activity: { actor: by, text: `moved back to Not yet submitted from ${from.replace(/_/g, ' ')}${why ? `: ${why}` : ''}${dropped.length ? `; dropped ${dropped.join(', ')}` : ''}` } },
+        ...(kept.length ? [{ activity: { actor: 'app', text: kept.join('; ') } } as ItemOp] : []),
+      ], by, { commit: `${id}: back to the backlog` });
+      this.heldPolledAt.delete(id);
+      if (fm.parent && this.store.getItem(fm.parent) && from !== 'QUEUED' && from !== 'ICEBOX') this.store.mutateItem(fm.parent, [{ activity: { actor: 'app', text: `${id} went back to Not yet submitted${why ? `: ${why}` : ''}. It is still one of this epic's children, and the epic waits on it.` } }], 'engine', { commit: `${fm.parent}: ${id} back to the backlog` });
+      this.note('info', `${id}: back to Not yet submitted from ${from}`);
+      return [`${id} is back in Not yet submitted`, ...(stopped.length || dropped.length ? [`stopped ${[...stopped, ...dropped].join(', ')}`] : []), ...kept].join('; ');
+    } finally { this.jobs.delete(id); release(); void this.tick(); }
+  }
+
   /** Why this item cannot be closed as done, or null: what closeAsDone would throw. A card option that closes it is checked with it (#126). */
   closeAsDoneRefusal(id: string): string | null {
     const item = this.store.getItem(id);
@@ -2810,14 +2927,9 @@ export class LiveEngine implements Engine {
       }
     }
     // The text crosses over: the new kind's planner reads Notes (plan-item and plan-epic both quote them).
-    const plan = getSection(item.file, 'Plan').trim();
-    const proposed = (was === 'epic' ? fm.awaiting_data?.children : epicFlagOf(fm)?.children) as ProposedChild[] | undefined;
-    const carried = plan || proposed?.length ? [
-      `### ${was === 'epic' ? 'Breakdown proposed while this was an epic' : 'Plan written while this was one item'} (converted ${this.now().slice(0, 10)})`, '',
-      to === 'epic' ? 'Its planner planned this request as one item. Start the breakdown from it: keep what holds, and split the work into children.' : 'The epic planner proposed this before it became one item. Plan it as one piece of work; the children only show how the work divides.',
-      ...(plan ? ['', plan] : []),
-      ...(proposed?.length ? ['', 'Children proposed:', ...proposed.map((c, i) => `- ${i}: **${c.title}**${c.implementer ? ` (${c.implementer})` : ''}${c.depends_on?.length ? `, after ${c.depends_on.join(', ')}` : ''}${c.description ? ` — ${c.description}` : ''}`)] : []),
-    ].join('\n') : '';
+    const carried = this.planForNotes(id,
+      `### ${was === 'epic' ? 'Breakdown proposed while this was an epic' : 'Plan written while this was one item'} (converted ${this.now().slice(0, 10)})`,
+      to === 'epic' ? 'Its planner planned this request as one item. Start the breakdown from it: keep what holds, and split the work into children.' : 'The epic planner proposed this before it became one item. Plan it as one piece of work; the children only show how the work divides.');
     const notes = getSection(item.file, 'Notes').trim();
     const reset = fm.status !== 'NOT_YET_SUBMITTED' && fm.status !== 'ICEBOX';
     const a = (text: string, actor: 'user' | 'orchestrator' | 'app' = by): ItemOp => ({ activity: { actor, text } });
@@ -2837,6 +2949,22 @@ export class LiveEngine implements Engine {
     const d = this.store.derived(this.store.requireItem(id));
     if (d.flavor === 'worker' && d.deps_satisfied && !d.base_branch_error) return { said, next: 'queue' };
     return { said: `${said}; left in the backlog (${d.flavor !== 'worker' ? 'an external item is not planned' : d.base_branch_error ?? 'its dependencies are not merged yet'})` };
+  }
+
+  /**
+   * An item's plan, and the children its planner proposed, as one block for Notes: the section every planner's prompt
+   * quotes (plan-item and plan-epic), so planning already paid for is in front of the next one. '' when there is neither.
+   */
+  private planForNotes(id: string, heading: string, lead: string): string {
+    const item = this.store.requireItem(id); const fm = item.file.frontmatter;
+    const plan = getSection(item.file, 'Plan').trim();
+    const proposed = ((fm.kind ?? 'item') === 'epic' ? fm.awaiting_data?.children : epicFlagOf(fm)?.children) as ProposedChild[] | undefined;
+    if (!plan && !proposed?.length) return '';
+    return [
+      heading, '', lead,
+      ...(plan ? ['', plan] : []),
+      ...(proposed?.length ? ['', 'Children proposed:', ...proposed.map((c, i) => `- ${i}: **${c.title}**${c.implementer ? ` (${c.implementer})` : ''}${c.depends_on?.length ? `, after ${c.depends_on.join(', ')}` : ''}${c.description ? ` — ${c.description}` : ''}`)] : []),
+    ].join('\n');
   }
 
   // ---- take-over: a person finishes the item by hand (dogfood p28) ----

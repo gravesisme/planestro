@@ -61,10 +61,15 @@ this project's own running server (`$PLANESTRO_URL` overrides it); its tools are
 connected.
 
 **A change the user asks for** (file an item, submit or queue it, move it into or out of the Icebox,
-reorder, unblock, message a session, approve a plan, …) is a `planestro` MCP tool call: `create_item`
+reorder, unblock, message a session, approve a plan, answer a question card, …) is a `planestro` MCP tool call: `create_item`
 then `submit_item` for "file it and queue it", `move_item` with `icebox` / `backlog` / `top` / … for
-moves. Each tool appears only when its opt-in is on in the project's `planestro.yml`
+moves; `list_questions` then `answer_question_card` for the user's answer to a question card (`Q-<n>`);
+`answer_decision` for a decision card and `answer_audition` for an audition's picks, each only with the
+user's own words for that card. Each tool appears only when its opt-in is on in the project's `planestro.yml`
 (`operator_mcp.allow_writes`, `allow_submit`, `allow_actions`, `allow_decisions`), and the server's
-instructions name the ones that are off. When the tool for it is not listed, tell the user which
-setting would offer it (Settings → Your own MCP clients), or that it is theirs to do on the board.
+instructions name the ones that are off. Some tools are listed but refuse part of what they take until a
+further opt-in is on (`allow_permissions`: allowing a permission request; `allow_models`: an item's
+models; `allow_card_actions`: a card option that carries an action, and audition picks): relay the
+refusal, which says where the setting is. When the tool for it is not listed, tell the user which
+setting would offer it (Settings → Project → Your own MCP clients), or that it is theirs to do on the board.
 Never work around a missing tool.

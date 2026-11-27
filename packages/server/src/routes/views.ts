@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { getSection, parseActivity, serializePromptFile, releaseCandidates, plannedFor, getQuestionSection, parseThread, TOOLCHAINS, nextRun, scheduleDescription, type Status, type LocalConfig } from '@planestro/shared';
+import { getSection, parseActivity, serializePromptFile, releaseCandidates, plannedFor, getQuestionSection, parseThread, TOOLCHAINS, nextRun, scheduleDescription, guardWindowReset, guardNeedsYou, guardSays, type Status, type LocalConfig } from '@planestro/shared';
 import { readUpdateStatus } from '../autoUpdate.ts';
 import { parkHint, permissionGrantRefusal } from '../engine/parks.ts';
 import type { DataStore, StoredItem, StoredPrompt, StoredRelease, StoredQuestion, StoredSchedule } from '../store/DataStore.ts';
@@ -124,6 +124,17 @@ export function modeView(store: DataStore, running: string) {
 export function guardView(store: DataStore, paused: boolean) {
   const e = store.local.engine;
   return { provider_guards: e.provider_guards, ...(paused ? { paused_by: e.paused_by, ...(e.paused_by === 'disk' && e.disk_guard ? { disk_guard: e.disk_guard } : {}) } : {}) };
+}
+
+/**
+ * The provider usage guards in words (#579), for a reader that cannot see the board (the operator MCP's get_state): which
+ * provider is paused and why, whether its window has reset, and whether it now waits on the user's Retry.
+ */
+export function providerGuardsView(store: DataStore, now = Date.now()) {
+  const cfg = store.config.usage_guard;
+  return Object.entries(store.local.engine.provider_guards ?? {}).map(([provider, g]) => ({
+    provider, ...g, window_reset: guardWindowReset(g, now), needs_you: guardNeedsYou(g, cfg, now), says: guardSays(provider, g, cfg, now),
+  }));
 }
 
 /** planestro.local.yml as the web sees it: MCP servers' keys and paired devices' token hashes (#403) are secrets, so the page learns only that they are set. */

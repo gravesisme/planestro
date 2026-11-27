@@ -1,4 +1,4 @@
-import { usageGuardTrips, usageWindowLabel, usagePercent, localClock, findModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, unavailableKey, guardKey, DEFAULT_ACCOUNT, type RateLimitSnapshot, type UsageGuardState, type ServerEvent, type ModelDef, type Account } from '@planestro/shared';
+import { usageGuardTrips, guardProviderLabel, usageWindowLabel, usagePercent, localClock, findModel, fallbackChain, unavailableEntry, markUnavailable, unavailableUntil, unavailableKey, guardKey, DEFAULT_ACCOUNT, type RateLimitSnapshot, type UsageGuardState, type ServerEvent, type ModelDef, type Account } from '@planestro/shared';
 import type { DataStore } from '../store/DataStore.ts';
 import type { Ports, TurnPhase, TurnResult } from './ports.ts';
 import type { Orchestrator } from './orchestrator.ts';
@@ -56,7 +56,12 @@ export class Guards {
   /** The lever by hand. A manual pause is the user's: the usage guard never resumes it. */
   pause(): void { this.setPaused(true, 'user'); this.ctx.note('warn', 'AUTOMATION PAUSED — running steps finish, nothing new starts'); }
   /** Global automation control is independent of provider usage guards. */
-  resume(message = 'automation resumed', by: 'user' | 'disk' = 'user'): void { this.setPaused(false, by); this.ctx.note('info', message); this.ctx.orchestrator.kick(); void this.ctx.tick(); }
+  resume(message = 'automation resumed', by: 'user' | 'disk' = 'user'): void { this.setPaused(false, by); this.ctx.note('info', `${message}${this.stillGuarded()}`); this.ctx.orchestrator.kick(); void this.ctx.tick(); }
+  /** Said with a resume while a provider guard stands (#579): the lever does not lift it, and the user is told what does. */
+  private stillGuarded(): string {
+    const on = Object.keys(this.ctx.store.local.engine.provider_guards ?? {}).map(guardProviderLabel);
+    return on.length ? ` — ${on.join(' and ')} ${on.length === 1 ? 'is' : 'are'} still paused for usage: Resume does not clear that, ${on.map((p) => `Retry ${p}`).join(' and ')} (on the banner under the top bar) does` : '';
+  }
   private setPaused(paused: boolean, by?: 'user' | 'disk', guard?: UsageGuardState, disk?: { free_gib: number; path: string; tripped_at: string }): void {
     const was = this._paused;
     this._paused = paused;

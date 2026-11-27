@@ -62,6 +62,23 @@ describe('the operator MCP endpoint (#175, step 2)', () => {
       const state = text(await client.callTool({ name: 'get_state', arguments: {} }));
       expect(state).toMatchObject({ project: { name: 'Test Project', id_prefix: 'TP', data_dir: dataDir }, queued: [q.id], counts: { QUEUED: 1, NOT_YET_SUBMITTED: 2 } });
       expect(state.instances.this).toMatchObject({ url: `http://127.0.0.1:${port}`, mcp: `http://127.0.0.1:${port}/mcp` });
+      // A provider paused by its usage guard is reported, beside a global pause that is off (#579).
+      expect(state.engine).toMatchObject({ paused: false, provider_guards: [] });
+      const reset = new Date(Date.now() + 3_600_000).toISOString();
+      srv.store.updateLocal({ engine: { ...srv.store.local.engine, provider_guards: {
+        claude: { window: 'seven_day', status: 'allowed', utilization: 0.85, resets_at: new Date(Date.now() - 60_000).toISOString(), tripped_at: new Date(Date.now() - 180_000).toISOString() },
+        'codex:work': { window: 'five_hour', status: 'rejected', resets_at: reset, tripped_at: new Date().toISOString() },
+      } } });
+      const guarded = text(await client.callTool({ name: 'get_state', arguments: {} })).engine;
+      expect(guarded.paused).toBe(false);
+      expect(guarded.provider_guards).toEqual([
+        expect.objectContaining({ provider: 'claude', window: 'seven_day', utilization: 0.85, window_reset: true, needs_you: true, says: 'Claude usage window has reset · nothing new starts on Claude until you press Retry Claude' }),
+        expect.objectContaining({ provider: 'codex:work', window: 'five_hour', status: 'rejected', resets_at: reset, window_reset: false, needs_you: false, says: expect.stringMatching(/^Codex \(work\) paused for usage \(5-hour window used up\)/) }),
+      ]);
+      // The board's Retry reaches a named account's guard too (its key is `<runner>:<account>`, #242).
+      expect((await fetch(`http://127.0.0.1:${port}/api/providers/${encodeURIComponent('codex:work')}/retry`, { method: 'POST' })).status).toBe(200);
+      expect((await fetch(`http://127.0.0.1:${port}/api/providers/gemini/retry`, { method: 'POST' })).status).toBe(400);
+      srv.store.updateLocal({ engine: { ...srv.store.local.engine, provider_guards: {} } });
       // An MCP client's OAuth discovery gets a plain 404, not the web UI's index.html as a 200 (Claude Code probes it first).
       expect((await fetch(`http://127.0.0.1:${port}/.well-known/oauth-protected-resource/mcp`)).status).toBe(404);
       // nothing that writes: an unknown tool is an error, not a side door
@@ -136,7 +153,7 @@ describe('the operator MCP endpoint (#175, step 2)', () => {
       // Models are listed so a call naming one is refused in words, never dropped: operator_mcp.allow_models is off (#577).
       const noModel = await client.callTool({ name: 'edit_item', arguments: { id: item.id, implementer: 'fable-5', title: 'Renamed' } });
       expect(noModel.isError).toBe(true);
-      expect(text(noModel).error).toMatch(/operator_mcp\.allow_models; it is off \(Settings → project → "Your own MCP clients" → "May set an item's models"\)/);
+      expect(text(noModel).error).toMatch(/operator_mcp\.allow_models; it is off \(Settings → Project → "Your own MCP clients" → "May set an item's models"\)/);
       expect(srv.store.requireItem(item.id).file.frontmatter).toMatchObject({ implementer: 'opus-5', title: 'Cave map' });
 
       const note = srv.store.journal.append({ type: 'orchestrator.planestro_note', actor: 'orchestrator', data: { text: 'A tool was missing.' } });

@@ -1,11 +1,12 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { statfs } from 'node:fs/promises';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, renameSync, copyFileSync, unlinkSync, rmdirSync, lstatSync, readdirSync, readFileSync, statSync, constants as fsConstants } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, renameSync, copyFileSync, unlinkSync, rmdirSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { matchesPathPattern } from './ports.ts';
 import { TRANSIENT } from './transient.ts';
+import { compareEntry, copyEntry, lstatOrNull, staysInside } from './treeCopy.ts';
 import type { GitPort, GhPort, ProcPort, WorktreeEntry, RebaseResult, ContinueResult, CiStatus, CiAttemptTiming, CiJobTiming, CiQueue, PrInfo, ChangedFile, IssueInfo, PrClosure, RunnerReport, RunnerInfo, OpenJob, WorktreeSnapshot, Checkpoint } from './ports.ts';
 
 const execFileP = promisify(execFile);
@@ -253,8 +254,8 @@ export class LiveGitPort implements GitPort {
     const walk = (rel: string) => {
       const abs = join(cwd, rel);
       let st; try { st = lstatSync(abs); } catch { return; }
-      if (st.isSymbolicLink()) return;
-      if (st.isFile()) { out.push(rel); return; }
+      // A link is listed as the link it is and never followed (#581: skipped, a venv's bin/python went missing from every copy).
+      if (st.isSymbolicLink() || st.isFile()) { out.push(rel); return; }
       if (st.isDirectory()) for (const name of readdirSync(abs)) walk(join(rel, name));
     };
     for (const p of paths) { const rel = p.replace(/^\.?\/+/, '').replace(/\/+$/, ''); if (rel && !rel.split('/').includes('..')) walk(rel); }
@@ -264,19 +265,21 @@ export class LiveGitPort implements GitPort {
     for (const p of paths) {
       // Never over a file set aside before (two set-asides in one second share a folder): the second gets a suffix.
       let to = join(dest, p);
-      for (let n = 2; existsSync(to); n++) to = join(dest, `${p}.${n}`);
+      for (let n = 2; lstatOrNull(to); n++) to = join(dest, `${p}.${n}`);   // a dangling link is there too
       mkdirSync(dirname(to), { recursive: true });
-      try { renameSync(join(cwd, p), to); } catch { copyFileSync(join(cwd, p), to); unlinkSync(join(cwd, p)); } // another volume
+      try { renameSync(join(cwd, p), to); } catch { copyEntry(join(cwd, p), to); unlinkSync(join(cwd, p)); } // another volume: a link stays a link
     }
   }
   async copyInto(cwd: string, paths: string[], destRoot: string) {
     const out = { copied: [] as string[], identical: [] as string[], collided: [] as string[] };
     for (const p of paths) {
       const from = join(cwd, p); const to = join(destRoot, p);
-      if (existsSync(to)) { (readFileSync(to).equals(readFileSync(from)) ? out.identical : out.collided).push(p); continue; }
+      // Never through a link of the destination (a folder on the way that is one), and never out of it.
+      if (!staysInside(destRoot, p)) { out.collided.push(p); continue; }
+      const against = compareEntry(from, to);
+      if (against !== 'absent') { (against === 'identical' ? out.identical : out.collided).push(p); continue; }
       mkdirSync(dirname(to), { recursive: true });
-      copyFileSync(from, to, fsConstants.COPYFILE_EXCL);
-      if (statSync(to).size !== statSync(from).size) throw new Error(`copy of ${p} is ${statSync(to).size} bytes, not ${statSync(from).size}`);
+      copyEntry(from, to);
       out.copied.push(p);
     }
     return out;

@@ -43,6 +43,36 @@ describe('merge and cleanup bind their mutations to verified commits', () => {
     expect(c.store.requireItem(c.item.id).file.frontmatter).toMatchObject({ status: 'IN_REVIEW', blocked_reason: 'merge_head_moved', ci_result: 'pending' });
   });
 
+  it('carries on as merged when the merge call failed but GitHub reports the PR MERGED on that head (#582)', async () => {
+    const c = await setup();
+    c.store.mutateItem(c.item.id, [{ set: { status: 'IN_REVIEW' } }], 'engine');
+    c.world.prs.get(401)!.state = 'OPEN';
+    const merge = c.gh.mergePr.bind(c.gh);
+    // GitHub merged it; the call was killed at its timeout before it answered.
+    c.gh.mergePr = async (repo, n, opts) => { await merge(repo, n, opts); throw new Error('gh pr merge 401 failed: timed out after 300s'); };
+    await (c.engine as any).merge(c.item.id, 'probe-merge', 'trunk', c.head);
+    const item = c.store.requireItem(c.item.id).file;
+    expect(item.frontmatter.blocked_reason).toBeUndefined();
+    expect(['MERGED', 'FINISHED']).toContain(item.frontmatter.status);
+    expect(item.frontmatter.validated_by).toMatchObject({ head: c.head, merge: c.world.prs.get(401)!.mergeCommit });
+    expect(JSON.stringify(item)).toMatch(/merge call for PR #401 failed \(gh pr merge 401 failed: timed out after 300s\), but GitHub reports it MERGED/);
+  });
+
+  it('fails as before when the merge call failed and GitHub does not report that head MERGED (#582)', async () => {
+    for (const after of ['open', 'unreadable', 'other head'] as const) {
+      const c = await setup();
+      c.store.mutateItem(c.item.id, [{ set: { status: 'IN_REVIEW' } }], 'engine');
+      c.world.prs.get(401)!.state = 'OPEN';
+      c.gh.mergePr = async () => { throw new Error('gh pr merge 401 failed: timed out after 300s'); };
+      if (after === 'unreadable') c.gh.prView = async () => { throw new Error('gh pr view failed: timed out after 300s'); };
+      // Merged by someone else on a head this run never validated: not this merge.
+      if (after === 'other head') { c.world.prs.get(401)!.state = 'MERGED'; c.world.remoteBranches.set(c.branch, c.world.sha()); }
+      await expect((c.engine as any).merge(c.item.id, 'probe-merge', 'trunk', c.head)).rejects.toThrow(/gh pr merge 401 failed: timed out after 300s/);
+      expect(c.store.requireItem(c.item.id).file.frontmatter.status).toBe('IN_REVIEW');
+      store?.close(); store = undefined;
+    }
+  });
+
   it('keeps the remote branch after merging until the cleanup proof succeeds', async () => {
     const c = await setup();
     c.world.prs.get(401)!.state = 'OPEN';
