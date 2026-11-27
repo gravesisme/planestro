@@ -39,6 +39,8 @@ export interface TurnQueueContext {
   /** The account a saved turn would run on (#242), and whether its usage guard is up. */
   accountFor(fm: { account?: string }, def: ModelDef): { account: Account } | { missing: string; why: string };
   guarded(runner: string, account?: string): boolean;
+  /** That guard, in words, with when it is due to lift. */
+  guardWait(runner: string, account?: string): string;
   /** A plan's revision turn answers the stop its plan's last turn left (#359). */
   clearSupersededStop(id: string): void;
   /** What a turn's end means for the item, for a report applied at the restart. */
@@ -118,6 +120,42 @@ export class TurnQueue {
       : sync.kind === 'dirty' ? `Your branch is ${sync.behind} commit${sync.behind === 1 ? '' : 's'} behind origin/${sync.base}; planestro did not rebase it (${sync.why ?? `uncommitted changes: ${sync.files.slice(0, 5).join(', ')}`}). Commit or clear them first; ask with report_blocked if you need the rebase.`
       : '';
     return next(said ? `${said}\n\n${turn.prompt}` : turn.prompt);
+  }
+  /**
+   * Why the item's saved instruction has not started, in words, or undefined when none is saved (#580). `lifts` says the wait
+   * ends without anyone acting on the item: a usage pause, the automation pause, a restart, a step running, the next pass. A
+   * saved turn that waits so is something coming, never a stall: HH-835's conflict and HH-844's red run were handed to their
+   * sessions while claude was paused for usage, and the review watchdog woke the orchestrator for both, which had no tool
+   * that would take them, since nothing was wrong. The checks are drivePendingTurns', in its order.
+   */
+  pendingTurnWait(id: string): { why: string; lifts: boolean } | undefined {
+    const item = this.ctx.store.getItem(id);
+    const fm = item?.file.frontmatter;
+    const turn = fm?.op_data?.pending_turn as PendingTurn | undefined;
+    if (!fm || !turn) return undefined;
+    if (fm.taken_over) return { why: 'the user has taken the item over', lifts: false };
+    if (fm.blocked || fm.awaiting) return { why: `the item is ${fm.blocked ? `blocked (${fm.blocked_reason})` : `awaiting ${fm.awaiting}`}`, lifts: false };
+    if (fm.resume_after) return { why: 'the items it resumes after have not merged', lifts: true };
+    const phase = this.ctx.phaseFor(fm.status);
+    if (!phase || (phase === 'plan') !== (turn.phase === 'plan')) return { why: `it is a ${turn.phase} instruction and the item is ${fm.status}`, lifts: false };
+    const wanted = turn.phase === 'plan' ? fm.planner : fm.implementer;
+    const model = findModel(this.ctx.store.config, wanted);
+    if (!model) return { why: `its model ${wanted ?? '(none)'} is not configured`, lifts: false };
+    if (model.external) return { why: `its model ${model.label} is external, with no session planestro can start`, lifts: false };
+    const now = new Date();
+    const acct = this.ctx.accountFor(fm, model);
+    if ('account' in acct) {
+      const unavailable = unavailableView(this.ctx.store.local.model_unavailable, acct.account.name);
+      const pick = resolveTurnModel(this.ctx.store.config, model, { allow: fm.allow_model_fallback === true, unavailable, now });
+      const runner = pick.def.runner ?? 'claude';
+      if (this.ctx.guarded(runner, acct.account.name)) return { why: this.ctx.guardWait(runner, acct.account.name), lifts: true };
+      const out = unavailableEntry(unavailable, pick.def.id, now);
+      if (out) return { why: `${pick.def.label} is out of usage until ${out.until}`, lifts: true };
+    }
+    if (this.ctx.guards.paused) return { why: 'automation is paused', lifts: true };
+    if (this.ctx.guards.draining || this.ctx.stopping) return { why: 'planestro is restarting', lifts: true };
+    if (this.ctx.jobs.has(id) || this.ctx.followUps.has(id) || fm.op) return { why: 'a step on the item is running', lifts: true };
+    return { why: 'planestro starts it on its next pass', lifts: true };
   }
   drivePendingTurns(): void {
     for (const item of this.ctx.store.listItems()) {

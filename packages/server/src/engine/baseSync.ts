@@ -429,7 +429,8 @@ export class BaseSync {
     const said = result.done ? ` ("${result.done.slice(0, 200)}")` : '';
     if (cur.status === 'IN_REVIEW') {
       this.ctx.store.mutateItem(id, [
-        { set: { ci_result: 'pending', op_data: { ...rest, needs_session_rebase: false } } },
+        // What the finished rebase replaces is recorded (#594): a held item's push (heldStep) asks for it, since a rebased head no longer descends from the PR's.
+        { set: { ci_result: 'pending', op_data: { ...rest, needs_session_rebase: false, ...(held.expected ? { rebased_from: { remote: held.expected, head } } : {}) } } },
         { activity: { actor: 'app', text: `the session resolved the conflict${said}; planestro continued the rebase onto origin/${base} (${held.base_sha.slice(0, 7)}) and checked it (finished, clean, contains origin/${base}): ${head.slice(0, 7)}${note}. Re-entering the merge pipeline, which pushes it with a lease and waits for CI on the new head` } },
       ], 'engine', { commit: `${id}: rebase conflict resolved` });
       this.ctx.heldPolledAt.delete(id);

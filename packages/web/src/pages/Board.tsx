@@ -2,13 +2,14 @@ import { useMemo, useRef, useState } from 'react';
 import { NavLink, useSearchParams } from 'react-router';
 import { DndContext, MouseSensor, TouchSensor, useSensor, useSensors, useDroppable, closestCenter, pointerWithin, type CollisionDetection, type DragEndEvent, type DragOverEvent } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
-import { findTransition, PRIORITIES, type Priority, type Status, openReleases } from '@planestro/shared/view';
+import { findTransition, STARTED_NO_PR, PRIORITIES, type Priority, type Status, openReleases } from '@planestro/shared/view';
 import { api, type ItemView } from '../api.ts';
 import { act, useStore } from '../store.ts';
 import { ItemCard, statusLabel } from '../components/ItemCard.tsx';
 import { NewItemDialog } from '../components/NewItemDialog.tsx';
 import { ImportIssuesDialog } from '../components/ImportIssuesDialog.tsx';
 import { PreviewDrawer } from '../components/PreviewDrawer.tsx';
+import { confirmMove } from '../components/QuickActions.tsx';
 import { usePhone } from '../usePhone.ts';
 import { activeFilters, emptyText, type ActiveFilter, type FilterKey, NO_RELEASE } from '../boardFilters.ts';
 import { boardColumns } from '../boardColumns.ts';
@@ -33,6 +34,8 @@ function dropAction(item: ItemView, to: string): { run?: () => Promise<unknown>;
   if (from === 'PLAN_READY') return { why: `open ${item.id} to approve its plan or request changes` };
   if (to === 'QUEUED' && item.derived.base_branch_error) return { why: item.derived.base_branch_error };
   if (to === 'QUEUED' && !item.derived.deps_satisfied) return { why: `${item.id} waits on ${(item.derived.waits_on ?? item.frontmatter.depends_on).join(', ')}` };
+  // Dropped on the backlog while planestro works on it (#584): that stops its turn, so it asks first, as the menu does.
+  if (to === 'NOT_YET_SUBMITTED' && STARTED_NO_PR.includes(from)) return { run: async () => { if (confirmMove(item, to, 'Move to BACKLOG')) await api.transition(item.id, to as Status); } };
   return { run: () => api.transition(item.id, to as Status) };
 }
 

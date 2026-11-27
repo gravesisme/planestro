@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- A held item whose rebase conflict the session resolved is pushed again (#594): the rebased head does not descend from
+  the PR's, so the hold read it as diverged and the PR kept its old head, with no CI, until the hold was released.
+  planestro now pushes its own finished rebase with a lease on the head it rebased from; a branch that moved by
+  itself is still left alone.
+- A merge call that fails or times out no longer blocks an item whose PR did merge (#582): planestro reads the PR and
+  carries on as merged when GitHub reports it `MERGED` on the head it validated, and stops as before otherwise.
+- A turn saved for a session under a usage pause is no longer read as a stalled review (#580): a rebase conflict and a
+  first CI red were handed to their sessions while claude was paused for usage, the review watchdog woke the orchestrator
+  for both, and the wake named tools that refuse an item that is not blocked. The item's Activity now says the turn is
+  saved and what it waits for, the watchdog leaves it alone, a real stall's wake names only tools that take the item, and
+  `message_session` answers whether it started the session's turn or queued the message.
+- Files copied into the main checkout on merge (`worktrees.copy_to_checkout`) and files set aside in `.displaced/` keep
+  their symbolic links (#581): a link is copied or moved as a link, never followed and never dropped. A Python virtual
+  environment (any folder with a `pyvenv.cfg`) is no longer copied into the checkout, since it only runs where it was
+  made; the Activity log names it, and it is still kept in `.displaced/`.
+
+### Added
+
+- An item submitted too early can go back to Not yet submitted after work has started and before its pull request exists
+  (#584): the board's **Move to BACKLOG**, the operator MCP's `move_item` and the orchestrator's new `return_to_backlog`
+  stop its turn, drop its hold and block, keep its plan in Notes and leave its worktree and branch in place; with a pull
+  request open it is refused and names Discard.
+- A provider paused by its usage guard is shown on a banner under the top bar with its Retry button on it (#579). It says
+  when its usage window has reset, counts in "Needs you" once only your retry restarts it, and is reported by the operator
+  MCP's `get_state`; pressing Pause or Resume says it does not clear that pause. A reading taken less than 10 minutes
+  before the window resets no longer trips the guard. A named account's guard can now be retried from the board.
+- A permission request handed to the orchestrator says whether the worker's `run_heavy` would run that command as it
+  stands or refuse it too, from the same check `run_heavy` makes, so a denial no longer sends a worker to a tool that turns
+  the command away; `run_heavy`'s own refusal says what it would take (a `heavy_runs.patterns` entry or an allow rule,
+  which only the user adds) (#583).
+- Operator MCP: a supervising session can relay your word for more decisions (#577). With `operator_mcp.allow_models`,
+  `create_item` and `edit_item` may set an item's planner and implementer. `list_questions` and `answer_question_card`
+  answer one of the orchestrator's question cards (posted in its thread, or closed with the answer). With
+  `operator_mcp.allow_card_actions` (off by default), `answer_decision` may pick a card option that carries an action,
+  performed exactly as your tap would and given your words in `word`, which it records, and `answer_audition` records your
+  audition picks. Each is recorded as `[operator]`; off, the refusal says where the setting is.
+
 ## 1.3.2 — 2026-11-18
 
 ### Fixed

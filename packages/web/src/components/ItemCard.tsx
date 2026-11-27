@@ -10,7 +10,7 @@ import { confirmMove } from './QuickActions.tsx';
 import { CategoryTag } from './CategoryTag.tsx';
 import { CiCardTag } from './CiBreakdown.tsx';
 import { afterChoices, columnOf, stepMove } from '../reorder.ts';
-import { connectionDropOf, decisionOf, heldReasonOf, previewOf, waitsFor } from '@planestro/shared/view';
+import { connectionDropOf, decisionOf, heldReasonOf, previewOf, waitsFor, STARTED_NO_PR } from '@planestro/shared/view';
 
 export function statusLabel(s: string): string { return s.replace(/_/g, ' '); }
 
@@ -94,6 +94,8 @@ export function ItemCard({ item, sortable = true, onSelect, selection }: {
           {lane !== 'done' && <ContextMenu.Item className="menu-item" onSelect={() => act(() => api.move(item.id, 'bottom'))}>Move to bottom</ContextMenu.Item>}
           {lane !== 'done' && state && <ReorderItems item={item} items={state.items} onPickAfter={() => setPickingAfter(true)} />}
           {lane === 'board' && ['NOT_YET_SUBMITTED', 'QUEUED', 'PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS'].includes(fm.status) && <ContextMenu.Item className="menu-item" onSelect={() => { if (confirmMove(item, 'ICEBOX', 'Move to ICEBOX')) void act(() => api.move(item.id, 'icebox')); }}>Move to ICEBOX</ContextMenu.Item>}
+          {/* The undo of a submit (#584): while there is no pull request; past that it is Discard, on the item's page. */}
+          {lane === 'board' && STARTED_NO_PR.includes(fm.status) && !fm.pr && !d.external && !(fm.kind === 'epic' && fm.status === 'IN_PROGRESS') && <ContextMenu.Item className="menu-item" onSelect={() => { if (confirmMove(item, 'NOT_YET_SUBMITTED', 'Move to BACKLOG')) void act(() => api.move(item.id, 'backlog')); }}>Move to BACKLOG</ContextMenu.Item>}
           {lane === 'icebox' && <ContextMenu.Item className="menu-item" onSelect={() => { if (confirmMove(item, 'NOT_YET_SUBMITTED', 'Move to BACKLOG')) void act(() => api.move(item.id, 'backlog')); }}>Move to BACKLOG</ContextMenu.Item>}
           {lane === 'done' && <ContextMenu.Item className="menu-item" onSelect={() => { if (confirmMove(item, 'NOT_YET_SUBMITTED', 'Reopen')) void act(() => api.transition(item.id, 'NOT_YET_SUBMITTED')); }}>Reopen</ContextMenu.Item>}
           <ContextMenu.Separator className="menu-sep" />

@@ -291,7 +291,8 @@ it('does not let a deferred slot wait replace a newer saved instruction, even ac
   engine.pause();
   release(); await active;
   await until(() => !(engine as any).jobs.has(b));
-  expect(store.requireItem(b).file.frontmatter.op_data?.pending_turn).toEqual(latest);
+  // The newer instruction is intact; it was deferred by the pause in its turn, which is said once and noted on it (#580).
+  expect(store.requireItem(b).file.frontmatter.op_data?.pending_turn).toEqual({ ...(latest as object), waits: 'automation is paused' });
   await ctx.restart(); engine.resume();
   await until(() => ctx.calls.length === 2 && engine.sessions().length === 0);
   expect(ctx.calls[1].prompt).toContain('New instruction');

@@ -5,7 +5,7 @@ import { DataStore } from '../src/store/DataStore.ts';
 import { LiveEngine } from '../src/engine/LiveEngine.ts';
 import { FakeWorld, DryRunGitPort, DryRunGhPort, DryRunClaudePort } from '../src/engine/dryrun-ports.ts';
 import { makePolicy } from '../src/engine/policy.ts';
-import { heavyRedirects, ciOnSharedHost } from '../src/engine/heavyRuns.ts';
+import { heavyRedirects, ciOnSharedHost, heavyRouteNote } from '../src/engine/heavyRuns.ts';
 import { workerTools } from '../src/engine/sessions/workerTools.ts';
 import type { Ports, ProcPort, TurnOptions, TurnResult, RunnerReport } from '../src/engine/ports.ts';
 import { makeFixture, sleep } from './helpers.ts';
@@ -121,6 +121,56 @@ describe('heavy local runs (#218)', () => {
     expect(await tools(engine, id).run_heavy(['./tools/run_checks.sh mine_cart --repeat 20'])).not.toMatch(/^Rejected/);
     expect(await tools(engine, id).run_heavy(['./tools/run_checks.sh mine_cart'])).toMatch(/^Rejected/);
     expect(log).toEqual(['start ./tools/run_checks.sh mine_cart --repeat 20', 'end ./tools/run_checks.sh mine_cart --repeat 20']);
+  });
+});
+
+// #583 (HH-941): the orchestrator denied a long export as plain Bash and pointed the worker at run_heavy, which
+// refused it too. The permission wake says what run_heavy would make of the command, from run_heavy's own judgment.
+describe('whether run_heavy would take a command (#583)', () => {
+  const verdict = (e: LiveEngine, id: string, command: string) => (e as any).orchestrator.hooks.heavyVerdict(id, command);
+
+  it('the verdict the orchestrator is given is the one run_heavy acts on, for every kind of command', async () => {
+    const { store, engine, item } = await setup({ runners: [], jobs: [] });
+    store.updateConfig((doc) => { doc.set('permissions', { allow: ['Bash(npx playwright test *)'], deny: ['Bash(npm run stress -- 999*)'], redirect: [] }); }, 'config: rules');
+    const id = item('x');
+    const cases = ['npm run stress -- 40', 'npx playwright test --project a', './tools/export.sh macos --demo', 'git push origin HEAD', 'npm run stress -- 999'];
+    for (const c of cases) {
+      const v = verdict(engine, id, c); const ran = await tools(engine, id).run_heavy([c]);
+      expect(v.ok, c).toBe(!/^Rejected/.test(ran));
+    }
+    expect(verdict(engine, id, 'npm run stress -- 40')).toEqual({ ok: true });
+    expect(verdict(engine, id, './tools/export.sh macos --demo')).toEqual({ ok: false, why: 'unlisted', patterns: true });
+    expect(verdict(engine, id, 'npm run stress -- 999')).toMatchObject({ ok: false, why: 'denied' });
+    // Off, the patterns grant nothing, and the verdict says which rules could.
+    store.updateConfig((doc) => { doc.set('heavy_runs', { enabled: false, patterns: ['npm run stress'] }); }, 'config: off');
+    expect(verdict(engine, id, 'npm run stress -- 40')).toEqual({ ok: false, why: 'unlisted', patterns: false });
+    expect(verdict(engine, id, 'npx playwright test --project a')).toEqual({ ok: true });
+    // A planner has no run_heavy, and an item with no worktree nowhere to run: no verdict, so no line.
+    store.mutateItem(id, [{ set: { status: 'PLAN_IN_PROGRESS' } }], 'engine');
+    expect(verdict(engine, id, 'npx playwright test --project a')).toBeUndefined();
+    expect(verdict(engine, store.createItem({ title: 'bare', description: 'x' }).id, 'npx playwright test')).toBeUndefined();
+  });
+
+  it('a refusal tells the worker what it would take, and that asking again will not help', async () => {
+    const { store, engine, log, item } = await setup({ runners: [], jobs: [] });
+    const id = item('x');
+    const on = await tools(engine, id).run_heavy(['./tools/export.sh macos --demo']);
+    expect(on).toMatch(/^Rejected: run_heavy runs only commands your allow rules or the project's heavy_runs\.patterns permit, and `\.\/tools\/export\.sh macos --demo` is neither\. Nothing was run\./);
+    expect(on).toMatch(/only once the user adds a heavy_runs\.patterns entry or an allow rule that covers it; you cannot add either/);
+    expect(on).toMatch(/plain Bash call, which asks for permission\. If it was already denied there, report_blocked and name the command/);
+    store.updateConfig((doc) => { doc.set('heavy_runs', { enabled: false }); }, 'config: off');
+    expect(await tools(engine, id).run_heavy(['./tools/export.sh macos --demo'])).toMatch(/only once the user adds an allow rule that covers it \(heavy-run turn-taking is off in this project/);
+    expect(log).toEqual([]);
+  });
+
+  it('the line for the orchestrator says in plain words whether run_heavy is a route', () => {
+    expect(heavyRouteNote({ ok: true })).toMatch(/would run this command as it stands/);
+    const unlisted = heavyRouteNote({ ok: false, why: 'unlisted', patterns: true });
+    expect(unlisted).toMatch(/would refuse this command too: it runs only what the allow rules or the project's heavy-command patterns \(heavy_runs\.patterns\) cover/);
+    expect(unlisted).toMatch(/Do not send the worker to run_heavy with it/);
+    expect(unlisted).toMatch(/new pattern or allow rule, which only the user adds: ask_user and name it/);
+    expect(heavyRouteNote({ ok: false, why: 'unlisted', patterns: false })).toMatch(/heavy-command patterns are off in this project[\s\S]*new allow rule, which only the user adds/);
+    expect(heavyRouteNote({ ok: false, why: 'denied', reason: 'git push is planestro\'s to run.' })).toMatch(/would refuse this command too \(git push is planestro's to run\.\)\. Do not send the worker to run_heavy/);
   });
 });
 

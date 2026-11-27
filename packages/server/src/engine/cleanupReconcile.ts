@@ -4,6 +4,7 @@ import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Ports, RebaseResult } from './ports.ts';
 import type { ReviewUndo } from './reviewUndo.ts';
 import { RESUMABLE_TURN_OPS } from './resumableOps.ts';
+import { isUnder, venvRoots } from './treeCopy.ts';
 
 /**
  * A folder name planestro's `worktrees.dir_pattern` could have made (#416): the shared `.claude/worktrees` root also holds
@@ -102,19 +103,25 @@ export class CleanupReconcile {
    * After a merge, before the worktree goes (#72): the untracked files under `worktrees.copy_to_checkout`
    * are copied to the same paths in the main checkout. A sandboxed worker (the art runner) cannot write
    * there, and every art brief's "copy the raws into the main tmp/" step waited on a person. Never
-   * over a file with other content: that one stays only in .displaced/. Throws when a copy fails.
+   * over a file with other content: that one stays only in .displaced/. Throws when a copy fails. A symbolic link is
+   * copied as a link, and a Python virtual environment not at all (#581).
    */
   private async copyToCheckout(cwd: string): Promise<string | undefined> {
     const paths = this.ctx.store.config.worktrees.copy_to_checkout;
     if (!paths.length) return undefined;
     const under = await this.ctx.ports.git.filesUnder(cwd, paths);
     const tracked = new Set(under.length ? await this.ctx.ports.git.trackedAt(cwd, 'HEAD', under) : []);
-    const files = under.filter((f) => !tracked.has(f) && !this.ctx.isByproduct(f));
-    if (!files.length) return undefined;
+    // A Python virtual environment is never copied (#581): it records absolute paths into this worktree, so the copy
+    // is broken once the worktree goes. Found by its pyvenv.cfg, whatever the folder is called; said once, below.
+    const venvs = venvRoots(under);
+    const files = under.filter((f) => !tracked.has(f) && !this.ctx.isByproduct(f) && !isUnder(f, venvs));
+    const skipped = venvs.length ? `skipped ${venvs.length} Python virtual environment${venvs.length === 1 ? '' : 's'} (a folder with a pyvenv.cfg: it holds absolute paths into this worktree, so a copy would not run), kept only in .displaced/: ${venvs.slice(0, 10).join(', ')}${venvs.length > 10 ? ', …' : ''}` : undefined;
+    if (!files.length) return skipped ? `copied nothing under ${paths.join(', ')} into the main checkout (worktrees.copy_to_checkout); ${skipped}` : undefined;
     const { copied, identical, collided } = await this.ctx.ports.git.copyInto(cwd, files, this.ctx.repo);
     const n = (k: number) => `${k} file${k === 1 ? '' : 's'}`;
     return [
       `copied ${n(copied.length)} under ${paths.join(', ')} into the main checkout (worktrees.copy_to_checkout)`,
+      ...(skipped ? [skipped] : []),
       ...(identical.length ? [`${n(identical.length)} already there`] : []),
       ...(collided.length ? [`${n(collided.length)} not copied because the checkout has a different file at that path, kept only in .displaced/: ${collided.slice(0, 10).join(', ')}${collided.length > 10 ? ', …' : ''}`] : []),
     ].join('; ');

@@ -237,6 +237,20 @@ describe('held pull requests (skip_merge)', () => {
     expect(activityOf(store, id)).toContain('held: CI is green');
   });
 
+  it("a held sync that rebases without a conflict pushes in the same step, though the new head no longer descends from the PR's (#594)", async () => {
+    const { store, engine, world, id, branch, cwd, stopPolling } = await held();
+    const old = world.remoteBranches.get(branch)!;
+    world.worktrees.get(cwd)!.head = world.sha(); // the session committed while held, behind the base
+    const git = (engine as any).ports.git; const rebase = git.rebase.bind(git);
+    git.rebase = async (...a: unknown[]) => { const r = await rebase(...a); if (r.ok) world.unreachable.add(old); return r; };
+    await engine.start();
+    await waitFor(() => activityOf(store, id).includes('held: rebased onto trunk'));
+    stopPolling();
+    expect(world.unreachable.has(old)).toBe(true);
+    expect(world.remoteBranches.get(branch)).toBe(world.worktrees.get(cwd)!.head);
+    expect(activityOf(store, id)).not.toContain('have diverged');
+  });
+
   it('reads CI for a held item: red goes to the session, the fix is pushed, green waits for the release (p37)', async () => {
     const { store, engine, world, id, branch, cwd, stopPolling } = await held({ failOnce: true });
     await engine.start();

@@ -32,6 +32,10 @@ button.needs.on { background: var(--panel2); box-shadow: 0 0 0 1px var(--accent)
 .usage-pill { border: 1px solid var(--warn); color: var(--warn); border-radius: 999px; padding: 2px 10px; font-size: 12px; font-weight: 700; white-space: nowrap; }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); } .dot.on { background: var(--ok); } .dot.off { background: var(--hot); }
 .banner { padding: 8px 16px; } .banner.error { background: #3a1d1d; color: #ffb3b3; } .banner.warn { background: #3a2f14; color: #ffe0a3; }
+/* A provider paused by its usage guard (#579): under the top bar on every page, its Retry on it. It stays with the bar as the page scrolls. */
+.guard-banner { position: sticky; top: 56px; z-index: 4; display: grid; gap: 6px; border-bottom: 1px solid var(--line); }
+.guard-row { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; } .guard-says { flex: 1 1 240px; min-width: 0; overflow-wrap: anywhere; } .guard-row button { flex: none; }
+.guard-lever-note { font-size: 13px; overflow-wrap: anywhere; }
 main { padding: 16px; flex: 1; }
 .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; } .toolbar input[type=search] { min-width: 260px; }
 .chip { padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); background: transparent; font-size: 12px; } .chip.on { background: var(--accent); color: #0b0d10; border-color: var(--accent); }
@@ -217,6 +221,7 @@ html { -webkit-text-size-adjust: 100%; }
   body { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
   .app { position: relative; height: 100%; height: 100dvh; min-height: 0; overflow: hidden; }
   .app > .banner { flex: none; }
+  .guard-banner { position: relative; top: 0; padding: 8px max(var(--gutter), env(safe-area-inset-right)) 8px max(var(--gutter), env(safe-area-inset-left)); font-size: 13px; } .guard-row button { min-height: 36px; padding: 4px 12px; font-size: 13px; }
   .phone-only { display: revert; } .desk-only { display: none !important; }
   /* iOS zooms the page into any focused control set under 16px, and never zooms back out */
   select, input, textarea { font-size: 16px; } textarea { font-family: inherit; line-height: 1.45; }

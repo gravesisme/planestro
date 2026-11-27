@@ -65,6 +65,15 @@ export interface Engine {
   discardPreview(id: string): Promise<{ refusal: string | null; branch?: string; remote_sha: string | null; pr?: number }>;
   /** Drop work in progress (#135): close its PR, take it off its epic, icebox it; its remote branch goes only with deleteBranch, leased to expectSha. User-only. Returns what happened. */
   discard(id: string, reason: string, opts?: { deleteBranch?: boolean; expectSha?: string }): Promise<string>;
+  /**
+   * Back to Not yet submitted (#584): undo a submit after work started and before a pull request. The live turn is stopped,
+   * what was queued for it, a block and a hold are dropped, the plan goes to Notes, and the worktree, branch and
+   * conversation are left as they are. Past that point (a pull request, a pushed branch) it throws, naming discard.
+   * Returns what happened.
+   */
+  returnToBacklog(id: string, opts?: { by?: 'user' | 'orchestrator'; why?: string }): Promise<string>;
+  /** Why returnToBacklog would refuse before it reads the remote, or null; engines that stop nothing leave it out. */
+  returnToBacklogRefusal?(id: string, by?: 'user' | 'orchestrator'): string | null;
   /** What undoing the item's last turn would discard, or why it cannot be (#234). */
   undoTurnPreview(id: string): Promise<UndoTurnPreview>;
   /** Put the worktree back as it was before the last turn, confirmed against the preview's `expect`. User-only. Returns what happened. */

@@ -54,7 +54,9 @@ Evaluate every change against these; they are the architecture.
    A sync git refuses over local changes is not a conflict: untracked files it
    names are set aside and it runs once more, else `dirty_tree`. An epic's own
    `merge-<id>` worktree is cleared before merging: tips logged, its changes
-   moved or copied to `.displaced/`, then reset to its own HEAD.)
+   moved or copied to `.displaced/`, then reset to its own HEAD. A symbolic link is copied or set
+   aside as the link it is, never followed or written through; `worktrees.copy_to_checkout` leaves
+   out a folder holding a `pyvenv.cfg`, said in Activity and still set aside (`treeCopy.ts`, #581).)
 8. **No lifecycle code contains the literal default branch name.** Everything
    operates on the item's resolved `base_branch`; a test greps `engine/` for it.
 
@@ -88,6 +90,11 @@ A green run the base moved past is said in Activity (`green run for <sha> discar
 A red head the session changed nothing for is re-run once (`onSameRedRun`), then blocks `ci_red_parked`:
 nothing waits on a run that is not coming, and an item in review that nothing moves for `ci.stall_wake_min`
 wakes the orchestrator once (`review_stalled`, #201).
+A turn saved for the session that starts by itself (a usage pause, the automation pause) is something coming, never a stall,
+and its deferral is said once in Activity (`pending_turn.waits`); the wake names only tools that take an item that is not
+blocked, and `message_session` answers whether it started the turn (#580).
+A merge call that fails leaves the outcome unknown: the PR is read, and only GitHub reporting it `MERGED` on the head just
+validated carries on as merged; anything else stops as the failed call did (#582).
 A red epic whose failed log names files its base changed since it last synced, and none of its own, is not blocked:
 `op_data.base_wait` waits for the base to move, merges it in and lets CI run once more (`driveBaseWaits`, #204).
 A red run whose failed log matches `ci.infra_patterns` (or a built-in: disk full, runner lost) is the runner's: re-run once
@@ -107,8 +114,12 @@ Setup hooks of all worktrees share `concurrency.max_local_jobs` (1 by default: n
 queued again and said in Activity, before it blocks `hook_failed`, unless it timed out or could not start (`setupHookRetries`, #561).
 run_heavy is offered even with `heavy_runs` off, then with no lock or CI wait: the one run of any length past the CLI's 10-minute
 foreground cap (#502); a Bash call that hit the cap is told so, and the orchestrator counts either as one foreground harness run.
+What run_heavy runs is one judgment (`heavyVerdict`: nothing a deny refuses, only what the allow rules or, when on, the heavy
+patterns cover); a delegated Bash permission request carries its answer in one line, so a denial never points a worker at
+run_heavy for a command it refuses, and the refusal itself says what it would take (#583).
 A held item (`skip_merge`) skips only the merge: its new commits are pushed and its
 CI is polled from the tick, outside the merge chain (`driveHeld`).
+A rebase planestro finished for a held item in review (`op_data.rebased_from`) is pushed there too, leased to the head it rebased from (#594).
 Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
 `live-ports.ts`: worktrees share the ref store); transient git/gh errors are retried there.
 
@@ -139,6 +150,20 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   branch is deleted only when the user ticks it, leased to the tip they were shown, with the tips
   logged first; otherwise local cleanup needs a clean tree whose HEAD the remote holds. An iceboxed
   child still holds its epic open, and the epic says so. IN_REVIEW → ICEBOX goes only through it.
+- **Back to the backlog** (`Engine.returnToBacklog`, #584) is the undo of a submit, PLAN_IN_PROGRESS through IN_PROGRESS while
+  no pull request exists and the branch is not on the remote (read before anything is stopped): the turn stops, what was queued
+  for it, a block, a card and a hold are dropped, and the item goes to NOT_YET_SUBMITTED. Nothing is deleted: the worktree,
+  branch and conversation stay for the next submit, and the plan (or an epic's proposed children) moves to Notes, where the
+  next planner reads it. An epic goes back only while its breakdown is planned; a child stays its epic's child. It starts
+  nothing, so the orchestrator's `return_to_backlog` may do it in any wake (#73); past a pull request it is refused in words,
+  naming Discard. The routes send started work to it, never the bare transition.
+- The operator MCP may make the user's own taps only on the user's word and only with `operator_mcp.allow_card_actions`
+  (#577, off by default, read per call, written by no tool): `answer_decision` picks an option that carries an action through
+  `Triage.answerDecision` itself, only with the user's `word` (its own field, written to Activity and the journal, never part
+  of the answer; `actionRefusal` at the tap; a discard or close also needs `allow_decisions`, a remote branch's deletion stays
+  on the board), and `answer_audition` relays the picks through `Engine.respond`. `answer_question_card` (with `allow_actions`)
+  posts the user's answer in a `Q-<n>` thread as a `user` line that says it was relayed, waking `question_message`, or
+  resolves it with `close`. `allow_models` lets `create_item` / `edit_item` set an item's planner and implementer.
 - **Undo last turn** (#234): each worker implement/fix turn is bracketed by checkpoints of its worktree, read through a
   temporary index (the index's tree, every file git does not ignore, HEAD and the index kept as parents) under
   `refs/planestro/checkpoints/<item>/<n>/{before,after}`; refs are only added. The user's Undo (never an orchestrator tool)
@@ -313,6 +338,10 @@ Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
   `account_missing` rather than bill the default login, and guards / `model_unavailable` are keyed per account. Out of usage
   with another account free, the engine files the card itself (`continue_on_account`, `wait_for_reset`; no triage); a
   conversation resumes only from the same store (`sameSessionStore`), else a fresh brief.
+- A provider guard is said on the banner under the top bar with its Retry (`guardSays`), and once its window has reset with
+  nothing to resume it (`guardNeedsYou`: `auto_resume` off or no `resume_at`) it is counted beside the items in "Needs you",
+  never as an item's `needs_you`; `get_state` lists `engine.provider_guards`; a threshold or warning reading under
+  `USAGE_GUARD_RESET_MARGIN_MS` (10 min) from its reset does not trip, a `rejected` one always does (#579).
 - A wait on a person (an item whose `needs_you` turns true, an open orchestrator question) is announced once
   (#224): `NeedsYouWatch` (`engine/needsYou.ts`) sees every store event, journals one `notification`
   (`on_needs_you`, with an absolute link) per wait key and runs `notifications.on_needs_you`. It holds back while a
