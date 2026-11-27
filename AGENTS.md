@@ -119,6 +119,7 @@ patterns cover); a delegated Bash permission request carries its answer in one l
 run_heavy for a command it refuses, and the refusal itself says what it would take (#583).
 A held item (`skip_merge`) skips only the merge: its new commits are pushed and its
 CI is polled from the tick, outside the merge chain (`driveHeld`).
+A rebase planestro finished for a held item in review (`op_data.rebased_from`) is pushed there too, leased to the head it rebased from (#594).
 Ref-updating git (fetch, push, worktree add) runs one at a time (`refLocked` in
 `live-ports.ts`: worktrees share the ref store); transient git/gh errors are retried there.
 
