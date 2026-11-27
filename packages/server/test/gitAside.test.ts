@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync, symlinkSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync, symlinkSync, rmSync, lstatSync, readlinkSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { LiveGitPort } from '../src/engine/live-ports.ts';
+import { venvRoots } from '../src/engine/treeCopy.ts';
 import { git } from './helpers.ts';
 
 describe('setting regenerated files aside (p17)', () => {
@@ -32,7 +33,8 @@ describe('setting regenerated files aside (p17)', () => {
     writeFileSync(join(repo, '.gitignore'), 'tmp/\n'); writeFileSync(join(repo, 'tmp/src/raw.png'), 'r'); writeFileSync(join(repo, 'tmp/note.txt'), 'n'); writeFileSync(join(repo, 'assets/a.png'), 'a');
     symlinkSync('/', join(repo, 'tmp/escape'));
     const port = new LiveGitPort();
-    expect((await port.filesUnder(repo, ['tmp', './assets/'])).sort()).toEqual(['assets/a.png', 'tmp/note.txt', 'tmp/src/raw.png']);
+    // the link is listed as a link (#581); nothing behind it is
+    expect((await port.filesUnder(repo, ['tmp', './assets/'])).sort()).toEqual(['assets/a.png', 'tmp/escape', 'tmp/note.txt', 'tmp/src/raw.png']);
     expect(await port.filesUnder(repo, ['../', 'missing'])).toEqual([]);
   });
 
@@ -164,5 +166,85 @@ describe('a worktree folder git no longer lists (#356)', () => {
     mkdirSync(left); writeFileSync(join(left, '.git'), 'gitdir: elsewhere\n'); writeFileSync(join(left, 'a.txt'), 'a');
     await expect(port.setAsideLeftover(left, dest)).rejects.toThrow(/holds a \.git; kept it/);
     expect(existsSync(join(left, 'a.txt'))).toBe(true);
+  });
+});
+
+describe('symbolic links in what is copied or set aside (#581)', () => {
+  /** A worktree whose tmp/ holds a venv-like folder and one of each kind of link. */
+  const tree = () => {
+    const root = mkdtempSync(join(tmpdir(), 'planestro-links-'));
+    const wt = join(root, 'wt'); const outside = join(root, 'outside');
+    mkdirSync(join(wt, 'tmp/venv/bin'), { recursive: true }); mkdirSync(join(wt, 'tmp/venv/lib/python3.12/site-packages'), { recursive: true }); mkdirSync(join(wt, 'tmp/real'), { recursive: true }); mkdirSync(outside);
+    writeFileSync(join(outside, 'python3.12'), 'interpreter'); writeFileSync(join(outside, 'secret.txt'), 'outside');
+    writeFileSync(join(wt, 'tmp/venv/lib/python3.12/site-packages/pkg.py'), 'pkg'); writeFileSync(join(wt, 'tmp/real/in.txt'), 'in'); writeFileSync(join(wt, 'tmp/plain.txt'), 'plain');
+    symlinkSync(join(outside, 'python3.12'), join(wt, 'tmp/venv/bin/python3.12'));   // out of the tree, absolute
+    symlinkSync('python3.12', join(wt, 'tmp/venv/bin/python'));                      // to a file (itself a link)
+    symlinkSync('real', join(wt, 'tmp/dirlink'));                                    // to a folder
+    symlinkSync('nowhere/at/all', join(wt, 'tmp/dangling'));                         // dangling
+    symlinkSync('../../outside', join(wt, 'tmp/updir'));                             // out of the tree, relative, a folder
+    return { root, wt, outside };
+  };
+  const LINKS: Record<string, string> = { 'tmp/venv/bin/python': 'python3.12', 'tmp/dirlink': 'real', 'tmp/dangling': 'nowhere/at/all', 'tmp/updir': '../../outside' };
+  const FILES = ['tmp/plain.txt', 'tmp/real/in.txt', 'tmp/venv/lib/python3.12/site-packages/pkg.py'];
+  const expectLinks = (base: string, t: { outside: string }) => {
+    for (const [p, target] of Object.entries({ ...LINKS, 'tmp/venv/bin/python3.12': join(t.outside, 'python3.12') })) {
+      expect(lstatSync(join(base, p)).isSymbolicLink(), p).toBe(true);
+      expect(readlinkSync(join(base, p)), p).toBe(target);
+    }
+  };
+
+  it('filesUnder lists each link once, as a link, and nothing behind one', async () => {
+    const t = tree();
+    expect((await new LiveGitPort().filesUnder(t.wt, ['tmp'])).sort()).toEqual([...Object.keys(LINKS), 'tmp/venv/bin/python3.12', ...FILES].sort());
+  });
+
+  it('copyInto recreates every link with its target text: none followed, dropped or turned into a copy of its target', async () => {
+    const t = tree(); const checkout = join(t.root, 'checkout'); mkdirSync(checkout);
+    const port = new LiveGitPort();
+    const files = await port.filesUnder(t.wt, ['tmp']);
+    const out = await port.copyInto(t.wt, files, checkout);
+    expect(out.copied.sort()).toEqual([...files].sort());
+    expect(out.collided).toEqual([]);
+    expectLinks(checkout, t); expectLinks(t.wt, t);                              // and the source keeps its own
+    for (const f of FILES) expect(readFileSync(join(checkout, f), 'utf8')).toBe(readFileSync(join(t.wt, f), 'utf8'));
+    expect(readdirSync(t.outside).sort()).toEqual(['python3.12', 'secret.txt']); // nothing written through a link
+    expect(existsSync(join(checkout, 'tmp/real/secret.txt'))).toBe(false);
+    // a second run finds every link and file already there
+    const again = await port.copyInto(t.wt, files, checkout);
+    expect(again.copied).toEqual([]); expect(again.collided).toEqual([]); expect(again.identical.sort()).toEqual([...files].sort());
+  });
+
+  it('copyInto never writes through a link of the destination: a folder that is one, a link where a file goes, a link to elsewhere', async () => {
+    const t = tree(); const checkout = join(t.root, 'checkout'); const elsewhere = join(t.root, 'elsewhere');
+    mkdirSync(join(checkout, 'tmp'), { recursive: true }); mkdirSync(elsewhere);
+    symlinkSync(elsewhere, join(checkout, 'tmp/real'));                              // the folder tmp/real/in.txt would go into
+    symlinkSync(join(elsewhere, 'made-by-copy.txt'), join(checkout, 'tmp/plain.txt')); // a dangling link where a file goes
+    symlinkSync('other-target', join(checkout, 'tmp/dangling'));                     // a link with another target
+    const out = await new LiveGitPort().copyInto(t.wt, ['tmp/real/in.txt', 'tmp/plain.txt', 'tmp/dangling', 'tmp/dirlink'], checkout);
+    expect(out).toEqual({ copied: ['tmp/dirlink'], identical: [], collided: ['tmp/real/in.txt', 'tmp/plain.txt', 'tmp/dangling'] });
+    expect(readdirSync(elsewhere)).toEqual([]);
+    expect(readlinkSync(join(checkout, 'tmp/dangling'))).toBe('other-target');
+    expect(existsSync(join(t.wt, 'tmp/plain.txt'))).toBe(true);
+    await expect(new LiveGitPort().copyInto(t.wt, ['tmp/plain.txt'], join(checkout, 'tmp/real'))).resolves.toMatchObject({ copied: ['tmp/plain.txt'] });   // a root that is a link is the caller's root
+    expect(await new LiveGitPort().copyInto(t.wt, ['../outside/secret.txt'], checkout)).toMatchObject({ copied: [], collided: ['../outside/secret.txt'] });
+    expect(existsSync(join(t.root, 'outside/secret.txt'))).toBe(true);
+  });
+
+  it('moveAside moves links as links, a dangling one too, and never onto a dangling link set aside before', async () => {
+    const t = tree(); const dest = join(t.root, 'aside');
+    const port = new LiveGitPort();
+    const files = await port.filesUnder(t.wt, ['tmp']);
+    await port.moveAside(t.wt, files, dest);
+    expectLinks(dest, t);
+    for (const f of files) expect(() => lstatSync(join(t.wt, f)), f).toThrow();
+    expect(readFileSync(join(t.outside, 'python3.12'), 'utf8')).toBe('interpreter');   // the targets are untouched
+    symlinkSync('second', join(t.wt, 'tmp/dangling'));
+    await port.moveAside(t.wt, ['tmp/dangling'], dest);
+    expect(readlinkSync(join(dest, 'tmp/dangling'))).toBe('nowhere/at/all');
+    expect(readlinkSync(join(dest, 'tmp/dangling.2'))).toBe('second');
+  });
+
+  it('venvRoots names each folder that holds a pyvenv.cfg, whatever it is called, and only the outermost', () => {
+    expect(venvRoots(['tmp/a/.venv/pyvenv.cfg', 'tmp/a/.venv/bin/python', 'tmp/round_two/pyvenv.cfg', 'tmp/round_two/inner/pyvenv.cfg', 'tmp/notes/pyvenv.cfg.txt', 'pyvenv.cfg'])).toEqual(['tmp/a/.venv', 'tmp/round_two']);
   });
 });
