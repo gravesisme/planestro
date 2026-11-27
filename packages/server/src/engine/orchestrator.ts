@@ -8,6 +8,7 @@ import { modelCapabilities, clampTitle, NOTE_TITLE_MAX, runnerTurnSettings, type
 import { parkHint, permissionGrantRefusal } from './parks.ts';
 import { precedents, rulingsFromJournal, worktreeFinder, worstOf } from './allowSuggest.ts';
 import { hostNote, keptPathsNote, longRunNote } from './hostNote.ts';
+import { heavyRouteNote, type HeavyVerdict } from './heavyRuns.ts';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import { DRY_RUN_SESSION_PREFIX } from './ports.ts';
 import type { Ports, CustomToolDef, TurnResult } from './ports.ts';
@@ -120,6 +121,8 @@ export interface OrchestratorHooks {
   handPlanToUser(id: string, reason: string): void;
   /** A wake that carried this item's plan review is over, however it ended. */
   planReviewEnded(id: string): void;
+  /** What the worker's run_heavy would make of this Bash command as it stands (#583); undefined when the tool is not this session's (a planner, no worktree). */
+  heavyVerdict?(id: string, command: string): HeavyVerdict | undefined;
   /** Whether workers' permission requests come to the orchestrator before the user. */
   permissionsDelegated(): boolean;
   /** Decide a worker's parked permission request: allow it once, deny it with a reason, or leave it to the user. */
@@ -697,9 +700,17 @@ export class Orchestrator {
       (refusal ? undefined : nativeApprovalGuidance(data.tool)) ?? 'planestro has already refused the things no worker may do (git push, gh pr, touching protected branches, force flags, rm -rf of / or ~).',
       ...choices,
       'Judge the command, not the worker\'s description of it. If you decide nothing, it goes to the user.',
+      data.tool === 'Bash' ? this.heavyRoute(what, fm) : '',
       data.tool === 'Bash' ? this.earlierRulings(what, fm) : '',
       this.rulingRubric(),
     ].filter(Boolean).join('\n');
+  }
+
+  /** Whether run_heavy would take this command (#583, HH-941: a denial pointed a worker at run_heavy, which refused it too). Left out when it cannot be judged. */
+  private heavyRoute(command: string, fm: { worktree?: string }): string {
+    const id = (fm as { id?: string }).id;
+    if (!id || !command.trim()) return '';
+    try { const v = this.hooks.heavyVerdict?.(id, command); return v ? heavyRouteNote(v) : ''; } catch { return ''; }
   }
 
   /** The project's ruling rubric (#203), a partial the project may edit; a copy that does not render is left out. */

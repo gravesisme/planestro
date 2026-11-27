@@ -5,7 +5,7 @@ import { DEBUG_MARKER, debugMarkerRefusal, Audition, AuditionPicks, auditionPick
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type CiQueue, type RunnerReport, type AccountCredentials } from './ports.ts';
-import { makePolicy, ruleFor, allowedByRules, BASE_ALLOWED } from './policy.ts';
+import { makePolicy, ruleFor } from './policy.ts';
 import { answeredCommand, commandShape, rulingText, parkedRefusal, permissionGrantRefusal } from './parks.ts';
 import { commandGrant, commandForms } from './sessions/nativeApproval.ts';
 import { workerCommandEnv } from './sessions/commandEnv.ts';
@@ -15,7 +15,7 @@ import { Orchestrator } from './orchestrator.ts';
 import { NeedsYouWatch, type Wait } from './needsYou.ts';
 import { auditSlotDue, runEfficiencyAudit } from './efficiencyAudit.ts';
 import { runnerStatusText, stallWords, type RunnerStall } from './runners.ts';
-import { HeavyLock, ciOnSharedHost, heavyAllowRules, took } from './heavyRuns.ts';
+import { HeavyLock, ciOnSharedHost, heavyVerdict, heavyRejection, took, type HeavyVerdict } from './heavyRuns.ts';
 import type { ReviewImage, ReviewDiff, UndoTurnPreview } from './Engine.ts';
 import { ReviewUndo } from './reviewUndo.ts';
 import { WorkerTools, ATTACH_PER_CALL } from './workerTools.ts';
@@ -430,6 +430,8 @@ export class LiveEngine implements Engine {
       handPlanToUser: (id, reason) => this.handPlanToUser(id, `the orchestrator left it to you: ${reason}`),
       planReviewEnded: (id) => this.handPlanToUser(id, 'the orchestrator reviewed it without deciding'),
       permissionsDelegated: () => this.permissionsDelegated(),
+      // run_heavy is an implementing worker's tool: a planner's request gets no line about it (#583).
+      heavyVerdict: (id, command) => (this.store.requireItem(id).file.frontmatter.status === 'PLAN_IN_PROGRESS' ? undefined : this.heavyJudge(id, Object.keys(this.store.local.secret_env ?? {}))?.(command)),
       decidePermission: (id, request, decision, reason) => this.orchestratorDecidesPermission(id, request, decision, reason),
       permissionReviewEnded: (id) => this.handPermissionToUser(id, 'the orchestrator looked at it without deciding'),
       handOff: (from, to, paths, note) => this.handOff(from, to, paths, note, 'orchestrator'),
@@ -1706,6 +1708,18 @@ export class LiveEngine implements Engine {
     return write;
   }
   /**
+   * How run_heavy judges a command for this item (#583): its policy without the heavy redirects, and `heavyVerdict`.
+   * run_heavy's own call and the orchestrator's permission wake both go through here. Undefined: no worktree to run in.
+   */
+  private heavyJudge(id: string, secretNames: string[]): ((command: string) => HeavyVerdict) | undefined {
+    const item = this.store.requireItem(id); const fm = item.file.frontmatter;
+    if (!fm.worktree) return undefined;
+    const cwd = this.absWorktree(fm.worktree);
+    const rules = this.store.permissionRules();
+    const policy = makePolicy(this.store.config, this.store.derived(item).base_branch!, cwd, { env: secretNames }, rules);
+    return (command) => heavyVerdict(command, { config: this.store.config, policy, allow: rules.allow, cwd });
+  }
+  /**
    * A worker's heavy local run: what its rules (or the project's heavy patterns) let it run, in its worktree, one heavy
    * run at a time, each batch after any CI job on a runner sharing this host (`heavy_runs.shared_labels`) has ended.
    * The waits are the lock and CI, never a person (invariant 2); a turn that is stopped stops waiting. With
@@ -1719,14 +1733,12 @@ export class LiveEngine implements Engine {
     const item = this.store.requireItem(id); const fm = item.file.frontmatter;
     if (!fm.worktree) return 'Rejected: this item has no worktree to run in.';
     const cwd = this.absWorktree(fm.worktree);
-    const rules = this.store.permissionRules();
     // What secret_env hands the worker's session reaches its heavy runs (#501); what they print comes back redacted.
     const secrets = this.turnRunner.secretEnv(id);
-    const policy = makePolicy(this.store.config, this.store.derived(item).base_branch!, cwd, { env: Object.keys(secrets ?? {}) }, rules);
+    const judge = this.heavyJudge(id, Object.keys(secrets ?? {}))!;
     for (const command of commands) {
-      const why = policy.deny({ tool: 'Bash', input: { command } });
-      if (why) return `Rejected: ${why} Nothing was run.`;
-      if (!allowedByRules({ tool: 'Bash', input: { command } }, [...BASE_ALLOWED.implement, ...rules.allow, ...heavyAllowRules(this.store.config)], cwd)) return `Rejected: run_heavy runs only commands your allow rules or the project's heavy_runs.patterns permit, and \`${command.slice(0, 200)}\` is neither. Nothing was run.`;
+      const refused = heavyRejection(command, judge(command));
+      if (refused) return refused;
     }
     // The command sees what the worker's own commands would (#228), by its runner.
     const env = workerCommandEnv(this.store.config.models.find((m) => m.id === fm.implementer)?.runner ?? 'claude', this.store.config, secrets, id);
