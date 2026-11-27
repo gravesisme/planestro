@@ -409,6 +409,8 @@ function registerDecisions(server: McpServer, store: DataStore, engine: Engine):
  * Submitting and moving (`allow_submit`), for the developer's own session acting on what they ask: each the call the board's
  * Submit and drag make (`Engine.submitItem`, `DataStore.move`), journaled and written to Activity as `[operator]`. Taking
  * started work out of its column is a discard (`allow_decisions`), so the Icebox here takes only what has not started.
+ * Back to the backlog is the undo of a submit (#584): while no pull request exists it also takes started work
+ * (`Engine.returnToBacklog`, which stops the turn and deletes nothing).
  */
 function registerSubmit(server: McpServer, store: DataStore, engine: Engine): void {
   const id = z.string().describe('The item id, e.g. HH-143');
@@ -434,13 +436,14 @@ function registerSubmit(server: McpServer, store: DataStore, engine: Engine): vo
     return how === 'planning' ? `epic ${itemId} is having its breakdown planned (it is not queued: the user approves the children it proposes)` : `${itemId} is queued for planning`;
   }));
   server.registerTool('move_item', {
-    description: "Move an item as the board's drag and menu do. `icebox`: park an item that has not started (Not yet submitted or Queued); started work comes out through discard_item. `backlog`: back to Not yet submitted, from the Icebox or from Queued (cancelling the submit). `top` / `bottom` / `before` / `after` (with `ref`, an item in the same column): its order within its column and priority band; changing the band is edit_item's priority.",
+    description: "Move an item as the board's drag and menu do. `icebox`: park an item that has not started (Not yet submitted or Queued); started work comes out through discard_item. `backlog`: back to Not yet submitted, from the Icebox, from Queued (cancelling the submit), or from work that has started and has no pull request yet (planning, a plan waiting for approval, or in progress with nothing pushed): that undoes a submit made too early. Its turn is stopped, what was queued for it, a block and a hold are dropped, its plan is kept in Notes, and its worktree and branch are left as they are for the next submit; an epic goes back only while its breakdown is being planned. Once a pull request exists it is refused: that is discard_item. `top` / `bottom` / `before` / `after` (with `ref`, an item in the same column): its order within its column and priority band; changing the band is edit_item's priority.",
     inputSchema: { id, to: z.enum(['icebox', 'backlog', 'top', 'bottom', 'before', 'after']).describe('Where it goes'), ref: z.string().optional().describe('For before/after: the item it goes beside') },
     annotations: FILES,
   }, ({ id: itemId, to, ref }) => run('move_item', itemId, { to, ...(ref ? { ref } : {}) }, async () => {
     const fm = store.requireItem(itemId).file.frontmatter;
     if (to === 'icebox' && !['NOT_YET_SUBMITTED', 'QUEUED'].includes(fm.status)) throw new Error(`${itemId} is ${fm.status}: work on it has started, so it leaves through discard_item (it stops the turn, closes any PR and says what became of the branch), or the user moves it on the board`);
-    if (to === 'backlog' && !['ICEBOX', 'QUEUED'].includes(fm.status)) throw new Error(`${itemId} is ${fm.status}: only an item in the Icebox or Queued goes back to Not yet submitted`);
+    // Started work goes back through the engine (#584): it stops the turn, keeps the plan and says what it left in place, or refuses in words.
+    if (to === 'backlog' && !['ICEBOX', 'QUEUED'].includes(fm.status)) return engine.returnToBacklog(itemId, { why: 'through the operator MCP' });
     if ((to === 'before' || to === 'after') && !ref) throw new Error(`${to} needs ref: the item it goes beside`);
     if (ref) { const r = store.requireItem(ref).file.frontmatter; if (laneOf(r.status) !== laneOf(fm.status)) throw new Error(`${ref} is in another column (${r.status}); before/after order items within one`); }
     const moved = store.move(itemId, to, ref, 'user').file.frontmatter;

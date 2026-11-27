@@ -51,7 +51,7 @@ export function confirmMove(item: ItemView, to: string, label: string): boolean 
   if (!inFlight && laneOfStatus(from) === laneOfStatus(to)) return true;
   const where = to.replace(/_/g, ' ');
   return confirm(inFlight
-    ? `${item.id} is ${from.replace(/_/g, ' ')} — planestro is working on it.\n\n"${label}" moves it to ${where} and stops that work (its worktree and session are kept). Continue?`
+    ? `${item.id} is ${from.replace(/_/g, ' ')} — planestro is working on it.\n\n"${label}" moves it to ${where} and stops that work (${to === 'NOT_YET_SUBMITTED' ? 'its plan goes to Notes; ' : ''}its worktree and session are kept). Continue?`
     : `Move ${item.id} "${item.frontmatter.title}" to ${where}?`);
 }
 

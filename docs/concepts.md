@@ -255,7 +255,15 @@ and `convert_item` turns an item into an epic or back under the same rules as th
 (see [Item or epic](#item-or-epic)). `submit_item` queues an item that is not submitted yet. An
 epic is never queued: asked in the chat to start one, `submit_item` has its breakdown planned,
 as if you had pressed **plan the breakdown**, and you approve the children. In any wake you did
-not start it refuses an epic and says why, rather than reporting something that did not happen. It resolves stopped items with the same tools it uses in
+not start it refuses an epic and says why, rather than reporting something that did not happen.
+`return_to_backlog` is the undo of a submit: an item submitted too early goes back to **Not yet
+submitted**, in any wake, since it stops work and starts none. It is the board menu's **Move to
+BACKLOG** (and the item page's **back to backlog**): the live turn is stopped, what was queued
+for the session, a block and a hold are dropped, the plan is kept in Notes for the next planner,
+and the worktree, branch and conversation stay where they are, so a later submit picks them up.
+It takes an item that is queued, planning, waiting for plan approval, or in progress with nothing
+pushed; an epic only while its breakdown is being planned. Once a pull request exists it is
+refused, and the way out is **Discard**. It resolves stopped items with the same tools it uses in
 triage (`unblock_item`, `retry_op`, …). The **Ask the orchestrator** button on a blocked item
 opens the chat about that item. While automation is paused it answers when you resume.
 

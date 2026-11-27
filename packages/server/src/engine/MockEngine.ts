@@ -53,6 +53,13 @@ export class MockEngine implements Engine {
   }
   async discardPreview(id: string) { return { refusal: 'no engine is running', ...(this.store.requireItem(id).file.frontmatter.branch ? { branch: this.store.requireItem(id).file.frontmatter.branch } : {}), remote_sha: null }; }
   async discard(): Promise<string> { throw new Error('no engine is running'); }
+  /** Without an engine nothing runs, so there is nothing to stop: only the moves the board already made (from the Icebox, or Queued). */
+  async returnToBacklog(id: string): Promise<string> {
+    const fm = this.store.requireItem(id).file.frontmatter;
+    if (fm.status !== 'ICEBOX' && fm.status !== 'QUEUED') throw new Error('no engine is running');
+    this.store.move(id, 'backlog');
+    return `${id} is back in Not yet submitted`;
+  }
   async undoTurnPreview() { return { refusal: 'no engine is running' }; }
   async undoTurn(): Promise<string> { throw new Error('no engine is running'); }
   async rerunCi(): Promise<string> { return 'not possible: no engine is running'; }
