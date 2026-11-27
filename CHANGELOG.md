@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- A held item whose rebase conflict the session resolved is pushed again (#594): the rebased head does not descend from
+  the PR's, so the hold read it as diverged and the PR kept its old head, with no CI, until the hold was released.
+  planestro now pushes its own finished rebase with a lease on the head it rebased from; a branch that moved by
+  itself is still left alone.
 - A merge call that fails or times out no longer blocks an item whose PR did merge (#582): planestro reads the PR and
   carries on as merged when GitHub reports it `MERGED` on the head it validated, and stops as before otherwise.
 - A turn saved for a session under a usage pause is no longer read as a stalled review (#580): a rebase conflict and a
