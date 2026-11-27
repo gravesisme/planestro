@@ -3,7 +3,7 @@ import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore, act } from './store.ts';
 import { api } from './api.ts';
-import { findModel, usageWindowLabel, usagePercent, localClock, limitsLabel, type UsageGuardState } from '@planestro/shared/view';
+import { findModel, limitsLabel, guardSays, guardProviderLabel, guardNeedsYou, guardWindowReset } from '@planestro/shared/view';
 import { OrchestratorChat } from './components/OrchestratorChat.tsx';
 import { setTitle, setNeeds } from './tabBadge.ts';
 import { setNotificationNavigate } from './desktopNotify.ts';
@@ -24,11 +24,17 @@ const TABS: { to: string; label: string; icon: string }[] = [
   { to: '/console', label: 'Console', icon: 'M5 7l5 5-5 5M13 17h6' },
   { to: '/settings', label: 'Settings', icon: 'M4 7h9M17 7h3M4 17h3M11 17h9M15 5v4M9 15v4' },
 ];
-/** "PAUSED — usage 87% of 5-hour window · resumes 6:20 pm": why the usage guard stopped automation, and until when. */
-function guardPill(g: UsageGuardState): string {
-  const pct = usagePercent(g.utilization);
-  const what = pct ? `usage ${pct} of ${usageWindowLabel(g.window)} window` : `${usageWindowLabel(g.window)} window ${g.status === 'rejected' ? 'exhausted' : 'near its limit'}`;
-  return `PAUSED — ${what} · ${g.resume_at ? `resumes ${localClock(g.resume_at)}` : g.resets_at ? `resets ${localClock(g.resets_at)} · resume by hand` : 'resume by hand'}`;
+const MAX_TIMER_MS = 2 ** 31 - 1;
+/** The time, redrawn when the next of `times` passes: a guard's wording changes at its window's reset with no event from the server. */
+function useNowAt(times: number[]): number {
+  const [now, setNow] = useState(() => Date.now());
+  const next = Math.min(...times.filter((t) => Number.isFinite(t) && t > now));
+  useEffect(() => {
+    if (!Number.isFinite(next)) return;
+    const t = setTimeout(() => setNow(Date.now()), Math.min(Math.max(next - Date.now(), 0) + 250, MAX_TIMER_MS));
+    return () => clearTimeout(t);
+  }, [next]);
+  return now;
 }
 const onBoardTab = (path: string) => path === '/' || /^\/(icebox|done|items)(\/|$)/.test(path);
 
@@ -50,12 +56,23 @@ export function App() {
   useEffect(() => { setNotificationNavigate((path) => nav(path)); }, [nav]);
   const needs = state?.items.filter((i) => i.derived.needs_you && i.derived.lane === 'board') ?? [];
   const needsHot = needs.some((i) => i.frontmatter.blocked);
-  // A background tab shows it too: "(2) …" in its title and a dot on its icon.
-  useEffect(() => { setNeeds(needs.length, needsHot); }, [needs.length, needsHot]);
   const active = state?.items.filter((i) => ['PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS', 'IN_REVIEW', 'MERGED'].includes(i.frontmatter.status)) ?? [];
   const inReview = state?.items.filter((i) => i.frontmatter.status === 'IN_REVIEW') ?? [];
   const paused = state?.engine.paused ?? false;
   const guards = Object.entries(state?.engine.provider_guards ?? {});
+  const guardCfg = { auto_resume: state?.config.usage_guard?.auto_resume ?? false };
+  const now = useNowAt(guards.flatMap(([, g]) => [g.resets_at, g.resume_at].flatMap((t) => (t ? [Date.parse(t)] : []))));
+  // A provider whose window has reset and that only a Retry by hand restarts waits on the user as an item does (#579).
+  const guardsWaiting = guards.filter(([, g]) => guardNeedsYou(g, guardCfg, now));
+  const guardNames = guards.map(([key]) => guardProviderLabel(key));
+  const guardedLabel = guardNames.length === 1 ? `${guardNames[0]} paused` : guardNames.length > 1 ? `${guardNames.length} providers paused` : undefined;
+  // Said on the guard's banner after the lever is pressed while a provider is paused: the lever is not what clears it.
+  const guardsNow = guards.map(([key, g]) => `${key}@${g.tripped_at}`).join(' ');
+  const [leverPress, setLeverPress] = useState<{ said: 'paused' | 'resumed'; guards: string }>();
+  const leverSaid = leverPress && leverPress.guards === guardsNow ? leverPress.said : undefined;
+  const needsCount = needs.length + guardsWaiting.length;
+  // A background tab shows it too: "(2) …" in its title and a dot on its icon.
+  useEffect(() => { setNeeds(needsCount, needsHot); }, [needsCount, needsHot]);
   const provider = state && findModel(state.config, state.config.orchestrator.model)?.runner;
   const providerLabel = provider === 'codex' ? 'Codex' : provider === 'claude' ? 'Claude' : 'Not set';
   const switchProviderPath = provider ? `/switch-provider?provider=${provider === 'codex' ? 'claude' : 'codex'}` : '/switch-provider';
@@ -67,7 +84,7 @@ export function App() {
   const max = slots?.max ?? state?.config.concurrency?.max_sessions;
   const [statusOpen, setStatusOpen] = useState(false);
   const restart = state?.engine.restart;
-  const engineLabel = !connected ? 'Reconnecting' : paused ? 'Paused' : restart?.draining ? restart.by === 'update' ? 'Updating' : 'Draining' : state?.engine.mode === 'live' ? 'Live' : 'Dry-run';
+  const engineLabel = !connected ? 'Reconnecting' : paused ? 'Paused' : restart?.draining ? restart.by === 'update' ? 'Updating' : 'Draining' : guardedLabel ?? (state?.engine.mode === 'live' ? 'Live' : 'Dry-run');
   const runnerStalls = state?.engine.runner_stalls ?? [];
   const statusWarning = paused || restart?.draining || state?.engine.modes?.restart_to_apply || guards.length > 0 || (state?.engine.ci_queue?.queued ?? 0) > 0 || runnerStalls.length > 0;
   const notes = useStore((s) => s.notes); const notesSeen = useStore((s) => s.notesSeen);
@@ -79,7 +96,7 @@ export function App() {
       {updateReady && <button className="banner warn" style={{ border: 0, borderRadius: 0, textAlign: 'left' }} onClick={() => location.reload()}>planestro was updated — click to reload (held back so nothing you were typing is lost)</button>}
       <header className="topbar">
         <Link className="brand" to="/" title={`${state?.config.project.name ?? 'planestro'} · Board`}><img className="logo" src="/favicon.svg" alt="" width={22} height={22} /> <span className="wordmark">planestro</span> <span className="project">{state?.config.project.name ?? '…'}</span>
-          <span className="engine phone-only">{paused ? 'paused' : state?.engine.restart?.draining && state.engine.restart.by === 'update' ? 'updating' : state?.engine.mode === 'live' ? 'live' : 'dry-run'} · {running}{max !== undefined ? ` of ${max}` : ''} agent{(max ?? running) === 1 ? '' : 's'} running</span></Link>
+          <span className="engine phone-only">{paused ? 'paused' : state?.engine.restart?.draining && state.engine.restart.by === 'update' ? 'updating' : guardedLabel ?? (state?.engine.mode === 'live' ? 'live' : 'dry-run')} · {running}{max !== undefined ? ` of ${max}` : ''} agent{(max ?? running) === 1 ? '' : 's'} running</span></Link>
         <nav>
           <NavLink to="/" end>Board</NavLink>
           <NavLink to="/icebox">Icebox</NavLink>
@@ -102,14 +119,21 @@ export function App() {
             {restart?.draining && <p>{restart.by === 'update' ? `Updating planestro: ${restart.idle ? 'restarting now' : `waiting for ${restart.running.join(', ')} to finish`}. Automation resumes after the restart.` : restart.idle ? 'Safe to restart: nothing is running.' : `Draining: waiting for ${restart.running.join(', ')} to finish. Nothing new starts meanwhile.`}</p>}
             {paused && state?.engine.paused_by === 'disk' && state.engine.disk_guard && <p className="status-notice">Disk nearly full · {state.engine.disk_guard.free_gib} GiB free on {state.engine.disk_guard.path}. Automation resumes once there is {state.config.disk_guard.resume_free_gib} GiB free.</p>}
             {state?.engine.ci_queue && state.engine.ci_queue.queued > 0 && <p className="status-notice">CI queue · {state.engine.ci_queue.queued} waiting · {state.engine.ci_queue.running} running.{state.config.ci.max_queued_runs > 0 && state.engine.ci_queue.queued >= state.config.ci.max_queued_runs ? ' New items are waiting for capacity.' : ''}</p>}
-            {guards.map(([provider, guard]) => <div key={provider} className="status-notice"><p>{provider === 'codex' ? 'Codex' : 'Claude'}: {guardPill(guard)}</p><ActionButton working="Retrying…" onAct={() => act(() => api.retryProvider(provider))}>Retry {provider === 'codex' ? 'Codex' : 'Claude'}</ActionButton></div>)}
+            {guards.map(([provider, guard]) => <div key={provider} className="status-notice"><p>{guardSays(provider, guard, guardCfg, now)}. The Pause / Resume button does not clear this.</p><ActionButton working="Retrying…" onAct={() => act(() => api.retryProvider(provider))}>Retry {guardProviderLabel(provider)}</ActionButton></div>)}
             <div className="status-links"><Link to="/console">Open Console →</Link><Link to="/usage">Usage →</Link><Link to="/projects">All projects →</Link></div>
           </div>
-          <button className={`needs ${needsHot ? 'hot' : needs.length ? 'wait' : ''} ${needsFilter ? 'on' : ''}`} aria-pressed={needsFilter} onClick={() => (needsFilter ? nav('/') : needs.length === 1 ? nav(`/items/${needs[0].id}`, { state: TO_WAIT }) : nav('/?needs=1'))} aria-label={`${needs.length === 1 ? '1 item needs' : `${needs.length} items need`} you${needsFilter ? ': showing only these, tap to show all' : ''}`} title={needsFilter ? 'The board shows only items waiting on you: show all' : needs.length === 1 ? `${needs[0].id} is waiting on you: open it on what it waits for` : 'Items waiting on you (red: one of them is blocked)'}><span className="dot" /> <span className="desk-only">Needs you</span><span>{needs.length}</span></button>
+          <button className={`needs ${needsHot ? 'hot' : needsCount ? 'wait' : ''} ${needsFilter ? 'on' : ''}`} aria-pressed={needsFilter} onClick={() => (needsFilter ? nav('/') : !needs.length && guardsWaiting.length ? document.getElementById('provider-guards')?.querySelector('button')?.focus() : needs.length === 1 && !guardsWaiting.length ? nav(`/items/${needs[0].id}`, { state: TO_WAIT }) : nav('/?needs=1'))} aria-label={`${needs.length === 1 ? '1 item needs' : `${needs.length} items need`} you${guardsWaiting.length ? `, and ${guardsWaiting.map(([key]) => guardProviderLabel(key)).join(' and ')} ${guardsWaiting.length === 1 ? 'waits' : 'wait'} for your retry` : ''}${needsFilter ? ': showing only these, tap to show all' : ''}`} title={needsFilter ? 'The board shows only items waiting on you: show all' : guardsWaiting.length ? `${guardsWaiting.map(([key]) => `${guardProviderLabel(key)} usage window has reset: press Retry ${guardProviderLabel(key)}`).join('. ')}${needs.length ? `. ${needs.length === 1 ? '1 item is' : `${needs.length} items are`} waiting on you too` : ''}` : needs.length === 1 ? `${needs[0].id} is waiting on you: open it on what it waits for` : 'Items waiting on you (red: one of them is blocked)'}><span className="dot" /> <span className="desk-only">Needs you</span><span>{needsCount}</span></button>
           {state && <Link className="button provider-switch-button" to={switchProviderPath} aria-label={`Provider: ${providerLabel}. Switch provider`} title={`Orchestrator provider: ${providerLabel}. Open provider switching. Individual items may use another provider.`}><span className="desk-only">Provider: </span>{providerLabel}</Link>}
-          <ActionButton className={`lever ${paused ? 'paused' : ''}`} aria-label={`${paused ? 'Resume' : 'Pause'} automation`} title={`${paused ? 'Resume' : 'Pause'} automation`} working={paused ? 'Resuming…' : 'Pausing…'} onAct={() => act(() => (paused ? api.resume() : api.pause()))}>{paused ? 'Resume' : 'Pause'}</ActionButton>
+          <ActionButton className={`lever ${paused ? 'paused' : ''}`} aria-label={`${paused ? 'Resume' : 'Pause'} automation`} title={`${paused ? 'Resume' : 'Pause'} automation${guardNames.length ? `. This does not clear a usage pause: ${guardNames.map((n) => `Retry ${n}`).join(' and ')} does` : ''}`} working={paused ? 'Resuming…' : 'Pausing…'} onAct={async () => { const said = paused ? 'resumed' : 'paused'; const done = await act(() => (paused ? api.resume() : api.pause())); if (done && guards.length) setLeverPress({ said, guards: guardsNow }); }}>{paused ? 'Resume' : 'Pause'}</ActionButton>
         </div>
       </header>
+      {guards.length > 0 && <div id="provider-guards" className="banner warn guard-banner" role="status">
+        {guards.map(([key, guard]) => <div key={key} className={`guard-row ${guardNeedsYou(guard, guardCfg, now) ? 'waits' : ''}`}>
+          <span className="guard-says">{guardWindowReset(guard, now) ? <strong>{guardSays(key, guard, guardCfg, now)}</strong> : guardSays(key, guard, guardCfg, now)}</span>
+          <ActionButton className={guardNeedsYou(guard, guardCfg, now) ? 'primary' : ''} working="Retrying…" title={`Start ${guardProviderLabel(key)} again now`} onAct={() => act(() => api.retryProvider(key))}>Retry {guardProviderLabel(key)}</ActionButton>
+        </div>)}
+        {leverSaid && <div className="guard-lever-note">Automation {leverSaid}. That button does not clear a usage pause: {guardNames.join(' and ')} {guardNames.length === 1 ? 'stays' : 'stay'} paused until you press {guardNames.map((n) => `Retry ${n}`).join(' and ')}.</div>}
+      </div>}
       {error && <div className="banner error">{error}</div>}
       {modeNote(state?.engine.modes) && <div className="banner warn" role="status">Engine mode · {modeNote(state?.engine.modes)}</div>}
       {slots?.stepped_down && <div className="banner warn">planestro stepped concurrency down to {limitsLabel(slots.stepped_down.to)}{slots.stepped_down.reason ? `: ${slots.stepped_down.reason.replace(/^stepped down: /, '')}` : ''}. Raise it again from the status menu once the machine is healthy.</div>}
