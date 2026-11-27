@@ -296,6 +296,12 @@ waited for, and how long, is in its answer and the item's Activity. A Bash call 
 patterns or the allow rules permit and nothing the deny rules refuse. Waiting on the lock or on
 CI is not waiting on a person: a turn that is stopped stops waiting.
 
+A command `run_heavy` refuses is answered with what it would take to run there: a `patterns` entry
+or an allow rule that covers it, which only you add. When a worker's Bash request is delegated to
+the orchestrator, the request says whether `run_heavy` would run that command as it stands or
+refuse it too, from the same check `run_heavy` makes, so a denial does not send the worker to a
+tool that turns the command away (#583).
+
 While automation is paused (by you or the disk guard), a batch that has not started its command
 waits in the same loop until Resume, `enabled` or not, and says `heavy run: held while automation is
 paused` once (#534); a command already running finishes. A setup hook (`after_worktree_create`) that
