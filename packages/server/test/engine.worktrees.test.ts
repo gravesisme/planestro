@@ -454,6 +454,24 @@ describe('files a worktree must not take with it (p40)', () => {
     expect(log).toMatch(/set aside 2 files under tmp/);                          // the originals are kept as keep_on_remove keeps them
   });
 
+  it('copy_to_checkout leaves a Python virtual environment out, says so once, and still sets it aside (#581)', async () => {
+    const { store, engine, world } = await setup();
+    store.updateConfig((doc) => { doc.setIn(['worktrees', 'copy_to_checkout'], ['tmp']); }, 'config: copy tmp');
+    const item = store.createItem({ title: 'Art with a venv', description: 'x' });
+    store.transition(item.id, 'QUEUED', 'user');
+    await engine.start();
+    await waitFor(() => status(store, item.id) === 'PLAN_READY');
+    const cwd = (engine as any).absWorktree(store.getItem(item.id)!.file.frontmatter.worktree!);
+    world.ignored.set(cwd, ['tmp/raws/a.png', 'tmp/re_round_two/pyvenv.cfg', 'tmp/re_round_two/bin/python', 'tmp/re_round_two/lib/site-packages/PIL/Image.py']);
+    await engine.approvePlan(item.id);
+    await waitFor(() => status(store, item.id) === 'FINISHED', 8000);
+    expect([...world.checkout.get(store.codeRepoPath())!]).toEqual(['tmp/raws/a.png']);
+    const log = activityOf(store, item.id);
+    expect(log).toMatch(/copied 1 file under tmp into the main checkout \(worktrees\.copy_to_checkout\); skipped 1 Python virtual environment \(a folder with a pyvenv\.cfg[^)]*\), kept only in \.displaced\/: tmp\/re_round_two/);
+    expect(log.match(/skipped 1 Python virtual environment/g)).toHaveLength(1);
+    expect(log).toMatch(/set aside 4 files under tmp/);                          // nothing of the venv is lost with the worktree
+  });
+
   it('a copy into the checkout that fails blocks cleanup_dirty and removes nothing (#72)', async () => {
     const { store, engine, world } = await setup();
     store.updateConfig((doc) => { doc.setIn(['worktrees', 'copy_to_checkout'], ['tmp']); }, 'config: copy tmp');
