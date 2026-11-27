@@ -198,6 +198,10 @@ export class MergePipeline {
       // Commits the session made while the item was held. Pushed only when they build on what the
       // PR has; a remote that moved on its own is someone else's work and is left alone.
       if (await this.ctx.ports.git.isAncestor(cwd, remote, local)) { await this.mergeJob(id, { hold: true }); return; }
+      // A rebase planestro itself finished (continueHeldRebase) does not descend from the PR's head either (#594): pushed, with a
+      // lease, only while the remote still holds exactly the head it rebased from and the worktree is on its result or builds on it.
+      const own = fm.op_data?.rebased_from as { remote?: string; head?: string } | undefined;
+      if (own?.head && own.remote === remote && (own.head === local || await this.ctx.ports.git.isAncestor(cwd, own.head, local))) { await this.mergeJob(id, { hold: true, lease: remote }); return; }
       if (fm.op_data?.held_diverged !== remote) this.ctx.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), held_diverged: remote } } }, { activity: { actor: 'app', text: `held: the worktree (${local.slice(0, 7)}) and the PR branch (${remote.slice(0, 7)}) have diverged; not pushing either way` } }], 'engine');
       return;
     }
@@ -230,7 +234,7 @@ export class MergePipeline {
   }
 
   // ---- merge pipeline: the serial chain syncs and merges; CI is waited for outside it ----
-  private mergeJob(id: string, opts: { hold?: boolean } = {}): Promise<void> {
+  private mergeJob(id: string, opts: { hold?: boolean; lease?: string } = {}): Promise<void> {
     const run = this.mergeChain.then(() => this.mergeStep(id, opts));
     this.mergeChain = run.catch(() => undefined);
     return run;
@@ -245,7 +249,7 @@ export class MergePipeline {
    * session committed: sync and push only, then leave, so the PR shows the work and CI runs;
    * driveHeld reads the verdict.
    */
-  async mergeStep(id: string, { hold = false }: { hold?: boolean } = {}): Promise<void> {
+  async mergeStep(id: string, { hold = false, lease }: { hold?: boolean; lease?: string } = {}): Promise<void> {
     if (this.ctx.guards.paused || this.ctx.guards.draining || this.ctx.stopping) return;
     let item = this.ctx.store.requireItem(id);
     let fm = item.file.frontmatter;
@@ -302,6 +306,12 @@ export class MergePipeline {
         return;
       }
       this.ctx.store.mutateItem(id, [{ activity: { actor: 'app', text: `took in origin/${fm.branch} (${expected.slice(0, 7)}) before syncing: it had moved on GitHub` } }], 'engine');
+    }
+    // A held item's finished rebase is pushed over the head it rebased from, and no other (#594): a remote that moved since is left to driveHeld.
+    if (lease && expected !== lease) {
+      this.ctx.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }], 'engine');
+      this.ctx.store.journal.end(opId, id, 'aborted', { reason: 'remote_moved', remote: expected });
+      return;
     }
     const localHead = await this.ctx.ports.git.revParse(cwd, 'HEAD');
     const { behind } = await this.ctx.ports.git.aheadBehind(cwd, `origin/${base}`, 'HEAD');

@@ -643,6 +643,52 @@ describe('a pull request whose rebase conflicts: planestro holds the rebase and 
     expect(activity.indexOf('Re-entering the merge pipeline')).toBeLessThan(activity.indexOf('rebased onto trunk@fffffff and pushed'));
   });
 
+  /**
+   * The hold goes on while the session resolves the conflict, so the finished rebase is driveHeld's to push (#594). As in git, the head
+   * the PR branch has is not an ancestor of the rebased one (the fake answers isAncestor from `unreachable`).
+   */
+  const was = { remote: '' };
+  const holdMidConflict = (remoteMoves = false) => inReview(async (_o, world) => {
+    const fm = store!.getItem(store!.listItems()[0].id)!.file.frontmatter;
+    was.remote = world.remoteBranches.get(fm.branch!)!;
+    world.unreachable.add(was.remote);
+    if (remoteMoves) { const theirs = world.sha(); world.remoteBranches.set(fm.branch!, theirs); world.unreachable.add(theirs); }
+    store!.mutateItem(store!.listItems()[0].id, [{ set: { skip_merge: true, hold_reason: 'to play it first' } }], 'user');
+    return undefined;
+  });
+
+  it('a held item: the rebase planestro finished is pushed with a lease over the head it rebased from, and not merged (#594)', async () => {
+    const ctx = await holdMidConflict();
+    await waitFor(() => activityOf(ctx.store, ctx.id).includes('Re-entering the merge pipeline'), 8000);
+    const before = was.remote;
+    const rebased = ctx.world.worktrees.get((ctx.engine as any).absWorktree(ctx.fm().worktree!))!.head;
+    expect(before).toMatch(/^\w{40}$/);
+    expect(rebased).not.toBe(before);
+    await waitFor(() => ctx.world.remoteBranches.get(ctx.fm().branch!) !== before || activityOf(ctx.store, ctx.id).includes('have diverged'), 8000);
+    expect(activityOf(ctx.store, ctx.id)).not.toContain('have diverged');
+    // The fake's rebase makes a new commit even on the base tip, so the pushed head is the worktree's as it is now.
+    expect(ctx.world.remoteBranches.get(ctx.fm().branch!)).toBe(ctx.world.worktrees.get((ctx.engine as any).absWorktree(ctx.fm().worktree!))!.head);
+    expect(ctx.fm().op_data?.rebased_from).toEqual({ remote: before, head: rebased });
+    expect(activityOf(ctx.store, ctx.id)).toMatch(/held: rebased onto trunk@fffffff and pushed \w{7}/);
+    // The tick polls a held item once a minute; the test looks again at once.
+    await waitFor(() => { (ctx.engine as any).heldPolledAt.clear(); return ctx.fm().ci_result === 'green'; });
+    expect(ctx.fm().ci_head_sha).toBe(ctx.world.remoteBranches.get(ctx.fm().branch!));
+    expect(ctx.fm()).toMatchObject({ status: 'IN_REVIEW', skip_merge: true });
+    expect(ctx.log.some((l) => l.startsWith('Would gh pr merge'))).toBe(false);
+  });
+
+  it('a held item whose PR branch moved by itself during the rebase is left alone: diverged, nothing pushed (#594)', async () => {
+    const ctx = await holdMidConflict(true);
+    await waitFor(() => activityOf(ctx.store, ctx.id).includes('have diverged; not pushing either way'), 8000);
+    const theirs = ctx.world.remoteBranches.get(ctx.fm().branch!)!;
+    expect(theirs).not.toBe(was.remote);
+    expect((ctx.fm().op_data?.rebased_from as { remote: string }).remote).toBe(was.remote);
+    await sleep(300);
+    expect(ctx.world.remoteBranches.get(ctx.fm().branch!)).toBe(theirs);
+    expect(activityOf(ctx.store, ctx.id)).not.toContain('held: rebased onto');
+    expect(activityOf(ctx.store, ctx.id).match(/have diverged; not pushing either way/g)).toHaveLength(1);
+  });
+
   it('a later commit that stops on its own conflict goes back to the session as another round', async () => {
     const ctx = await inReview(async (_o, world) => { if (!world.continueOutcomes.length && !(world as any).scripted) { (world as any).scripted = true; world.continueOutcomes.push({ state: 'stopped', files: ['src/other.ts'], stepFiles: ['src/other.ts'] }); } return undefined; });
     await waitFor(() => ctx.fm().status === 'FINISHED', 8000);
