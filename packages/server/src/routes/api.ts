@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { managedAttachmentPath } from '../store/managedAttachments.ts';
 import { readFileSync } from 'node:fs';
 import YAML from 'yaml';
-import { allowedTransitions, parsePromptFile, RenderError, STATUSES, PRIORITIES, type Priority, PROMPT_KINDS, RELEASE_STATUSES, KINDS, markUnavailable, CHAT_ATTACHMENTS_DIR, CHAT_MAX_FILES, type Status, type Actor, usageReport, dayBefore, USAGE_REPORT_TYPES, itemEfficiency, efficiencyRanking, EFFICIENCY_TYPES, ciAggregates, CI_INSIGHT_TYPES, isoLocal, HEX_COLOR, suggestCategoryColor, PLANESTRO_REPO } from '@planestro/shared';
+import { allowedTransitions, STARTED_NO_PR, parsePromptFile, RenderError, STATUSES, PRIORITIES, type Priority, PROMPT_KINDS, RELEASE_STATUSES, KINDS, markUnavailable, CHAT_ATTACHMENTS_DIR, CHAT_MAX_FILES, type Status, type Actor, usageReport, dayBefore, USAGE_REPORT_TYPES, itemEfficiency, efficiencyRanking, EFFICIENCY_TYPES, ciAggregates, CI_INSIGHT_TYPES, isoLocal, HEX_COLOR, suggestCategoryColor, PLANESTRO_REPO } from '@planestro/shared';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Engine } from '../engine/Engine.ts';
 import type { ConsoleBuffer } from '../store/ConsoleBuffer.ts';
@@ -158,6 +158,8 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
   api.post('/items/:id/move', async (c) => {
     try {
       const { op, ref } = z.object({ op: z.enum(['top', 'bottom', 'before', 'after', 'icebox', 'backlog']), ref: z.string().optional() }).parse(await c.req.json());
+      // Started work goes back through the engine (#584): it stops the turn first and says what it kept.
+      if (op === 'backlog' && STARTED_NO_PR.includes(store.requireItem(c.req.param('id')).file.frontmatter.status)) { await engine.returnToBacklog(c.req.param('id')); return c.json(itemView(store, store.requireItem(c.req.param('id')))); }
       return c.json(itemView(store, store.move(c.req.param('id'), op, ref)));
     } catch (e) { return fail(c, e); }
   });
@@ -172,7 +174,9 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
     const it = store.requireItem(c.req.param('id'));
     // A childless epic is not offered "start": nothing would ever drive it; "plan the breakdown" is (dogfood p56, LM-2).
     const bare = it.file.frontmatter.kind === 'epic' && it.file.frontmatter.status === 'NOT_YET_SUBMITTED' && !store.derived(it).children.length;   // approving a breakdown is also → IN_PROGRESS, with no children yet
-    return c.json(allowedTransitions(it.file.frontmatter.status, 'user', store.flavorOf(it.file.frontmatter)).filter((t) => !(bare && t.to === 'IN_PROGRESS')).map((t) => ({ to: t.to, label: t.label })));
+    // Back to the backlog is offered only where the engine would do it (#584): not past a pull request.
+    const stays = STARTED_NO_PR.includes(it.file.frontmatter.status) && Boolean(it.file.frontmatter.pr || engine.returnToBacklogRefusal?.(it.id));
+    return c.json(allowedTransitions(it.file.frontmatter.status, 'user', store.flavorOf(it.file.frontmatter)).filter((t) => !(bare && t.to === 'IN_PROGRESS') && !(stays && t.to === 'NOT_YET_SUBMITTED')).map((t) => ({ to: t.to, label: t.label })));
   });
   api.post('/items/:id/reopen-pr', async (c) => { try { const said = await engine.reopenPr(c.req.param('id')); if (/^not (possible|now)/.test(said)) throw new Error(said); return c.json({ said, item: itemView(store, store.requireItem(c.req.param('id'))) }); } catch (e) { return fail(c, e); } });
   api.post('/items/:id/rerun-ci', async (c) => { try { const said = await engine.rerunCi(c.req.param('id'), 'user'); if (/^not (possible|now)/.test(said)) throw new Error(said); return c.json({ said, item: itemView(store, store.requireItem(c.req.param('id'))) }); } catch (e) { return fail(c, e); } });
@@ -201,6 +205,8 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
       // Closing without a PR goes through the engine: it decides what happens to the worktree and branch.
       if (to === 'PLAN_IN_PROGRESS' && it.file.frontmatter.kind === 'epic') { await engine.planEpic(id); return c.json(itemView(store, store.requireItem(id))); }
       if (to === 'FINISHED') { await engine.closeAsDone(id, reason); return c.json(itemView(store, store.requireItem(id))); }
+      // Back to the backlog from started work stops its turn first (#584): the engine's, never the bare transition.
+      if (to === 'NOT_YET_SUBMITTED' && STARTED_NO_PR.includes(it.file.frontmatter.status)) { await engine.returnToBacklog(id, { why: reason }); return c.json(itemView(store, store.requireItem(id))); }
       // Out of review only by Discard (#135): it closes the pull request and says what became of the branch.
       if (to === 'ICEBOX' && it.file.frontmatter.status === 'IN_REVIEW') throw new Error('use Discard: it closes the pull request and says what becomes of the branch');
       const d = store.derived(it);

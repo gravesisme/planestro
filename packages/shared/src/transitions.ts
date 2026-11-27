@@ -15,6 +15,13 @@ const UE: readonly Actor[] = ['user', 'engine'];
 export const CLOSE_AS_DONE = 'close as done';
 /** Discard (#135): the user drops work planestro is doing. Only through Engine.discard, which closes the PR and says what became of the branch. */
 export const DISCARD = 'discard';
+/**
+ * Back to the backlog (#584): a submit undone after work started and before a pull request. Only through
+ * Engine.returnToBacklog, which stops the turn, keeps the plan in Notes and leaves the worktree as it is.
+ */
+export const BACK_TO_BACKLOG = 'back to backlog';
+/** Where work has started and a pull request is not open yet: what goes back to the backlog through the engine, never as a bare transition. */
+export const STARTED_NO_PR: readonly Status[] = ['PLAN_IN_PROGRESS', 'PLAN_READY', 'IN_PROGRESS'];
 
 export const TRANSITIONS: readonly Transition[] = [
   { from: 'NOT_YET_SUBMITTED', to: 'QUEUED', by: UO, flavors: ['worker'], sets: 'queued_at', label: 'queue' },
@@ -24,11 +31,15 @@ export const TRANSITIONS: readonly Transition[] = [
   { from: 'NOT_YET_SUBMITTED', to: 'PLAN_IN_PROGRESS', by: UE, flavors: ['epic'], sets: 'started_at', label: 'plan the breakdown' },
   { from: 'ICEBOX', to: 'NOT_YET_SUBMITTED', by: U, flavors: ALL, label: 'move to backlog' },
   { from: 'ICEBOX', to: 'QUEUED', by: U, flavors: ['worker'], sets: 'queued_at', label: 'queue' },
-  { from: 'QUEUED', to: 'NOT_YET_SUBMITTED', by: U, flavors: ['worker'], label: 'cancel' },
+  // Stopping work is never starting it (#73), so the orchestrator may undo a submit too (#584).
+  { from: 'QUEUED', to: 'NOT_YET_SUBMITTED', by: UO, flavors: ['worker'], label: 'cancel' },
   { from: 'QUEUED', to: 'ICEBOX', by: U, flavors: ['worker'], sets: 'iceboxed_at', label: 'icebox' },
   { from: 'QUEUED', to: 'PLAN_IN_PROGRESS', by: E, flavors: ['worker'], sets: 'started_at', label: 'start planning' },
   { from: 'PLAN_IN_PROGRESS', to: 'PLAN_READY', by: E, flavors: ['worker', 'epic'], sets: 'plan_ready_at', label: 'plan submitted' },
   { from: 'PLAN_IN_PROGRESS', to: 'ICEBOX', by: U, flavors: ['worker', 'epic'], sets: 'iceboxed_at', label: 'icebox' },
+  // Started, no pull request yet (#584). An epic only while its breakdown is planned: once approved, its children and branch exist.
+  ...(['PLAN_IN_PROGRESS', 'PLAN_READY'] as const).map((from): Transition => ({ from, to: 'NOT_YET_SUBMITTED', by: UO, flavors: ['worker', 'epic'], label: BACK_TO_BACKLOG })),
+  { from: 'IN_PROGRESS', to: 'NOT_YET_SUBMITTED', by: UO, flavors: ['worker'], label: BACK_TO_BACKLOG },
   { from: 'PLAN_READY', to: 'PLAN_IN_PROGRESS', by: UO, flavors: ['worker', 'epic'], label: 'request changes' },
   { from: 'PLAN_READY', to: 'IN_PROGRESS', by: UO, flavors: ['worker'], sets: 'plan_approved_at', label: 'approve plan' },
   // Approving a breakdown creates items and spends money on them: the user's call alone, never the orchestrator's.
