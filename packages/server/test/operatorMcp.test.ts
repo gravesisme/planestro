@@ -136,7 +136,7 @@ describe('the operator MCP endpoint (#175, step 2)', () => {
       // Models are listed so a call naming one is refused in words, never dropped: operator_mcp.allow_models is off (#577).
       const noModel = await client.callTool({ name: 'edit_item', arguments: { id: item.id, implementer: 'fable-5', title: 'Renamed' } });
       expect(noModel.isError).toBe(true);
-      expect(text(noModel).error).toMatch(/operator_mcp\.allow_models; it is off \(Settings → project → "Your own MCP clients" → "May set an item's models"\)/);
+      expect(text(noModel).error).toMatch(/operator_mcp\.allow_models; it is off \(Settings → Project → "Your own MCP clients" → "May set an item's models"\)/);
       expect(srv.store.requireItem(item.id).file.frontmatter).toMatchObject({ implementer: 'opus-5', title: 'Cave map' });
 
       const note = srv.store.journal.append({ type: 'orchestrator.planestro_note', actor: 'orchestrator', data: { text: 'A tool was missing.' } });

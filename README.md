@@ -263,6 +263,8 @@ in:
 - `list_notes`: the orchestrator's notes about planestro (the Console's
   Planestro feedback) and what became of each; `open` for the ones nothing
   was done with.
+- `list_questions`: the orchestrator's question cards for the user (`Q-<n>`),
+  open ones by default, each with its summary, recommendation and thread.
 - `create_item`, `edit_item`, `attach_file` and `mark_note`: with `operator_mcp.allow_writes:
   true` in `planestro.yml` (off by default). `create_item` files a new item
   (title, description, kind, category, priority, attachments) to Not yet submitted, marked
@@ -285,12 +287,20 @@ in:
 - Item actions, with `operator_mcp.allow_actions: true` (a separate opt-in,
   off by default, so filing items never grants acting on them): `unblock_item` (id, message, fresh),
   `send_message`, `answer_question` (each question to its answer),
-  `answer_decision` (an option's label and/or words; an option that carries an
-  action stays on the board), `decide_permission` (deny; allow once only with
+  `answer_question_card` (the user's answer to a question card `Q-<n>`: posted
+  in its thread, which wakes the orchestrator, or with `close` recorded as its
+  resolution), `answer_decision` (an option's label and/or words),
+  `answer_audition` (the user's picks per role), `decide_permission` (deny; allow once only with
   `operator_mcp.allow_permissions`, never an allow rule), `sync_item`,
   `rerun_ci` and `file_note` (a note filed as an issue in
   `feedback.issue_repo`). Each takes the engine path the board's button does,
   and its Activity line says `[operator]`, not `[user]`.
+  A card option that carries an action (file an item, submit one) and an
+  audition's picks are the user's own taps: `answer_decision` and
+  `answer_audition` take them only with `operator_mcp.allow_card_actions: true`
+  (its own opt-in, off by default), for a session relaying the user's word.
+  planestro then performs the card's action exactly as the tap would, with the
+  tap's refusals. Off, the refusal says where the setting is.
 - Decisions, with `operator_mcp.allow_decisions: true` (a third opt-in, off by
   default): `approve_plan` (notes, hold), `reject_plan`, `discard_item`,
   `close_as_done`, `set_hold` and `release_hold`, each as the board makes it

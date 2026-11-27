@@ -2,8 +2,8 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
-import { STATUSES, PRIORITIES, KINDS, decisionOf, laneOf, findModel, canPlan, getSection, mcpBudgetOf } from '@planestro/shared';
-import { actingAs, type DataStore, type StoredItem, type ItemOp } from '../store/DataStore.ts';
+import { STATUSES, PRIORITIES, KINDS, decisionOf, laneOf, findModel, canPlan, getSection, mcpBudgetOf, getQuestionSection, parseThread, type DecisionAction } from '@planestro/shared';
+import { actingAs, type DataStore, type StoredItem, type StoredQuestion, type ItemOp } from '../store/DataStore.ts';
 import { notesWithLinks, fileNote, markNotes } from '../engine/feedback.ts';
 import type { GhPort } from '../engine/ports.ts';
 import type { Engine } from '../engine/Engine.ts';
@@ -25,18 +25,19 @@ import { McpAttachments, readMcpAttachments, type McpAttachmentInput } from './m
 // a plan, discard, close as done). Submitting an item and moving it in or out of the Icebox or along its column is a fourth,
 // `operator_mcp.allow_submit`: the developer's own session at the keyboard does what they ask without going around the
 // endpoint to the board's HTTP routes, where it would read as `[user]`. Item edits and the feedback notes ride the first two; an item's planner and
-// implementer are a fifth, `operator_mcp.allow_models` (#577), on `create_item` and `edit_item`. It is a different thing from
+// implementer are a fifth, `operator_mcp.allow_models` (#577), on `create_item` and `edit_item`; the two taps that are the user's own (a card option that
+// carries an action, #73, and an audition's picks, #207) are a sixth, `operator_mcp.allow_card_actions` (#577). It is a different thing from
 // the in-process `planestro` server each worker and the orchestrator get (submit_plan, report_done,
 // …), and must never reach them: workers never touch planning state (invariant 1). They run with
 // strictMcpConfig (Claude) or --ignore-user-config (Codex), so a user-scope registration is not
 // inherited, and a project's own MCP servers may not point at an operator endpoint (operatorMcpUrl).
 
 /** The tools this endpoint always offers. */
-export const OPERATOR_READ_TOOLS = ['list_items', 'get_item', 'get_state', 'list_notes'] as const;
+export const OPERATOR_READ_TOOLS = ['list_items', 'get_item', 'get_state', 'list_notes', 'list_questions'] as const;
 /** Listed only with `operator_mcp.allow_writes` (#232); off, they are unknown tools. Files only: nothing starts work. */
 export const OPERATOR_WRITE_TOOLS = ['create_item', 'edit_item', 'attach_file', 'mark_note'] as const;
 /** Listed only with `operator_mcp.allow_actions` (#365); off, they are unknown tools. */
-export const OPERATOR_ACTION_TOOLS = ['unblock_item', 'send_message', 'answer_question', 'answer_decision', 'decide_permission', 'sync_item', 'rerun_ci', 'file_note'] as const;
+export const OPERATOR_ACTION_TOOLS = ['unblock_item', 'send_message', 'answer_question', 'answer_question_card', 'answer_decision', 'answer_audition', 'decide_permission', 'sync_item', 'rerun_ci', 'file_note'] as const;
 /** Listed only with `operator_mcp.allow_decisions`: the board's decisions about an item's run, for a supervising session the user directs. */
 export const OPERATOR_DECISION_TOOLS = ['approve_plan', 'reject_plan', 'discard_item', 'close_as_done', 'set_hold', 'release_hold'] as const;
 /** Listed only with `operator_mcp.allow_submit`: submit an item, move it in or out of the Icebox or along its column, as the board does. */
@@ -47,15 +48,40 @@ export const OPERATOR_TOOLS = [...OPERATOR_READ_TOOLS, ...OPERATOR_WRITE_TOOLS, 
 /** Each opt-in, what it adds: named in the endpoint's instructions while it is off, so a session says which setting would offer a tool instead of going around the endpoint. */
 const OPT_INS = [
   ['allow_writes', 'create_item, edit_item, attach_file, mark_note'],
-  ['allow_actions', 'unblock_item, send_message, answer_question, answer_decision, decide_permission, sync_item, rerun_ci, file_note'],
+  ['allow_actions', 'unblock_item, send_message, answer_question, answer_question_card, answer_decision, answer_audition, decide_permission, sync_item, rerun_ci, file_note'],
   ['allow_decisions', 'approve_plan, reject_plan, discard_item, close_as_done, set_hold, release_hold'],
   ['allow_submit', 'submit_item, move_item'],
   ['allow_models', "an item's planner and implementer, on create_item and edit_item"],
+  ['allow_card_actions', "a decision-card option that carries an action, on answer_decision, and an audition's picks, on answer_audition"],
 ] as const;
 
 /** Where the opt-ins are, said in every refusal that names one (#577): a session relays it to a user who is away from the board. */
-const SETTINGS_PLACE = 'Settings → project → "Your own MCP clients"';
+const SETTINGS_PLACE = 'Settings → Project → "Your own MCP clients"';
 const MODELS_OFF = `setting an item's planner or implementer needs operator_mcp.allow_models; it is off (${SETTINGS_PLACE} → "May set an item's models"), so nothing was changed: the user sets it on the board, or turns that on`;
+
+const CARD_ACTIONS_SWITCH = `operator_mcp.allow_card_actions; it is off (${SETTINGS_PLACE} → "May take card actions and answer auditions")`;
+const AUDITION_OFF = `picking an audition's takes is the user's own call: relaying it from here needs ${CARD_ACTIONS_SWITCH}, so nothing was picked: the user picks on the item's page, or turns that on; there is no other path from here`;
+
+/**
+ * Why this session may not pick a card option that carries an action, or null (#577). The action is the user's own tap (#73):
+ * it is taken from here only with `allow_card_actions`, read per call. One that discards or closes an item needs the opt-in
+ * that offers those here too, and a remote branch's deletion never leaves the board. What the tap itself refuses
+ * (`actionRefusal`) is the engine's to say, as on the board.
+ */
+function cardActionRefusal(store: DataStore, label: string, action: DecisionAction): string | null {
+  const cfg = store.config.operator_mcp;
+  if (!cfg.allow_card_actions) return `"${label}" carries an action (${action.tool}), which is the user's own tap: picking it from here needs ${CARD_ACTIONS_SWITCH}, so nothing was done: the user picks it on the board, or turns that on; from here, an option with no action, or an answer in words where the card takes one, is the only other path`;
+  if ((action.tool === 'discard_item' || action.tool === 'close_as_done') && !cfg.allow_decisions) return `"${label}" carries ${action.tool}, which also needs operator_mcp.allow_decisions; it is off (${SETTINGS_PLACE} → "May make decisions on items"), so nothing was done: the user picks it on the board, or turns that on`;
+  if (action.tool === 'discard_item' && action.args.delete_branch === true) return `"${label}" deletes a remote branch, which stays the user's tick on the board: nothing was done`;
+  return null;
+}
+
+/** A refused answer says where the answer belongs instead: the item's audition, or an open question card about it (#577). */
+function answerElsewhere(store: DataStore, tool: string, itemId: string, message: string): string {
+  if (tool !== 'answer_question' && tool !== 'answer_decision') return message;
+  const cards = store.listQuestions({ status: 'open', item: itemId }).map((q) => q.id);
+  return `${message}${store.getItem(itemId)?.file.frontmatter.awaiting === 'audition' ? '; it waits on an audition: answer_audition' : ''}${cards.length ? `; ${cards.join(', ')} ${cards.length === 1 ? 'is an open question card' : 'are open question cards'} about it: answer_question_card` : ''}`;
+}
 
 /** A model named for a role must be a row the project defines, and a planner one that can plan: the board's own check. */
 function requireModels(store: DataStore, fields: { planner?: string; implementer?: string }): void {
@@ -142,6 +168,7 @@ const DECLINED = /^(not now|not possible|refused|nothing to)/;
 
 /** The engine calls the board's routes make that are not on every engine (MockEngine has none of them). */
 type ActingEngine = Engine & {
+  orchestrator?: { enabled: boolean; wake: (ev: { type: string; item?: string; data?: Record<string, unknown> }) => void };
   unblock?: (id: string, message?: string, by?: 'user', opts?: { fresh?: boolean }) => Promise<void>;
   syncWithBase?: (id: string, opts?: { by?: 'user' }) => Promise<string>;
   answerDecision?: (id: string, answer: { choice?: string; text?: string }) => Promise<void>;
@@ -156,10 +183,10 @@ export function operatorServer(store: DataStore, engine: Engine, caller: Operato
   const { allow_writes: writes, allow_actions: actions, allow_decisions: decisions, allow_submit: submits } = cfg;
   const models = cfg.allow_models;
   const modelField = (role: 'planner' | 'implementer') => z.string().trim().min(1).optional().describe(models ? `The model that ${role === 'planner' ? 'plans' : 'implements'} it, on the user's word: one of ${store.config.models.filter((m) => role === 'implementer' || canPlan(m)).map((m) => m.id).join(', ')}; omitted, ${store.config.defaults[role]}` : 'Refused: operator_mcp.allow_models is off, so models are set on the board');
-  const offers = [writes && `create_item, which files a new item${submits ? '' : ' for the user to submit'} (screenshots attached), edit_item, attach_file and mark_note`, actions && 'item actions (unblock_item, send_message, answer_question, answer_decision, decide_permission, sync_item, rerun_ci, file_note) that act as the board does, recorded in Activity as [operator]', decisions && 'decisions (approve_plan, reject_plan, discard_item, close_as_done, set_hold, release_hold) as the board makes them', submits && 'submit_item and move_item (Icebox, backlog, order), on the user\'s word'].filter(Boolean).join(', and ');
+  const offers = [writes && `create_item, which files a new item${submits ? '' : ' for the user to submit'} (screenshots attached), edit_item, attach_file and mark_note`, actions && 'item actions (unblock_item, send_message, answer_question, answer_question_card, answer_decision, answer_audition, decide_permission, sync_item, rerun_ci, file_note) that act as the board does, recorded in Activity as [operator]', decisions && 'decisions (approve_plan, reject_plan, discard_item, close_as_done, set_hold, release_hold) as the board makes them', submits && 'submit_item and move_item (Icebox, backlog, order), on the user\'s word'].filter(Boolean).join(', and ');
   const off = OPT_INS.filter(([key]) => !cfg[key]).map(([key, tools]) => `operator_mcp.${key} (${tools})`);
   // A session that wants what no tool offers must not reach for the board's HTTP routes or the item files: it would act as the user, unrecorded as [operator].
-  const limits = `Change the backlog only through these tools: never through planestro's HTTP API or by editing its files.${off.length ? ` Off in this project's planestro.yml: ${off.join('; ')}. To do one of those, say which setting would offer it (Settings → Your own MCP clients), or leave it to the user on the board.` : ''}`;
+  const limits = `Change the backlog only through these tools: never through planestro's HTTP API or by editing its files.${off.length ? ` Off in this project's planestro.yml: ${off.join('; ')}. To do one of those, say which setting would offer it (Settings → Project → Your own MCP clients), or leave it to the user on the board.` : ''}`;
   const server = new McpServer({ name: 'planestro', version: TOOL_VERSION }, { instructions: `The backlog of ${store.config.project.name} (${store.dataDir}), ${offers ? `with ${offers}` : 'read-only'}. get_state for the overview, list_items to find items, get_item for one. ${limits}` });
   server.registerTool('list_items', {
     description: 'List backlog items, one summary line each (id, title, kind, status, priority, epic, blocked reason, awaiting, needs_you, PR and CI). Filters combine.',
@@ -223,11 +250,23 @@ export function operatorServer(store: DataStore, engine: Engine, caller: Operato
     inputSchema: { open: z.boolean().optional().describe('true: only notes not yet filed or handled') },
     annotations: READ_ONLY,
   }, async ({ open }) => json(notesWithLinks(store).filter((n) => !open || !(n.links.handled || n.links.issues.length)).map((n) => ({ ts: n.ts, ...(n.item ? { item: n.item } : {}), text: n.data?.text, ...n.links }))));
+  server.registerTool('list_questions', {
+    description: "The orchestrator's question cards for the user (the Console's questions, each Q-<n> with its own page): status, the item it is about, headline, summary, recommendation, details and thread. Open ones, unless `status` says otherwise. Answering one is answer_question_card (with allow_actions).",
+    inputSchema: { status: z.enum(['open', 'resolved', 'withdrawn', 'all']).optional().describe('open (default), resolved, withdrawn, or all'), item: z.string().optional().describe('Only the cards about this item id') },
+    annotations: READ_ONLY,
+  }, async ({ status, item }) => json(store.listQuestions({ ...(status === 'all' ? {} : { status: status ?? 'open' }), ...(item ? { item } : {}) }).map((q) => questionSummary(q))));
   if (writes) registerWrites(server, store, engine, caller, modelField);
   if (actions) registerItemActions(server, store, engine as ActingEngine);
   if (decisions) registerDecisions(server, store, engine);
   if (submits) registerSubmit(server, store, engine);
   return server;
+}
+
+/** A question card as a session reads it: what was asked, and what has been said since. */
+function questionSummary(q: StoredQuestion) {
+  const fm = q.file.frontmatter;
+  const section = (title: 'Summary' | 'Details' | 'Recommendation') => { const body = getQuestionSection(q.file, title); return body ? { [title.toLowerCase()]: body } : {}; };
+  return { id: fm.id, status: fm.status, ...(fm.item ? { item: fm.item } : {}), headline: fm.headline, asked_at: fm.asked_at, ...section('Summary'), ...section('Recommendation'), ...section('Details'), ...(fm.resolution ? { resolution: fm.resolution } : {}), thread: parseThread(q.file) };
 }
 
 const opError = (e: unknown) => ({ ...json({ error: (e as Error).message }), isError: true });
@@ -420,7 +459,7 @@ function registerItemActions(server: McpServer, store: DataStore, engine: Acting
       const said = await actingAs('operator', fn);
       store.journal.append({ type: 'operator_mcp.action', item: itemId, actor: 'operator', data: { tool, ...args } });
       return json({ ...(said ? { said } : {}), item: itemSummary(store, store.requireItem(itemId)) });
-    } catch (e) { return { ...json({ error: (e as Error).message }), isError: true }; }
+    } catch (e) { return { ...json({ error: answerElsewhere(store, tool, itemId, (e as Error).message) }), isError: true }; }
   };
   const said = (r: string) => { if (DECLINED.test(r)) throw new Error(r); return r; };
 
@@ -442,16 +481,62 @@ function registerItemActions(server: McpServer, store: DataStore, engine: Acting
     inputSchema: { id, answers: z.record(z.string(), z.string().min(1)).refine((a) => Object.keys(a).length > 0, 'at least one answer').describe('Each question, as asked, to its answer') },
     annotations: ACTS,
   }, ({ id: itemId, answers }) => act('answer_question', itemId, { answers }, () => engine.respond(itemId, { kind: 'question', answers })));
-  server.registerTool('answer_decision', {
-    description: "Answer the decision card an item waits on: one of its option labels, your own words where it allows them, or both, as the board's card does. An option that carries an action (filing or submitting an item, a discard) is the user's to pick on the board.",
-    inputSchema: { id, choice: z.string().optional().describe('The label of the option picked, exactly'), text: z.string().optional().describe('Your answer in words') },
+  server.registerTool('answer_question_card', {
+    description: "Answer a question card (Q-<n>, from list_questions) that the orchestrator filed for the user, in the user's own words: never an answer of your own. The answer is posted in the card's thread, as the reply box on its page does, and the orchestrator is woken to carry it out and close the card. `close: true` instead records the answer and closes the card with no wake, as its page's Mark answered does: for an answer already carried out (say, relayed with unblock_item). An item's own parked question is answer_question; its decision card is answer_decision.",
+    inputSchema: { question: z.string().regex(/^Q-\d+$/, 'a question card id, e.g. Q-7').describe('The question card id, e.g. Q-7'), answer: z.string().trim().min(1).describe("The user's answer, in their words"), close: z.boolean().optional().describe('true: record the answer and close the card, waking nobody') },
     annotations: ACTS,
-  }, ({ id: itemId, choice, text }) => act('answer_decision', itemId, { ...(choice ? { choice } : {}), ...(text ? { text } : {}) }, async () => {
-    if (!engine.answerDecision) throw new Error('decisions need the live engine');
-    // An option's action is performed as the user when it is picked: never on an operator session's word (#73).
-    const option = decisionOf(store.requireItem(itemId).file.frontmatter)?.options.find((o) => o.label === choice?.trim());
-    if (option?.action) throw new Error(`"${option.label}" carries an action (${option.action.tool}); pick it on the board`);
-    await engine.answerDecision(itemId, { choice, text });
+  }, async ({ question, answer, close }) => {
+    try {
+      const fm = store.requireQuestion(question).file.frontmatter;
+      // Said in the thread itself: a question file has no [operator], and the orchestrator should know who relayed it.
+      const relayed = `${answer} (the user's word, relayed through the operator MCP)`;
+      await actingAs('operator', async () => {
+        if (close) {
+          if (fm.status !== 'open') throw new Error(`${fm.id} is already ${fm.status}`);
+          store.resolveQuestion(fm.id, 'resolved', relayed, 'user');
+        } else {
+          // The board's reply needs someone to read it; so does this one.
+          if (!engine.orchestrator?.enabled) throw new Error('the orchestrator is not available with this engine, so nobody would read the answer: pass close: true to record it and close the card');
+          store.postToQuestion(fm.id, 'user', relayed);
+          engine.orchestrator.wake({ type: 'question_message', data: { question: fm.id, message: relayed } });
+        }
+        if (fm.item && store.getItem(fm.item)) store.mutateItem(fm.item, [{ activity: { actor: 'user', text: `answered ${fm.id} (${fm.headline.slice(0, 120)})${close ? ' and closed it' : ''}: ${answer.slice(0, 600)}` } }], 'user', { commit: `${fm.item}: ${fm.id} answered` });
+      });
+      store.journal.append({ type: 'operator_mcp.action', ...(fm.item ? { item: fm.item } : {}), actor: 'operator', data: { tool: 'answer_question_card', question: fm.id, answer, ...(close ? { close } : {}) } });
+      return json({ said: close ? `${fm.id} is closed with that answer` : `posted in ${fm.id}'s thread; the orchestrator is woken to carry it out`, question: questionSummary(store.requireQuestion(fm.id)) });
+    } catch (e) { return opError(e); }
+  });
+  const cardActions = store.config.operator_mcp.allow_card_actions;
+  server.registerTool('answer_decision', {
+    description: `Answer the decision card an item waits on: one of its option labels, your own words where it allows them, or both, as the board's card does. ${cardActions ? "An option that carries an action (filing or submitting an item, a re-run) is the user's own tap: pick it only on their explicit word for this card, put their words in `text`, and planestro performs the action exactly as their tap would, with the same refusals. One that discards or closes an item also needs allow_decisions, and one that deletes a remote branch stays on the board." : "An option that carries an action (filing or submitting an item, a discard) is the user's to pick on the board: picking it here needs operator_mcp.allow_card_actions, which is off."}`,
+    inputSchema: { id, choice: z.string().optional().describe('The label of the option picked, exactly'), text: z.string().optional().describe("Your answer in words; with an option that carries an action, the user's words") },
+    annotations: ACTS,
+  }, ({ id: itemId, choice, text }) => {
+    const args: Record<string, unknown> = { ...(choice ? { choice } : {}), ...(text ? { text } : {}) };
+    return act('answer_decision', itemId, args, async () => {
+      if (!engine.answerDecision) throw new Error('decisions need the live engine');
+      // An option's action is performed as the user when it is picked (#73): from here only with the opt-in, read per call (#577).
+      const option = decisionOf(store.requireItem(itemId).file.frontmatter)?.options.find((o) => o.label === choice?.trim());
+      const refusal = option?.action ? cardActionRefusal(store, option.label, option.action) : null;
+      if (refusal) throw new Error(refusal);
+      // The board's own tap: actionRefusal is asked again there, and a refusal leaves the card as it was.
+      await engine.answerDecision(itemId, { choice, text });
+      if (option?.action) args.action = option.action.tool;
+    });
+  });
+  server.registerTool('answer_audition', {
+    description: `Record the user's picks for the audition an item waits on (awaiting: audition; get_item shows its roles and takes), as the item page's audition does. ${cardActions ? "Listening and choosing is the user's own call: relay only what they said, never a choice of your own. Each role that still needs takes gets up to what it needs (`pick`, less its `kept`) from this round's takes; short of that, `regenerate` asks for new ones, with their note. The worker resumes with the picks." : 'It needs operator_mcp.allow_card_actions, which is off.'}`,
+    inputSchema: {
+      id,
+      picks: z.record(z.string(), z.object({ takes: z.array(z.string()).max(30).default([]).describe('The takes kept for this role: paths exactly as the audition lists them; none to regenerate them all'), regenerate: z.string().max(2000).optional().describe("Regenerate what the role still needs, with the user's note for the new takes ('' for no note)") })).describe('Each role id to its answer; every role that still needs takes must have one'),
+      word: z.string().trim().min(1).describe('What the user said, for Activity, e.g. "take B for the overworld loop"'),
+    },
+    annotations: ACTS,
+  }, ({ id: itemId, picks, word }) => act('answer_audition', itemId, { picks, word }, async () => {
+    // Read per call, like allow_permissions. Nobody answers an audition for the designer (#207): the session only relays.
+    if (!store.config.operator_mcp.allow_card_actions) throw new Error(AUDITION_OFF);
+    await engine.respond(itemId, { kind: 'audition', picks });
+    store.mutateItem(itemId, [{ activity: { actor: 'user', text: `audition picks relayed on the user's word: ${word.slice(0, 400)}` } }], 'user');
   }));
   server.registerTool('decide_permission', {
     description: `Decide the permission request an item's session parked on: deny it (with a reason the session reads)${store.config.operator_mcp.allow_permissions ? ', or allow it once' : '. Allowing needs operator_mcp.allow_permissions, which is off'}. Never adds an allow rule: that stays on the board.`,
