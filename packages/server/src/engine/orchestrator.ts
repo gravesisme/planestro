@@ -97,7 +97,10 @@ export interface OrchestratorHooks {
   ciWorkflow?: string;
   /** The CI runners per label, read by planestro's own gh and cached (#216): online, busy, idle and queued jobs. */
   runnerStatus?(): Promise<string>;
-  message(id: string, text: string): Promise<void>;
+  /** Returns what became of the message, in words (#580): its session's turn started, or it is queued, and behind what. */
+  message(id: string, text: string): Promise<string | void>;
+  /** A `review_stalled` wake read late: what the item is doing now when it is no longer a stall (CiWatch.reviewStallOver, #580). */
+  reviewStallOver?(id: string): string | undefined;
   /** `hold`: the pull request it opens stays out of the merge queue, for this reason (#97). `syncFirst` (default true): sync the branch with its base first (#217). */
   approvePlan(id: string, notes?: string, hold?: string, syncFirst?: boolean): Promise<void>;
   /** Hold an item out of the merge queue, with the reason on the item. Returns what happened. */
@@ -554,6 +557,9 @@ export class Orchestrator {
           if (stated) lines.push(this.holdPlanPolicy(fm.id, stated));
         }
         if (e.type === 'permission_request') lines.push(this.permissionPacket(fm));
+        // A stall wake read late (#580): the queue held it while this orchestrator was busy or paused, and the item moved on.
+        const over = e.type === 'review_stalled' ? this.hooks.reviewStallOver?.(fm.id) : undefined;
+        if (over) lines.push(`NO LONGER A STALL (planestro's reading of the item now, later than this wake): ${over}. The note below was written when the wake was raised; there is nothing to do for it now, and message_session would only queue behind what is running.`);
         const drop = fm.op_data?.mcp_drop as { error?: string; at?: string; final_message?: string } | undefined;
         if (fm.blocked && fm.blocked_reason === 'connection_lost' && drop) lines.push(`Connection lost (#167): the session lost its line to planestro at ${drop.at} (${drop.error}), so its reports and permission requests never arrived, and nothing could be applied from them. Its last message, as it ended:\n${drop.final_message?.trim() || '(none)'}\nRecover from it: if it says the work is done and committed, finish_from_worktree (retry_op in review) lands it as it is; otherwise unblock_item tells the session what to hand in again (a new turn has a working connection).`);
         if (fm.triage) lines.push(e.type === 'decision_answered' ? this.decisionAnsweredPacket() : this.triagePacket(fm));
@@ -808,7 +814,7 @@ export class Orchestrator {
       { name: 'set_queue_order', description: 'Reorder the QUEUED items (first is admitted first) within each priority: the queue admits high before medium before low before none whatever their order here; a priority is the user\'s to change.', schema: { ids: z.array(z.string()) }, handler: async (a) => { const ids = a.ids as string[]; const ranks = renormalize(ids); for (const id of ids) { const it = store.requireItem(id); if (laneOf(it.file.frontmatter.status) !== 'board') throw new Error(`${id} is not on the board`); store.mutateItem(id, [{ rank: ranks.get(id)! }], 'orchestrator'); } this.hooks.poke(); return 'queue order set'; } },
       { name: 'skip_merge', description: 'Hold an item\'s pull request out of the merge queue, with a reason: what it waits for. The reason is shown on the item. Its commits are still pushed and its CI is still read; it does not merge until the hold is released. Before the pull request exists, it is opened held.', schema: { ...idArg, reason: z.string() }, handler: async (a) => this.hooks.holdMerge(String(a.id), String(a.reason)) },
       { name: 'unskip_merge', description: 'Return a held item to the merge queue, once what its hold waits for has happened. Only a hold that waits on an agent (yours, a worker\'s, a scope check); a hold that waits on the user (their Approve and hold, a pull request into a review.hold_into branch, a loop\'s review) is refused: they release it on the item\'s page.', schema: idArg, handler: async (a) => { store.requireItem(String(a.id)); const result = await this.hooks.unskipMerge(String(a.id)); this.hooks.poke(); return result; } },
-      { name: 'message_session', description: "Send guidance to an item's worker session (queued for its next turn).", schema: { ...idArg, text: z.string() }, handler: async (a) => { try { await this.hooks.message(String(a.id), String(a.text)); } catch (e) { return `refused: ${(e as Error).message}`; } return 'queued for the session'; } },
+      { name: 'message_session', description: "Send guidance to an item's worker session. With nothing live on the item (no turn, no step, no saved turn) and no stop, the message starts the session's turn now: the way to move an item in review that is not blocked. Otherwise it is queued for the session's next turn. The answer says which, and what it waits behind.", schema: { ...idArg, text: z.string() }, handler: async (a) => { try { return (await this.hooks.message(String(a.id), String(a.text))) || 'queued for the session'; } catch (e) { return `refused: ${(e as Error).message}`; } } },
       { name: 'annotate_item', description: "Append an orchestrator note to an item's activity log.", schema: { ...idArg, text: z.string() }, handler: async (a) => { store.mutateItem(String(a.id), [{ activity: { actor: 'orchestrator', text: String(a.text) } }], 'orchestrator'); return 'noted'; } },
       { name: 'submit_item', description: 'Submit a NOT_YET_SUBMITTED item. A worker item is queued for planning. An epic is never queued: its breakdown is planned, as the user\'s own action, so only in a wake where the user is talking to you (the chat, or a question\'s thread) and asked for it; in any other wake an epic is refused. An item imported from a GitHub issue is submitted the same way: only where the user is talking to you, since its text is not theirs. To offer it outside the chat, give a decision card option the action { tool: "submit_item", args: { id } } when an item is stopped, or ask with ask_user.', schema: idArg, handler: async (a) => {
         const id = String(a.id);

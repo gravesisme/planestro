@@ -72,6 +72,8 @@ export interface TurnRunnerContext {
   /** The account a turn runs on (#242), whether its usage guard is up, and what the runner is given for it. */
   accountFor(fm: { account?: string }, def: ModelDef): { account: Account } | { missing: string; why: string };
   guarded(runner: string, account?: string): boolean;
+  /** That guard, in words, with when it is due to lift: what a turn held by it is said to wait for (#580). */
+  guardWait(runner: string, account?: string): string;
   accountTurnOptions(account: Account): { account?: AccountCredentials; secretDirs?: string[] };
   /** The item's caps, and what resuming its conversation costs now (#64). */
   budgetOf(fm: { budget_usd?: number; budget_turns?: number; budget_tokens?: number }): { usd: number; usdKey: string; turns: number; turnsKey: string; tokens: number; tokensKey: string };
@@ -111,7 +113,8 @@ const BUDGET_WARN_AT = 0.8;
  * `syncFirst`: the branch is synced with its base before the turn starts (#217), and the turn told how.
  */
 export interface TurnOpts { /** A plan's revision turn: it answers whatever stop the plan's last turn left (#359). */ clearsStop?: true; opener?: boolean; fresh?: true | 'auto'; note?: string; carryOn?: boolean; final?: boolean; estimate?: ResumeEstimate; commandGrant?: CommandGrant; syncFirst?: boolean; ruling?: true }
-export interface PendingTurn { key: string; phase: TurnPhase; prompt: string; extraAllowed: string[]; oneShotCommands: string[]; opts: TurnOpts }
+/** `waits`: what a deferred turn was last said, in Activity, to be waiting for (#580): said once per reason. */
+export interface PendingTurn { key: string; phase: TurnPhase; prompt: string; extraAllowed: string[]; oneShotCommands: string[]; opts: TurnOpts; waits?: string }
 
 /** The CLI's quote as the engine's estimate: the write when the cache has expired, a read of the same window when it has not. */
 function quoteEstimate(q: ResumeQuote): ResumeEstimate {
@@ -232,11 +235,23 @@ export class TurnRunner {
   async runTurnFor(id: string, phase: TurnPhase, prompt: string, extraAllowed: string[] = [], oneShotCommands: string[] = [], opts: TurnOpts = {}, queued?: PendingTurn): Promise<TurnResult | undefined> {
     const oneShot = new Set(oneShotCommands.map((c) => c.trim()));
     const intent: PendingTurn = queued ?? { key: randomUUID(), phase, prompt, extraAllowed, oneShotCommands, opts };
-    const defer = () => {
+    const defer = (why?: string) => {
       const pending = this.ctx.store.requireItem(id).file.frontmatter.op_data?.pending_turn as PendingTurn | undefined;
       // A slot wait can finish after a newer instruction has been queued for this item.
-      if (!pending || pending.key === intent.key) this.ctx.savePendingTurn(id, intent);
+      if (pending && pending.key !== intent.key) return undefined;
+      // Said once per reason (#580): HH-835's conflict and HH-844's red run were "handed to the session" under a usage pause,
+      // and for an hour their logs said nothing of the turn that was saved, so the stall watchdog and the orchestrator read a stall.
+      const said = pending?.waits ?? intent.waits;
+      if (!why || said === why) { this.ctx.savePendingTurn(id, said ? { ...intent, waits: said } : intent); return undefined; }
+      this.ctx.savePendingTurn(id, { ...intent, waits: why });
+      this.ctx.store.mutateItem(id, [{ activity: { actor: 'app', text: `its ${phase} turn is saved and waits: ${why}; it starts by itself then, with nothing to unblock` } }], 'engine');
       return undefined;
+    };
+    /** What holds a turn back that is no fault of the item's, in words; nothing is said while the engine stops or restarts. */
+    const heldBy = (runner?: string, account?: string): string | undefined => {
+      if (this.ctx.stopping || this.ctx.guards.draining) return undefined;
+      if (this.ctx.guards.paused) return 'automation is paused';
+      return runner && this.ctx.guarded(runner, account) ? this.ctx.guardWait(runner, account) : undefined;
     };
     const item = this.ctx.store.requireItem(id);
     const fm = item.file.frontmatter;
@@ -247,7 +262,7 @@ export class TurnRunner {
       this.ctx.store.mutateItem(id, [{ set: { op_data: data } }, { activity: { actor: 'app', text: `not starting its ${phase} turn: you have this item (taken over)` } }], 'engine');
       return undefined;
     }
-    if (this.ctx.stopping || this.ctx.guards.paused || this.ctx.guards.draining) return defer();
+    if (this.ctx.stopping || this.ctx.guards.paused || this.ctx.guards.draining) return defer(heldBy());
     const d = this.ctx.store.derived(item);
     // No worktree, no turn (#439): an epic past planning, or an item whose worktree cleanup removed (HH-357), has no session
     // to run in. Its saved instruction is dropped and said; an active worker item stops as worktree_missing, never engine_error.
@@ -283,7 +298,7 @@ export class TurnRunner {
     if (runner === 'claude' && !model) throw new Error(`model ${def.id} has no claude_model`);
     // Runners that report tokens instead of dollars are budgeted in worker turns.
     const metered = modelCapabilities(def).accounting === 'dollars';
-    if (this.ctx.guarded(runner, account.name)) return defer();
+    if (this.ctx.guarded(runner, account.name)) return defer(heldBy(runner, account.name));
     const budget = this.ctx.budgetOf(fm);
     // A turn that only carries a permission ruling continues the turn that parked, which was charged (#295, HH-439).
     if (!metered && !opts.ruling && (fm.agent_turns ?? 0) >= budget.turns) { this.ctx.block(id, 'turn_budget', `${def.label} has used ${fm.agent_turns} of ${budget.turns} turns on this item (${budget.turnsKey}); raise it on the item and unblock, or take the item over by hand`); return undefined; }
@@ -507,7 +522,7 @@ export class TurnRunner {
     // A worker turn once the PR is open is a fix (CI or review) for the efficiency report (#346).
     this.recordUsage(id, def, model ?? def.label, phase === 'plan' ? 'planner' : 'worker', op, result, { stage: phase === 'plan' ? 'planning' : fm.status === 'IN_REVIEW' ? 'fix' : 'implementation', resumed: Boolean(resumeId) });
     if (result.subtype === 'deferred') {
-      defer();
+      defer(heldBy(runner, account.name));
       const { active_turn: _active, ...data } = this.ctx.store.requireItem(id).file.frontmatter.op_data ?? {};
       this.ctx.store.mutateItem(id, [{ unset: ['op', 'op_started_at'] }, { set: { op_data: data } }], 'engine');
       this.ctx.store.journal.end(opId, id, 'ok', { subtype: 'deferred', reason: 'admission paused; instruction saved' });

@@ -1,7 +1,7 @@
 import { closesLine } from './issueImport.ts';
 import { itemModelSwitchOps } from '../providerSwitch.ts';
 import { join, relative, isAbsolute, extname, basename, matchesGlob } from 'node:path';
-import { DEBUG_MARKER, debugMarkerRefusal, Audition, AuditionPicks, auditionPicksProblem, auditionPickLines, auditionNote, auditionComplete, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, fallbackChain, unavailableEntry, validateBreakdown, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type Decision, type ServerEvent, type Status, type RateLimitSnapshot, demoteH1, loopGreen, loopLine, loopTallyProblem, testRunShape, TEST_RUN, type HostLoad, type ModelDef, resolveAccount, guardKey, unavailableView, DEFAULT_ACCOUNT, type Account } from '@planestro/shared';
+import { DEBUG_MARKER, debugMarkerRefusal, Audition, AuditionPicks, auditionPicksProblem, auditionPickLines, auditionNote, auditionComplete, resumeEstimate, resumeRates, chooseTurnPath, minRaiseUsd, MIN_TURN_USD, FRESH_FLOOR_USD, type ResumeEstimate, type SessionContext, type ItemFrontmatter, validateParts, partsSummary, serializeItemFile, modelCapabilities, getSection, idNumber, slugify, isoLocal, renderPrompt, findTransition, waitsFor, fallbackChain, unavailableEntry, validateBreakdown, findModel, epicFlagOf, epicShapeOf, holdShapeOf, heldReasonOf, holdWaitsOnPerson, kindConversionRefusal, type EpicFlag, type ProposedChild, type BreakdownChild, type DecisionInput, type Decision, type ServerEvent, type Status, type RateLimitSnapshot, demoteH1, loopGreen, loopLine, loopTallyProblem, testRunShape, TEST_RUN, type HostLoad, type ModelDef, resolveAccount, guardKey, localClock, unavailableView, DEFAULT_ACCOUNT, type Account } from '@planestro/shared';
 import type { DataStore, ItemOp } from '../store/DataStore.ts';
 import type { Engine, SessionView } from './Engine.ts';
 import { matchesPathPattern, type Ports, type TurnPhase, type TurnResult, type TurnTools, type PermissionRequest, type CiQueue, type RunnerReport, type AccountCredentials } from './ports.ts';
@@ -211,6 +211,7 @@ export class LiveEngine implements Engine {
       turns: this.turns,
       jobs: this.jobs,
       followUps: this.followUps,
+      pendingTurnWait: (id) => this.turnQueue.pendingTurnWait(id),
       get ciQueue() { return ciQueue(); },
       get baseSync() { return baseSync(); },
       now: () => this.now(),
@@ -382,6 +383,7 @@ export class LiveEngine implements Engine {
       resumeNote: (id, reason) => this.resumeNote(id, reason),
       accountFor: (fm, def) => this.accountFor(fm, def),
       guarded: (runner, account) => this.guarded(runner, account),
+      guardWait: (runner, account) => this.guardWait(runner, account),
       accountTurnOptions: (account) => this.accountTurnOptions(account),
       budgetOf: (fm) => this.budgetOf(fm),
       resumeEstimateFor: (fm, model) => this.resumeEstimateFor(fm, model),
@@ -413,11 +415,13 @@ export class LiveEngine implements Engine {
       phaseFor: (status) => this.phaseFor(status),
       accountFor: (fm, def) => this.accountFor(fm, def),
       guarded: (runner, account) => this.guarded(runner, account),
+      guardWait: (runner, account) => this.guardWait(runner, account),
       clearSupersededStop: (id) => this.clearSupersededStop(id),
       afterTurn: (id, phase, result) => this.afterTurn(id, phase, result),
     });
     this.orchestrator = new Orchestrator(store, ports, {
-      message: (id, text) => this.message(id, text, 'orchestrator'),
+      message: (id, text) => this.deliverMessage(id, text, 'orchestrator'),
+      reviewStallOver: (id) => this.ciWatch.reviewStallOver(id),
       approvePlan: (id, notes, hold, syncFirst) => this.approvePlan(id, notes, 'orchestrator', { hold, syncFirst }),
       holdMerge: (id, reason) => this.orchestratorHolds(id, reason),
       convertKind: (id, to, why) => this.convertKind(id, to, 'orchestrator', why).catch((e) => (e as Error).message),
@@ -875,7 +879,13 @@ export class LiveEngine implements Engine {
     this.store.mutateItem(id, [{ unset: stale }, { activity: { actor: 'app', text: `the earlier stop (${fm.blocked_reason}) is cleared: the plan's revision turn answers it` } }], 'engine', { commit: `${id}: stop cleared by the plan's revision` });
   }
 
-  async message(id: string, text: string, by: 'user' | 'orchestrator' = 'user'): Promise<void> {
+  async message(id: string, text: string, by: 'user' | 'orchestrator' = 'user'): Promise<void> { await this.deliverMessage(id, text, by); }
+
+  /**
+   * A message for an item's session, and what became of it, in words (#580): the orchestrator's message_session answered
+   * "queued for the session" whether the turn started or the message waited an hour behind a usage pause.
+   */
+  private async deliverMessage(id: string, text: string, by: 'user' | 'orchestrator' = 'user'): Promise<string> {
     const item = this.store.requireItem(id);
     const fm = item.file.frontmatter;
     const phase = this.phaseFor(fm.status);
@@ -893,17 +903,20 @@ export class LiveEngine implements Engine {
         const pending = [...((fm.op_data?.pending_messages as string[] | undefined) ?? []), text];
         this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), pending_messages: pending } } }, { activity: { actor: by, text: `message queued for its running ${what}: ${text}` } }], by, { commit: `${id}: message` });
         if (by === 'user') this.wakeOrchestrator('epic_message', id, { message: text, queued_for: `its running ${what}` });
-        return;
+        return `queued for its running ${what}, which reads it when its turn ends`;
       }
       if (by === 'orchestrator') throw new Error(`epic ${id} has no session past its breakdown; message its children (${this.store.derived(item).children.join(', ') || 'none yet'}) or annotate_item the epic`);
       this.store.mutateItem(id, [{ activity: { actor: 'user', text: `message: ${text}` } }, { activity: { actor: 'app', text: 'an epic has no session of its own past its breakdown: passed to the orchestrator for its children' } }], 'user', { commit: `${id}: message` });
       this.wakeOrchestrator('epic_message', id, { message: text });
-      return;
+      return 'passed to the orchestrator for the epic\'s children';
     }
     if (this.turns.has(id) || this.jobs.has(id) || fm.op_data?.pending_turn) {
       const pending = [...((fm.op_data?.pending_messages as string[] | undefined) ?? []), text];
       this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), pending_messages: pending } } }, { activity: { actor: 'user', text: `message queued: ${text}` } }], 'user');
-      return;
+      if (this.turns.has(id)) return `queued: ${id}'s session is in a turn now, and the message goes to it as its next turn`;
+      const saved = this.turnQueue.pendingTurnWait(id);
+      if (saved) return `queued with the turn already saved for ${id}'s session, which has not started: ${saved.why}. They go to the session together${saved.lifts ? ' once that ends' : '; that is what has to change first'}`;
+      return `queued: a step is running on ${id} (a CI wait, a sync or a merge step), and the message goes to its session as its next turn when that step ends, before its pull request merges`;
     }
     // A session parked on its question (or a permission) takes the message with the answer (#128, HH-259): a designer
     // decision that changes the brief is not held back until someone answers, and does not wake it a second time.
@@ -911,7 +924,7 @@ export class LiveEngine implements Engine {
     if (parked) {
       const pending = [...((fm.op_data?.pending_messages as string[] | undefined) ?? []), text];
       this.store.mutateItem(id, [{ set: { op_data: { ...(fm.op_data ?? {}), pending_messages: pending } } }, { activity: { actor: by === 'orchestrator' ? 'orchestrator' : 'user', text: `message queued: ${text} (it reaches the session with the answer to its ${fm.awaiting === 'question' || fm.awaiting_data?.kind === 'question' ? 'question' : fm.awaiting === 'audition' ? 'audition' : 'permission request'})` } }], by === 'orchestrator' ? 'orchestrator' : 'user');
-      return;
+      return `queued: ${id}'s session is parked on a question, a permission request or an audition, and the message reaches it with that answer`;
     }
     if (fm.awaiting && fm.awaiting !== 'user') throw new Error(`${id} is awaiting ${fm.awaiting}; answer that first`);
     // A message that resumes a blocked session is the answer to the block (unblock-with-message
@@ -919,6 +932,12 @@ export class LiveEngine implements Engine {
     // that then reported done sat IN_PROGRESS as "blocked" forever and no PR was ever opened.
     this.store.mutateItem(id, [{ unset: ['awaiting', 'awaiting_data', 'triage', ...(fm.blocked ? ['blocked', 'blocked_reason'] : [])] }, { activity: { actor: 'user', text: `message: ${text}` } }], 'user');
     this.runJob(id, () => this.runTurnFor(id, phase, `${this.resumeNote(id, 'a message from the user')}\n\nMessage from the user:\n\n${text}`));
+    // The turn's admission checks run before its first await: one a pause or a usage guard held back is saved by now.
+    const held = this.turnQueue.pendingTurnWait(id);
+    if (held) return `saved, not started: nothing was live on ${id}, so the message is its session's next turn, which waits (${held.why})${held.lifts ? ' and starts by itself once that ends' : ''}`;
+    const now = this.store.requireItem(id).file.frontmatter;
+    if (now.blocked) return `not started: ${id} blocked as its turn was about to start (${now.blocked_reason}); see its Activity`;
+    return `started: nothing was live on ${id}, so its session's ${phase} turn starts now with the message`;
   }
 
   async respond(id: string, payload: Record<string, unknown>, by: 'user' | 'orchestrator' = 'user'): Promise<void> {
@@ -1885,6 +1904,12 @@ export class LiveEngine implements Engine {
   }
   /** Whether that account's usage guard holds its new turns. */
   private guarded(runner: string, account?: string): boolean { return Boolean(this.store.local.engine.provider_guards?.[guardKey(runner, account)]); }
+  /** That guard, in words, with when it is due to lift: what a turn it holds back is said to wait for (#580). */
+  private guardWait(runner: string, account?: string): string {
+    const key = guardKey(runner, account);
+    const g = this.store.local.engine.provider_guards?.[key];
+    return `${key} is paused by the usage guard${g?.resume_at ? ` until ${localClock(g.resume_at)}` : g?.resets_at ? ` (its window resets at ${localClock(g.resets_at)}; resumed by hand)` : ' until it is resumed'}`;
+  }
   private guardedFor(fm: { account?: string }, def: ModelDef): boolean {
     const acct = this.accountFor(fm, def);
     return 'account' in acct && this.guarded(def.runner ?? 'claude', acct.account.name);
