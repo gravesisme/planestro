@@ -132,7 +132,7 @@ export const api = {
   previewProviderSwitch: (body: unknown) => req<any>('POST', '/api/providers/preview', body),
   applyProviderSwitch: (body: unknown) => req<any>('POST', '/api/providers/apply', body),
   orchestratorSelection: () => req<{ configured?: string; current?: string; pending?: boolean }>('GET', '/api/orchestrator/selection'),
-  retryProvider: (runner: string) => req('POST', `/api/providers/${runner}/retry`),
+  retryProvider: (runner: string) => req('POST', `/api/providers/${encodeURIComponent(runner)}/retry`),
   state: async () => { const s = await req<unknown>('GET', '/api/state'); if (!isState(s)) throw new Error('the server sent an unreadable state'); return s; },
   projects: () => req<{ projects: ProjectRow[] }>('GET', '/api/projects'),
   createItem: (body: { title: string; category?: string; priority?: Priority; release?: string | null; description?: string; kind?: 'item' | 'epic'; planner?: string; parent?: string; implementer?: string; status?: 'NOT_YET_SUBMITTED' | 'ICEBOX'; auto_approve_plan?: boolean; allow_model_fallback?: boolean }) => req<ItemView>('POST', '/api/items', body),

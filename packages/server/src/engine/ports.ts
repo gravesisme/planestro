@@ -51,11 +51,14 @@ export interface GitPort {
   dirtyDetail(cwd: string): Promise<{ tracked: string[]; untracked: string[] }>;
   /** Which of `paths` exist as files at `ref`. */
   trackedAt(cwd: string, ref: string, paths: string[]): Promise<string[]>;
-  /** Move files (relative to cwd) into `dest`, keeping their relative paths: set aside, never deleted. */
+  /** Move files (relative to cwd) into `dest`, keeping their relative paths: set aside, never deleted. A symbolic link moves as the link it is. */
   moveAside(cwd: string, paths: string[], dest: string): Promise<void>;
-  /** Copy files (relative to cwd) to the same relative paths under `destRoot`, never over a file with other content. Each copy is checked by size. */
+  /**
+   * Copy files (relative to cwd) to the same relative paths under `destRoot`, never over a file with other content. Each copy is checked by size.
+   * A symbolic link is recreated with the same target text, never followed (#581); a path that would be written through a link of `destRoot` is `collided`.
+   */
   copyInto(cwd: string, paths: string[], destRoot: string): Promise<{ copied: string[]; identical: string[]; collided: string[] }>;
-  /** Every file (tracked, ignored or unknown to git) under the given relative directories or files of `cwd`, as relative paths. */
+  /** Every file and symbolic link (tracked, ignored or unknown to git) under the given relative directories or files of `cwd`, as relative paths. A link is listed, never followed. */
   filesUnder(cwd: string, paths: string[]): Promise<string[]>;
   /** Stage everything in the worktree and commit it; returns the new head. */
   /** `git add -A` and commit, leaving the untracked paths in `leave` out of it. */

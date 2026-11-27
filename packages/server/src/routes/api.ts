@@ -94,7 +94,7 @@ export function apiRoutes(store: DataStore, engine: Engine, consoles?: ConsoleBu
 
   api.post('/providers/preview', async (c) => { try { return c.json(previewSwitch(store, engine, await c.req.json())); } catch (e) { return fail(c, e); } });
   api.post('/providers/apply', async (c) => { try { return c.json(applySwitch(store, engine, await c.req.json())); } catch (e) { return fail(c, e); } });
-  api.post('/providers/:runner/retry', (c) => { try { const runner = z.enum(['claude', 'codex']).parse(c.req.param('runner')); engine.retryProvider?.(runner); return c.json({ ok: true }); } catch (e) { return fail(c, e); } });
+  api.post('/providers/:runner/retry', (c) => { try { const runner = z.string().regex(/^(claude|codex)(:[^/\s]+)?$/).parse(c.req.param('runner')); engine.retryProvider?.(runner); return c.json({ ok: true }); } catch (e) { return fail(c, e); } });
   api.get('/orchestrator/selection', (c) => c.json((engine as any).orchestrator?.selection ?? { restart_required: false }));
   api.get('/state', async (c) => c.json(stateView(store, engine, await store.git.status({ maxAgeMs: 2000 }))));
   // Every project on this machine (#235), read-only: the others are asked server-side, so the page makes no cross-origin read.

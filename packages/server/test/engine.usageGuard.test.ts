@@ -124,6 +124,28 @@ describe('provider usage guards in the engine', () => {
     expect(store.local.engine.provider_guards?.claude?.resume_at).toBeUndefined();
     expect(timers).toHaveLength(0);
   });
+  it('a reading minutes before its window resets trips nothing; a used-up window still does (#579)', async () => {
+    const { store, engine } = await setup({ defaults: true });
+    seen(engine, snap({ utilization: 0.85, window: 'seven_day', resetsAt: new Date(Date.now() + 2 * 60_000).toISOString() }));
+    expect(store.local.engine.provider_guards?.claude).toBeUndefined();
+    expect(trips(store)).toHaveLength(0);
+    // nothing is remembered of the reading that was let through: the same window further from its reset trips
+    seen(engine, snap({ utilization: 0.85, window: 'seven_day', resetsAt: new Date(Date.now() + 11 * 60_000).toISOString() }));
+    expect(store.local.engine.provider_guards?.claude).toMatchObject({ window: 'seven_day' });
+    engine.retryProvider('claude');
+    seen(engine, snap({ status: 'rejected', window: 'five_hour', resetsAt: new Date(Date.now() + 60_000).toISOString() }));
+    expect(store.local.engine.provider_guards?.claude).toMatchObject({ window: 'five_hour', status: 'rejected' });
+  });
+  it('the global Resume says a provider is still paused and what clears it (#579)', async () => {
+    const { store, engine } = await setup({ defaults: true });
+    const said = () => ((engine as any).log as { message: string }[]).map((e) => e.message);
+    engine.pause(); engine.resume();
+    expect(said().at(-1)).toBe('automation resumed');
+    seen(engine, snap());
+    engine.pause(); engine.resume();
+    expect(said().at(-1)).toMatch(/^automation resumed — Claude is still paused for usage: Resume does not clear that, Retry Claude .* does$/);
+    expect(store.local.engine.provider_guards?.claude).toBeDefined();
+  });
   it('disabled guards ignore readings', async () => {
     const { store, engine } = await setup({ edit: (y) => y.replace('  enabled: true\\n  threshold', '  enabled: false\\n  threshold') });
     store.updateConfig((doc) => doc.setIn(['usage_guard', 'enabled'], false), 'config: disabled usage guard');

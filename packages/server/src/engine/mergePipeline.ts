@@ -676,7 +676,17 @@ export class MergePipeline {
     // Record what this branch changed while it still exists: dependents are told from this, not from a summary.
     const delivered = await this.ctx.reviewUndo.deliveredBy(id).catch(() => undefined);
     this.ctx.store.mutateItem(id, [{ set: { op: 'merging', op_started_at: this.ctx.now(), ci_result: 'green', ...(delivered ? { delivered } : {}) } }], 'engine');
-    if (await this.ctx.ports.gh.mergePr(this.ctx.github, fm.pr!, { headSha }) === 'head_moved') {
+    // A merge call that failed says nothing about the merge (#582): gh killed at its timeout, or a dropped connection, can
+    // leave the PR merged on GitHub. Only GitHub reporting MERGED for this PR on the head just validated counts as merged;
+    // anything else (still open, closed, another head, or a read that fails too) stops exactly as the failed call did.
+    let unknown: Error | undefined;
+    const outcome = await this.ctx.ports.gh.mergePr(this.ctx.github, fm.pr!, { headSha }).catch((e: Error) => { unknown = e; return 'unknown' as const; });
+    if (unknown) {
+      const after = await this.ctx.ports.gh.prView(this.ctx.github, fm.pr!).catch(() => null);
+      if (after?.state !== 'MERGED' || after.headRefOid !== headSha) throw unknown;
+      this.ctx.store.mutateItem(id, [{ activity: { actor: 'app', text: `the merge call for PR #${fm.pr} failed (${unknown.message.slice(0, 200)}), but GitHub reports it MERGED on ${headSha.slice(0, 7)}: carrying on as merged` } }], 'engine');
+    }
+    if (outcome === 'head_moved') {
       this.ctx.store.mutateItem(id, [{ set: { ci_result: 'pending' } }], 'engine');
       this.ctx.store.journal.end(opId, id, 'aborted', { reason: 'head_moved', head: headSha });
       this.ctx.block(id, 'merge_head_moved', `PR #${fm.pr} moved after ${headSha.slice(0, 7)} passed checks; nothing merged. Inspect and sync the branch, then retry validation.`);

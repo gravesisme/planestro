@@ -296,6 +296,8 @@ describe('permission requests delegated to the orchestrator', () => {
     expect(denials).toBe(3);
     // #203: the next request of the same kind is shown the ruling it got before
     expect(w.seen.prompts[0]).not.toContain('Earlier rulings');
+    // #583: the request says whether run_heavy would take the command, so a denial never points the worker at a tool that refuses it too
+    expect(w.seen.prompts[0]).toMatch(/run_heavy: the worker's run_heavy tool would refuse this command too: it runs only what the allow rules cover[\s\S]*Do not send the worker to run_heavy with it/);
     expect(w.seen.prompts[1]).toMatch(/Earlier rulings on `node` commands[\s\S]*deny \(orchestrator\): use the project check script instead/);
     expect(w.seen.implementPrompts[1]).toContain('DENIED: The orchestrator denied your command `node -e 1`: use the project check script instead. This exact command is denied: do not run it again, reworded or by another route');
     expect(fmOf(ctx.store, ctx.id).op_data?.orchestrator_denials).toBe(3);

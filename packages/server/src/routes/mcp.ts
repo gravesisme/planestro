@@ -9,7 +9,7 @@ import type { GhPort } from '../engine/ports.ts';
 import type { Engine } from '../engine/Engine.ts';
 import { TOOL_VERSION } from '../config.ts';
 import { listInstances, readInstance, pgidOf, uptime, type Instance } from '../instances.ts';
-import { itemView } from './views.ts';
+import { itemView, providerGuardsView } from './views.ts';
 import { itemModelSwitchOps } from '../providerSwitch.ts';
 import { allowedHosts, hostnameOf, fromThisMachine } from '../guard.ts';
 import { McpAttachments, readMcpAttachments, type McpAttachmentInput } from './mcpAttachments.ts';
@@ -119,7 +119,8 @@ function stateSummary(store: DataStore, engine: Engine) {
   return {
     project: { name: store.config.project.name, id_prefix: store.config.project.id_prefix, data_dir: store.dataDir, code_repo: store.codeRepoPath() },
     planestro: TOOL_VERSION,
-    engine: { mode: engine.mode, paused: engine.paused, read_only: store.readOnly, sessions: engine.sessions() },
+    // `paused` is the global lever only: a provider's usage guard stops that provider's new turns beside it (#579).
+    engine: { mode: engine.mode, paused: engine.paused, provider_guards: providerGuardsView(store), read_only: store.readOnly, sessions: engine.sessions() },
     counts: byStatus,
     running: count((i) => ['PLAN_IN_PROGRESS', 'IN_PROGRESS'].includes(fm(i).status) && !fm(i).blocked),
     queued: count((i) => fm(i).status === 'QUEUED'),
@@ -188,7 +189,7 @@ export function operatorServer(store: DataStore, engine: Engine, caller: Operato
     return json(view);
   });
   server.registerTool('get_state', {
-    description: 'The backlog at a glance: project, engine mode and pause, counts by status, what is running, queued, blocked, needs you, awaiting review, open PRs, and the planestro instances running on this machine.',
+    description: 'The backlog at a glance: project, engine mode and pause, any provider paused by its usage guard (engine.provider_guards: nothing new starts on that provider until the user presses its Retry on the board, even with paused false), counts by status, what is running, queued, blocked, needs you, awaiting review, open PRs, and the planestro instances running on this machine.',
     inputSchema: {},
     annotations: READ_ONLY,
   }, async () => json(stateSummary(store, engine)));
