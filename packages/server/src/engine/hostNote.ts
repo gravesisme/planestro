@@ -42,7 +42,7 @@ export function cwdNote(worktree: string): string {
 export function keptPathsNote(paths: string[], checkout: string, orchestrator = false): string {
   if (!paths.length) return '';
   const where = paths.map((p) => `\`${p.replace(/\/+$/, '')}/\``).join(', ');
-  const lines = ['', '', '## Files copied on merge', '', `- Files a worker leaves under ${where} in its worktree are copied by planestro into the same folder of the main checkout (${checkout}) when the item merges, and kept in .displaced/ as well.`];
+  const lines = ['', '', '## Files copied on merge', '', `- Files a worker leaves under ${where} in its worktree are copied by planestro into the same folder of the main checkout (${checkout}) when the item merges, and kept in .displaced/ as well. A Python virtual environment (a folder with a pyvenv.cfg) is not copied: it only runs where it was made.`];
   lines.push(orchestrator
     ? '- So a worker never copies them there itself, and a worker that reports it could not copy them there is not blocked: it is not a merge blocker. Do not write that step into a plan or instruction.'
     : '- Leave them there; do not copy them into the main checkout yourself, even if a brief says to.');
